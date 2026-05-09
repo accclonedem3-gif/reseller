@@ -1,0 +1,43 @@
+{
+  "name": "reseller-platform",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "start:local": "powershell -ExecutionPolicy Bypass -File .\\start-local.ps1",
+    "start:local:bot-test": "powershell -ExecutionPolicy Bypass -File .\\start-local-bot-test.ps1",
+    "dev": "concurrently -k -n api,worker,web -c blue,green,magenta \"npm run dev -w @reseller/api\" \"npm run dev -w @reseller/worker\" \"npm run dev -w @reseller/web\"",
+    "dev:api": "npm run dev -w @reseller/api",
+    "dev:worker": "npm run dev -w @reseller/worker",
+    "dev:web": "npm run dev -w @reseller/web",
+    "start:api": "node apps/api/dist/main.js",
+    "start:worker": "node apps/worker/dist/main.js",
+    "serve:web:dist": "py -3 -m http.server 5173 -d apps/web/dist",
+    "build": "npm run build -w @reseller/shared && npm run build -w @reseller/api && npm run build -w @reseller/worker && npm run build -w @reseller/web",
+    "typecheck": "npm run typecheck -w @reseller/shared && npm run typecheck -w @reseller/api && npm run typecheck -w @reseller/worker && npm run typecheck -w @reseller/web",
+    "db:generate": "prisma generate --schema prisma/schema.prisma",
+    "db:migrate": "prisma migrate dev --schema prisma/schema.prisma",
+    "db:deploy": "prisma migrate deploy --schema prisma/schema.prisma",
+    "db:seed": "tsx prisma/seed.ts",
+    "db:purge-mock": "node scripts/purge-mock-data.cjs",
+    "docker:up": "docker compose up -d",
+    "docker:down": "docker compose down",
+    "format": "prettier --write ."
+  },
+  "dependencies": {
+    "@prisma/client": "^6.7.0",
+    "bcryptjs": "^3.0.2",
+    "dotenv": "^16.5.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.14.1",
+    "concurrently": "^9.1.2",
+    "prettier": "^3.4.2",
+    "prisma": "^6.7.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.8.3"
+  }
+}

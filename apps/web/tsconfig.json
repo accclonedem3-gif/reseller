@@ -1,0 +1,37 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "jsx": "react-jsx",
+    "baseUrl": ".",
+    "lib": [
+      "ES2022",
+      "DOM",
+      "DOM.Iterable"
+    ],
+    "allowJs": false,
+    "noEmit": true,
+    "noImplicitAny": false,
+    "paths": {
+      "@/*": [
+        "./src/*"
+      ],
+      "@reseller/shared": [
+        "../../packages/shared/dist/index"
+      ],
+      "@reseller/shared/client": [
+        "../../packages/shared/dist/client"
+      ]
+    },
+    "types": [
+      "vite/client"
+    ]
+  },
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.tsx",
+    "vite.config.ts",
+    "tailwind.config.ts"
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "name": "@reseller/worker",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "@prisma/client": "^6.7.0",
+    "@reseller/shared": "1.0.0",
+    "axios": "^1.8.4",
+    "bullmq": "^5.49.1",
+    "dotenv": "^16.5.0",
+    "ioredis": "^5.4.2"
+  },
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/main.js",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  }
+}

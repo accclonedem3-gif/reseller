@@ -1,0 +1,379 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── Light mode (default) ───────────────────────────────── */
+:root {
+  --bg:       #f5f5f2;
+  --surface:  #ffffff;
+  --sidebar:  #ffffff;
+  --bd:       #e5e7eb;
+  --tx:       #111827;
+  --tx-m:     #6b7280;
+  --tx-f:     #9ca3af;
+  --inp:      #f3f4f6;
+  --s-act:    #fff7ed;
+  --s-act-tx: #c2410c;
+  --blob:     rgba(249, 115, 22, 0.06);
+  --glow:     rgba(249, 115, 22, 0.08);
+}
+
+/* ── Dark mode ──────────────────────────────────────────── */
+.dark {
+  --bg:       #1a1d2e;
+  --surface:  #252840;
+  --sidebar:  #252840;
+  --bd:       rgba(255, 255, 255, 0.08);
+  --tx:       #f8fafc;
+  --tx-m:     #94a3b8;
+  --tx-f:     #64748b;
+  --inp:      #1a1d2e;
+  --s-act:    rgba(249, 115, 22, 0.15);
+  --s-act-tx: #fdba74;
+  --blob:     rgba(249, 115, 22, 0.05);
+  --glow:     rgba(249, 115, 22, 0.08);
+}
+
+html { scroll-behavior: auto; }
+
+body {
+  min-height: 100vh;
+  margin: 0;
+  position: relative;
+  overflow-x: hidden;
+  background-color: var(--bg);
+  background-image:
+    radial-gradient(circle at 16% 8%, var(--glow), transparent 18%),
+    radial-gradient(circle at 84% 14%, var(--blob), transparent 16%);
+  font-family: "Be Vietnam Pro", ui-sans-serif, system-ui, sans-serif;
+  color: var(--tx);
+  letter-spacing: -0.01em;
+  transition: background-color 0.3s, color 0.3s;
+}
+
+#root {
+  min-height: 100vh;
+  position: relative;
+  isolation: isolate;
+}
+
+* { box-sizing: border-box; }
+
+*::selection {
+  background: rgba(249, 115, 22, 0.24);
+  color: #fff;
+}
+
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { border-radius: 10px; background: rgba(249, 115, 22, 0.2); }
+
+.custom-scrollbar::-webkit-scrollbar { width: 4px; }
+.custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+.custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(249, 115, 22, 0.2); border-radius: 10px; }
+
+/* ── Animations ─────────────────────────────────────────── */
+@keyframes shell-slide-left {
+  from { opacity: 0; transform: translateX(-18px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+@keyframes shell-slide-down {
+  from { opacity: 0; transform: translateY(-16px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes shell-page-enter {
+  from { opacity: 0; transform: translateY(18px) scale(0.992); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes shell-child-enter {
+  from { opacity: 0; transform: translateY(14px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.shell-sidebar   { animation: shell-slide-left 520ms cubic-bezier(0.22, 1, 0.36, 1) both; }
+.shell-topbar    { animation: shell-slide-down 500ms cubic-bezier(0.22, 1, 0.36, 1) 60ms both; }
+.shell-mobilebar { animation: shell-slide-down 460ms cubic-bezier(0.22, 1, 0.36, 1) both; }
+
+.page-stage {
+  animation: shell-page-enter 520ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  transform-origin: top center;
+}
+.page-stage > *                { animation: shell-child-enter 460ms cubic-bezier(0.22, 1, 0.36, 1) both; }
+.page-stage > *:nth-child(1)   { animation-delay: 70ms; }
+.page-stage > *:nth-child(2)   { animation-delay: 130ms; }
+.page-stage > *:nth-child(3)   { animation-delay: 190ms; }
+.page-stage > *:nth-child(4)   { animation-delay: 250ms; }
+.page-stage > *:nth-child(n+5) { animation-delay: 300ms; }
+
+/* ── Auth pages ─────────────────────────────────────────── */
+.auth-stage { position: relative; isolation: isolate; }
+.auth-stage::before {
+  content: "";
+  position: absolute; inset: 0;
+  background:
+    radial-gradient(circle at center top, rgba(249,115,22,0.09), transparent 30%),
+    linear-gradient(180deg, rgba(255,255,255,0.01), transparent 26%);
+  pointer-events: none; z-index: -1;
+}
+.auth-shell {
+  position: relative;
+  animation: shell-slide-down 520ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.auth-panel {
+  background: var(--surface);
+  border: 1px solid var(--bd);
+  box-shadow: 0 26px 64px rgba(0,0,0,0.12);
+  animation: shell-page-enter 560ms cubic-bezier(0.22, 1, 0.36, 1) 80ms both;
+}
+
+/* ── Glass chip (used across many pages as a card/chip surface) ─── */
+.glass-chip {
+  background-color: var(--inp);
+  border: 1px solid var(--bd);
+}
+
+/* ── Utility classes ─────────────────────────────────────── */
+.app-kicker {
+  color: #f97316;
+  font-size: 0.65rem;
+  font-weight: 900;
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+}
+.app-muted { color: var(--tx-m); }
+.app-faint { color: var(--tx-f); }
+.app-divider { height: 1px; background: var(--bd); }
+
+/* ── Table ───────────────────────────────────────────────── */
+.app-table-wrap { overflow-x: auto; border-radius: 1.5rem; }
+.app-table { min-width: 100%; border-collapse: separate; border-spacing: 0; }
+.app-table thead th {
+  padding: 0 1rem 0.9rem;
+  color: var(--tx-f);
+  font-size: 0.65rem;
+  font-weight: 900;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+}
+.app-table tbody td {
+  padding: 1rem;
+  border-top: 1px solid var(--bd);
+  color: var(--tx);
+  vertical-align: top;
+}
+.app-table tbody tr { transition: background-color 180ms ease; }
+.app-table tbody tr:hover td { background: rgba(249,115,22,0.04); }
+.app-table tbody tr td:first-child { border-top-left-radius: 1rem; border-bottom-left-radius: 1rem; }
+.app-table tbody tr td:last-child  { border-top-right-radius: 1rem; border-bottom-right-radius: 1rem; }
+.app-empty {
+  border: 1px dashed rgba(249,115,22,0.2);
+  background: rgba(249,115,22,0.03);
+}
+
+/* ── Toast ───────────────────────────────────────────────── */
+@keyframes toast-card-enter {
+  from { opacity: 0; transform: translate3d(0,-12px,0) scale(0.98); }
+  to   { opacity: 1; transform: translate3d(0,0,0) scale(1); }
+}
+@keyframes toast-card-exit {
+  from { opacity: 1; transform: translate3d(0,0,0) scale(1); }
+  to   { opacity: 0; transform: translate3d(0,-10px,0) scale(0.98); }
+}
+@keyframes toast-progress {
+  from { transform: scaleX(1); }
+  to   { transform: scaleX(0); }
+}
+.toast-card-enter { animation: toast-card-enter 320ms cubic-bezier(0.22,1,0.36,1) both; }
+.toast-card-exit  { animation: toast-card-exit 220ms cubic-bezier(0.4,0,0.2,1) both; }
+.toast-progress   { animation-name: toast-progress; animation-timing-function: linear; animation-fill-mode: forwards; }
+
+/* ── Light mode: auto-fix hardcoded dark classes ──────────
+   Targets common Tailwind dark-only utilities so most pages
+   render correctly in light mode without touching each file.
+   ────────────────────────────────────────────────────────── */
+
+/* text-white → semantic text color (page content only) */
+:root:not(.dark) .page-stage .text-white { color: var(--tx) !important; }
+/* Preserve white text ON colored backgrounds */
+:root:not(.dark) .page-stage .bg-orange-500 .text-white,
+:root:not(.dark) .page-stage .bg-orange-500.text-white,
+:root:not(.dark) .page-stage [class*="bg-emerald-"] .text-white,
+:root:not(.dark) .page-stage [class*="bg-emerald-"].text-white,
+:root:not(.dark) .page-stage [class*="bg-rose-"] .text-white,
+:root:not(.dark) .page-stage [class*="bg-rose-"].text-white,
+:root:not(.dark) .page-stage [class*="bg-yellow-"] .text-white,
+:root:not(.dark) .page-stage [class*="bg-yellow-"].text-white { color: white !important; }
+
+/* Dark bg utilities → light surface */
+:root:not(.dark) .bg-\[\#18233c\]  { background-color: var(--inp) !important; }
+:root:not(.dark) .bg-\[\#121a2e\]  { background-color: var(--inp) !important; }
+:root:not(.dark) .bg-\[\#1e2a47\]  { background-color: var(--inp) !important; }
+:root:not(.dark) .bg-\[\#0f1729\]  { background-color: var(--inp) !important; }
+:root:not(.dark) .bg-\[\#1a1d2e\]  { background-color: var(--inp) !important; }
+:root:not(.dark) .bg-\[\#0a0f1c\]  { background-color: var(--inp) !important; }
+:root:not(.dark) .bg-\[\#252840\]  { background-color: var(--surface) !important; }
+
+/* Semi-transparent white → semi-transparent dark */
+:root:not(.dark) .bg-white\/\[0\.03\] { background-color: rgba(0,0,0,0.02) !important; }
+:root:not(.dark) .bg-white\/\[0\.04\] { background-color: rgba(0,0,0,0.03) !important; }
+:root:not(.dark) .bg-white\/\[0\.05\] { background-color: rgba(0,0,0,0.04) !important; }
+:root:not(.dark) .bg-white\/8        { background-color: rgba(0,0,0,0.04) !important; }
+
+/* Dark borders → semantic border */
+:root:not(.dark) .border-white\/6  { border-color: var(--bd) !important; }
+:root:not(.dark) .border-white\/8  { border-color: var(--bd) !important; }
+:root:not(.dark) .border-white\/10 { border-color: var(--bd) !important; }
+:root:not(.dark) .border-white\/14 { border-color: var(--bd) !important; }
+
+/* Near-white text → readable text in light mode */
+:root:not(.dark) .page-stage .text-slate-50,
+:root:not(.dark) .page-stage .text-slate-100,
+:root:not(.dark) .page-stage .text-slate-200,
+:root:not(.dark) .page-stage .text-slate-300 { color: var(--tx) !important; }
+/* Preserve on colored backgrounds */
+:root:not(.dark) .page-stage [class*="bg-emerald-"] .text-slate-300,
+:root:not(.dark) .page-stage [class*="bg-rose-"] .text-slate-300,
+:root:not(.dark) .page-stage [class*="bg-yellow-"] .text-slate-300,
+:root:not(.dark) .page-stage [class*="bg-orange-"] .text-slate-300 { color: inherit !important; }
+
+/* Pastel accent text → saturated equivalents in light mode (visible on light bg) */
+:root:not(.dark) .page-stage .text-emerald-100 { color: #065f46 !important; }
+:root:not(.dark) .page-stage .text-emerald-200 { color: #059669 !important; }
+:root:not(.dark) .page-stage .text-emerald-300 { color: #059669 !important; }
+:root:not(.dark) .page-stage .text-teal-200    { color: #0d9488 !important; }
+:root:not(.dark) .page-stage .text-rose-100    { color: #9f1239 !important; }
+:root:not(.dark) .page-stage .text-rose-200    { color: #be123c !important; }
+:root:not(.dark) .page-stage .text-amber-100,
+:root:not(.dark) .page-stage .text-amber-200   { color: #92400e !important; }
+:root:not(.dark) .page-stage .text-violet-200,
+:root:not(.dark) .page-stage .text-violet-300  { color: #7c3aed !important; }
+:root:not(.dark) .page-stage .text-purple-200,
+:root:not(.dark) .page-stage .text-purple-300  { color: #9333ea !important; }
+:root:not(.dark) .page-stage .text-sky-200,
+:root:not(.dark) .page-stage .text-sky-300     { color: #0369a1 !important; }
+:root:not(.dark) .page-stage .text-blue-200,
+:root:not(.dark) .page-stage .text-blue-300    { color: #1d4ed8 !important; }
+:root:not(.dark) .page-stage .text-indigo-200,
+:root:not(.dark) .page-stage .text-indigo-300  { color: #4338ca !important; }
+/* Preserve where the element itself carries the colored bg (same-element compound selector) */
+:root:not(.dark) .page-stage [class*="bg-emerald-"].text-emerald-100,
+:root:not(.dark) .page-stage [class*="bg-emerald-"].text-emerald-200,
+:root:not(.dark) .page-stage [class*="bg-emerald-"].text-emerald-300 { color: #065f46 !important; }
+:root:not(.dark) .page-stage [class*="bg-rose-"].text-rose-100,
+:root:not(.dark) .page-stage [class*="bg-rose-"].text-rose-200       { color: #9f1239 !important; }
+/* Keep pastel text on deeply colored (500+) parent backgrounds */
+:root:not(.dark) .page-stage [class*="bg-emerald-5"] .text-emerald-100,
+:root:not(.dark) .page-stage [class*="bg-emerald-5"] .text-emerald-200 { color: inherit !important; }
+
+/* More dark bg hex codes */
+:root:not(.dark) .bg-\[\#0d1526\]  { background-color: var(--inp) !important; }
+:root:not(.dark) .bg-\[\#111827\]  { background-color: var(--inp) !important; }
+:root:not(.dark) .bg-\[\#0f172a\]  { background-color: var(--inp) !important; }
+:root:not(.dark) .bg-\[\#1e293b\]  { background-color: var(--inp) !important; }
+
+/* More semi-transparent dark overlay backgrounds */
+:root:not(.dark) .bg-white\/\[0\.06\] { background-color: rgba(0,0,0,0.04) !important; }
+:root:not(.dark) .bg-white\/\[0\.07\] { background-color: rgba(0,0,0,0.04) !important; }
+
+/* More border opacities */
+:root:not(.dark) .border-white\/5  { border-color: var(--bd) !important; }
+:root:not(.dark) .border-white\/12 { border-color: var(--bd) !important; }
+:root:not(.dark) .border-white\/15 { border-color: var(--bd) !important; }
+:root:not(.dark) .border-white\/16 { border-color: var(--bd) !important; }
+:root:not(.dark) .border-white\/18 { border-color: var(--bd) !important; }
+:root:not(.dark) .border-white\/20 { border-color: var(--bd) !important; }
+:root:not(.dark) .border-white\/25 { border-color: var(--bd) !important; }
+
+/* bg-white/* shorthand */
+:root:not(.dark) .bg-white\/5  { background-color: rgba(0,0,0,0.03) !important; }
+:root:not(.dark) .bg-white\/3  { background-color: rgba(0,0,0,0.02) !important; }
+:root:not(.dark) .bg-white\/10 { background-color: rgba(0,0,0,0.04) !important; }
+
+/* Dark overlay on dark bg → subtle in light mode */
+:root:not(.dark) .bg-black\/20 { background-color: rgba(0,0,0,0.04) !important; }
+:root:not(.dark) .bg-black\/30 { background-color: rgba(0,0,0,0.05) !important; }
+:root:not(.dark) .bg-black\/40 { background-color: rgba(0,0,0,0.06) !important; }
+
+/* Uppercase hex variants (Tailwind class names are case-sensitive) */
+:root:not(.dark) .bg-\[\#121A2E\]  { background-color: var(--inp) !important; }
+:root:not(.dark) .bg-\[\#18233C\]  { background-color: var(--inp) !important; }
+:root:not(.dark) .bg-\[\#1E2A47\]  { background-color: var(--inp) !important; }
+:root:not(.dark) .bg-\[\#252840\]  { background-color: var(--surface) !important; }
+:root:not(.dark) .bg-\[\#0F1729\]  { background-color: var(--inp) !important; }
+
+/* More dark hex codes (lowercase) */
+:root:not(.dark) .bg-\[\#0f1319\]  { background-color: var(--inp) !important; }
+:root:not(.dark) .bg-\[\#10151c\]  { background-color: var(--inp) !important; }
+:root:not(.dark) .bg-\[\#121922\]  { background-color: var(--inp) !important; }
+:root:not(.dark) .bg-\[\#141a22\]  { background-color: var(--inp) !important; }
+:root:not(.dark) .bg-\[\#090909\]  { background-color: var(--inp) !important; }
+:root:not(.dark) .bg-\[\#0a0c10\]  { background-color: var(--inp) !important; }
+:root:not(.dark) .bg-\[\#0c1220\]  { background-color: var(--inp) !important; }
+:root:not(.dark) .bg-\[\#0d1117\]  { background-color: var(--inp) !important; }
+:root:not(.dark) .bg-\[\#0d1525\]  { background-color: var(--inp) !important; }
+:root:not(.dark) .bg-\[\#0d1525\]\/60 { background-color: var(--surface) !important; }
+
+/* bg-white/[0.025] */
+:root:not(.dark) .bg-white\/\[0\.025\] { background-color: rgba(0,0,0,0.02) !important; }
+
+/* Slate dark backgrounds */
+:root:not(.dark) .bg-slate-900\/\[0\.45\] { background-color: rgba(0,0,0,0.04) !important; }
+:root:not(.dark) .bg-slate-950\/45        { background-color: rgba(0,0,0,0.04) !important; }
+:root:not(.dark) .bg-slate-900\/50        { background-color: rgba(0,0,0,0.04) !important; }
+
+/* placeholder text */
+:root:not(.dark) .placeholder-slate-500::placeholder { color: #9ca3af; }
+
+/* Additional dark hex codes */
+:root:not(.dark) .bg-\[\#0c1424\]  { background-color: var(--inp) !important; }
+:root:not(.dark) .bg-\[\#0e1528\]  { background-color: var(--inp) !important; }
+
+/* More semi-transparent backgrounds */
+:root:not(.dark) .bg-white\/\[0\.02\] { background-color: rgba(0,0,0,0.02) !important; }
+
+/* Slate-950 with opacity used as dark stat/card bg */
+:root:not(.dark) .bg-slate-950\/25 { background-color: var(--inp) !important; }
+:root:not(.dark) .bg-slate-950\/30 { background-color: var(--inp) !important; }
+:root:not(.dark) .bg-slate-950\/35 { background-color: var(--inp) !important; }
+:root:not(.dark) .bg-slate-950\/40 { background-color: var(--inp) !important; }
+
+/* More border opacities */
+:root:not(.dark) .border-white\/4  { border-color: var(--bd) !important; }
+
+/* Pastel yellow/amber/rose text → saturated in light mode */
+:root:not(.dark) .page-stage .text-yellow-300 { color: #92400e !important; }
+:root:not(.dark) .page-stage .text-amber-300  { color: #92400e !important; }
+:root:not(.dark) .page-stage .text-rose-300   { color: #be123c !important; }
+
+/* White / slate text → CSS vars in light mode */
+:root:not(.dark) .page-stage .text-white   { color: var(--tx) !important; }
+:root:not(.dark) .page-stage .text-slate-100 { color: var(--tx) !important; }
+:root:not(.dark) .page-stage .text-slate-200 { color: var(--tx-m) !important; }
+:root:not(.dark) .page-stage .text-slate-300 { color: var(--tx-m) !important; }
+:root:not(.dark) .page-stage .text-slate-400 { color: var(--tx-m) !important; }
+:root:not(.dark) .page-stage .text-slate-500 { color: var(--tx-f) !important; }
+
+/* Missing border-white opacities */
+:root:not(.dark) .border-white\/8  { border-color: var(--bd) !important; }
+:root:not(.dark) .border-white\/10 { border-color: var(--bd) !important; }
+:root:not(.dark) .border-white\/12 { border-color: var(--bd) !important; }
+
+/* Small white/bg opacity backgrounds not yet covered */
+:root:not(.dark) .bg-white\/\[0\.025\] { background-color: rgba(0,0,0,0.015) !important; }
+:root:not(.dark) .bg-white\/\[0\.03\]  { background-color: rgba(0,0,0,0.02) !important; }
+:root:not(.dark) .bg-white\/\[0\.04\]  { background-color: rgba(0,0,0,0.02) !important; }
+:root:not(.dark) .bg-white\/\[0\.05\]  { background-color: rgba(0,0,0,0.03) !important; }
+
+/* Hover border opacities */
+:root:not(.dark) .hover\:border-white\/12:hover { border-color: var(--bd) !important; }
+
+/* Pale emerald text → readable in light mode */
+:root:not(.dark) .page-stage .text-emerald-100 { color: #065f46 !important; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+}

@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="T tech logo">
+  <defs>
+    <linearGradient id="bg" x1="10" y1="8" x2="54" y2="58" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#34D399"/>
+      <stop offset="1" stop-color="#0EA5E9"/>
+    </linearGradient>
+    <linearGradient id="stroke" x1="16" y1="12" x2="52" y2="54" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ECFEFF" stop-opacity="0.95"/>
+      <stop offset="1" stop-color="#A7F3D0" stop-opacity="0.42"/>
+    </linearGradient>
+    <filter id="glow" x="-25%" y="-25%" width="150%" height="150%">
+      <feGaussianBlur stdDeviation="2.4" result="blur"/>
+      <feColorMatrix in="blur" type="matrix" values="0 0 0 0 0.062 0 0 0 0 0.725 0 0 0 0 0.506 0 0 0 0.55 0"/>
+      <feMerge>
+        <feMergeNode/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  <rect width="64" height="64" rx="18" fill="#0A0F1C"/>
+  <path d="M18 9.5h28c5 0 8.5 3.5 8.5 8.5v28c0 5-3.5 8.5-8.5 8.5H18c-5 0-8.5-3.5-8.5-8.5V18c0-5 3.5-8.5 8.5-8.5Z" fill="#121A2E" stroke="url(#stroke)" stroke-width="1.5"/>
+  <path d="M18 20h28" stroke="url(#bg)" stroke-width="7" stroke-linecap="round" filter="url(#glow)"/>
+  <path d="M32 20v25" stroke="#E2E8F0" stroke-width="7" stroke-linecap="round"/>
+  <path d="M22 20h20" stroke="#E2E8F0" stroke-width="7" stroke-linecap="round"/>
+  <path d="M48 14.5h2.5v2.5H48zM13.5 47H16v2.5h-2.5zM49 47h2v2h-2z" fill="#34D399" opacity="0.9"/>
+</svg>

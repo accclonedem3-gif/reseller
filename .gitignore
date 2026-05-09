@@ -1,0 +1,27 @@
+node_modules
+dist
+.turbo
+.vite
+.env
+.env.local
+.env.bot-test
+.env.bot-test.local
+.DS_Store
+coverage
+uploads
+apps/web/dist
+apps/api/dist
+apps/worker/dist
+packages/shared/dist
+prisma/dev.db
+*.log
+CODEX_IMPLEMENTATION_PROMPT.md
+deploy.ps1
+hd trigger sản phẩm thủ công.txt
+HUONG_DAN_DEPLOY_TU_DAU.md
+HUONG_DAN_LAY_KEY_PAYOS.md
+HUONG_DAN_LAY_KEY_PAYOS.txt
+PHASE_PROMPTS.md
+.claude
+.codex-runtime
+.env.bot-test.example
