@@ -1,0 +1,9 @@
+ALTER TYPE "PaymentProvider" ADD VALUE IF NOT EXISTS 'BINANCE';
+ALTER TYPE "PaymentProvider" ADD VALUE IF NOT EXISTS 'OKX';
+
+ALTER TABLE "payment_configs"
+ADD COLUMN IF NOT EXISTS "binance_uid" TEXT,
+ADD COLUMN IF NOT EXISTS "okx_uid" TEXT;
+
+ALTER TABLE "customers"
+ADD COLUMN IF NOT EXISTS "preferred_language" TEXT NOT NULL DEFAULT 'vi';

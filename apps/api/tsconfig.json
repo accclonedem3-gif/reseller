@@ -1,0 +1,22 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "src",
+    "declaration": true,
+    "paths": {
+      "@reseller/shared": [
+        "../../packages/shared/dist/index"
+      ],
+      "@reseller/shared/client": [
+        "../../packages/shared/dist/client"
+      ],
+      "@reseller/shared/server": [
+        "../../packages/shared/dist/server"
+      ]
+    }
+  },
+  "include": [
+    "src/**/*.ts"
+  ]
+}

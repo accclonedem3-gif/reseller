@@ -1,0 +1,1 @@
+ALTER TYPE "WalletLedgerType" ADD VALUE 'SALE_REVENUE';
