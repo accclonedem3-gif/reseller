@@ -50,7 +50,10 @@ const T = {
     noWarranty: "Không có BH",
     toastResolved: "Đã xử lý claim bảo hành thủ công.",
     toastRejected: "Đã từ chối claim bảo hành.",
+    toastRechecked: "Đã đưa claim vào hàng đợi kiểm tra lại.",
     toastError: "Có lỗi xảy ra. Hãy thử lại.",
+    recheckBtn: "Kiểm tra lại",
+    rechecking: "Đang đưa vào hàng đợi...",
     colCustomer: "KHÁCH HÀNG",
     colOrder: "ĐƠN HÀNG",
     colWarranty: "THỜI HẠN BẢO HÀNH",
@@ -100,7 +103,10 @@ const T = {
     noWarranty: "No warranty",
     toastResolved: "Manual warranty claim processed.",
     toastRejected: "Warranty claim rejected.",
+    toastRechecked: "Claim re-queued for auto-check.",
     toastError: "An error occurred. Please try again.",
+    recheckBtn: "Re-check",
+    rechecking: "Queuing...",
     colCustomer: "CUSTOMER",
     colOrder: "ORDER",
     colWarranty: "WARRANTY PERIOD",
@@ -150,7 +156,10 @@ const T = {
     noWarranty: "ไม่มีการรับประกัน",
     toastResolved: "ดำเนินการคำขอรับประกันด้วยตนเองแล้ว",
     toastRejected: "ปฏิเสธคำขอรับประกันแล้ว",
+    toastRechecked: "เพิ่มคำขอเข้าคิวตรวจสอบใหม่แล้ว",
     toastError: "เกิดข้อผิดพลาด กรุณาลองใหม่",
+    recheckBtn: "ตรวจสอบใหม่",
+    rechecking: "กำลังเข้าคิว...",
     colCustomer: "ลูกค้า",
     colOrder: "คำสั่งซื้อ",
     colWarranty: "ระยะเวลารับประกัน",
@@ -199,6 +208,15 @@ type WarrantyClaim = {
     warrantyClaimCount: number;
     warrantyStartedAt: string | null;
     warrantyExpiresAt: string | null;
+  } | null;
+  autoCheck?: {
+    status: string;
+    tool: string | null;
+    result: any;
+    startedAt: string | null;
+    completedAt: string | null;
+    errorMessage: string | null;
+    attempts: number;
   } | null;
 };
 
@@ -311,6 +329,15 @@ export function WarrantyClaimsPage() {
     onSuccess: async (_r, claimId) => {
       showToast({ tone: "success", message: t.toastRejected });
       setRejectReasons((c) => ({ ...c, [claimId]: "" }));
+      await queryClient.invalidateQueries({ queryKey: ["warranty", "claims"] });
+    },
+    onError: (e) => showToast({ tone: "error", message: getApiErrorMessage(e, t.toastError) }),
+  });
+
+  const recheckMutation = useMutation({
+    mutationFn: async (claimId: string) => api.post(`/warranty/claims/${claimId}/recheck`),
+    onSuccess: async () => {
+      showToast({ tone: "success", message: t.toastRechecked });
       await queryClient.invalidateQueries({ queryKey: ["warranty", "claims"] });
     },
     onError: (e) => showToast({ tone: "error", message: getApiErrorMessage(e, t.toastError) }),
@@ -545,6 +572,92 @@ export function WarrantyClaimsPage() {
                     )}
                   </div>
                 </div>
+
+                {/* Auto-check result block */}
+                {claim.autoCheck && (
+                  <div
+                    className="px-4 py-3"
+                    style={{
+                      borderBottom: !closed ? "1px solid var(--bd)" : undefined,
+                      background: "rgba(59,130,246,0.04)",
+                    }}
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="text-[10px] font-black uppercase tracking-widest" style={{ color: "var(--tx-f)" }}>
+                        Auto-check {claim.autoCheck.tool || ""}
+                      </p>
+                      <div className="flex items-center gap-2">
+                        <span
+                          className="rounded-full px-2 py-0.5 text-[10px] font-bold"
+                          style={{
+                            background:
+                              claim.autoCheck.status === "completed"
+                                ? "rgba(16,185,129,0.12)"
+                                : claim.autoCheck.status === "failed" || claim.autoCheck.status === "overloaded"
+                                  ? "rgba(239,68,68,0.12)"
+                                  : "rgba(59,130,246,0.12)",
+                            color:
+                              claim.autoCheck.status === "completed"
+                                ? "rgb(16,185,129)"
+                                : claim.autoCheck.status === "failed" || claim.autoCheck.status === "overloaded"
+                                  ? "rgb(239,68,68)"
+                                  : "rgb(59,130,246)",
+                          }}
+                        >
+                          {claim.autoCheck.status}
+                        </span>
+                        {!closed
+                          && claim.autoCheck.status
+                          && !["queued", "running"].includes(String(claim.autoCheck.status).toLowerCase())
+                          && (
+                          <button
+                            type="button"
+                            disabled={recheckMutation.isPending && recheckMutation.variables === claim.id}
+                            onClick={() => recheckMutation.mutate(claim.id)}
+                            className="rounded-full px-2.5 py-0.5 text-[10px] font-bold transition hover:opacity-80 active:scale-95 disabled:opacity-50"
+                            style={{
+                              background: "rgba(59,130,246,0.12)",
+                              color: "rgb(59,130,246)",
+                              border: "1px solid rgba(59,130,246,0.25)",
+                            }}
+                          >
+                            {recheckMutation.isPending && recheckMutation.variables === claim.id
+                              ? t.rechecking
+                              : t.recheckBtn}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                    {claim.autoCheck.result && (
+                      <div className="mt-2 grid gap-1 text-[12px]" style={{ color: "var(--tx-m)" }}>
+                        {claim.autoCheck.result.plan && (
+                          <p>Gói: <span className="font-mono" style={{ color: "var(--tx)" }}>{String(claim.autoCheck.result.plan)}</span></p>
+                        )}
+                        {claim.autoCheck.result.expires && (
+                          <p>Hạn: <span className="font-mono" style={{ color: "var(--tx)" }}>{String(claim.autoCheck.result.expires)}</span></p>
+                        )}
+                        {claim.autoCheck.result.status && (
+                          <p>Trạng thái: <span className="font-mono" style={{ color: "var(--tx)" }}>{String(claim.autoCheck.result.status)}</span></p>
+                        )}
+                        {claim.autoCheck.result.stillPaid && (
+                          <p className="font-semibold" style={{ color: "rgb(239,68,68)" }}>
+                            ⚠ Tài khoản vẫn còn hạn — không đủ điều kiện bảo hành.
+                          </p>
+                        )}
+                        {claim.autoCheck.result.isDead && (
+                          <p className="font-semibold" style={{ color: "rgb(16,185,129)" }}>
+                            ✓ Tài khoản đã die/hết hạn — nên cấp bảo hành.
+                          </p>
+                        )}
+                      </div>
+                    )}
+                    {claim.autoCheck.errorMessage && (
+                      <p className="mt-2 text-[11px]" style={{ color: "rgb(239,68,68)" }}>
+                        {claim.autoCheck.errorMessage}
+                      </p>
+                    )}
+                  </div>
+                )}
 
                 {/* Row 4: delivered account text */}
                 {claim.deliveredAccountText && (

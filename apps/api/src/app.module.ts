@@ -32,6 +32,8 @@ import { PaymentService } from "./lib/payment.service";
 import { BinancePayService } from "./lib/binance-pay.service";
 import { OnchainPaymentService } from "./lib/onchain-payment.service";
 import { QueueService } from "./lib/queue.service";
+import { CacheService } from "./lib/cache.service";
+import { IdempotencyService } from "./lib/idempotency.service";
 import { TelegramBotService } from "./lib/telegram-bot.service.v2";
 import { OrdersController } from "./orders/orders.controller";
 import { OrdersService } from "./orders/orders.service";
@@ -52,6 +54,7 @@ import { ProAnalyticsService } from "./pro/pro-analytics.service";
 import { WarrantyController } from "./warranty/warranty.controller";
 import { WarrantyPublicController } from "./warranty/warranty-public.controller";
 import { WarrantyService } from "./warranty/warranty.service";
+import { WarrantyAutoCheckService } from "./warranty/warranty-auto-check.service";
 import { AffiliateController } from "./affiliate/affiliate.controller";
 import { AffiliateService } from "./affiliate/affiliate.service";
 import { AdminController } from "./admin/admin.controller";
@@ -101,6 +104,8 @@ import { GramJsService } from "./lib/gramjs.service";
     AppConfigService,
     PrismaService,
     QueueService,
+    CacheService,
+    IdempotencyService,
     BinancePayService,
     OnchainPaymentService,
     PaymentService,
@@ -112,6 +117,7 @@ import { GramJsService } from "./lib/gramjs.service";
     WalletService,
     WalletPromotionService,
     WarrantyService,
+    WarrantyAutoCheckService,
     OrdersService,
     ReportsService,
     BroadcastsService,

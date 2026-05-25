@@ -1,15 +1,90 @@
-import { Inject, Injectable } from "@nestjs/common";
+import { Inject, Injectable, Logger } from "@nestjs/common";
 import { OrderStatus, Prisma, SellerTier, UserRole, UserStatus } from "@prisma/client";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import axios from "axios";
 
 import { PrismaService } from "../db/prisma.service";
+import { CacheService } from "../lib/cache.service";
 import { decimalToNumber } from "../lib/utils";
 
 @Injectable()
 export class AdminService {
+  private readonly logger = new Logger(AdminService.name);
+
   constructor(
     @Inject(PrismaService)
     private readonly prisma: PrismaService,
+    @Inject(CacheService)
+    private readonly cache: CacheService,
   ) {}
+
+  /**
+   * Push the admin's `warranty.check.proxies` value to the CheckGrokJS server so its CF cookie
+   * warmer + per-job picker uses the same proxy list as the worker. Without this sync, the
+   * grok server keeps its boot-time proxy.txt snapshot — when admin adds a new proxy, the
+   * worker picks it up on the next job (no cache) but the warmer never warms it → cold-start
+   * tax (~15-25s CF challenge) on first hit instead of ~3s warm.
+   *
+   * Two steps:
+   *  1. Write the proxy list to `CHECK_GROK_PROXY_FILE` (defaults to ../../CheckGrokJS/proxy.txt
+   *     relative to API cwd — covers the local-dev monorepo-sibling layout).
+   *  2. Hit `POST /admin/reload-proxies` on the grok server so it re-reads the file in-process,
+   *     no restart needed.
+   *
+   * Errors are logged but don't fail the admin config save — the DB is the source of truth,
+   * worker reads from there. Grok server sync is an optimisation, not correctness-critical.
+   */
+  private async syncProxiesToGrokServer(proxyValue: string): Promise<void> {
+    const grokUrl = (process.env.CHECK_GROK_URL || "").replace(/\/+$/, "");
+
+    // proxy.txt path resolution: API cwd depends on how it's launched (nest start runs from
+    // `apps/api/`, npm run dev runs from reseller root, prod PM2 may be `apps/api/dist`).
+    // Walk a list of candidates from inside-out — first existing parent gets the write.
+    // Explicit env override always wins.
+    const candidates = process.env.CHECK_GROK_PROXY_FILE
+      ? [process.env.CHECK_GROK_PROXY_FILE]
+      : [
+          path.resolve(process.cwd(), "..", "..", "..", "CheckGrokJS", "proxy.txt"), // from apps/api/dist
+          path.resolve(process.cwd(), "..", "..", "CheckGrokJS", "proxy.txt"),       // from apps/api/
+          path.resolve(process.cwd(), "..", "CheckGrokJS", "proxy.txt"),             // from reseller/
+          path.resolve(process.cwd(), "CheckGrokJS", "proxy.txt"),                   // from D:/DuAn/
+        ];
+
+    // Pick the first candidate whose PARENT DIR exists. If none exist, use the first
+    // candidate and let writeFileSync error out (caller logs it).
+    const proxyFile: string =
+      candidates.find((p): p is string => !!p && fs.existsSync(path.dirname(p))) ||
+      candidates[0] || "";
+    if (!proxyFile) {
+      this.logger.warn("No proxy.txt path candidate resolved — skipping grok sync.");
+      return;
+    }
+
+    try {
+      fs.writeFileSync(proxyFile, proxyValue, "utf8");
+      this.logger.log(`Wrote ${proxyValue.split(/\r?\n/).filter(Boolean).length} proxy lines to ${proxyFile}`);
+    } catch (err: any) {
+      this.logger.warn(`Failed to write proxy.txt at ${proxyFile}: ${err?.message ?? err}`);
+      return; // Skip reload if file write failed — server has nothing fresh to read.
+    }
+
+    if (!grokUrl) {
+      this.logger.log("CHECK_GROK_URL not set — skipping grok server reload (proxy.txt written though, will pick up on next server restart).");
+      return;
+    }
+
+    try {
+      const headers: Record<string, string> = {};
+      if (process.env.CHECK_GROK_API_KEY) headers["X-API-Key"] = process.env.CHECK_GROK_API_KEY;
+      const res = await axios.post(`${grokUrl}/admin/reload-proxies`, {}, { headers, timeout: 5_000 });
+      this.logger.log(`Grok server reloaded: ${res.data?.proxies ?? "?"} proxies active`);
+      // Kick off a warm cycle immediately so the new proxies pick up CF cookies before the next check.
+      await axios.post(`${grokUrl}/admin/warm-now`, {}, { headers, timeout: 5_000 }).catch(() => undefined);
+    } catch (err: any) {
+      this.logger.warn(`Grok server /admin/reload-proxies failed: ${err?.message ?? err}`);
+    }
+  }
 
   async getOverview() {
     const now = new Date();
@@ -367,6 +442,12 @@ export class AdminService {
       create: { key, value },
       update: { value },
     });
+    this.cache.memoDel("wac:config");
+    // Side-effect: keep grok server's proxy.txt + in-memory list in sync with admin updates.
+    // Fire-and-forget so the HTTP response doesn't wait on the grok server.
+    if (key === "warranty.check.proxies") {
+      void this.syncProxiesToGrokServer(value);
+    }
     return { key, value };
   }
 
@@ -380,6 +461,10 @@ export class AdminService {
         }),
       ),
     );
+    this.cache.memoDel("wac:config");
+    if ("warranty.check.proxies" in configs) {
+      void this.syncProxiesToGrokServer(configs["warranty.check.proxies"]);
+    }
     return this.getSystemConfigs();
   }
 }

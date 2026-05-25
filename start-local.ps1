@@ -3,7 +3,10 @@ param(
   [switch]$SkipDev,
   [switch]$Seed,
   [switch]$ForceRestart,
-  [int]$DockerTimeoutSeconds = 120
+  [int]$DockerTimeoutSeconds = 120,
+  [switch]$SkipGrokServer,
+  [string]$GrokServerPath = "d:\DuAn\CheckGrokJS",
+  [int]$GrokServerPort = 4001
 )
 
 $ErrorActionPreference = "Stop"
@@ -123,6 +126,80 @@ function Ensure-NoDuplicateLocalStack {
   Start-Sleep -Seconds 2
 }
 
+function Ensure-GrokServer {
+  if ($SkipGrokServer) {
+    Write-Notice "Grok HTTP server skipped (-SkipGrokServer). Worker will use subprocess fallback for grok checks."
+    return $null
+  }
+  $serverJs = Join-Path $GrokServerPath "server.js"
+  if (-not (Test-Path -LiteralPath $serverJs)) {
+    Write-Notice "Grok server.js not found at $serverJs — skipping (worker will use subprocess fallback)."
+    return $null
+  }
+
+  # Check if something is already listening on the target port — assume it's a prior instance, reuse it.
+  $existing = $false
+  try {
+    $client = [System.Net.Sockets.TcpClient]::new()
+    $async  = $client.BeginConnect("127.0.0.1", $GrokServerPort, $null, $null)
+    if ($async.AsyncWaitHandle.WaitOne(500, $false)) {
+      $client.EndConnect($async)
+      if ($client.Connected) { $existing = $true }
+    }
+    $client.Dispose()
+  } catch { }
+  if ($existing) {
+    Write-Step "Grok HTTP server already listening on :$GrokServerPort — reusing."
+    return $null
+  }
+
+  # Auto-install deps if missing (express was added later than the original tool).
+  $expressDir = Join-Path $GrokServerPath "node_modules\express"
+  if (-not (Test-Path -LiteralPath $expressDir)) {
+    Write-Step "Installing grok server deps (express, express-rate-limit)..."
+    Push-Location $GrokServerPath
+    try {
+      & cmd /c npm.cmd install --no-fund --no-audit
+      if ($LASTEXITCODE -ne 0) { throw "npm install in $GrokServerPath failed." }
+    } finally { Pop-Location }
+  }
+
+  Write-Step "Starting grok HTTP server on :$GrokServerPort..."
+  $logPath = Join-Path $env:TEMP "reseller-grok-server.log"
+
+  # Windows PowerShell 5.1 doesn't support Start-Process -Environment. Set in current
+  # process so the child inherits, then restore. Child uses cmd shell to launch node so
+  # we can reliably background and log to file.
+  $prevPort   = $env:PORT
+  $prevWarmer = $env:WARMER
+  $env:PORT   = "$GrokServerPort"
+  $env:WARMER = "1"
+  try {
+    $grokProc = Start-Process `
+      -FilePath "cmd.exe" `
+      -ArgumentList @("/c", "node", "server.js") `
+      -WorkingDirectory $GrokServerPath `
+      -RedirectStandardOutput $logPath `
+      -RedirectStandardError  ($logPath + ".err") `
+      -WindowStyle Hidden `
+      -PassThru
+  } finally {
+    $env:PORT   = $prevPort
+    $env:WARMER = $prevWarmer
+  }
+
+  # Wait briefly for the server to start listening so the worker doesn't race the first claim.
+  try {
+    Wait-TcpPort -HostName "127.0.0.1" -Port $GrokServerPort -TimeoutSeconds 30
+    Write-Step "Grok HTTP server up on http://127.0.0.1:$GrokServerPort (log: $logPath)"
+  } catch {
+    Write-Notice "Grok HTTP server didn't open port :$GrokServerPort within 30s — worker will fall back to subprocess. See $logPath for details."
+    return $null
+  }
+
+  return $grokProc
+}
+
 function Wait-TcpPort {
   param(
     [string]$HostName,
@@ -175,6 +252,19 @@ try {
   & cmd /c npm.cmd run db:deploy
   if ($LASTEXITCODE -ne 0) {
     throw "Database migration step failed."
+  }
+
+  # Grok HTTP server (long-running, CF warmer) — launched BEFORE dev so the worker
+  # sees CHECK_GROK_URL on startup. Skip on -SkipGrokServer or if server.js missing.
+  $grokProc = Ensure-GrokServer
+  if ($grokProc) {
+    $env:CHECK_GROK_URL = "http://127.0.0.1:$GrokServerPort"
+    Write-Step "CHECK_GROK_URL set to $env:CHECK_GROK_URL — worker will route grok checks through HTTP."
+  } else {
+    # Even if we didn't spin it, respect a pre-set CHECK_GROK_URL from the user's env.
+    if ($env:CHECK_GROK_URL) {
+      Write-Step "Using existing CHECK_GROK_URL=$env:CHECK_GROK_URL from environment."
+    }
   }
 
   if ($Seed) {

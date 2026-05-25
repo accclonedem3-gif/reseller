@@ -1,0 +1,40 @@
+# syntax=docker/dockerfile:1.6
+# Worker service: BullMQ jobs + Telegram polling. No Chrome — auto-check tools
+# (check_veo, check_gpt, CheckGrokJS) are NOT bundled in this image, so the
+# warranty auto-check feature will fall back to manual review (PENDING_REVIEW)
+# on this deploy. The worker code already logs a warning + skips gracefully when
+# the tool wrappers aren't found.
+
+FROM node:22-bookworm-slim AS builder
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends openssl ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+
+COPY package*.json tsconfig.base.json ./
+COPY prisma ./prisma
+COPY packages ./packages
+COPY apps/worker ./apps/worker
+COPY apps/api/package.json ./apps/api/package.json
+COPY apps/web/package.json ./apps/web/package.json
+
+RUN npm ci
+RUN npx prisma generate --schema prisma/schema.prisma
+RUN npm run build -w @reseller/shared
+RUN npm run build -w @reseller/worker
+
+FROM node:22-bookworm-slim AS runtime
+WORKDIR /app
+ENV NODE_ENV=production
+
+RUN apt-get update && apt-get install -y --no-install-recommends openssl ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/package.json ./package.json
+COPY --from=builder /app/prisma ./prisma
+COPY --from=builder /app/packages ./packages
+COPY --from=builder /app/apps/worker/dist ./apps/worker/dist
+COPY --from=builder /app/apps/worker/package.json ./apps/worker/package.json
+
+CMD ["node", "apps/worker/dist/main.js"]

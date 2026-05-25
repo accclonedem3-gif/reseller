@@ -120,6 +120,59 @@ docker compose down
 - Khi gan `BOT_TOKEN` va `providerBuyerKey` that, he thong van support verify + sync + Telegram polling/webhook.
 - Neu muon dung PayOS that, doi `PAYMENT_MODE=payos` va set du `PAYOS_CLIENT_ID`, `PAYOS_API_KEY`, `PAYOS_CHECKSUM_KEY`.
 
+## Warranty Auto-Check (Veo / Grok / ChatGPT)
+
+Hệ thống tự động login tài khoản đã giao khi customer mở claim → check gói + hạn:
+- Account vẫn còn hạn → auto-reject claim ("tài khoản vẫn còn hạn")
+- Account dead/expired → tự cấp acc thay thế qua flow purchase upstream
+- Family không support (Claude/Gemini/...) → chuyển seller xử lý thủ công
+
+### Setup 3 check tools
+
+3 tool nằm ở sibling folder (mặc định `../check_veo`, `../check_gpt`, `../CheckGrokJS`):
+
+```powershell
+cd ..\check_veo
+cmd /c npm.cmd install
+cmd /c npx playwright install chromium
+
+cd ..\check_gpt
+cmd /c npm.cmd install
+cmd /c npx playwright install chromium
+
+cd ..\CheckGrokJS
+cmd /c npm.cmd install
+# Grok dùng Chrome/Edge local (puppeteer-core), không cần download
+```
+
+Override tool paths qua env vars nếu cần: `CHECK_VEO_PATH`, `CHECK_GROK_PATH`, `CHECK_GPT_PATH`.
+
+### Admin config (set qua `PUT /admin/system-config`)
+
+- `warranty.check.concurrency` (default 3) — số luồng check song song. Queue overload threshold = concurrency × 4.
+- `warrant.cooldownDays` (default 7) — số ngày cooldown sau khi cấp acc thay thế. Trong cooldown: customer vẫn mở được claim, nhưng auto-check skip + seller xử lý thủ công.
+
+### Cách hoạt động
+
+1. Customer mở claim → Service lấy acc đang active (replacement mới nhất hoặc acc gốc) → enqueue BullMQ job.
+2. Worker pick job → spawn `single-check.js` subprocess (credentials qua env vars để tránh `ps`).
+3. Tool login → trả `JSON_RESULT:{status, plan, expires, isDead, stillPaid, ...}`.
+4. Worker ghi vào `warranty_claims.auto_check_*` rồi callback API (HMAC signed).
+5. `applyAutoCheckResult` ra quyết định:
+   - `stillPaid` → REJECT
+   - `isDead` → trigger flow purchase replacement → AUTO_RESOLVED
+   - lỗi/ambiguous → PENDING_REVIEW (seller xử lý)
+6. Customer (public web form) poll `/warranty/claims/:id/auto-check?token=...` để xem status + acc thay thế khi xong.
+
+### Safety nets
+
+- `MAX_CLAIMS_PER_ORDER = 2` — chặn spam.
+- Transaction lock `SELECT ... FOR UPDATE` khi tạo claim — chống race.
+- Rate-limit public claim: 3 / 10 phút / IP.
+- Stuck claim sweep: claim QUEUED/RUNNING > 5 phút → auto FAILED + callback.
+- Access token (SHA-256 hashed) bắt buộc khi poll để xem `deliveredAccountText`.
+- Internal callback bắt buộc HMAC signature + timestamp.
+
 ## Smoke Flow Da Test
 
 - Seller login

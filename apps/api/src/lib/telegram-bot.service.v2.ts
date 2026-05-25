@@ -123,6 +123,19 @@ type PendingWarrantyAccountSelection = {
   expiresAt: number;
 };
 
+/**
+ * In-flight state for the Y/N "đã đổi mật khẩu chưa?" prompt that we show after the user
+ * picked an order + (optionally) target account usernames. While in this state the bot is
+ * either (a) waiting for the user to tap Yes/No on the inline keyboard, or (b) waiting for the
+ * user to TYPE the new password (when `awaitingPasswordInput=true`).
+ */
+type PendingWarrantyPasswordPrompt = {
+  orderCode: string;
+  targetUsernames?: string[];
+  awaitingPasswordInput: boolean;
+  expiresAt: number;
+};
+
 type PendingConnectionTopupInput = {
   connectionId: string;
   downstreamShopId: string;
@@ -148,6 +161,7 @@ export class TelegramBotService {
   private readonly pendingWarrantyClaimSubmissions = new Map<string, PendingWarrantyClaimSubmission>();
   private readonly pendingWarrantyIssueDescriptions = new Map<string, PendingWarrantyIssueDescription>();
   private readonly pendingWarrantyAccountSelections = new Map<string, PendingWarrantyAccountSelection>();
+  private readonly pendingWarrantyPasswordPrompts = new Map<string, PendingWarrantyPasswordPrompt>();
   private readonly pendingConnectionTopupInputs = new Map<string, PendingConnectionTopupInput>();
   private readonly pendingQrMessages = new Map<string, { token: string; chatId: string | number; messageId: number }>();
   private readonly pendingQuantityTtlMs = 10 * 60 * 1000;
@@ -528,6 +542,20 @@ export class TelegramBotService {
         return { ok: true, actions };
       }
 
+      // Password-input step has to run BEFORE the generic warranty-claim handler — both react
+      // to free-form text from the same user, but the password handler is gated on the
+      // pendingWarrantyPasswordPrompts.awaitingPasswordInput flag so it doesn't false-fire.
+      const handledWarrantyPasswordPrompt = await this.handlePendingWarrantyPasswordPromptMessage(
+        shopId,
+        outboundToken,
+        message,
+        actions,
+      );
+
+      if (handledWarrantyPasswordPrompt) {
+        return { ok: true, actions };
+      }
+
       const handledPendingWarrantyClaim = await this.handlePendingWarrantyClaimMessage(
         shopId,
         outboundToken,
@@ -708,6 +736,20 @@ export class TelegramBotService {
         this.clearPendingPaymentSelection(shopId, telegramUserId);
         this.clearPendingTxHashSubmission(shopId, telegramUserId);
         await this.renderWalletPanel(shopId, outboundToken, chatId, messageId, telegramUserId, actions, callbackLanguage);
+      } else if (data === "wpwd:yes" || data === "wpwd:no") {
+        // Password Y/N callback fired from promptWarrantyPasswordChange. The orderCode +
+        // targetUsernames are stashed in pendingWarrantyPasswordPrompts, not in callback_data,
+        // so the payload stays compact and never leaks account usernames.
+        await this.handleWarrantyPasswordCallback(
+          data === "wpwd:yes" ? "yes" : "no",
+          outboundToken,
+          chatId,
+          messageId,
+          shopId,
+          telegramUserId,
+          actions,
+          callbackLanguage,
+        );
       } else if (data === "home:warranty" || data === "warranty:start") {
         this.clearPendingQuantitySelection(shopId, telegramUserId);
         this.clearPendingWalletTopup(shopId, telegramUserId);
@@ -715,6 +757,7 @@ export class TelegramBotService {
         this.clearPendingTxHashSubmission(shopId, telegramUserId);
         this.clearPendingWarrantyIssueDescription(shopId, telegramUserId);
         this.clearPendingWarrantyAccountSelection(shopId, telegramUserId);
+        this.clearPendingWarrantyPasswordPrompt(shopId, telegramUserId);
         await this.promptWarrantyClaimOrderCode(
           outboundToken,
           chatId,
@@ -3111,10 +3154,10 @@ export class TelegramBotService {
             : "🛡️ Yêu cầu bảo hành",
         "",
         language === "en"
-          ? "Please reply with your order code in the next message."
+          ? "Reply with your order code — or enter your account email to look up warranty details."
           : language === "th"
-            ? "กรุณาตอบกลับด้วยรหัสคำสั่งซื้อในข้อความถัดไป"
-            : "Vui lòng trả lời bằng mã đơn hàng ở tin nhắn tiếp theo.",
+            ? "ตอบกลับด้วยรหัสคำสั่งซื้อ หรือป้อนอีเมลบัญชีเพื่อค้นหารายละเอียดการรับประกัน"
+            : "Nhập mã đơn hàng — hoặc email tài khoản để tra cứu hóa đơn bảo hành.",
         language === "en"
           ? "We will validate the warranty window and process the claim automatically when possible."
           : language === "th"
@@ -3154,6 +3197,21 @@ export class TelegramBotService {
         undefined,
         shopId,
         telegramUserId,
+        actions,
+        language,
+      );
+      return true;
+    }
+
+    // Email/account lookup: nếu input chứa '@' → tra cứu hóa đơn bảo hành thay vì nộp claim
+    if (orderCode.includes("@")) {
+      this.clearPendingWarrantyClaimSubmission(shopId, telegramUserId);
+      await this.sendWarrantyLookupResult(
+        token,
+        Number(message.chat?.id || 0),
+        shopId,
+        telegramUserId,
+        orderCode,
         actions,
         language,
       );
@@ -3213,14 +3271,22 @@ export class TelegramBotService {
     language: BotLanguage = "vi",
   ) {
     if (accounts.length <= 1) {
-      const claim = await this.warrantyService.submitTelegramWarrantyClaim({
+      // Single-account orders DON'T need a targetUsernames hint — there's only one account
+      // to warranty, so the submit path uses it implicitly. The previous code tried to
+      // extract a username from the raw `accounts[0]` string using a naive split("|"), which
+      // broke on space-separated formats like "email@x.com password" (returned the entire
+      // string as the "username", failing the in-order validation). Just omit.
+      await this.promptWarrantyPasswordChange(
+        token,
+        chatId,
+        messageId,
         shopId,
         telegramUserId,
-        telegramChatId: String(chatId),
         orderCode,
+        undefined,
+        actions,
         language,
-      });
-      await this.sendWarrantyClaimResult(token, chatId, claim, actions, language);
+      );
     } else {
       await this.promptWarrantyAccountSelection(
         token,
@@ -3234,6 +3300,245 @@ export class TelegramBotService {
         language,
       );
     }
+  }
+
+  /**
+   * Y/N prompt: "Tài khoản đã đổi mật khẩu chưa?" — mirrors the toggle on the web warranty
+   * form (`apps/web/src/pages/warranty-claim-page.tsx`). The two inline buttons fire
+   * callbacks `wpwd:yes` / `wpwd:no`; the (orderCode, targetUsernames) parameters are stashed
+   * in `pendingWarrantyPasswordPrompts` rather than encoded in callback_data to avoid the
+   * 64-byte Telegram limit and to keep account usernames out of the public callback payload.
+   */
+  private async promptWarrantyPasswordChange(
+    token: string,
+    chatId: number,
+    messageId: number | undefined,
+    shopId: string,
+    telegramUserId: string,
+    orderCode: string,
+    targetUsernames: string[] | undefined,
+    actions: unknown[],
+    language: BotLanguage = "vi",
+  ) {
+    this.setPendingWarrantyPasswordPrompt(shopId, telegramUserId, {
+      orderCode,
+      targetUsernames,
+      awaitingPasswordInput: false,
+    });
+
+    const lines = language === "en"
+      ? [
+          "🛡️ Warranty request",
+          `Order: ${orderCode}`,
+          "",
+          "Has the account password been changed since delivery?",
+          "If yes, please share the new password so the auto-check can log in.",
+        ]
+      : language === "th"
+        ? [
+            "🛡️ คำขอรับประกัน",
+            `รหัสคำสั่งซื้อ: ${orderCode}`,
+            "",
+            "บัญชีนี้มีการเปลี่ยนรหัสผ่านหลังจากได้รับหรือไม่?",
+            "หากเปลี่ยนแล้ว กรุณาส่งรหัสผ่านใหม่เพื่อให้ระบบเข้าตรวจสอบ",
+          ]
+        : [
+            "🛡️ Yêu cầu bảo hành",
+            `Đơn hàng: ${orderCode}`,
+            "",
+            "Bạn có đổi mật khẩu tài khoản sau khi nhận hàng không?",
+            "Nếu có, vui lòng gửi mật khẩu mới để hệ thống đăng nhập kiểm tra.",
+          ];
+
+    const yesLabel = language === "en" ? "✓ Yes, I changed it" : language === "th" ? "✓ ใช่ เปลี่ยนแล้ว" : "✓ Có, tôi đã đổi";
+    const noLabel = language === "en" ? "No, keep original" : language === "th" ? "ไม่ ใช้รหัสเดิม" : "Không, giữ nguyên";
+    const cancelLabel = language === "en" ? "Cancel" : language === "th" ? "ยกเลิก" : "Hủy";
+
+    await this.editOrSend(
+      token,
+      chatId,
+      messageId,
+      lines.join("\n"),
+      {
+        inline_keyboard: [
+          [{ text: yesLabel, callback_data: "wpwd:yes" }],
+          [{ text: noLabel, callback_data: "wpwd:no" }],
+          [{ text: cancelLabel, callback_data: "home:menu" }],
+        ],
+      },
+      actions,
+    );
+  }
+
+  /**
+   * Resolves the password Y/N decision and submits the claim. The bot's reply to the customer
+   * after submit is then handed back so we can capture its message_id and persist it on the
+   * claim — that's the anchor we later edit to show the final result + invoice.
+   */
+  private async submitWarrantyClaimWithPassword(
+    token: string,
+    chatId: number,
+    shopId: string,
+    telegramUserId: string,
+    orderCode: string,
+    targetUsernames: string[] | undefined,
+    currentPassword: string | undefined,
+    actions: unknown[],
+    language: BotLanguage,
+  ) {
+    const claim = await this.warrantyService.submitTelegramWarrantyClaim({
+      shopId,
+      telegramUserId,
+      telegramChatId: String(chatId),
+      orderCode,
+      language,
+      ...(targetUsernames && targetUsernames.length > 0 ? { targetUsernames } : {}),
+      ...(currentPassword ? { currentPassword } : {}),
+    });
+
+    const replyResult = await this.sendWarrantyClaimResult(token, chatId, claim, actions, language);
+
+    // For `auto_check_pending` flows the bot's reply is the message the customer will watch.
+    // Anchor it on the claim row so applyAutoCheckResult can EDIT this exact message later
+    // (web parity: one persistent receipt instead of a fresh reply for each state transition).
+    if (
+      claim.status === "auto_check_pending" &&
+      claim.claimId &&
+      replyResult?.message_id &&
+      this.config.appPublicUrl
+    ) {
+      await this.warrantyService
+        .updateBotProgressContext(claim.claimId, {
+          shopId,
+          chatId: Number(chatId),
+          messageId: Number(replyResult.message_id),
+        })
+        .catch((e) => this.logger.warn(`updateBotProgressContext failed: ${e?.message ?? e}`));
+    }
+  }
+
+  /**
+   * Inline-keyboard callback handler for the password Y/N step. Yes → flips the pending state
+   * to `awaitingPasswordInput=true` and prompts for the new password text. No → submits
+   * immediately with no override.
+   */
+  private async handleWarrantyPasswordCallback(
+    decision: "yes" | "no",
+    token: string,
+    chatId: number,
+    messageId: number | undefined,
+    shopId: string,
+    telegramUserId: string,
+    actions: unknown[],
+    language: BotLanguage,
+  ) {
+    const pending = this.getPendingWarrantyPasswordPrompt(shopId, telegramUserId);
+    if (!pending) {
+      await this.editOrSend(
+        token,
+        chatId,
+        messageId,
+        language === "en"
+          ? "This request has expired. Please tap 🛡️ Warranty to start again."
+          : language === "th"
+            ? "คำขอนี้หมดอายุแล้ว กรุณาเริ่มต้นใหม่"
+            : "Yêu cầu này đã hết hạn. Vui lòng bấm 🛡️ Yêu cầu bảo hành để bắt đầu lại.",
+        {
+          inline_keyboard: [
+            [{ text: this.buttonLabel("warranty", language), callback_data: "warranty:start" }],
+            [{ text: this.buttonLabel("home", language), callback_data: "home:menu" }],
+          ],
+        },
+        actions,
+      );
+      return;
+    }
+
+    if (decision === "no") {
+      this.clearPendingWarrantyPasswordPrompt(shopId, telegramUserId);
+      await this.submitWarrantyClaimWithPassword(
+        token, chatId, shopId, telegramUserId,
+        pending.orderCode, pending.targetUsernames, undefined,
+        actions, language,
+      );
+      return;
+    }
+
+    // decision === "yes": switch to awaitingPasswordInput=true and ask for the new password.
+    this.setPendingWarrantyPasswordPrompt(shopId, telegramUserId, {
+      orderCode: pending.orderCode,
+      targetUsernames: pending.targetUsernames,
+      awaitingPasswordInput: true,
+    });
+
+    const promptText = language === "en"
+      ? `Please reply with the NEW password for the account on order ${pending.orderCode}.\nWe'll use it only for this auto-check and won't store it.`
+      : language === "th"
+        ? `กรุณาตอบกลับด้วยรหัสผ่านใหม่ของบัญชีในคำสั่งซื้อ ${pending.orderCode}\nระบบใช้เฉพาะการตรวจสอบครั้งนี้และไม่ได้จัดเก็บ`
+        : `Vui lòng trả lời với mật khẩu MỚI của tài khoản trong đơn ${pending.orderCode}.\nHệ thống chỉ dùng cho lần kiểm tra này và không lưu lại.`;
+
+    await this.editOrSend(
+      token,
+      chatId,
+      messageId,
+      promptText,
+      {
+        inline_keyboard: [
+          [{ text: language === "en" ? "Skip — use original" : language === "th" ? "ข้าม ใช้รหัสเดิม" : "Bỏ qua — dùng mật khẩu cũ", callback_data: "wpwd:no" }],
+          [{ text: language === "en" ? "Cancel" : language === "th" ? "ยกเลิก" : "Hủy", callback_data: "home:menu" }],
+        ],
+      },
+      actions,
+    );
+  }
+
+  /**
+   * Text-message handler for the password input step. Active only while
+   * `pendingWarrantyPasswordPrompts.awaitingPasswordInput === true`. Trims input, requires
+   * non-empty (we don't enforce a minimum length — Google/x.ai/OpenAI all have their own
+   * password rules and we want to forward whatever the customer typed).
+   */
+  private async handlePendingWarrantyPasswordPromptMessage(
+    shopId: string,
+    token: string,
+    message: TelegramUpdate,
+    actions: unknown[],
+  ) {
+    const telegramUserId = String(message.from?.id || "");
+    const pending = this.getPendingWarrantyPasswordPrompt(shopId, telegramUserId);
+    if (!pending || !pending.awaitingPasswordInput) return false;
+
+    const language = await this.getCustomerLanguage(shopId, telegramUserId);
+    const newPassword = String(message.text || "").trim();
+    const chatId = Number(message.chat?.id || 0);
+
+    if (!newPassword) {
+      await this.sendText(
+        token,
+        chatId,
+        language === "en"
+          ? "Please type the new password, or tap Skip to use the original."
+          : language === "th"
+            ? "กรุณาพิมพ์รหัสผ่านใหม่ หรือกด ข้าม เพื่อใช้รหัสเดิม"
+            : "Vui lòng nhập mật khẩu mới, hoặc bấm Bỏ qua để dùng mật khẩu cũ.",
+        actions,
+        {
+          inline_keyboard: [
+            [{ text: language === "en" ? "Skip — use original" : language === "th" ? "ข้าม ใช้รหัสเดิม" : "Bỏ qua — dùng mật khẩu cũ", callback_data: "wpwd:no" }],
+          ],
+        },
+      );
+      return true;
+    }
+
+    this.clearPendingWarrantyPasswordPrompt(shopId, telegramUserId);
+
+    await this.submitWarrantyClaimWithPassword(
+      token, chatId, shopId, telegramUserId,
+      pending.orderCode, pending.targetUsernames, newPassword,
+      actions, language,
+    );
+    return true;
   }
 
   private async promptWarrantyAccountSelection(
@@ -3338,16 +3643,19 @@ export class TelegramBotService {
 
     const targetUsernames = input.split(";").map((s) => s.trim()).filter(Boolean);
 
-    const claim = await this.warrantyService.submitTelegramWarrantyClaim({
+    // Same Y/N password question as the single-account path. We don't call submit here yet —
+    // it fires from inside handleWarrantyPasswordCallback / handlePendingWarrantyPasswordPromptMessage.
+    await this.promptWarrantyPasswordChange(
+      token,
+      Number(message.chat?.id || 0),
+      undefined,
       shopId,
       telegramUserId,
-      telegramChatId: String(message.chat?.id || telegramUserId),
-      orderCode: pending.orderCode,
+      pending.orderCode,
       targetUsernames,
+      actions,
       language,
-    });
-
-    await this.sendWarrantyClaimResult(token, message.chat.id, claim, actions, language);
+    );
     return true;
   }
 
@@ -3398,7 +3706,7 @@ export class TelegramBotService {
         (language === "en" ? "An error occurred." : language === "th" ? "เกิดข้อผิดพลาด" : "Đã xảy ra lỗi.");
     }
 
-    await this.sendText(
+    const sendResult = await this.sendText(
       token,
       chatId,
       replyText,
@@ -3411,7 +3719,237 @@ export class TelegramBotService {
         ],
       },
     );
+    // Returned so the caller can anchor the message_id on the claim for later edit-in-place
+    // when applyAutoCheckResult finalizes the auto-check.
+    return sendResult && typeof sendResult === "object" && "message_id" in sendResult
+      ? { message_id: Number((sendResult as { message_id: unknown }).message_id) }
+      : null;
   }
+
+  // ─── Warranty lookup by account email ────────────────────────────────────
+
+  /**
+   * Customer-facing warranty duration label — short form, no "BH mặc định 30 ngày" prose.
+   * Customers care about the total period; callers prepend "BH " / 🛡 themselves if needed.
+   */
+  private formatWarrantyPolicy(policy: string | null | undefined): string {
+    if (!policy) return "Không có";
+    switch (policy.toUpperCase()) {
+      case "KBH":   return "Không bảo hành";
+      case "BH24H": return "24 giờ";
+      case "BH1M":  return "1 tháng";
+      case "BH3M":  return "3 tháng";
+      case "BH6M":  return "6 tháng";
+      case "BH12M": return "12 tháng";
+      case "BHF":   return "Vĩnh viễn";
+      default:      return policy;
+    }
+  }
+
+  private formatOrderStatusShort(status: string): string {
+    switch (status) {
+      case "DELIVERED":        return "completed";
+      case "PAID":             return "paid";
+      case "AWAITING_PAYMENT": return "pending";
+      case "CANCELED":         return "canceled";
+      default:                 return status.toLowerCase();
+    }
+  }
+
+  private parseDeliveredAccountLines(text: string | null): string[] {
+    if (!text) return ["(không có)"];
+    return text
+      .split(/\n/)
+      .map((l) => l.trim())
+      .filter(Boolean)
+      .map((l, i) => (/^\d+\./.test(l) ? l : `${i + 1}. ${l}`));
+  }
+
+  private async sendWarrantyLookupResult(
+    token: string,
+    chatId: number,
+    shopId: string,
+    telegramUserId: string,
+    keyword: string,
+    actions: unknown[],
+    language: BotLanguage = "vi",
+  ) {
+    const orders = await this.prisma.order.findMany({
+      where: {
+        shopId,
+        status: "DELIVERED",
+        customer: { telegramUserId },
+        deliveredAccountText: { contains: keyword, mode: "insensitive" },
+      },
+      include: {
+        customer: { select: { telegramUsername: true, firstName: true, telegramChatId: true } },
+        shop:     { select: { supportTelegram: true, name: true } },
+        warrantyClaims: {
+          select:  { status: true },
+          orderBy: { createdAt: "desc" },
+        },
+      },
+      orderBy: { deliveredAt: "desc" },
+      take: 3,
+    });
+
+    // Nav keyboard used only on the "no matches" path. The success path uses a richer
+    // keyboard with one direct "Bảo hành đơn này" button per matched order — saves the
+    // customer from re-typing the orderCode they just searched.
+    const navKeyboard = {
+      inline_keyboard: [
+        [{ text: this.buttonLabel("warranty", language), callback_data: "warranty:start" }],
+        [{ text: this.buttonLabel("home",     language), callback_data: "home:menu"      }],
+      ],
+    };
+
+    if (orders.length === 0) {
+      await this.sendText(
+        token, chatId,
+        language === "en"
+          ? `🔍 No orders found matching: ${keyword}`
+          : `🔍 Không tìm thấy đơn nào khớp với: ${keyword}`,
+        actions, navKeyboard,
+      );
+      return;
+    }
+
+    // Balanced lookup result: keep the useful fields, drop the descriptive labels ("Mã đơn:",
+    // "Sản phẩm:", "Trạng thái refund:" etc.) — emojis carry the meaning. Group related lines
+    // with blank lines so the message scans like a printed receipt: identity → warranty →
+    // accounts → refund → meta. ~10 dòng/đơn vs ~14 dòng cũ; mỗi dòng ngắn hơn ~40%.
+    const rule = "━━━━━━━━━━━━━━━━━";
+    const now = Date.now();
+    const lines: string[] = [
+      `🔍 <b>Tìm thấy ${orders.length} đơn</b>`,
+      ...(orders.length === 1 ? [] : [`Từ khóa: <code>${this.escapeHtml(keyword)}</code>`]),
+    ];
+
+    for (let i = 0; i < orders.length; i++) {
+      const o = orders[i];
+      if (!o) continue;
+      const saleAmount = decimalToNumber(o.totalSaleAmount);
+      const qty = o.quantity || 1;
+      const pricePerAcc = qty > 0 ? Math.round(saleAmount / qty) : saleAmount;
+
+      const resolvedCount = o.warrantyClaims.filter((c) =>
+        ["AUTO_RESOLVED", "RESOLVED_MANUAL"].includes(c.status),
+      ).length;
+      const refundIcon = resolvedCount > 0 ? "✅" : "⏳";
+      const refundLabel = resolvedCount > 0
+        ? `Đã refund ${resolvedCount}/${qty}`
+        : `Chưa refund 0/${qty}`;
+
+      // Days computation (consistent with web): floor for used, ceil for remaining so the two
+      // never sum to more than the policy duration. Both null when no warranty window snapshot.
+      const startedAt = o.warrantyStartedAt ?? o.deliveredAt;
+      const expiresAt = o.warrantyExpiresAt;
+      const daysUsed = startedAt ? Math.max(0, Math.floor((now - new Date(startedAt).getTime()) / 86_400_000)) : null;
+      const daysLeft = expiresAt ? Math.max(0, Math.ceil((new Date(expiresAt).getTime() - now) / 86_400_000)) : null;
+
+      const fmtDate = (d: Date | null | undefined) =>
+        d ? new Date(d).toLocaleDateString("vi-VN", { day: "2-digit", month: "2-digit", year: "numeric" }) : "—";
+      const expiresStr = expiresAt ? fmtDate(expiresAt) : "vĩnh viễn";
+      const createdStr = fmtDate(o.createdAt);
+      const policyShort = this.formatWarrantyPolicyShort(o.warrantyPolicySnapshot);
+      const accountText = (o.deliveredAccountText || "").trim();
+
+      // Buyer label — prefer @username, fall back to first name, then telegram id.
+      // Customers verify it's their own order; sellers cross-reference chat history.
+      const buyerLabel = o.customer?.telegramUsername
+        ? `@${o.customer.telegramUsername}${o.customer.firstName ? ` (${o.customer.firstName})` : ""}`
+        : o.customer?.firstName
+          ? o.customer.firstName
+          : o.customer?.telegramChatId
+            ? `#${o.customer.telegramChatId}`
+            : "—";
+
+      // ── Order identity ────────────────────────────────
+      lines.push("");
+      lines.push(rule);
+      if (orders.length > 1) {
+        lines.push(`📝 <b>Đơn ${i + 1}</b>`);
+        lines.push("");
+      }
+      lines.push(`📦 <code>${this.escapeHtml(o.orderCode)}</code>`);
+      lines.push(`🏷 ${this.escapeHtml(o.productNameSnapshot)} · ${qty} acc · ${formatCurrency(saleAmount)}`);
+      lines.push(`👤 ${this.escapeHtml(buyerLabel)}`);
+
+      // ── Warranty window ──────────────────────────────
+      lines.push("");
+      if (policyShort) lines.push(`🛡 BH ${policyShort}`);
+      lines.push(`⏰ Hạn ${this.escapeHtml(expiresStr)}`);
+      if (daysUsed !== null && daysLeft !== null) {
+        lines.push(`📊 Đã dùng ${daysUsed} / còn ${daysLeft} ngày`);
+      }
+
+      // ── Accounts (tap-to-copy code box) ───────────────
+      if (accountText) {
+        lines.push("");
+        lines.push("🔑 <b>Tài khoản</b>");
+        lines.push(`<pre>${this.escapeHtml(accountText)}</pre>`);
+      }
+
+      // ── Refund + meta ─────────────────────────────────
+      lines.push("");
+      lines.push(`${refundIcon} ${refundLabel} · ${formatCurrency(pricePerAcc)}/acc`);
+      lines.push(`📅 Tạo ${this.escapeHtml(createdStr)}`);
+      lines.push(rule);
+    }
+
+    // Build one warranty button per matched order. `warranty_claim:<orderCode>` is handled by
+    // the existing callback at the top of handleCallbackQuery — it runs eligibility +
+    // routeWarrantyByAccountCount → password Y/N prompt → submit + auto-check. Saves the
+    // customer from re-typing the orderCode they literally just searched for. Label is short
+    // ("...XXX" suffix) because Telegram caps inline button text at 64 bytes.
+    const claimButtons = orders.map((o) => {
+      const tail = o.orderCode.slice(-6);
+      const label = orders.length === 1
+        ? (language === "en" ? "🛡 Open warranty for this order" : language === "th" ? "🛡 เปิดเคลมประกันคำสั่งซื้อนี้" : "🛡 Bảo hành đơn này")
+        : (language === "en" ? `🛡 Warranty …${tail}` : language === "th" ? `🛡 เคลม …${tail}` : `🛡 Bảo hành …${tail}`);
+      return [{ text: label, callback_data: `warranty_claim:${o.orderCode}` }];
+    });
+
+    // Second button is "search another order" — visually distinct from the per-order claim
+    // buttons above (which already say "Bảo hành đơn này"). Hardcoded label here instead of
+    // reusing the generic `buttonLabel("warranty")` so the customer can tell the two apart at
+    // a glance: "warranty THIS order" vs "look up A DIFFERENT order".
+    const lookupAnotherLabel =
+      language === "en" ? "🔍 Look up another order"
+      : language === "th" ? "🔍 ค้นหาคำสั่งซื้ออื่น"
+      : "🔍 Tìm đơn bảo hành khác";
+
+    const successKeyboard = {
+      inline_keyboard: [
+        ...claimButtons,
+        [{ text: lookupAnotherLabel, callback_data: "warranty:start" }],
+        [{ text: this.buttonLabel("home", language), callback_data: "home:menu" }],
+      ],
+    };
+
+    await this.sendText(token, chatId, lines.join("\n"), actions, successKeyboard, "HTML");
+  }
+
+  /**
+   * Short policy label for compact lookup view ("12 tháng", "Vĩnh viễn", etc.). Mirrors
+   * `formatWarrantyPolicyHuman` on the API/warranty side — kept here as a private helper
+   * to avoid a cross-module dependency from the bot layer.
+   */
+  private formatWarrantyPolicyShort(policy: string | null | undefined): string {
+    if (!policy) return "";
+    switch (String(policy).toUpperCase()) {
+      case "KBH":   return "Không BH";
+      case "BH24H": return "24 giờ";
+      case "BH1M":  return "1 tháng";
+      case "BH3M":  return "3 tháng";
+      case "BH6M":  return "6 tháng";
+      case "BH12M": return "12 tháng";
+      case "BHF":   return "Vĩnh viễn";
+      default:      return "";
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
 
   private async handlePendingTxHashMessage(
     shopId: string,
@@ -4625,6 +5163,33 @@ export class TelegramBotService {
     }
 
     this.pendingWarrantyAccountSelections.delete(this.getPendingQuantityKey(shopId, telegramUserId));
+  }
+
+  private setPendingWarrantyPasswordPrompt(
+    shopId: string,
+    telegramUserId: string,
+    value: Omit<PendingWarrantyPasswordPrompt, "expiresAt">,
+  ) {
+    this.pendingWarrantyPasswordPrompts.set(
+      this.getPendingQuantityKey(shopId, telegramUserId),
+      { ...value, expiresAt: Date.now() + this.pendingQuantityTtlMs },
+    );
+  }
+
+  private getPendingWarrantyPasswordPrompt(shopId: string, telegramUserId: string) {
+    const key = this.getPendingQuantityKey(shopId, telegramUserId);
+    const pending = this.pendingWarrantyPasswordPrompts.get(key);
+    if (!pending) return null;
+    if (pending.expiresAt <= Date.now()) {
+      this.pendingWarrantyPasswordPrompts.delete(key);
+      return null;
+    }
+    return pending;
+  }
+
+  private clearPendingWarrantyPasswordPrompt(shopId: string, telegramUserId: string) {
+    if (!telegramUserId) return;
+    this.pendingWarrantyPasswordPrompts.delete(this.getPendingQuantityKey(shopId, telegramUserId));
   }
 
   private getPendingConnectionTopupKey(shopId: string, telegramUserId: string) {

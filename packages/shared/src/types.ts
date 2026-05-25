@@ -113,6 +113,35 @@ export const topBuyerSchema = z.object({
 });
 export type TopBuyer = z.infer<typeof topBuyerSchema>;
 
+export const accountCheckResultSchema = z.object({
+  ok: z.boolean(),
+  tool: z.enum(["veo", "grok", "gpt"]),
+  status: z.string(),
+  plan: z.string().nullable().optional(),
+  tier: z.string().nullable().optional(),
+  credit: z.number().nullable().optional(),
+  expires: z.string().nullable().optional(),
+  daysRemaining: z.number().nullable().optional(),
+  cancelAtEnd: z.boolean().nullable().optional(),
+  detail: z.string().nullable().optional(),
+  isDead: z.boolean().optional(),
+  stillPaid: z.boolean().optional(),
+  errorType: z.string().nullable().optional(),
+  error: z.string().nullable().optional(),
+});
+export type AccountCheckResult = z.infer<typeof accountCheckResultSchema>;
+
+export const accountCheckJobSchema = z.object({
+  claimId: z.string(),
+  shopId: z.string(),
+  tool: z.enum(["veo", "grok", "gpt"]),
+  email: z.string(),
+  password: z.string(),
+  extra: z.string().nullable().optional(),
+  proxy: z.string().nullable().optional(),
+});
+export type AccountCheckJob = z.infer<typeof accountCheckJobSchema>;
+
 export const authResponseSchema = z.object({
   accessToken: z.string(),
   refreshToken: z.string(),

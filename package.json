@@ -9,7 +9,7 @@
   "scripts": {
     "start:local": "powershell -ExecutionPolicy Bypass -File .\\start-local.ps1",
     "start:local:bot-test": "powershell -ExecutionPolicy Bypass -File .\\start-local-bot-test.ps1",
-    "dev": "concurrently -k -n api,worker,web -c blue,green,magenta \"npm run dev -w @reseller/api\" \"npm run dev -w @reseller/worker\" \"npm run dev -w @reseller/web\"",
+    "dev": "concurrently -k -n api,worker,web,grok -c blue,green,magenta,yellow \"npm run dev -w @reseller/api\" \"npm run dev -w @reseller/worker\" \"npm run dev -w @reseller/web\" \"node scripts/start-grok-server.cjs\"",
     "dev:api": "npm run dev -w @reseller/api",
     "dev:worker": "npm run dev -w @reseller/worker",
     "dev:web": "npm run dev -w @reseller/web",
@@ -23,6 +23,7 @@
     "db:deploy": "prisma migrate deploy --schema prisma/schema.prisma",
     "db:seed": "tsx prisma/seed.ts",
     "db:purge-mock": "node scripts/purge-mock-data.cjs",
+    "telegram:refresh-webhooks": "node scripts/refresh-telegram-webhooks.cjs",
     "docker:up": "docker compose up -d",
     "docker:down": "docker compose down",
     "format": "prettier --write ."

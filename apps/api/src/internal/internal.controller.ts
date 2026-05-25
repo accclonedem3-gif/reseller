@@ -17,6 +17,7 @@ import { AppConfigService } from "../config/app-config.service";
 import { PrismaService } from "../db/prisma.service";
 import { TelegramBotService } from "../lib/telegram-bot.service.v2";
 import { toDecimal } from "../lib/utils";
+import { WarrantyService } from "../warranty/warranty.service";
 
 @Controller("internal")
 export class InternalController {
@@ -29,7 +30,23 @@ export class InternalController {
     private readonly prisma: PrismaService,
     @Inject(TelegramBotService)
     private readonly telegramBotService: TelegramBotService,
+    @Inject(WarrantyService)
+    private readonly warrantyService: WarrantyService,
   ) {}
+
+  @Post("warranty/:claimId/auto-check-applied")
+  async warrantyAutoCheckCallback(
+    @Param("claimId") claimId: string,
+    @Req() req: RawBodyRequest<Request>,
+    @Headers("x-internal-token") token: string,
+    @Headers("x-internal-timestamp") timestamp: string,
+    @Headers("x-internal-signature") signature: string,
+    @Body() body: Record<string, any>,
+  ) {
+    this.assertValidInternalRequest(req, body || {}, token, timestamp, signature);
+    await this.warrantyService.applyAutoCheckResult(claimId);
+    return { success: true };
+  }
 
   @Post("telegram/process/:shopId")
   async processTelegramUpdate(

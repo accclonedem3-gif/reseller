@@ -10,6 +10,7 @@ const client_1 = require("@prisma/client");
 const bullmq_1 = require("bullmq");
 const ioredis_1 = __importDefault(require("ioredis"));
 const server_1 = require("@reseller/shared/server");
+const account_check_1 = require("./account-check");
 const prisma = new client_1.PrismaClient();
 const REDIS_URL = process.env.REDIS_URL || "redis://localhost:6379";
 const INFRA_RETRY_MS = Number(process.env.WORKER_INFRA_RETRY_MS || 5000);
@@ -660,7 +661,7 @@ function extractInternalBusinessFields(metadata) {
             ? String(metadata?.durationTypeOther || "").trim() || null
             : null,
         sourceDeliveryMode: normalizeSourceEnum(metadata?.sourceDeliveryMode || metadata?.deliveryMode, ["AUTO_API", "AUTO_STOCK", "MANUAL"]),
-        warrantyPolicy: normalizeSourceEnum(metadata?.warrantyPolicy, ["KBH", "BH24H", "BH1M", "BH6M", "BH12M"]),
+        warrantyPolicy: normalizeSourceEnum(metadata?.warrantyPolicy, ["KBH", "BH24H", "BH1M", "BH3M", "BH6M", "BH12M", "BHF"]),
     };
 }
 async function snapshotWarrantyForDeliveredOrder(orderId, tx = prisma) {
@@ -2619,7 +2620,49 @@ async function bootstrap() {
     }, 30 * 1000);
     void expireAwaitingPaymentOrders().catch(() => undefined);
     // Web2m polling removed — replaced by webhook /api/v1/webhooks/web2m
+    let accountCheckHandles = null;
+    try {
+        accountCheckHandles = await account_check_1.setupAccountCheckWorker(prisma, redis);
+    }
+    catch (error) {
+        console.error("[worker] Failed to setup account-check worker:", formatError(error));
+    }
     console.log(`[worker] Started queue workers and Telegram poller. Catalog sync concurrency=${Math.max(1, Math.floor(CATALOG_SYNC_CONCURRENCY))}, scheduler tick=${CATALOG_SCHEDULER_TICK_MS}ms, target interval=${CATALOG_SYNC_INTERVAL_MS}ms.`);
+
+    // Graceful shutdown: drain in-flight jobs, stop the sweep timer, close BullMQ workers + queues,
+    // disconnect Redis. Without this, PM2/Docker restart leaves Chromium subprocesses orphaned.
+    let shuttingDown = false;
+    const shutdown = async (signal) => {
+        if (shuttingDown) return;
+        shuttingDown = true;
+        console.log(`[worker] Received ${signal} — beginning graceful shutdown.`);
+        const tasks = [];
+        if (accountCheckHandles) {
+            if (accountCheckHandles.sweepTimer) clearInterval(accountCheckHandles.sweepTimer);
+            tasks.push(accountCheckHandles.worker.close().catch((e) => console.error("[worker] account-check worker.close failed:", formatError(e))));
+            tasks.push(accountCheckHandles.queue.close().catch((e) => console.error("[worker] account-check queue.close failed:", formatError(e))));
+        }
+        try { tasks.push(syncWorker.close().catch(() => undefined)); } catch {}
+        try { tasks.push(syncQueue.close().catch(() => undefined)); } catch {}
+        try { tasks.push(purchaseQueue.close().catch(() => undefined)); } catch {}
+        try { tasks.push(broadcastQueue.close().catch(() => undefined)); } catch {}
+        // Kill any subprocess children we still own (best-effort; primary mechanism is the
+        // process-group kill inside spawnSingleCheck on timeout).
+        if (typeof account_check_1.killAllChildren === "function") {
+            try { account_check_1.killAllChildren(); } catch {}
+        }
+        // Bound the shutdown to 15s — beyond that, accept the loss and exit so the orchestrator
+        // doesn't escalate to SIGKILL (which would skip the finally blocks we still rely on).
+        await Promise.race([
+            Promise.all(tasks),
+            new Promise((resolve) => setTimeout(resolve, 15000)),
+        ]);
+        try { await redis.quit(); } catch {}
+        console.log("[worker] Shutdown complete.");
+        process.exit(0);
+    };
+    process.on("SIGTERM", () => { void shutdown("SIGTERM"); });
+    process.on("SIGINT", () => { void shutdown("SIGINT"); });
 }
 bootstrap().catch((error) => {
     console.error(error);

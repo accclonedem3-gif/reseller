@@ -126,6 +126,7 @@ enum PaymentProvider {
   OKX
   USDT_TRC20
   BINANCE_PAY
+  THUNDER
 }
 
 enum PaymentTransactionStatus {
@@ -907,7 +908,16 @@ model WarrantyClaim {
   resolutionNote        String?             @map("resolution_note")
   replacementCostSnapshot Decimal?          @map("replacement_cost_snapshot") @db.Decimal(18, 2)
   metadataJson          Json?               @map("metadata_json")
+  targetAccountEmail    String?             @map("target_account_email")
   resolvedAt            DateTime?           @map("resolved_at")
+  autoCheckStatus       String?             @map("auto_check_status")
+  autoCheckTool         String?             @map("auto_check_tool")
+  autoCheckJobId        String?             @map("auto_check_job_id")
+  autoCheckResult       Json?               @map("auto_check_result")
+  autoCheckStartedAt    DateTime?           @map("auto_check_started_at")
+  autoCheckCompletedAt  DateTime?           @map("auto_check_completed_at")
+  autoCheckErrorMessage String?             @map("auto_check_error_message")
+  autoCheckAttempts     Int                 @default(0) @map("auto_check_attempts")
   createdAt             DateTime            @default(now()) @map("created_at")
   updatedAt             DateTime            @updatedAt @map("updated_at")
   order                 Order               @relation(fields: [orderId], references: [id], onDelete: Cascade)
@@ -919,6 +929,9 @@ model WarrantyClaim {
   @@index([sellerId, status, createdAt])
   @@index([shopId, status, createdAt])
   @@index([customerId, createdAt])
+  @@index([autoCheckStatus])
+  @@index([autoCheckStatus, autoCheckStartedAt])
+  @@index([orderId, status, resolvedAt])
   @@map("warranty_claims")
 }
 

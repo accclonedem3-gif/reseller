@@ -146,6 +146,57 @@ export function AdminSystemConfigPage() {
 
       <Card className="p-5">
         <p className="text-sm font-semibold uppercase tracking-wide text-slate-400">
+          Bảo hành — kiểm tra tự động
+        </p>
+        <p className="mt-2 text-xs text-slate-500">
+          Khi customer mở claim cho sản phẩm Veo 3 / Grok / ChatGPT, hệ thống tự đăng nhập tài khoản đã giao và kiểm tra gói + hạn dùng. Auto-check luôn bật.
+        </p>
+        <div className="mt-4 space-y-3">
+          <Field
+            label="Cooldown giữa 2 lần bảo hành (ngày)"
+            description="Sau khi 1 đơn được bảo hành cấp acc thay thế, customer phải chờ N ngày mới được mở claim tiếp cho đơn đó. Đặt 0 để tắt cooldown."
+          >
+            <Input
+              type="number"
+              min={0}
+              max={365}
+              value={form["warranty.cooldownDays"] ?? "7"}
+              onChange={(e) => handleChange("warranty.cooldownDays", e.target.value)}
+            />
+          </Field>
+          <Field
+            label="Số luồng check song song"
+            description="Mỗi luồng dùng 1 Chrome instance (~300MB RAM). Hàng chờ quá ngưỡng × 4 sẽ báo 'hệ thống quá tải' với customer."
+          >
+            <Input
+              type="number"
+              min={1}
+              max={20}
+              value={form["warranty.check.concurrency"] ?? "3"}
+              onChange={(e) => handleChange("warranty.check.concurrency", e.target.value)}
+            />
+          </Field>
+          <Field
+            label="Proxy cho tool check (mỗi proxy 1 dòng)"
+            description={
+              "Worker rotate round-robin theo từng account. Format: scheme://[user:pass@]host:port hoặc host:port[:user:pass]. " +
+              "Để trống = check chạy raw IP server (Google/X dễ ban). Khuyến nghị ≥ 20 proxy residential nếu deploy production."
+            }
+          >
+            <textarea
+              rows={8}
+              spellCheck={false}
+              placeholder={"# Ví dụ:\nhttp://user:pass@1.2.3.4:8080\nsocks5://5.6.7.8:1080\n9.10.11.12:8080:user:pass"}
+              value={form["warranty.check.proxies"] ?? ""}
+              onChange={(e) => handleChange("warranty.check.proxies", e.target.value)}
+              className="flex w-full rounded-[10px] border border-white/8 bg-[#18233c] px-3.5 py-2.5 font-mono text-xs text-slate-200 outline-none focus:border-white/20"
+            />
+          </Field>
+        </div>
+      </Card>
+
+      <Card className="p-5">
+        <p className="text-sm font-semibold uppercase tracking-wide text-slate-400">
           Cấu hình tùy chỉnh
         </p>
         <p className="mt-2 text-xs text-slate-500">
@@ -153,14 +204,14 @@ export function AdminSystemConfigPage() {
         </p>
         <div className="mt-4 space-y-2">
           {Object.entries(form)
-            .filter(([k]) => !CONFIG_SCHEMA.find((s) => s.key === k))
+            .filter(([k]) => !CONFIG_SCHEMA.find((s) => s.key === k) && !k.startsWith("warranty."))
             .map(([key, value]) => (
               <div key={key} className="flex items-center gap-3 rounded-[12px] border border-white/6 bg-[#18233c] px-4 py-2.5">
                 <p className="min-w-0 flex-1 font-mono text-xs text-slate-400">{key}</p>
                 <p className="text-xs text-slate-300 truncate max-w-[200px]">{value}</p>
               </div>
             ))}
-          {Object.keys(form).filter((k) => !CONFIG_SCHEMA.find((s) => s.key === k)).length === 0 && (
+          {Object.keys(form).filter((k) => !CONFIG_SCHEMA.find((s) => s.key === k) && !k.startsWith("warranty.")).length === 0 && (
             <p className="text-xs text-slate-500">Không có cấu hình tùy chỉnh.</p>
           )}
         </div>
@@ -168,3 +219,4 @@ export function AdminSystemConfigPage() {
     </div>
   );
 }
+
