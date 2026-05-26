@@ -32,6 +32,11 @@ const JOB_TIMEOUT_MS = Number(process.env.ACCOUNT_CHECK_JOB_TIMEOUT_MS || 90000)
 const CHECK_GROK_URL = (process.env.CHECK_GROK_URL || "").replace(/\/+$/, "");
 const CHECK_GROK_API_KEY = process.env.CHECK_GROK_API_KEY || "";
 const GROK_HTTP_TIMEOUT_MS = Math.max(30_000, Number(process.env.CHECK_GROK_HTTP_TIMEOUT_MS || 180_000));
+// Veo HTTP API: same pattern as grok above. Long-running check_veo/server.js holds a
+// browser pool so each check skips the ~3-5s Chromium cold launch. Empty = subprocess-only.
+const CHECK_VEO_URL = (process.env.CHECK_VEO_URL || "").replace(/\/+$/, "");
+const CHECK_VEO_API_KEY = process.env.CHECK_VEO_API_KEY || "";
+const VEO_HTTP_TIMEOUT_MS = Math.max(30_000, Number(process.env.CHECK_VEO_HTTP_TIMEOUT_MS || 180_000));
 const CONCURRENCY = Math.max(1, Number(process.env.ACCOUNT_CHECK_CONCURRENCY || 3));
 // Per-claim parallelism: keep up to 3 Chrome slots filled continuously. parallelLimit's
 // drain loop already does the right thing for N accounts: N=1 spawns 1, N=2 spawns 2,
@@ -333,6 +338,164 @@ async function runGrokBatchViaHttp(
               else if (line.startsWith("data: ")) dataLine = line.slice(6);
             }
             if (!dataLine) continue; // keepalive ':'
+            let payload: any;
+            try { payload = JSON.parse(dataLine); } catch { continue; }
+            if (eventName === "result") {
+              byIdx.set(payload.idx, payload);
+              if (onProgress) onProgress(byIdx.size).catch(() => undefined);
+            } else if (eventName === "done" || eventName === "error") {
+              try { resp.data.destroy(); } catch {}
+              finish();
+            }
+          }
+        });
+        resp.data.on("end", () => finish());
+        resp.data.on("error", (e: Error) => finish(e));
+      })
+      .catch((e) => finish(e));
+  });
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// VEO HTTP fast-path (check_veo/server.js)
+// ──────────────────────────────────────────────────────────────────────────
+// Same idea as the grok HTTP path above but adapted for veo's result shape. check_veo's
+// server.js returns the raw `checkAccount()` output ({email, status, credit, plan, detail,
+// reason}); we derive the isDead/stillPaid/errorType shape on this side, mirroring the
+// logic in check_veo/single-check.js so downstream applyAutoCheckResult sees identical
+// fields regardless of whether the verdict came from HTTP or subprocess.
+function deriveVeoResultShape(input: {
+  status?: string | null;
+  credit?: number | string | null;
+  plan?: string | null;
+  detail?: string | null;
+  reason?: string | null;
+}) {
+  const status = String(input.status || "TIMEOUT").toUpperCase();
+  const credit = typeof input.credit === "number" ? input.credit : (parseInt(String(input.credit || "")) || null);
+  const planName = input.plan ? String(input.plan).trim() : null;
+  const planLower = planName ? planName.toLowerCase() : "";
+  const isUltraPlan = planLower === "ultra";
+  const isFreePlan = planLower === "free";
+
+  let errorType: string | null = null;
+  if (status === "DIE") errorType = input.reason || "account_disabled";
+  else if (status === "WRONG_PASS") errorType = "wrong_password";
+  else if (status === "TWO_FA") errorType = "2fa";
+  else if (status === "TIMEOUT") errorType = "timeout";
+  else if (isFreePlan) errorType = "plan_lost";
+
+  // Same dead-set as single-check.js: shop sells Ultra so plan_lost (Free) counts as dead.
+  // Pro/Premium and unknown plans fall through to seller review.
+  const isDead = ["flow_blocked", "plan_lost", "account_disabled"].includes(String(errorType || ""));
+  const stillPaid = status === "LIVE" && isUltraPlan;
+
+  return {
+    ok: status !== "TIMEOUT",
+    tool: "veo" as const,
+    status,
+    credit,
+    plan: planName || (credit !== null ? `${credit} credit` : null),
+    tier: planName,
+    stillPaid,
+    detail: input.detail || null,
+    reason: input.reason || null,
+    errorType,
+    isDead,
+  };
+}
+
+/**
+ * Submit a batch of veo accounts to check_veo/server.js and stream results via SSE.
+ * Same shape contract as runGrokBatchViaHttp — caller decides between this and subprocess.
+ * Saves the ~3-5s Chromium cold launch per account (the server's browser pool keeps them
+ * hot). Login itself is per-account, can't share — but with no cold launch tax veo drops
+ * from ~45s to ~30-35s per check, and bursts scale linearly with pool size instead of
+ * spawning a fresh browser process per check.
+ */
+async function runVeoBatchViaHttp(
+  accounts: Array<{ email: string; password: string; extra?: string | null }>,
+  proxies: Array<string | null>,
+  onProgress?: (done: number) => Promise<void>,
+): Promise<Array<{ raw: string; parsed: any | null; exitCode: number | null; timedOut: boolean }>> {
+  if (!CHECK_VEO_URL) throw new Error("CHECK_VEO_URL not set");
+
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (CHECK_VEO_API_KEY) headers["X-API-Key"] = CHECK_VEO_API_KEY;
+
+  const submitResp = await axios.post(
+    `${CHECK_VEO_URL}/check`,
+    {
+      accounts: accounts.map((a, i) => ({
+        user: a.email,
+        pwd: a.password,
+        ...(proxies[i] ? { proxy: proxies[i] } : {}),
+      })),
+    },
+    { headers, timeout: 10_000 },
+  );
+  const jobId: string = submitResp.data?.job_id;
+  if (!jobId) throw new Error("veo server did not return job_id");
+
+  const byIdx = new Map<number, any>();
+
+  function buildEntry(i: number, timedOut: boolean) {
+    const entry = byIdx.get(i);
+    if (!entry?.result) {
+      return {
+        raw: `HTTP veo job=${jobId} idx=${i} ${timedOut ? "timed out" : "no result"}`,
+        parsed: null, exitCode: null, timedOut,
+      };
+    }
+    const r = entry.result;
+    return {
+      raw: `HTTP veo job=${jobId} idx=${i} elapsed=${entry.elapsed_ms || 0}ms`,
+      parsed: deriveVeoResultShape({
+        status: r.status, credit: r.credit, plan: r.plan,
+        detail: r.detail, reason: r.reason,
+      }),
+      exitCode: 0, timedOut: false,
+    };
+  }
+
+  return new Promise((resolve, reject) => {
+    let settled = false;
+
+    const deadline = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      resolve(accounts.map((_, i) => buildEntry(i, true)));
+    }, VEO_HTTP_TIMEOUT_MS);
+
+    function finish(err?: Error) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(deadline);
+      if (err) { reject(err); return; }
+      resolve(accounts.map((_, i) => buildEntry(i, false)));
+    }
+
+    axios
+      .get(`${CHECK_VEO_URL}/check/${jobId}/stream`, {
+        headers: { ...headers, Accept: "text/event-stream", "Cache-Control": "no-cache" },
+        responseType: "stream",
+        timeout: 0,
+      })
+      .then((resp) => {
+        let buf = "";
+        resp.data.on("data", (chunk: Buffer) => {
+          buf += chunk.toString("utf8");
+          let sep: number;
+          while ((sep = buf.indexOf("\n\n")) !== -1) {
+            const block = buf.slice(0, sep);
+            buf = buf.slice(sep + 2);
+            let eventName = "message";
+            let dataLine = "";
+            for (const line of block.split("\n")) {
+              if (line.startsWith("event: ")) eventName = line.slice(7).trim();
+              else if (line.startsWith("data: ")) dataLine = line.slice(6);
+            }
+            if (!dataLine) continue;
             let payload: any;
             try { payload = JSON.parse(dataLine); } catch { continue; }
             if (eventName === "result") {
@@ -786,6 +949,71 @@ async function processJob(prisma: PrismaClient, redis: Redis, job: Job): Promise
       }
     }
 
+    // VEO HTTP fast-path: mirror grok pattern. Saves ~3-5s/account by reusing the server's
+    // persistent Chromium pool (no cold launch tax). The veo domain mass-die short-circuit
+    // in wrapTask still runs first via the subprocess path; HTTP path bypasses it because
+    // the server has no awareness of Redis dead-domain markers — so we filter mass-dead
+    // domains BEFORE submitting to keep the short-circuit semantics intact.
+    if (!allResults && tool === "veo" && CHECK_VEO_URL) {
+      // Filter accounts whose domain is over the mass-die threshold — those get the synthetic
+      // dead result without involving the veo server. Track them by original idx so we can
+      // splice results back in the right order.
+      const veoBatch: Array<{ email: string; password: string; extra?: string | null }> = [];
+      const veoIdxMap: number[] = [];
+      const proxiesForBatch: Array<string | null> = [];
+      const localResults: Array<{ raw: string; parsed: any | null; exitCode: number | null; timedOut: boolean } | null> =
+        new Array(allAccounts.length).fill(null);
+
+      for (let i = 0; i < allAccounts.length; i++) {
+        const domain = extractEmailDomain(allAccounts[i].email);
+        if (domain) {
+          const deadCount = await getVeoDomainDeadCount(redis, domain);
+          if (deadCount >= VEO_DOMAIN_DEAD_THRESHOLD) {
+            localResults[i] = syntheticVeoDomainMassDieResult(allAccounts[i].email, domain, deadCount);
+            completed++;
+            continue;
+          }
+        }
+        veoBatch.push({ email: allAccounts[i].email, password: allAccounts[i].password, extra: allAccounts[i].extra });
+        veoIdxMap.push(i);
+        const p = await pickHealthyProxy(proxyStartIdx(i, 0));
+        proxiesForBatch.push(p);
+        lastProxyByIdx.set(i, p);
+      }
+      await writeProgress();
+
+      if (veoBatch.length > 0) {
+        try {
+          const httpResults = await runVeoBatchViaHttp(
+            veoBatch,
+            proxiesForBatch,
+            async (done) => {
+              completed = Math.min(total, (allAccounts.length - veoBatch.length) + done);
+              await writeProgress();
+            },
+          );
+          // Splice HTTP results back into the original positions.
+          for (let k = 0; k < veoIdxMap.length; k++) {
+            localResults[veoIdxMap[k]] = httpResults[k];
+          }
+          const allTimed = httpResults.every((r) => r.timedOut);
+          if (allTimed) {
+            console.warn(`[account-check] claim=${claimId} veo HTTP all timed out → fallback subprocess`);
+            // Leave allResults=null so the subprocess fallback below picks up.
+          } else {
+            allResults = localResults as any;
+          }
+        } catch (err: any) {
+          console.warn(
+            `[account-check] claim=${claimId} veo HTTP failed (${err?.message || err}) → fallback subprocess`,
+          );
+        }
+      } else {
+        // Every account short-circuited via mass-die — no HTTP call needed, use the locals.
+        allResults = localResults as any;
+      }
+    }
+
     if (!allResults) {
       allResults = await parallelLimit(
         allAccounts.map((_, idx) => wrapTask(idx, 0)),
@@ -1088,10 +1316,13 @@ export async function setupAccountCheckWorker(prisma: PrismaClient, redis: Redis
   const grokHttp = CHECK_GROK_URL
     ? `grokHttp=${CHECK_GROK_URL} (CF warmer fast-path; subprocess fallback if down)`
     : "grokHttp=off (subprocess only)";
+  const veoHttp = CHECK_VEO_URL
+    ? `veoHttp=${CHECK_VEO_URL} (browser pool fast-path; subprocess fallback if down)`
+    : "veoHttp=off (subprocess only)";
   const stickyProxy = STICKY_PROXY_ENABLED ? "stickyProxy=on (hash email→same proxy)" : "stickyProxy=off (round-robin)";
   const ambiguousRetryCount = Math.max(0, Number(process.env.ACCOUNT_CHECK_AMBIGUOUS_RETRY || 2));
   console.log(
-    `[account-check] Worker started. bullmqConcurrency=${concurrency} jobs/parallel, perJobParallel=${ACCOUNT_PARALLEL_LIMIT} chromes, peakChrome=${concurrency * ACCOUNT_PARALLEL_LIMIT}, spawnStagger=${SPAWN_STAGGER_MS}ms, proxies=${proxyCount}${proxyCount === 0 ? " (warning: no proxies configured)" : ""}, jobTimeout=${JOB_TIMEOUT_MS}ms, sweepInterval=${SWEEP_INTERVAL_MS}ms, retries=${ACCOUNT_RETRY_COUNT}+${ambiguousRetryCount}(ambiguous), veoDomainMassDie=${VEO_DOMAIN_DEAD_THRESHOLD}/${VEO_DOMAIN_DEAD_TTL_SEC}s, ${grokHttp}, ${stickyProxy}`,
+    `[account-check] Worker started. bullmqConcurrency=${concurrency} jobs/parallel, perJobParallel=${ACCOUNT_PARALLEL_LIMIT} chromes, peakChrome=${concurrency * ACCOUNT_PARALLEL_LIMIT}, spawnStagger=${SPAWN_STAGGER_MS}ms, proxies=${proxyCount}${proxyCount === 0 ? " (warning: no proxies configured)" : ""}, jobTimeout=${JOB_TIMEOUT_MS}ms, sweepInterval=${SWEEP_INTERVAL_MS}ms, retries=${ACCOUNT_RETRY_COUNT}+${ambiguousRetryCount}(ambiguous), veoDomainMassDie=${VEO_DOMAIN_DEAD_THRESHOLD}/${VEO_DOMAIN_DEAD_TTL_SEC}s, ${grokHttp}, ${veoHttp}, ${stickyProxy}`,
   );
   return { queue, worker, sweepTimer };
 }

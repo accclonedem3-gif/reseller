@@ -9,7 +9,7 @@
   "scripts": {
     "start:local": "powershell -ExecutionPolicy Bypass -File .\\start-local.ps1",
     "start:local:bot-test": "powershell -ExecutionPolicy Bypass -File .\\start-local-bot-test.ps1",
-    "dev": "concurrently -k -n api,worker,web,grok -c blue,green,magenta,yellow \"npm run dev -w @reseller/api\" \"npm run dev -w @reseller/worker\" \"npm run dev -w @reseller/web\" \"node scripts/start-grok-server.cjs\"",
+    "dev": "concurrently -k -n api,worker,web,grok,veo -c blue,green,magenta,yellow,cyan \"npm run dev -w @reseller/api\" \"npm run dev -w @reseller/worker\" \"npm run dev -w @reseller/web\" \"node scripts/start-grok-server.cjs\" \"node scripts/start-veo-server.cjs\"",
     "dev:api": "npm run dev -w @reseller/api",
     "dev:worker": "npm run dev -w @reseller/worker",
     "dev:web": "npm run dev -w @reseller/web",

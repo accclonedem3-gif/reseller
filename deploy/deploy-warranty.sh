@@ -72,6 +72,9 @@ check_tool() {
 
 check_tool "check_veo"
 check_tool "CheckGrokJS"
+# Note: both check_veo and CheckGrokJS have HTTP server.js (PM2 starts them via
+# CHECK_*_SERVER_PATH in ecosystem.config.cjs). Their `npm install` step above pulls in
+# express + express-rate-limit if missing.
 # check_gpt is disabled by default (WARRANTY_DISABLED_TOOLS=gpt) — skip the check
 if [ -n "${ENABLE_GPT_TOOL:-}" ]; then
   check_tool "check_gpt"
