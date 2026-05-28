@@ -80,11 +80,11 @@ export class AffiliateService {
         },
       });
 
-      const wallet = await tx.customerWallet.findUnique({
+      const wallet = await tx.customerWallet.upsert({
         where: { customerId: affiliateCustomerId },
+        update: {},
+        create: { customerId: affiliateCustomerId },
       });
-
-      if (!wallet) return;
 
       await tx.$queryRaw(
         Prisma.sql`SELECT id FROM customer_wallets WHERE id = ${wallet.id} FOR UPDATE`,

@@ -470,6 +470,10 @@ export class OrdersService {
       throw new NotFoundException("Product not found.");
     }
 
+    if (product.isSample) {
+      throw new BadRequestException("Sản phẩm mẫu (template), không thể mua được.");
+    }
+
     const override = product.overrides[0];
     const quantity = Number(input.quantity);
 

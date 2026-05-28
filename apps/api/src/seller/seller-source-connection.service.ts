@@ -260,6 +260,9 @@ export class SellerSourceConnectionService {
         internalSourcePrice: p.internalSourcePrice
           ? decimalToNumber(p.internalSourcePrice)
           : null,
+        productIcon: p.productIcon ?? null,
+        iconCustomEmojiId: p.iconCustomEmojiId ?? null,
+        imageUrl: p.imageUrl ?? null,
       },
     }));
 

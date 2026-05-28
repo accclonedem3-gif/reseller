@@ -1,4 +1,5 @@
 import axios from "axios";
+import IORedis from "ioredis";
 import { Inject, Injectable, Logger, NotFoundException } from "@nestjs/common";
 import {
   decryptSecret,
@@ -11,7 +12,7 @@ import {
   telegramSendPhotoBuffer,
   type PayOSBankInfo,
 } from "@reseller/shared/server";
-import { DownstreamSourceConnectionStatus, PaymentProvider, PaymentStatus, Prisma, SellerTier } from "@prisma/client";
+import { DownstreamSourceConnectionStatus, PaymentProvider, PaymentStatus, PaymentTransactionStatus, Prisma, SellerTier } from "@prisma/client";
 
 import { AppConfigService } from "../config/app-config.service";
 import { PrismaService } from "../db/prisma.service";
@@ -24,6 +25,7 @@ import { InternalSourceApiKeyService } from "../source/internal-source-api-key.s
 import { SellerSourceConnectionService } from "../seller/seller-source-connection.service";
 import { BinancePayService } from "./binance-pay.service";
 import { OnchainPaymentService } from "./onchain-payment.service";
+import { SolanaPaymentService } from "./solana-payment.service";
 import { PaymentService } from "./payment.service";
 import { GramJsService } from "./gramjs.service";
 import { decimalToNumber, formatCurrency } from "./utils";
@@ -100,6 +102,7 @@ type PendingTxHashSubmission = {
   allowMockHash: boolean;
   expiresAt: number;
   isTopup?: boolean;
+  provider?: "USDT_TRC20" | "USDT_SOL";
 };
 
 type PendingBinanceOrderIdSubmission = {
@@ -140,16 +143,29 @@ type HandleIncomingUpdateOptions = {
 @Injectable()
 export class TelegramBotService {
   private readonly logger = new Logger(TelegramBotService.name);
-  private readonly pendingQuantitySelections = new Map<string, PendingQuantitySelection>();
-  private readonly pendingWalletTopups = new Map<string, PendingWalletTopupSelection>();
-  private readonly pendingPaymentSelections = new Map<string, PendingPaymentSelection>();
-  private readonly pendingTxHashSubmissions = new Map<string, PendingTxHashSubmission>();
-  private readonly pendingBinanceOrderIdSubmissions = new Map<string, PendingBinanceOrderIdSubmission>();
-  private readonly pendingWarrantyClaimSubmissions = new Map<string, PendingWarrantyClaimSubmission>();
-  private readonly pendingWarrantyIssueDescriptions = new Map<string, PendingWarrantyIssueDescription>();
-  private readonly pendingWarrantyAccountSelections = new Map<string, PendingWarrantyAccountSelection>();
-  private readonly pendingConnectionTopupInputs = new Map<string, PendingConnectionTopupInput>();
-  private readonly pendingQrMessages = new Map<string, { token: string; chatId: string | number; messageId: number }>();
+  private readonly redis: IORedis;
+
+  private async setPendingSession<T>(type: string, key: string, data: T, ttlMs: number) {
+    const fullKey = `bot:session:${type}:${key}`;
+    await this.redis.set(fullKey, JSON.stringify(data), "PX", ttlMs);
+  }
+
+  private async getPendingSession<T>(type: string, key: string): Promise<T | undefined> {
+    const fullKey = `bot:session:${type}:${key}`;
+    const val = await this.redis.get(fullKey);
+    if (!val) return undefined;
+    try {
+      return JSON.parse(val) as T;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async delPendingSession(type: string, key: string) {
+    const fullKey = `bot:session:${type}:${key}`;
+    await this.redis.del(fullKey);
+  }
+
   private readonly pendingQuantityTtlMs = 10 * 60 * 1000;
   private readonly pendingPaymentTtlMs = 5 * 60 * 1000;
   private readonly pendingTxHashTtlMs = 12 * 60 * 60 * 1000;
@@ -263,6 +279,8 @@ export class TelegramBotService {
     private readonly binancePayService: BinancePayService,
     @Inject(OnchainPaymentService)
     private readonly onchainPaymentService: OnchainPaymentService,
+    @Inject(SolanaPaymentService)
+    private readonly solanaPaymentService: SolanaPaymentService,
     @Inject(WarrantyService)
     private readonly warrantyService: WarrantyService,
     @Inject(AffiliateService)
@@ -300,7 +318,7 @@ export class TelegramBotService {
     const globalDefault = await this.getGlobalDefaultCustomization();
     if (!globalDefault) return shopCust ?? {};
     if (!shopCust) return globalDefault;
-    const DEEP_KEYS = ["labelEmojiIds", "buttonEmojiIds", "messageEmojiIds", "buttonLabels", "buttonEmojis", "welcomeMessage", "footerBill", "productNote", "catalogText", "homeFooter"];
+    const DEEP_KEYS = ["labelEmojiIds", "buttonEmojiIds", "messageEmojiIds", "buttonLabels", "buttonEmojis", "welcomeMessage", "footerBill", "productNote", "catalogText", "homeFooter", "walletNote"];
     const merged: Record<string, unknown> = { ...globalDefault };
     for (const [k, v] of Object.entries(shopCust)) {
       if (DEEP_KEYS.includes(k) && v && typeof v === "object" && !Array.isArray(v) && merged[k] && typeof merged[k] === "object") {
@@ -384,27 +402,27 @@ export class TelegramBotService {
       const allAffiliateLabels = Object.values(this.replyKeyboardLabels.affiliate);
 
       if (allProductLabels.includes(msgText as any)) {
-        this.clearPendingQuantitySelection(shopId, String(message.from?.id || ""));
-        this.clearPendingWalletTopup(shopId, String(message.from?.id || ""));
-        this.clearPendingPaymentSelection(shopId, String(message.from?.id || ""));
-        this.clearPendingTxHashSubmission(shopId, String(message.from?.id || ""));
+        await this.clearPendingQuantitySelection(shopId, String(message.from?.id || ""));
+        await this.clearPendingWalletTopup(shopId, String(message.from?.id || ""));
+        await this.clearPendingPaymentSelection(shopId, String(message.from?.id || ""));
+        await this.clearPendingTxHashSubmission(shopId, String(message.from?.id || ""));
         await this.renderCatalog(shopId, outboundToken, message.chat.id, undefined, 0, actions, messageLanguage);
         return { ok: true, actions };
       }
 
       if (allOrderLabels.includes(msgText as any)) {
-        this.clearPendingQuantitySelection(shopId, String(message.from?.id || ""));
-        this.clearPendingWalletTopup(shopId, String(message.from?.id || ""));
-        this.clearPendingPaymentSelection(shopId, String(message.from?.id || ""));
-        this.clearPendingTxHashSubmission(shopId, String(message.from?.id || ""));
+        await this.clearPendingQuantitySelection(shopId, String(message.from?.id || ""));
+        await this.clearPendingWalletTopup(shopId, String(message.from?.id || ""));
+        await this.clearPendingPaymentSelection(shopId, String(message.from?.id || ""));
+        await this.clearPendingTxHashSubmission(shopId, String(message.from?.id || ""));
         await this.renderOrderHistory(shopId, outboundToken, message.chat.id, undefined, String(message.from.id), actions, messageLanguage);
         return { ok: true, actions };
       }
 
       if (allWalletLabels.includes(msgText as any)) {
-        this.clearPendingQuantitySelection(shopId, String(message.from?.id || ""));
-        this.clearPendingPaymentSelection(shopId, String(message.from?.id || ""));
-        this.clearPendingTxHashSubmission(shopId, String(message.from?.id || ""));
+        await this.clearPendingQuantitySelection(shopId, String(message.from?.id || ""));
+        await this.clearPendingPaymentSelection(shopId, String(message.from?.id || ""));
+        await this.clearPendingTxHashSubmission(shopId, String(message.from?.id || ""));
         await this.renderWalletPanel(shopId, outboundToken, message.chat.id, undefined, String(message.from.id), actions, messageLanguage);
         return { ok: true, actions };
       }
@@ -428,12 +446,12 @@ export class TelegramBotService {
         if (shop.seller.tier !== SellerTier.ULTRA) {
           return { ok: true, actions };
         }
-        this.clearPendingQuantitySelection(shopId, String(message.from?.id || ""));
-        this.clearPendingWalletTopup(shopId, String(message.from?.id || ""));
-        this.clearPendingPaymentSelection(shopId, String(message.from?.id || ""));
-        this.clearPendingTxHashSubmission(shopId, String(message.from?.id || ""));
-        this.clearPendingWarrantyIssueDescription(shopId, String(message.from?.id || ""));
-        this.clearPendingWarrantyAccountSelection(shopId, String(message.from?.id || ""));
+        await this.clearPendingQuantitySelection(shopId, String(message.from?.id || ""));
+        await this.clearPendingWalletTopup(shopId, String(message.from?.id || ""));
+        await this.clearPendingPaymentSelection(shopId, String(message.from?.id || ""));
+        await this.clearPendingTxHashSubmission(shopId, String(message.from?.id || ""));
+        await this.clearPendingWarrantyIssueDescription(shopId, String(message.from?.id || ""));
+        await this.clearPendingWarrantyAccountSelection(shopId, String(message.from?.id || ""));
         await this.promptWarrantyClaimOrderCode(
           outboundToken,
           message.chat.id,
@@ -447,10 +465,10 @@ export class TelegramBotService {
       }
 
       if (allHomeLabels.includes(msgText as any)) {
-        this.clearPendingQuantitySelection(shopId, String(message.from?.id || ""));
-        this.clearPendingWalletTopup(shopId, String(message.from?.id || ""));
-        this.clearPendingPaymentSelection(shopId, String(message.from?.id || ""));
-        this.clearPendingTxHashSubmission(shopId, String(message.from?.id || ""));
+        await this.clearPendingQuantitySelection(shopId, String(message.from?.id || ""));
+        await this.clearPendingWalletTopup(shopId, String(message.from?.id || ""));
+        await this.clearPendingPaymentSelection(shopId, String(message.from?.id || ""));
+        await this.clearPendingTxHashSubmission(shopId, String(message.from?.id || ""));
         await this.renderHome(shopId, outboundToken, message.chat.id, undefined, actions, messageLanguage);
         return { ok: true, actions };
       }
@@ -553,10 +571,10 @@ export class TelegramBotService {
     }
 
     if (message?.text?.startsWith("/start")) {
-      this.clearPendingQuantitySelection(shopId, String(message.from?.id || ""));
-      this.clearPendingWalletTopup(shopId, String(message.from?.id || ""));
-      this.clearPendingPaymentSelection(shopId, String(message.from?.id || ""));
-      this.clearPendingTxHashSubmission(shopId, String(message.from?.id || ""));
+      await this.clearPendingQuantitySelection(shopId, String(message.from?.id || ""));
+      await this.clearPendingWalletTopup(shopId, String(message.from?.id || ""));
+      await this.clearPendingPaymentSelection(shopId, String(message.from?.id || ""));
+      await this.clearPendingTxHashSubmission(shopId, String(message.from?.id || ""));
 
       const startParam = message.text.slice("/start".length).trim();
       if (startParam.startsWith("ref_") && message.from?.id) {
@@ -582,10 +600,10 @@ export class TelegramBotService {
     }
 
     if (message?.text?.startsWith("/products")) {
-      this.clearPendingQuantitySelection(shopId, String(message.from?.id || ""));
-      this.clearPendingWalletTopup(shopId, String(message.from?.id || ""));
-      this.clearPendingPaymentSelection(shopId, String(message.from?.id || ""));
-      this.clearPendingTxHashSubmission(shopId, String(message.from?.id || ""));
+      await this.clearPendingQuantitySelection(shopId, String(message.from?.id || ""));
+      await this.clearPendingWalletTopup(shopId, String(message.from?.id || ""));
+      await this.clearPendingPaymentSelection(shopId, String(message.from?.id || ""));
+      await this.clearPendingTxHashSubmission(shopId, String(message.from?.id || ""));
       await this.renderCatalog(shopId, outboundToken, message.chat.id, undefined, 0, actions, messageLanguage);
       return { ok: true, actions };
     }
@@ -680,41 +698,41 @@ export class TelegramBotService {
       const telegramUserId = String(callbackQuery.from?.id || "");
       const callbackLanguage = await this.getCustomerLanguage(shopId, telegramUserId);
 
-      if (chatId && callbackQuery.id) {
+      if (chatId && callbackQuery.id && !data.startsWith("catalog:custom:")) {
         await this.answerCallback(outboundToken, callbackQuery.id, actions);
       }
 
       if (data === "home:menu") {
-        this.clearPendingQuantitySelection(shopId, telegramUserId);
-        this.clearPendingWalletTopup(shopId, telegramUserId);
-        this.clearPendingPaymentSelection(shopId, telegramUserId);
-        this.clearPendingTxHashSubmission(shopId, telegramUserId);
+        await this.clearPendingQuantitySelection(shopId, telegramUserId);
+        await this.clearPendingWalletTopup(shopId, telegramUserId);
+        await this.clearPendingPaymentSelection(shopId, telegramUserId);
+        await this.clearPendingTxHashSubmission(shopId, telegramUserId);
         await this.renderHome(shopId, outboundToken, chatId, messageId, actions, callbackLanguage);
       } else if (data === "home:products") {
-        this.clearPendingQuantitySelection(shopId, telegramUserId);
-        this.clearPendingWalletTopup(shopId, telegramUserId);
-        this.clearPendingPaymentSelection(shopId, telegramUserId);
-        this.clearPendingTxHashSubmission(shopId, telegramUserId);
+        await this.clearPendingQuantitySelection(shopId, telegramUserId);
+        await this.clearPendingWalletTopup(shopId, telegramUserId);
+        await this.clearPendingPaymentSelection(shopId, telegramUserId);
+        await this.clearPendingTxHashSubmission(shopId, telegramUserId);
         await this.renderCatalog(shopId, outboundToken, chatId, messageId, 0, actions, callbackLanguage);
       } else if (data === "home:history") {
-        this.clearPendingQuantitySelection(shopId, telegramUserId);
-        this.clearPendingWalletTopup(shopId, telegramUserId);
-        this.clearPendingPaymentSelection(shopId, telegramUserId);
-        this.clearPendingTxHashSubmission(shopId, telegramUserId);
+        await this.clearPendingQuantitySelection(shopId, telegramUserId);
+        await this.clearPendingWalletTopup(shopId, telegramUserId);
+        await this.clearPendingPaymentSelection(shopId, telegramUserId);
+        await this.clearPendingTxHashSubmission(shopId, telegramUserId);
         await this.renderOrderHistory(shopId, outboundToken, chatId, messageId, telegramUserId, actions, callbackLanguage);
       } else if (data === "home:wallet") {
-        this.clearPendingQuantitySelection(shopId, telegramUserId);
-        this.clearPendingWalletTopup(shopId, telegramUserId);
-        this.clearPendingPaymentSelection(shopId, telegramUserId);
-        this.clearPendingTxHashSubmission(shopId, telegramUserId);
+        await this.clearPendingQuantitySelection(shopId, telegramUserId);
+        await this.clearPendingWalletTopup(shopId, telegramUserId);
+        await this.clearPendingPaymentSelection(shopId, telegramUserId);
+        await this.clearPendingTxHashSubmission(shopId, telegramUserId);
         await this.renderWalletPanel(shopId, outboundToken, chatId, messageId, telegramUserId, actions, callbackLanguage);
       } else if (data === "home:warranty" || data === "warranty:start") {
-        this.clearPendingQuantitySelection(shopId, telegramUserId);
-        this.clearPendingWalletTopup(shopId, telegramUserId);
-        this.clearPendingPaymentSelection(shopId, telegramUserId);
-        this.clearPendingTxHashSubmission(shopId, telegramUserId);
-        this.clearPendingWarrantyIssueDescription(shopId, telegramUserId);
-        this.clearPendingWarrantyAccountSelection(shopId, telegramUserId);
+        await this.clearPendingQuantitySelection(shopId, telegramUserId);
+        await this.clearPendingWalletTopup(shopId, telegramUserId);
+        await this.clearPendingPaymentSelection(shopId, telegramUserId);
+        await this.clearPendingTxHashSubmission(shopId, telegramUserId);
+        await this.clearPendingWarrantyIssueDescription(shopId, telegramUserId);
+        await this.clearPendingWarrantyAccountSelection(shopId, telegramUserId);
         await this.promptWarrantyClaimOrderCode(
           outboundToken,
           chatId,
@@ -726,11 +744,11 @@ export class TelegramBotService {
         );
       } else if (data.startsWith("warranty_claim:")) {
         const orderCode = data.slice("warranty_claim:".length);
-        this.clearPendingQuantitySelection(shopId, telegramUserId);
-        this.clearPendingWalletTopup(shopId, telegramUserId);
-        this.clearPendingPaymentSelection(shopId, telegramUserId);
-        this.clearPendingTxHashSubmission(shopId, telegramUserId);
-        this.clearPendingWarrantyClaimSubmission(shopId, telegramUserId);
+        await this.clearPendingQuantitySelection(shopId, telegramUserId);
+        await this.clearPendingWalletTopup(shopId, telegramUserId);
+        await this.clearPendingPaymentSelection(shopId, telegramUserId);
+        await this.clearPendingTxHashSubmission(shopId, telegramUserId);
+        await this.clearPendingWarrantyClaimSubmission(shopId, telegramUserId);
         const check = await this.warrantyService.checkTelegramWarrantyEligibility({
           shopId,
           telegramUserId,
@@ -779,24 +797,24 @@ export class TelegramBotService {
       } else if (data === "prokey:topup") {
         await this.handleProKeyTopupPrompt(shop, outboundToken, chatId, messageId, telegramUserId, actions);
       } else if (data === "wallet:topup") {
-        this.clearPendingQuantitySelection(shopId, telegramUserId);
-        this.clearPendingPaymentSelection(shopId, telegramUserId);
-        this.clearPendingTxHashSubmission(shopId, telegramUserId);
-        this.clearPendingWalletTopup(shopId, telegramUserId);
+        await this.clearPendingQuantitySelection(shopId, telegramUserId);
+        await this.clearPendingPaymentSelection(shopId, telegramUserId);
+        await this.clearPendingTxHashSubmission(shopId, telegramUserId);
+        await this.clearPendingWalletTopup(shopId, telegramUserId);
         await this.promptWalletTopupCurrency(shopId, outboundToken, chatId, messageId, telegramUserId, actions, callbackLanguage);
       } else if (data === "wallet:topup:vnd") {
-        this.clearPendingWalletTopup(shopId, telegramUserId);
-        this.pendingWalletTopups.set(this.getPendingQuantityKey(shopId, telegramUserId), {
+        await this.clearPendingWalletTopup(shopId, telegramUserId);
+        await this.setPendingSession('pendingWalletTopups', this.getPendingQuantityKey(shopId, telegramUserId), {
           currency: "VND",
           expiresAt: Date.now() + this.pendingQuantityTtlMs,
-        });
+        }, this.pendingQuantityTtlMs);
         await this.promptWalletTopupAmount(shopId, outboundToken, chatId, telegramUserId, actions, "VND", undefined, callbackLanguage);
       } else if (data === "wallet:topup:usd") {
-        this.clearPendingWalletTopup(shopId, telegramUserId);
-        this.pendingWalletTopups.set(this.getPendingQuantityKey(shopId, telegramUserId), {
+        await this.clearPendingWalletTopup(shopId, telegramUserId);
+        await this.setPendingSession('pendingWalletTopups', this.getPendingQuantityKey(shopId, telegramUserId), {
           currency: "USDT",
           expiresAt: Date.now() + this.pendingQuantityTtlMs,
-        });
+        }, this.pendingQuantityTtlMs);
         await this.promptWalletTopupAmount(shopId, outboundToken, chatId, telegramUserId, actions, "USDT", undefined, callbackLanguage);
       } else if (data === "home:language") {
         await this.renderLanguageMenu(outboundToken, chatId, messageId, callbackLanguage, actions);
@@ -852,7 +870,7 @@ export class TelegramBotService {
         const parts = data.split(":");
         const customGroupId = parts[2] ?? "";
         const page = Number(parts[3] || "0");
-        await this.renderCustomCatalogGroup(shopId, outboundToken, chatId, messageId, customGroupId, page, actions, callbackLanguage);
+        await this.renderCustomCatalogGroup(shopId, outboundToken, chatId, messageId, customGroupId, page, actions, callbackLanguage, callbackQuery.id);
       } else if (data.startsWith("catalog:group:")) {
         const [, , rawGroupKey, rawPage] = data.split(":");
         const page = Number(rawPage || "0");
@@ -937,7 +955,7 @@ export class TelegramBotService {
         );
       } else if (data.startsWith("buy:")) {
         const sourceProductId = data.slice(4);
-        this.clearPendingTxHashSubmission(shopId, telegramUserId);
+        await this.clearPendingTxHashSubmission(shopId, telegramUserId);
 
         try {
           await this.promptQuantitySelection(
@@ -1340,12 +1358,19 @@ export class TelegramBotService {
       }
 
       const categoryCols = Math.min(3, Math.max(1, Number((shopCust as Record<string, unknown> | null)?.categoryGridCols) || 3));
+      const groupCounts = new Map<string, number>();
+      for (const p of products) {
+        if (p.groupId) groupCounts.set(p.groupId, (groupCounts.get(p.groupId) || 0) + 1);
+      }
       const groupRows = this.chunkButtons(
         customGroups.map((g) => {
           const groupAny = g as typeof g & { icon?: string | null; iconCustomEmojiId?: string | null };
-          const iconPrefix = groupAny.icon ? `${groupAny.icon} ` : "📁 ";
+          const iconPrefix = groupAny.iconCustomEmojiId
+            ? ""
+            : (groupAny.icon ? `${groupAny.icon} ` : "📁 ");
+          const count = groupCounts.get(g.id) || 0;
           const btn: Record<string, string> = {
-            text: `${iconPrefix}${g.name}`,
+            text: `${iconPrefix}${g.name} (${count})`,
             callback_data: `catalog:custom:${g.id}:0`,
           };
           if (groupAny.iconCustomEmojiId) btn.icon_custom_emoji_id = groupAny.iconCustomEmojiId;
@@ -1440,6 +1465,7 @@ export class TelegramBotService {
     page: number,
     actions: unknown[],
     language: BotLanguage = "vi",
+    callbackQueryId?: string,
   ) {
     const [allProducts, groups, custDataCustom, customerRecordGrp, downstreamConnGrp, ctvApiKeyGrp] = await Promise.all([
       this.shopsService.getCatalogViewForShop(shopId, false),
@@ -1461,6 +1487,9 @@ export class TelegramBotService {
 
     const group = groups.find((g) => g.id === groupId);
     if (!group) {
+      if (callbackQueryId) {
+        await telegramAnswerCallbackQuery(token, callbackQueryId).catch(() => undefined);
+      }
       await this.renderCatalog(shopId, token, chatId, messageId, 0, actions, language);
       return;
     }
@@ -1495,8 +1524,20 @@ export class TelegramBotService {
     };
 
     if (products.length === 0) {
-      await this.renderCatalog(shopId, token, chatId, messageId, 0, actions, language);
+      const outOfStockMsg =
+        language === "en"
+          ? "The product you selected is out of stock, please come back later."
+          : language === "th"
+            ? "สินค้าที่คุณเลือกหมดสต็อก กรุณากลับมาดูใหม่ภายหลังนะ"
+            : "Sản phẩm bạn đang chọn hết hàng, bạn quay lại mua sau nhé.";
+      if (callbackQueryId) {
+        await telegramAnswerCallbackQuery(token, callbackQueryId, outOfStockMsg, { showAlert: true }).catch(() => undefined);
+      }
       return;
+    }
+
+    if (callbackQueryId) {
+      await telegramAnswerCallbackQuery(token, callbackQueryId).catch(() => undefined);
     }
 
     const lines = [
@@ -1756,26 +1797,34 @@ export class TelegramBotService {
 
     // If only one option, skip selection and go straight to amount
     if (hasUsdt && !hasVnd) {
-      this.pendingWalletTopups.set(this.getPendingQuantityKey(shopId, telegramUserId), {
+      await this.setPendingSession('pendingWalletTopups', this.getPendingQuantityKey(shopId, telegramUserId), {
         currency: "USDT",
         expiresAt: Date.now() + this.pendingQuantityTtlMs,
-      });
+      }, this.pendingQuantityTtlMs);
       return this.promptWalletTopupAmount(shopId, token, chatId, telegramUserId, actions, "USDT", undefined, language);
     }
     if (!hasUsdt) {
-      this.pendingWalletTopups.set(this.getPendingQuantityKey(shopId, telegramUserId), {
+      await this.setPendingSession('pendingWalletTopups', this.getPendingQuantityKey(shopId, telegramUserId), {
         currency: "VND",
         expiresAt: Date.now() + this.pendingQuantityTtlMs,
-      });
+      }, this.pendingQuantityTtlMs);
       return this.promptWalletTopupAmount(shopId, token, chatId, telegramUserId, actions, "VND", undefined, language);
     }
 
-    const text =
+    const shopDataTopup = await this.shopsService.getSellerShopByShopId(shopId);
+    const shopCustTopup = await this.resolveCustomization(
+      shopDataTopup.botConfig?.customizationJson as Record<string, unknown> | null ?? null,
+    );
+    const walletNoteMapTopup = (shopCustTopup as Record<string, unknown> | null)?.walletNote as Record<string, string> | undefined;
+    const walletNoteTopup = (walletNoteMapTopup?.[language] || walletNoteMapTopup?.["vi"] || "").trim();
+
+    const promptLine =
       language === "en"
         ? "💳 Choose top-up currency:"
         : language === "th"
           ? "💳 เลือกสกุลเงินที่ต้องการเติม:"
           : "💳 Chọn loại tiền muốn nạp:";
+    const text = walletNoteTopup ? `${walletNoteTopup}\n\n${promptLine}` : promptLine;
 
     await this.editOrSend(
       token,
@@ -1845,7 +1894,7 @@ export class TelegramBotService {
     actions: unknown[],
     language: BotLanguage = "vi",
   ) {
-    this.clearPendingTxHashSubmission(shopId, customer.telegramUserId);
+    await this.clearPendingTxHashSubmission(shopId, customer.telegramUserId);
     const product = await this.getCatalogItemForTelegram(shopId, sourceProductId, language);
     const usdtVndRate = await this.getShopUsdtVndRate(shopId);
     const maxQuantity = this.getMaxQuantity(product.available);
@@ -1938,9 +1987,9 @@ export class TelegramBotService {
     paymentProvider?: PaymentProvider,
     language: BotLanguage = "vi",
   ) {
-    this.clearPendingQuantitySelection(shopId, customer.telegramUserId);
-    this.clearPendingPaymentSelection(shopId, customer.telegramUserId);
-    this.clearPendingTxHashSubmission(shopId, customer.telegramUserId);
+    await this.clearPendingQuantitySelection(shopId, customer.telegramUserId);
+    await this.clearPendingPaymentSelection(shopId, customer.telegramUserId);
+    await this.clearPendingTxHashSubmission(shopId, customer.telegramUserId);
 
     const created = await this.ordersService.createTelegramOrder({
       shopId,
@@ -2018,9 +2067,9 @@ export class TelegramBotService {
     actions: unknown[],
     language: BotLanguage = "vi",
   ) {
-    this.clearPendingQuantitySelection(shopId, customer.telegramUserId);
-    this.clearPendingPaymentSelection(shopId, customer.telegramUserId);
-    this.clearPendingTxHashSubmission(shopId, customer.telegramUserId);
+    await this.clearPendingQuantitySelection(shopId, customer.telegramUserId);
+    await this.clearPendingPaymentSelection(shopId, customer.telegramUserId);
+    await this.clearPendingTxHashSubmission(shopId, customer.telegramUserId);
 
     const created = await this.ordersService.createTelegramOrderWithWallet({
       shopId,
@@ -2116,7 +2165,7 @@ export class TelegramBotService {
       };
       checkoutUrl: string;
       manualCrypto?: {
-        provider: "BINANCE" | "OKX" | "USDT_TRC20";
+        provider: "BINANCE" | "OKX" | "USDT_TRC20" | "USDT_SOL";
         note: string;
         hasPersonalApi?: boolean;
       };
@@ -2203,6 +2252,7 @@ export class TelegramBotService {
       if (p === "WALLET") return "payWallet";
       if (p === PaymentProvider.BINANCE_PAY || p === PaymentProvider.BINANCE) return "payBinance";
       if (p === PaymentProvider.USDT_TRC20) return "payUsdt";
+      if (p === PaymentProvider.USDT_SOL) return "paySol";
       return "payQR";
     };
 
@@ -2354,6 +2404,7 @@ export class TelegramBotService {
         binanceUid: true,
         okxUid: true,
         usdtTrc20Address: true,
+        usdtSolanaAddress: true,
         binancePayEnabled: true,
       },
     });
@@ -2375,6 +2426,10 @@ export class TelegramBotService {
 
     if (String(paymentConfig?.usdtTrc20Address || "").trim()) {
       providers.push(PaymentProvider.USDT_TRC20);
+    }
+
+    if (String(paymentConfig?.usdtSolanaAddress || "").trim()) {
+      providers.push(PaymentProvider.USDT_SOL);
     }
 
     return Array.from(new Set(providers));
@@ -2412,6 +2467,7 @@ export class TelegramBotService {
     if (normalized === "BINANCE_PAY") return PaymentProvider.BINANCE_PAY;
     if (normalized === "OKX") return PaymentProvider.OKX;
     if (normalized === "USDT_TRC20") return PaymentProvider.USDT_TRC20;
+    if (normalized === "USDT_SOL") return PaymentProvider.USDT_SOL;
 
     return null;
   }
@@ -2432,6 +2488,9 @@ export class TelegramBotService {
     if (provider === PaymentProvider.USDT_TRC20) {
       return language === "en" ? "Pay with USDT (TRC20)" : language === "th" ? "ชำระด้วย USDT (TRC20)" : "Thanh toán USDT (TRC20)";
     }
+    if (provider === PaymentProvider.USDT_SOL) {
+      return language === "en" ? "Pay with USDT (Solana)" : language === "th" ? "ชำระด้วย USDT (Solana)" : "Thanh toán USDT (Solana)";
+    }
     if (provider === PaymentProvider.MOCK) {
       return language === "en" ? "💳 Pay with QR / Bank" : language === "th" ? "💳 ชำระด้วย QR / โอนเงิน" : "💳 Thanh toán QR / Chuyển khoản";
     }
@@ -2449,10 +2508,10 @@ export class TelegramBotService {
       };
       checkoutUrl: string;
       manualCrypto?: {
-        provider: "BINANCE" | "OKX" | "USDT_TRC20";
+        provider: "BINANCE" | "OKX" | "USDT_TRC20" | "USDT_SOL";
         uid?: string | null;
         address?: string | null;
-        network?: "TRC20" | null;
+        network?: "TRC20" | "SOLANA" | null;
         usdtAmount: number;
         usdtVndRate: number;
         note: string;
@@ -2535,12 +2594,17 @@ export class TelegramBotService {
 
     // ── Binance/OKX manual ────────────────────────────────────────────────────
     if (created.manualCrypto) {
+      const isTrc20 = created.manualCrypto.provider === "USDT_TRC20";
+      const isSol = created.manualCrypto.provider === "USDT_SOL";
+      const isOnchain = isTrc20 || isSol;
       const providerName =
         created.manualCrypto.provider === "BINANCE"
           ? "Binance"
           : created.manualCrypto.provider === "OKX"
             ? "OKX"
-            : "USDT (TRC20)";
+            : isSol
+              ? "USDT (Solana)"
+              : "USDT (TRC20)";
       const receiverLine =
         created.manualCrypto.provider === "BINANCE"
           ? language === "en"
@@ -2553,48 +2617,67 @@ export class TelegramBotService {
             : language === "th"
               ? `OKX UID (แตะเพื่อคัดลอก):\n<code>${created.manualCrypto.uid}</code>`
               : `OKX UID (chạm để copy):\n<code>${created.manualCrypto.uid}</code>`;
-      const displayReceiverLine =
-        created.manualCrypto.provider === "USDT_TRC20"
+      const displayReceiverLine = isTrc20
+        ? language === "en"
+          ? `USDT TRC20 address (tap to copy):\n<code>${created.manualCrypto.address}</code>`
+          : language === "th"
+            ? `ที่อยู่ USDT TRC20 (แตะเพื่อคัดลอก):\n<code>${created.manualCrypto.address}</code>`
+            : `Địa chỉ USDT TRC20 (chạm để copy):\n<code>${created.manualCrypto.address}</code>`
+        : isSol
           ? language === "en"
-            ? `USDT TRC20 address (tap to copy):\n<code>${created.manualCrypto.address}</code>`
+            ? `USDT Solana address (tap to copy):\n<code>${created.manualCrypto.address}</code>`
             : language === "th"
-              ? `ที่อยู่ USDT TRC20 (แตะเพื่อคัดลอก):\n<code>${created.manualCrypto.address}</code>`
-              : `Địa chỉ USDT TRC20 (chạm để copy):\n<code>${created.manualCrypto.address}</code>`
+              ? `ที่อยู่ USDT Solana (แตะเพื่อคัดลอก):\n<code>${created.manualCrypto.address}</code>`
+              : `Địa chỉ USDT Solana (chạm để copy):\n<code>${created.manualCrypto.address}</code>`
           : receiverLine;
-      const networkLine =
-        created.manualCrypto.provider === "USDT_TRC20"
+      const networkLine = isTrc20
+        ? language === "en"
+          ? "Network: TRC20 (Tron)"
+          : language === "th"
+            ? "เครือข่าย: TRC20 (Tron)"
+            : "Mạng: TRC20 (Tron)"
+        : isSol
           ? language === "en"
-            ? "Network: TRC20 (Tron)"
+            ? "Network: Solana (SPL Token)"
             : language === "th"
-              ? "เครือข่าย: TRC20 (Tron)"
-              : "Mạng: TRC20 (Tron)"
+              ? "เครือข่าย: Solana (SPL Token)"
+              : "Mạng: Solana (SPL Token)"
           : null;
-      const safetyLine =
-        created.manualCrypto.provider === "USDT_TRC20"
+      const safetyLine = isTrc20
+        ? language === "en"
+          ? "Only send USDT on the TRC20 network to this address."
+          : language === "th"
+            ? "ส่ง USDT ผ่านเครือข่าย TRC20 ไปยังที่อยู่นี้เท่านั้น"
+            : "Chỉ gửi USDT đúng mạng TRC20 về địa chỉ này."
+        : isSol
           ? language === "en"
-            ? "Only send USDT on the TRC20 network to this address."
+            ? "Only send USDT on the Solana network (SPL token) to this address."
             : language === "th"
-              ? "ส่ง USDT ผ่านเครือข่าย TRC20 ไปยังที่อยู่นี้เท่านั้น"
-              : "Chỉ gửi USDT đúng mạng TRC20 về địa chỉ này."
+              ? "ส่ง USDT ผ่านเครือข่าย Solana (SPL token) ไปยังที่อยู่นี้เท่านั้น"
+              : "Chỉ gửi USDT đúng mạng Solana (SPL token) về địa chỉ này."
           : language === "en"
             ? "Please send the order ID or off-chain transaction reference after payment for verification."
             : language === "th"
               ? "หลังชำระเงินกรุณาส่ง ID คำสั่งหรือรหัสอ้างอิงธุรกรรมเพื่อยืนยัน"
               : "Sau khi thanh toán, vui lòng gửi mã đơn hoặc mã giao dịch để xác minh.";
-      const expiryLine =
-        language === "en"
+      const expiryLine = isOnchain
+        ? language === "en"
+          ? "⚠️ This payment order will expire in 30 minutes."
+          : language === "th"
+            ? "⚠️ คำสั่งชำระเงินนี้จะหมดอายุใน 30 นาที"
+            : "⚠️ Lệnh thanh toán này chỉ duy trì được 30 phút."
+        : language === "en"
           ? "⚠️ This payment order will expire in 5 minutes."
           : language === "th"
             ? "⚠️ คำสั่งชำระเงินนี้จะหมดอายุใน 5 นาที"
             : "⚠️ Lệnh thanh toán này chỉ duy trì được 5 phút.";
-      const followupLine =
-        created.manualCrypto.provider === "USDT_TRC20"
-          ? language === "en"
-            ? "After transfer, tap 'Send TX hash' below and paste the txid for automatic verification."
-            : language === "th"
-              ? "หลังโอนเงินแล้ว กด 'ส่ง TX hash' ด้านล่างแล้ววาง txid เพื่อให้ระบบยืนยันอัตโนมัติ"
-              : "Sau khi chuyển xong, bấm 'Gửi TX hash' bên dưới rồi dán txid để hệ thống tự xác minh."
-          : null;
+      const followupLine = (isTrc20 || isSol)
+        ? language === "en"
+          ? "After transfer, the bot auto-detects within 30-60s. (Optional: paste the tx hash here for faster verification.)"
+          : language === "th"
+            ? "หลังโอนเงิน ระบบจะตรวจจับอัตโนมัติภายใน 30-60 วินาที (ทางเลือก: วาง tx hash ที่นี่เพื่อยืนยันเร็วขึ้น)"
+            : "Sau khi chuyển, bot tự dò trong 30-60s. (Tuỳ chọn: dán tx hash vào đây để xác nhận nhanh hơn.)"
+        : null;
       const binanceAutoLine =
         created.manualCrypto.provider === "BINANCE" && created.manualCrypto.hasPersonalApi
           ? language === "en"
@@ -2604,37 +2687,46 @@ export class TelegramBotService {
               : "Đơn này được gán số USDT riêng. Sau khi chuyển xong, bấm 'Tôi đã thanh toán' để bot tự kiểm tra lịch sử Binance Pay."
           : null;
       const binanceExactAmountLine =
-        created.manualCrypto.provider === "BINANCE" && created.manualCrypto.hasPersonalApi
+        ((created.manualCrypto.provider === "BINANCE" && created.manualCrypto.hasPersonalApi) || isSol)
           ? language === "en"
             ? "Send the exact amount shown below so the system can match your payment safely."
             : language === "th"
               ? "กรุณาโอนจำนวนที่แสดงด้านล่างเพื่อให้ระบบจับคู่การชำระเงินได้อย่างถูกต้อง"
               : "Hãy chuyển đúng số tiền bên dưới để hệ thống đối chiếu giao dịch an toàn hơn."
           : null;
-      const helperLine =
-        created.manualCrypto.provider === "USDT_TRC20"
+      const helperLine = isTrc20
+        ? language === "en"
+          ? "Scan the QR to copy the address, then enter the amount and choose USDT on TRC20 manually in your wallet."
+          : language === "th"
+            ? "สแกน QR เพื่อคัดลอกที่อยู่ จากนั้นระบุจำนวนเงินและเลือก USDT บน TRC20 ในกระเป๋าเงินของคุณ"
+            : "Quét mã QR để lấy địa chỉ ví, sau đó tự nhập số tiền và chọn gửi USDT mạng TRC20."
+        : isSol
           ? language === "en"
-            ? "Scan the QR to copy the address, then enter the amount and choose USDT on TRC20 manually in your wallet."
+            ? "Scan the QR to copy the address, then enter the amount and choose USDT on Solana network in your wallet."
             : language === "th"
-              ? "สแกน QR เพื่อคัดลอกที่อยู่ จากนั้นระบุจำนวนเงินและเลือก USDT บน TRC20 ในกระเป๋าเงินของคุณ"
-              : "Quét mã QR để lấy địa chỉ ví, sau đó tự nhập số tiền và chọn gửi USDT mạng TRC20."
+              ? "สแกน QR เพื่อคัดลอกที่อยู่ จากนั้นระบุจำนวนเงินและเลือก USDT บนเครือข่าย Solana ในกระเป๋าเงินของคุณ"
+              : "Quét mã QR để lấy địa chỉ ví, sau đó tự nhập số tiền và chọn gửi USDT mạng Solana."
           : null;
-      const feeLine =
-        created.manualCrypto.provider === "USDT_TRC20"
+      const feeLine = isTrc20
+        ? language === "en"
+          ? "TRC20 transfers also need enough TRX on the sending wallet for network fees."
+          : language === "th"
+            ? "การโอน TRC20 ต้องมี TRX เพียงพอในกระเป๋าผู้ส่งสำหรับค่าธรรมเนียมเครือข่าย"
+            : "Lệnh chuyển TRC20 cũng cần đủ TRX trong ví gửi để trả phí mạng."
+        : isSol
           ? language === "en"
-            ? "TRC20 transfers also need enough TRX on the sending wallet for network fees."
+            ? "Solana transfers need a small amount of SOL on the sending wallet for network fees (~0.001 SOL)."
             : language === "th"
-              ? "การโอน TRC20 ต้องมี TRX เพียงพอในกระเป๋าผู้ส่งสำหรับค่าธรรมเนียมเครือข่าย"
-              : "Lệnh chuyển TRC20 cũng cần đủ TRX trong ví gửi để trả phí mạng."
+              ? "การโอน Solana ต้องมี SOL เล็กน้อยในกระเป๋าผู้ส่งสำหรับค่าธรรมเนียม (~0.001 SOL)"
+              : "Lệnh chuyển Solana cũng cần một ít SOL trong ví gửi để trả phí mạng (~0.001 SOL)."
           : null;
-      const toleranceLine =
-        created.manualCrypto.provider === "USDT_TRC20"
-          ? language === "en"
-            ? `Allowed transfer difference: ${this.formatUsdt(this.config.usdtPaymentTolerance)} USDT`
-            : language === "th"
-              ? `ความคลาดเคลื่อนที่อนุญาต: ${this.formatUsdt(this.config.usdtPaymentTolerance)} USDT`
-              : `Sai số chuyển cho phép: ${this.formatUsdt(this.config.usdtPaymentTolerance)} USDT`
-          : null;
+      const toleranceLine = isOnchain
+        ? language === "en"
+          ? `Allowed transfer difference: ${this.formatUsdt(this.config.usdtPaymentTolerance)} USDT`
+          : language === "th"
+            ? `ความคลาดเคลื่อนที่อนุญาต: ${this.formatUsdt(this.config.usdtPaymentTolerance)} USDT`
+            : `Sai số chuyển cho phép: ${this.formatUsdt(this.config.usdtPaymentTolerance)} USDT`
+        : null;
 
       return [
         ...baseLines,
@@ -2946,15 +3038,15 @@ export class TelegramBotService {
       return;
     }
 
-    this.clearPendingQuantitySelection(shopId, telegramUserId);
-    this.clearPendingWalletTopup(shopId, telegramUserId);
-    this.clearPendingPaymentSelection(shopId, telegramUserId);
-    this.pendingTxHashSubmissions.set(this.getPendingQuantityKey(shopId, telegramUserId), {
+    await this.clearPendingQuantitySelection(shopId, telegramUserId);
+    await this.clearPendingWalletTopup(shopId, telegramUserId);
+    await this.clearPendingPaymentSelection(shopId, telegramUserId);
+    await this.setPendingSession('pendingTxHashSubmissions', this.getPendingQuantityKey(shopId, telegramUserId), {
       externalOrderCode,
       orderCode: payment.order.orderCode,
       allowMockHash: this.isSimulationToken(token),
       expiresAt: Date.now() + this.pendingTxHashTtlMs,
-    });
+    }, this.pendingTxHashTtlMs);
 
     await this.editOrSend(
       token,
@@ -3051,16 +3143,16 @@ export class TelegramBotService {
       return;
     }
 
-    this.clearPendingQuantitySelection(shopId, telegramUserId);
-    this.clearPendingWalletTopup(shopId, telegramUserId);
-    this.clearPendingPaymentSelection(shopId, telegramUserId);
-    this.pendingTxHashSubmissions.set(this.getPendingQuantityKey(shopId, telegramUserId), {
+    await this.clearPendingQuantitySelection(shopId, telegramUserId);
+    await this.clearPendingWalletTopup(shopId, telegramUserId);
+    await this.clearPendingPaymentSelection(shopId, telegramUserId);
+    await this.setPendingSession('pendingTxHashSubmissions', this.getPendingQuantityKey(shopId, telegramUserId), {
       externalOrderCode,
       orderCode: externalOrderCode,
       allowMockHash: this.isSimulationToken(token),
       expiresAt: Date.now() + this.pendingTxHashTtlMs,
       isTopup: true,
-    });
+    }, this.pendingTxHashTtlMs);
 
     await this.editOrSend(
       token,
@@ -3092,11 +3184,11 @@ export class TelegramBotService {
     actions: unknown[],
     language: BotLanguage = "vi",
   ) {
-    this.pendingWarrantyClaimSubmissions.set(
+    await this.setPendingSession(
+      "pendingWarrantyClaimSubmissions",
       this.getPendingQuantityKey(shopId, telegramUserId),
-      {
-        expiresAt: Date.now() + this.pendingQuantityTtlMs,
-      },
+      { expiresAt: Date.now() + this.pendingQuantityTtlMs },
+      this.pendingQuantityTtlMs,
     );
 
     await this.editOrSend(
@@ -3160,7 +3252,7 @@ export class TelegramBotService {
       return true;
     }
 
-    this.clearPendingWarrantyClaimSubmission(shopId, telegramUserId);
+    await this.clearPendingWarrantyClaimSubmission(shopId, telegramUserId);
 
     const check = await this.warrantyService.checkTelegramWarrantyEligibility({
       shopId,
@@ -3247,9 +3339,11 @@ export class TelegramBotService {
     actions: unknown[],
     language: BotLanguage = "vi",
   ) {
-    this.pendingWarrantyAccountSelections.set(
+    await this.setPendingSession(
+      "pendingWarrantyAccountSelections",
       this.getPendingQuantityKey(shopId, telegramUserId),
       { orderCode, accounts, expiresAt: Date.now() + this.pendingQuantityTtlMs },
+      this.pendingQuantityTtlMs,
     );
 
     const usernames = accounts.map((a) => (a.split("|")[0] || a).trim());
@@ -3334,7 +3428,7 @@ export class TelegramBotService {
       return true;
     }
 
-    this.clearPendingWarrantyAccountSelection(shopId, telegramUserId);
+    await this.clearPendingWarrantyAccountSelection(shopId, telegramUserId);
 
     const targetUsernames = input.split(";").map((s) => s.trim()).filter(Boolean);
 
@@ -3421,10 +3515,59 @@ export class TelegramBotService {
   ) {
     const telegramUserId = String(message.from?.id || "");
     const language = await this.getCustomerLanguage(shopId, telegramUserId);
-    const pending = this.getPendingTxHashSubmission(shopId, telegramUserId);
+    let pending = this.getPendingTxHashSubmission(shopId, telegramUserId);
 
     if (!pending) {
-      return false;
+      // Fallback: detect tx hash format and try to match a recent pending USDT order
+      const rawText = String(message.text || "").trim();
+      const isTrc20Like = /^(0x)?[a-f0-9]{64}$/i.test(rawText);
+      const isSolanaLike = /^[1-9A-HJ-NP-Za-km-z]{80,90}$/.test(rawText) && !isTrc20Like;
+      if (!isTrc20Like && !isSolanaLike) {
+        return false;
+      }
+      const customer = await this.prisma.customer.findFirst({
+        where: { shopId, telegramUserId },
+        select: { id: true },
+      });
+      if (!customer) {
+        return false;
+      }
+      const targetProvider = isSolanaLike ? PaymentProvider.USDT_SOL : PaymentProvider.USDT_TRC20;
+      const recentPayment = await this.prisma.paymentTransaction.findFirst({
+        where: {
+          provider: targetProvider,
+          status: PaymentTransactionStatus.PENDING,
+          createdAt: { gte: new Date(Date.now() - 60 * 60 * 1000) },
+          order: { customerId: customer.id, shopId },
+        },
+        orderBy: { createdAt: "desc" },
+        select: { externalOrderCode: true, order: { select: { orderCode: true } } },
+      });
+      const recentTopup = recentPayment
+        ? null
+        : await this.prisma.customerWalletTopup.findFirst({
+            where: {
+              provider: targetProvider,
+              status: PaymentTransactionStatus.PENDING,
+              customerId: customer.id,
+              shopId,
+              createdAt: { gte: new Date(Date.now() - 60 * 60 * 1000) },
+            },
+            orderBy: { createdAt: "desc" },
+            select: { externalOrderCode: true },
+          });
+      if (!recentPayment && !recentTopup) {
+        return false;
+      }
+      pending = {
+        externalOrderCode: (recentPayment?.externalOrderCode || recentTopup?.externalOrderCode) as string,
+        orderCode: recentPayment?.order?.orderCode || recentTopup?.externalOrderCode || "",
+        isTopup: !recentPayment && !!recentTopup,
+        allowMockHash: false,
+        expiresAt: Date.now() + this.pendingTxHashTtlMs,
+        provider: isSolanaLike ? "USDT_SOL" : "USDT_TRC20",
+      };
+      await this.setPendingSession('pendingTxHashSubmissions', this.getPendingQuantityKey(shopId, telegramUserId), pending, this.pendingTxHashTtlMs);
     }
 
     try {
@@ -3444,14 +3587,21 @@ export class TelegramBotService {
                 });
                 return { alreadyPaid: false, txHash: rawTxHash, verification: { amountUsdt: 0 } };
               })()
-            : await this.onchainPaymentService.submitTelegramTopupTxHash({
+            : pending.provider === "USDT_SOL"
+              ? await this.solanaPaymentService.submitTelegramSolTopupTxHash({
+                  shopId,
+                  telegramUserId,
+                  externalOrderCode: pending.externalOrderCode,
+                  signature: rawTxHash,
+                })
+              : await this.onchainPaymentService.submitTelegramTopupTxHash({
                 shopId,
                 telegramUserId,
                 externalOrderCode: pending.externalOrderCode,
                 txHash: rawTxHash,
               });
 
-        this.clearPendingTxHashSubmission(shopId, telegramUserId);
+        await this.clearPendingTxHashSubmission(shopId, telegramUserId);
 
         await this.sendText(
           token,
@@ -3496,14 +3646,21 @@ export class TelegramBotService {
                 },
               ),
             }
-          : await this.onchainPaymentService.submitTelegramTxHash({
+          : pending.provider === "USDT_SOL"
+            ? await this.solanaPaymentService.submitTelegramSolTxHash({
+                shopId,
+                telegramUserId,
+                externalOrderCode: pending.externalOrderCode,
+                signature: rawTxHash,
+              })
+            : await this.onchainPaymentService.submitTelegramTxHash({
               shopId,
               telegramUserId,
               externalOrderCode: pending.externalOrderCode,
               txHash: rawTxHash,
             });
 
-      this.clearPendingTxHashSubmission(shopId, telegramUserId);
+      await this.clearPendingTxHashSubmission(shopId, telegramUserId);
 
       await this.sendText(
         token,
@@ -3636,16 +3793,13 @@ export class TelegramBotService {
       };
 
       if (paymentProviders.length > 1) {
-        this.clearPendingQuantitySelection(shopId, telegramUserId);
-        this.pendingPaymentSelections.set(
-          this.getPendingQuantityKey(shopId, telegramUserId),
-          {
+        await this.clearPendingQuantitySelection(shopId, telegramUserId);
+        await this.setPendingSession('pendingPaymentSelections', this.getPendingQuantityKey(shopId, telegramUserId), {
             sourceProductId: selection.sourceProductId,
             quantity,
             ...customer,
             expiresAt: Date.now() + this.pendingPaymentTtlMs,
-          },
-        );
+          }, this.pendingPaymentTtlMs);
         await this.renderPaymentMethodPrompt(
           shopId,
           token,
@@ -3773,7 +3927,7 @@ export class TelegramBotService {
         providerOverride,
       });
 
-      this.clearPendingWalletTopup(shopId, telegramUserId);
+      await this.clearPendingWalletTopup(shopId, telegramUserId);
 
       const qrBuffer = created.bankInfo
         ? await this.downloadVietQrAsBuffer(created.bankInfo, created.topup.amount)
@@ -3822,11 +3976,11 @@ export class TelegramBotService {
       }
 
       if (sentMessageId) {
-        this.pendingQrMessages.set(created.topup.externalOrderCode, {
+        await this.setPendingSession('pendingQrMessages', created.topup.externalOrderCode, {
           token,
           chatId: message.chat.id,
           messageId: sentMessageId,
-        });
+        }, 30 * 60 * 1000);
       }
     } catch (error) {
       this.logger.error(
@@ -3869,10 +4023,10 @@ export class TelegramBotService {
       return;
     }
 
-    const qrMsg = this.pendingQrMessages.get(externalOrderCode);
+    const qrMsg = await this.getPendingSession<{ token: string; chatId: string | number; messageId: number }>('pendingQrMessages', externalOrderCode);
     if (qrMsg) {
       await telegramDeleteMessage(qrMsg.token, qrMsg.chatId, qrMsg.messageId).catch(() => undefined);
-      this.pendingQrMessages.delete(externalOrderCode);
+      await this.delPendingSession('pendingQrMessages', externalOrderCode);
     }
 
     await this.sendText(
@@ -4287,7 +4441,8 @@ export class TelegramBotService {
       await this.sendText(token, chatId, fullText, actions, replyMarkup, "HTML");
     }
 
-    this.pendingQuantitySelections.set(
+    await this.setPendingSession(
+      "pendingQuantitySelections",
       this.getPendingQuantityKey(shopId, telegramUserId),
       {
         sourceProductId: selection.sourceProductId,
@@ -4304,6 +4459,7 @@ export class TelegramBotService {
         iconCustomEmojiId: selection.iconCustomEmojiId ?? null,
         expiresAt: Date.now() + this.pendingQuantityTtlMs,
       },
+      this.pendingQuantityTtlMs,
     );
   }
 
@@ -4478,14 +4634,14 @@ export class TelegramBotService {
 
   private getPendingWalletTopup(shopId: string, telegramUserId: string) {
     const key = this.getPendingQuantityKey(shopId, telegramUserId);
-    const pending = this.pendingWalletTopups.get(key);
+    const pending = await this.getPendingSession<PendingWalletTopupSelection>('pendingWalletTopups', key);
 
     if (!pending) {
       return null;
     }
 
     if (pending.expiresAt <= Date.now()) {
-      this.pendingWalletTopups.delete(key);
+      await this.delPendingSession('pendingWalletTopups', key);
       return null;
     }
 
@@ -4494,14 +4650,14 @@ export class TelegramBotService {
 
   private getPendingQuantitySelection(shopId: string, telegramUserId: string) {
     const key = this.getPendingQuantityKey(shopId, telegramUserId);
-    const selection = this.pendingQuantitySelections.get(key);
+    const selection = await this.getPendingSession<PendingQuantitySelection>('pendingQuantitySelections', key);
 
     if (!selection) {
       return null;
     }
 
     if (selection.expiresAt <= Date.now()) {
-      this.pendingQuantitySelections.delete(key);
+      await this.delPendingSession('pendingQuantitySelections', key);
       return null;
     }
 
@@ -4510,14 +4666,14 @@ export class TelegramBotService {
 
   private getPendingPaymentSelection(shopId: string, telegramUserId: string) {
     const key = this.getPendingQuantityKey(shopId, telegramUserId);
-    const selection = this.pendingPaymentSelections.get(key);
+    const selection = await this.getPendingSession<PendingPaymentSelection>('pendingPaymentSelections', key);
 
     if (!selection) {
       return null;
     }
 
     if (selection.expiresAt <= Date.now()) {
-      this.pendingPaymentSelections.delete(key);
+      await this.delPendingSession('pendingPaymentSelections', key);
       return null;
     }
 
@@ -4526,14 +4682,14 @@ export class TelegramBotService {
 
   private getPendingTxHashSubmission(shopId: string, telegramUserId: string) {
     const key = this.getPendingQuantityKey(shopId, telegramUserId);
-    const pending = this.pendingTxHashSubmissions.get(key);
+    const pending = await this.getPendingSession<PendingTxHashSubmission>('pendingTxHashSubmissions', key);
 
     if (!pending) {
       return null;
     }
 
     if (pending.expiresAt <= Date.now()) {
-      this.pendingTxHashSubmissions.delete(key);
+      await this.delPendingSession('pendingTxHashSubmissions', key);
       return null;
     }
 
@@ -4542,89 +4698,89 @@ export class TelegramBotService {
 
   private getPendingWarrantyClaimSubmission(shopId: string, telegramUserId: string) {
     const key = this.getPendingQuantityKey(shopId, telegramUserId);
-    const pending = this.pendingWarrantyClaimSubmissions.get(key);
+    const pending = await this.getPendingSession<PendingWarrantyClaimSubmission>('pendingWarrantyClaimSubmissions', key);
 
     if (!pending) {
       return null;
     }
 
     if (pending.expiresAt <= Date.now()) {
-      this.pendingWarrantyClaimSubmissions.delete(key);
+      await this.delPendingSession('pendingWarrantyClaimSubmissions', key);
       return null;
     }
 
     return pending;
   }
 
-  private clearPendingQuantitySelection(shopId: string, telegramUserId: string) {
+  private async clearPendingQuantitySelection(shopId: string, telegramUserId: string) {
     if (!telegramUserId) {
       return;
     }
 
-    this.pendingQuantitySelections.delete(this.getPendingQuantityKey(shopId, telegramUserId));
+    await this.delPendingSession('pendingQuantitySelections', this.getPendingQuantityKey(shopId, telegramUserId));
   }
 
-  private clearPendingWalletTopup(shopId: string, telegramUserId: string) {
+  private async clearPendingWalletTopup(shopId: string, telegramUserId: string) {
     if (!telegramUserId) {
       return;
     }
-    this.pendingWalletTopups.delete(this.getPendingQuantityKey(shopId, telegramUserId));
+    await this.delPendingSession('pendingWalletTopups', this.getPendingQuantityKey(shopId, telegramUserId));
   }
 
-  private clearPendingPaymentSelection(shopId: string, telegramUserId: string) {
+  private async clearPendingPaymentSelection(shopId: string, telegramUserId: string) {
     if (!telegramUserId) {
       return;
     }
 
-    this.pendingPaymentSelections.delete(this.getPendingQuantityKey(shopId, telegramUserId));
+    await this.delPendingSession('pendingPaymentSelections', this.getPendingQuantityKey(shopId, telegramUserId));
   }
 
-  private clearPendingTxHashSubmission(shopId: string, telegramUserId: string) {
+  private async clearPendingTxHashSubmission(shopId: string, telegramUserId: string) {
     if (!telegramUserId) {
       return;
     }
 
-    this.pendingTxHashSubmissions.delete(this.getPendingQuantityKey(shopId, telegramUserId));
+    await this.delPendingSession('pendingTxHashSubmissions', this.getPendingQuantityKey(shopId, telegramUserId));
   }
 
-  private clearPendingWarrantyClaimSubmission(shopId: string, telegramUserId: string) {
+  private async clearPendingWarrantyClaimSubmission(shopId: string, telegramUserId: string) {
     if (!telegramUserId) {
       return;
     }
 
-    this.pendingWarrantyClaimSubmissions.delete(this.getPendingQuantityKey(shopId, telegramUserId));
+    await this.delPendingSession('pendingWarrantyClaimSubmissions', this.getPendingQuantityKey(shopId, telegramUserId));
   }
 
-  private clearPendingWarrantyIssueDescription(shopId: string, telegramUserId: string) {
+  private async clearPendingWarrantyIssueDescription(shopId: string, telegramUserId: string) {
     if (!telegramUserId) {
       return;
     }
 
-    this.pendingWarrantyIssueDescriptions.delete(this.getPendingQuantityKey(shopId, telegramUserId));
+    await this.delPendingSession("pendingWarrantyIssueDescriptions", this.getPendingQuantityKey(shopId, telegramUserId));
   }
 
   private getPendingWarrantyAccountSelection(shopId: string, telegramUserId: string) {
     const key = this.getPendingQuantityKey(shopId, telegramUserId);
-    const pending = this.pendingWarrantyAccountSelections.get(key);
+    const pending = await this.getPendingSession<PendingWarrantyAccountSelection>('pendingWarrantyAccountSelections', key);
 
     if (!pending) {
       return null;
     }
 
     if (pending.expiresAt <= Date.now()) {
-      this.pendingWarrantyAccountSelections.delete(key);
+      await this.delPendingSession('pendingWarrantyAccountSelections', key);
       return null;
     }
 
     return pending;
   }
 
-  private clearPendingWarrantyAccountSelection(shopId: string, telegramUserId: string) {
+  private async clearPendingWarrantyAccountSelection(shopId: string, telegramUserId: string) {
     if (!telegramUserId) {
       return;
     }
 
-    this.pendingWarrantyAccountSelections.delete(this.getPendingQuantityKey(shopId, telegramUserId));
+    await this.delPendingSession('pendingWarrantyAccountSelections', this.getPendingQuantityKey(shopId, telegramUserId));
   }
 
   private getPendingConnectionTopupKey(shopId: string, telegramUserId: string) {
@@ -4720,9 +4876,11 @@ export class TelegramBotService {
       if (wallet) currentBalance = decimalToNumber(wallet.balance);
     }
 
-    this.pendingConnectionTopupInputs.set(
+    await this.setPendingSession(
+      "pendingConnectionTopupInputs",
       this.getPendingConnectionTopupKey(shop.id, telegramUserId),
       { connectionId: connection.id, downstreamShopId: plusCustomer.shopId, expiresAt: Date.now() + this.pendingQuantityTtlMs },
+      this.pendingQuantityTtlMs,
     );
 
     await this.editOrSend(
@@ -4748,10 +4906,10 @@ export class TelegramBotService {
   ) {
     const telegramUserId = String(message.from?.id || "");
     const key = this.getPendingConnectionTopupKey(shop.id, telegramUserId);
-    const pending = this.pendingConnectionTopupInputs.get(key);
+    const pending = await this.getPendingSession<PendingConnectionTopupInput>('pendingConnectionTopupInputs', key);
 
     if (!pending || pending.expiresAt <= Date.now()) {
-      if (pending) this.pendingConnectionTopupInputs.delete(key);
+      if (pending) await this.delPendingSession('pendingConnectionTopupInputs', key);
       return false;
     }
 
@@ -4769,7 +4927,7 @@ export class TelegramBotService {
       return true;
     }
 
-    this.pendingConnectionTopupInputs.delete(key);
+    await this.delPendingSession('pendingConnectionTopupInputs', key);
 
     try {
       const result = await this.connectionTopupService.createPayosTopupForConnection(
@@ -5109,55 +5267,7 @@ export class TelegramBotService {
   }
 
   private cleanupExpiredPendingSelections() {
-    const now = Date.now();
-
-    for (const [key, selection] of this.pendingQuantitySelections.entries()) {
-      if (selection.expiresAt <= now) {
-        this.pendingQuantitySelections.delete(key);
-      }
-    }
-
-    for (const [key, pending] of this.pendingWalletTopups.entries()) {
-      if (pending.expiresAt <= now) {
-        this.pendingWalletTopups.delete(key);
-      }
-    }
-
-    for (const [key, selection] of this.pendingPaymentSelections.entries()) {
-      if (selection.expiresAt <= now) {
-        this.pendingPaymentSelections.delete(key);
-      }
-    }
-
-    for (const [key, pending] of this.pendingTxHashSubmissions.entries()) {
-      if (pending.expiresAt <= now) {
-        this.pendingTxHashSubmissions.delete(key);
-      }
-    }
-
-    for (const [key, pending] of this.pendingBinanceOrderIdSubmissions.entries()) {
-      if (pending.expiresAt <= now) {
-        this.pendingBinanceOrderIdSubmissions.delete(key);
-      }
-    }
-
-    for (const [key, pending] of this.pendingWarrantyClaimSubmissions.entries()) {
-      if (pending.expiresAt <= now) {
-        this.pendingWarrantyClaimSubmissions.delete(key);
-      }
-    }
-
-    for (const [key, pending] of this.pendingWarrantyIssueDescriptions.entries()) {
-      if (pending.expiresAt <= now) {
-        this.pendingWarrantyIssueDescriptions.delete(key);
-      }
-    }
-
-    for (const [key, pending] of this.pendingConnectionTopupInputs.entries()) {
-      if (pending.expiresAt <= now) {
-        this.pendingConnectionTopupInputs.delete(key);
-      }
-    }
+    // No-op: Redis handles TTL automatically
   }
 
   private buildOrderHistoryText(
@@ -5266,12 +5376,15 @@ export class TelegramBotService {
       createdAt: Date;
       paidAt: Date | null;
     }>;
-  }, language: BotLanguage = "vi", usdtVndRate?: Prisma.Decimal | number | string | null) {
+  }, language: BotLanguage = "vi", usdtVndRate?: Prisma.Decimal | number | string | null, shopCust?: Record<string, unknown> | null) {
     const commissionBalance = summary.commissionBalance ?? 0;
+    const walletNoteMap = (shopCust as Record<string, unknown> | null)?.walletNote as Record<string, string> | undefined;
+    const walletNote = (walletNoteMap?.[language] || walletNoteMap?.["vi"] || "").trim();
     if (language === "en") {
       const lines: string[] = [
         "💳 Your wallet",
         "",
+        ...(walletNote ? [walletNote, ""] : []),
         ...(summary.telegramUsername ? [`Username: @${summary.telegramUsername}`] : []),
         ...(summary.telegramChatId ? [`ID: ${summary.telegramChatId}`] : []),
         `💰 Wallet balance: ${this.formatBotMoney(summary.balance, language, usdtVndRate)}`,
@@ -5315,6 +5428,7 @@ export class TelegramBotService {
       const lines: string[] = [
         "💳 กระเป๋าเงินของคุณ",
         "",
+        ...(walletNote ? [walletNote, ""] : []),
         `💰 ยอดเติม: ${this.formatBotMoney(summary.balance, language, usdtVndRate)}`,
         `🎁 ยอดค่าคอม: ${this.formatBotMoney(commissionBalance, language, usdtVndRate)}`,
         `สกุลเงิน: ${summary.currency}`,
@@ -5355,6 +5469,7 @@ export class TelegramBotService {
     const lines: string[] = [
       "💳 Ví của bạn",
       "",
+      ...(walletNote ? [walletNote, ""] : []),
       ...(summary.telegramUsername ? [`Username: @${summary.telegramUsername}`] : []),
       ...(summary.telegramChatId ? [`ID: ${summary.telegramChatId}`] : []),
       `💰 Số dư nạp ví: ${this.formatBotMoney(summary.balance, language, usdtVndRate)}`,
@@ -5742,20 +5857,20 @@ export class TelegramBotService {
     }
   }
 
-  private getPendingBinanceOrderIdSubmission(shopId: string, telegramUserId: string) {
+  private async getPendingBinanceOrderIdSubmission(shopId: string, telegramUserId: string) {
     const key = this.getPendingQuantityKey(shopId, telegramUserId);
-    const pending = this.pendingBinanceOrderIdSubmissions.get(key);
+    const pending = await this.getPendingSession<PendingBinanceOrderIdSubmission>("pendingBinanceOrderIdSubmissions", key);
     if (!pending) return null;
     if (pending.expiresAt <= Date.now()) {
-      this.pendingBinanceOrderIdSubmissions.delete(key);
+      await this.delPendingSession("pendingBinanceOrderIdSubmissions", key);
       return null;
     }
     return pending;
   }
 
-  private clearPendingBinanceOrderIdSubmission(shopId: string, telegramUserId: string) {
+  private async clearPendingBinanceOrderIdSubmission(shopId: string, telegramUserId: string) {
     if (!telegramUserId) return;
-    this.pendingBinanceOrderIdSubmissions.delete(this.getPendingQuantityKey(shopId, telegramUserId));
+    await this.delPendingSession('pendingBinanceOrderIdSubmissions', this.getPendingQuantityKey(shopId, telegramUserId));
   }
 
   private async handleBinanceOrderIdPrompt(
@@ -5790,11 +5905,16 @@ export class TelegramBotService {
       return;
     }
 
-    this.pendingBinanceOrderIdSubmissions.set(this.getPendingQuantityKey(shopId, telegramUserId), {
-      externalOrderCode,
-      orderCode: transaction.order.orderCode,
-      expiresAt: Date.now() + this.pendingBinanceOrderIdTtlMs,
-    });
+    await this.setPendingSession(
+      "pendingBinanceOrderIdSubmissions",
+      this.getPendingQuantityKey(shopId, telegramUserId),
+      {
+        externalOrderCode,
+        orderCode: transaction.order.orderCode,
+        expiresAt: Date.now() + this.pendingBinanceOrderIdTtlMs,
+      },
+      this.pendingBinanceOrderIdTtlMs
+    );
 
     await this.sendText(
       token,
@@ -5817,13 +5937,13 @@ export class TelegramBotService {
     language: BotLanguage,
   ): Promise<boolean> {
     const telegramUserId = String(message.from?.id || "");
-    const pending = this.getPendingBinanceOrderIdSubmission(shopId, telegramUserId);
+    const pending = await this.getPendingBinanceOrderIdSubmission(shopId, telegramUserId);
     if (!pending) return false;
 
     const msgText = String(message.text || "").trim();
     if (!/^\d{15,22}$/.test(msgText)) return false;
 
-    this.clearPendingBinanceOrderIdSubmission(shopId, telegramUserId);
+    await this.clearPendingBinanceOrderIdSubmission(shopId, telegramUserId);
     await this.handleBinanceVerifyByOrderId(shopId, token, message.chat.id, telegramUserId, pending.externalOrderCode, msgText, actions, language);
     return true;
   }
@@ -6515,9 +6635,9 @@ export class TelegramBotService {
       : this.formatCompactBotMoney(product.salePrice, language, usdtVndRate);
     const stockLabel = product.available === null ? "∞" : String(Math.max(0, product.available));
     const suffix = ` | ${priceLabel} | 📦 ${stockLabel}`;
-    const emoji = product.iconCustomEmojiId?.trim()
-      ? ""
-      : (product.productIcon?.trim() || this.resolveProductEmoji(product.displayName, product.sourceName));
+    // Button labels (inline keyboard) chỉ hỗ trợ plain text — không render được custom emoji động.
+    // Luôn fallback về productIcon (text emoji) hoặc auto-detect, kể cả khi có customEmojiId.
+    const emoji = product.productIcon?.trim() || this.resolveProductEmoji(product.displayName, product.sourceName);
     const normalizedName = [emoji, this.compactProductName(this.localizeProductName(product.displayName, language))].filter(Boolean).join(" ");
     const safeNameLength = Math.max(16, 58 - suffix.length);
 

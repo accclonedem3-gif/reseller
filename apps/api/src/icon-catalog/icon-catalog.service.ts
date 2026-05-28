@@ -28,6 +28,11 @@ export class IconCatalogService {
   ) {}
 
   async listIcons(user: AuthenticatedUser) {
+    if (user.role === "SUPER_ADMIN") {
+      return this.prisma.iconCatalog.findMany({
+        orderBy: [{ shopId: "asc" }, { position: "asc" }, { createdAt: "asc" }],
+      });
+    }
     const shop = await this.shopsService.getSellerShop(user.id);
     return this.prisma.iconCatalog.findMany({
       where: { OR: [{ shopId: null }, { shopId: shop.id }] },

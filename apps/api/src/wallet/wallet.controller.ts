@@ -78,9 +78,6 @@ export class WalletController {
   }
 
   @Post("deposit-requests")
-  @UseGuards(SellerTierGuard, SellerCapabilitiesGuard)
-  @RequireSellerTier(SellerTier.PRO, SellerTier.ULTRA)
-  @RequireSellerCapabilities("wallet_manage")
   createDepositRequest(
     @CurrentUser() user: AuthenticatedUser,
     @Body() body: CreateDepositRequestDto,
@@ -88,10 +85,23 @@ export class WalletController {
     return this.walletService.createDepositRequest(user, body);
   }
 
+  @Delete("deposit-requests/:id")
+  cancelDepositRequest(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param("id") id: string,
+  ) {
+    return this.walletService.cancelDepositRequest(user, id);
+  }
+
+  @Delete("withdraw-requests/:id")
+  cancelWithdrawRequest(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param("id") id: string,
+  ) {
+    return this.walletService.cancelWithdrawRequest(user, id);
+  }
+
   @Post("withdraw-requests")
-  @UseGuards(SellerTierGuard, SellerCapabilitiesGuard)
-  @RequireSellerTier(SellerTier.PRO, SellerTier.ULTRA)
-  @RequireSellerCapabilities("wallet_manage")
   createWithdrawRequest(
     @CurrentUser() user: AuthenticatedUser,
     @Body() body: CreateWithdrawRequestDto,

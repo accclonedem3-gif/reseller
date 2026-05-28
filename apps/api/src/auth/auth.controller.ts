@@ -27,6 +27,7 @@ import {
   RefreshDto,
   RegisterSellerDto,
   ResetPasswordDto,
+  SetReferralCodeDto,
   UpdateSellerByAdminDto,
   UpdateRecoveryEmailDto,
 } from "./auth.dto";
@@ -71,7 +72,16 @@ export class AuthController {
   @UseGuards(ThrottlerGuard)
   @Throttle({ default: { ttl: 60000, limit: 5 } })
   register(@Body() body: RegisterSellerDto) {
-    return this.authService.register(body.username, body.email, body.password, body.displayName);
+    return this.authService.register(body.username, body.email, body.password, body.displayName, body.referralCode);
+  }
+
+  @Post("auth/me/referral-code")
+  @UseGuards(JwtAuthGuard)
+  setReferralCode(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() body: SetReferralCodeDto,
+  ) {
+    return this.authService.setReferralCode(user.id, body.referralCode);
   }
 
   @Get("me")

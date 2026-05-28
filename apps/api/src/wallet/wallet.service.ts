@@ -135,10 +135,6 @@ export class WalletService {
   }
 
   async createDepositRequest(user: AuthenticatedUser, dto: CreateDepositRequestDto) {
-    throw new BadRequestException(
-      "Tính năng nạp ví seller qua web đã được tắt. Vui lòng nạp trực tiếp ở bot nguồn Canboso.",
-    );
-
     const shop = await this.shopsService.getSellerShop(user.id);
     const amount = Number(dto.amount);
 
@@ -146,17 +142,34 @@ export class WalletService {
       throw new BadRequestException("Deposit amount must be at least 1,000 VND.");
     }
 
+    const platformShopId = this.config.platformDepositShopId;
+    if (!platformShopId) {
+      throw new BadRequestException(
+        "Tính năng nạp ví chưa được cấu hình. Vui lòng liên hệ admin.",
+      );
+    }
+
+    const providerOverride =
+      dto.paymentMethod === "USDT_SOL"
+        ? "USDT_SOL"
+        : dto.paymentMethod === "BINANCE"
+          ? "BINANCE"
+          : "PAYOS";
+
+    // PayOS: 5 phút (chuyển ngân hàng nhanh) — USDT/Binance: 30 phút (chuyển crypto chậm hơn)
+    const expiryMinutes = providerOverride === "PAYOS" ? 5 : 30;
     const externalOrderCode = generateExternalPaymentCode();
-    const expiresAt = new Date(Date.now() + this.depositExpiryMs);
+    const expiresAt = new Date(Date.now() + expiryMinutes * 60 * 1000);
     const payment = await this.paymentService.createPaymentLink({
-      shopId: shop.id,
+      shopId: platformShopId,
       externalOrderCode,
       amount,
-      description: `NAPCTV-${externalOrderCode.slice(-6)}`,
+      description: `NAPVI-${externalOrderCode.slice(-6)}`,
       expiredAt: expiresAt,
+      providerOverride: providerOverride as any,
     });
 
-    return this.prisma.depositRequest.create({
+    const deposit = await this.prisma.depositRequest.create({
       data: {
         sellerId: shop.sellerId,
         amount: toDecimal(amount),
@@ -165,10 +178,24 @@ export class WalletService {
         checkoutUrl: payment.checkoutUrl,
         qrCode: payment.qrCode,
         expiresAt,
-        note: dto.note ?? "Top up seller wallet from dashboard",
+        note: `WALLET_TOPUP:${shop.sellerId}${dto.note ? `:${dto.note}` : ""}`,
         rawPayloadJson: payment.providerPayload as Prisma.InputJsonValue,
       },
     });
+
+    return {
+      id: deposit.id,
+      externalOrderCode,
+      amount,
+      provider: payment.provider,
+      checkoutUrl: payment.checkoutUrl,
+      qrCode: payment.qrCode,
+      expiresAt,
+      providerPayload: payment.providerPayload,
+      bankInfo: (payment as any).bankInfo ?? null,
+      manualCrypto: (payment as any).manualCrypto ?? null,
+      reconcileToken: this.paymentService.buildPublicReconcileToken(externalOrderCode),
+    };
   }
 
   async confirmDepositRequestByExternalOrderCode(externalOrderCode: string, rawPayload?: unknown) {
@@ -184,6 +211,11 @@ export class WalletService {
 
     // Upgrade deposits are handled by UpgradeService, not wallet
     if (deposit.note && deposit.note.startsWith("UPGRADE_TIER:")) {
+      throw new NotFoundException("Deposit request not found.");
+    }
+
+    // Tier subscription deposits are handled by TiersService, not wallet
+    if (deposit.note && deposit.note.startsWith("TIER_SUB:")) {
       throw new NotFoundException("Deposit request not found.");
     }
 
@@ -214,6 +246,55 @@ export class WalletService {
         approvedAt: new Date(),
         rawPayloadJson: rawPayload as Prisma.InputJsonValue,
         note: deposit.note ?? "Top up seller wallet from dashboard",
+      },
+    });
+  }
+
+  async cancelDepositRequest(user: AuthenticatedUser, depositId: string) {
+    const shop = await this.shopsService.getSellerShop(user.id);
+    const deposit = await this.prisma.depositRequest.findUnique({
+      where: { id: depositId },
+      select: { id: true, sellerId: true, status: true, note: true },
+    });
+    if (!deposit) {
+      throw new NotFoundException("Deposit request not found.");
+    }
+    if (deposit.sellerId !== shop.sellerId) {
+      throw new NotFoundException("Deposit request not found.");
+    }
+    if (deposit.status !== DepositStatus.PENDING) {
+      throw new BadRequestException("Chỉ có thể hủy yêu cầu đang chờ.");
+    }
+    return this.prisma.depositRequest.update({
+      where: { id: deposit.id },
+      data: {
+        status: DepositStatus.REJECTED,
+        note: deposit.note ? `${deposit.note} | Hủy bởi người dùng` : "Hủy bởi người dùng",
+      },
+    });
+  }
+
+  async cancelWithdrawRequest(user: AuthenticatedUser, withdrawId: string) {
+    const shop = await this.shopsService.getSellerShop(user.id);
+    const withdraw = await this.prisma.withdrawRequest.findUnique({
+      where: { id: withdrawId },
+      select: { id: true, sellerId: true, status: true },
+    });
+    if (!withdraw) {
+      throw new NotFoundException("Withdraw request not found.");
+    }
+    if (withdraw.sellerId !== shop.sellerId) {
+      throw new NotFoundException("Withdraw request not found.");
+    }
+    if (withdraw.status !== WithdrawStatus.PENDING) {
+      throw new BadRequestException("Chỉ có thể hủy yêu cầu đang chờ duyệt.");
+    }
+    return this.prisma.withdrawRequest.update({
+      where: { id: withdraw.id },
+      data: {
+        status: WithdrawStatus.REJECTED,
+        rejectReason: "Hủy bởi người dùng",
+        reviewedAt: new Date(),
       },
     });
   }

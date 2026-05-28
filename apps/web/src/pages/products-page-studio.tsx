@@ -62,7 +62,7 @@ const T = {
     loading: "Đang tải...", refresh: "Làm mới", searchPh: "Tìm tên sản phẩm...", clearFilter: "Xóa lọc",
     visibleOf: (n: number, tot: number) => `${n}/${tot} sản phẩm`,
     fAll: "Tất cả", fManual: "Sản phẩm riêng", fActive: "Đang bán", fHidden: "Ẩn trên bot", fPaused: "Tạm dừng",
-    colName: "Tên sản phẩm", colSalePrice: "Giá bán", colSourcePrice: "Giá vốn", colUnsold: "Chưa bán", colSold: "Đã bán", colTotal: "Tổng", colActions: "Hành động",
+    colName: "Tên sản phẩm", colSalePrice: "Giá bán", colSourcePrice: "Giá vốn", colCtvPrice: "Giá CTV", colUnsold: "Chưa bán", colSold: "Đã bán", colTotal: "Tổng", colActions: "Hành động",
     loadError: "Không tải được danh sách sản phẩm", loadErrorHint: "Hãy thử tải lại catalog sau ít phút nữa.",
     emptyTitle: "Chưa có sản phẩm phù hợp", emptyHint: "Đổi bộ lọc hoặc tạo sản phẩm riêng",
     bManual: "Riêng", bSource: "Nguồn", bOff: "Tắt", bHidden: "Ẩn", bShown: "Hiện", bOn: "Bật",
@@ -153,7 +153,7 @@ const T = {
     loading: "Loading...", refresh: "Refresh", searchPh: "Search products...", clearFilter: "Clear filters",
     visibleOf: (n: number, tot: number) => `${n}/${tot} products`,
     fAll: "All", fManual: "Own products", fActive: "Active", fHidden: "Hidden on bot", fPaused: "Paused",
-    colName: "Product name", colSalePrice: "Sale price", colSourcePrice: "Cost", colUnsold: "In stock", colSold: "Sold", colTotal: "Total", colActions: "Actions",
+    colName: "Product name", colSalePrice: "Sale price", colSourcePrice: "Cost", colCtvPrice: "CTV price", colUnsold: "In stock", colSold: "Sold", colTotal: "Total", colActions: "Actions",
     loadError: "Could not load products", loadErrorHint: "Try refreshing the catalog in a moment.",
     emptyTitle: "No matching products", emptyHint: "Change filters or create a custom product",
     bManual: "Own", bSource: "Source", bOff: "Off", bHidden: "Hidden", bShown: "Shown", bOn: "On",
@@ -244,7 +244,7 @@ const T = {
     loading: "กำลังโหลด...", refresh: "รีเฟรช", searchPh: "ค้นหาสินค้า...", clearFilter: "ล้างตัวกรอง",
     visibleOf: (n: number, tot: number) => `${n}/${tot} สินค้า`,
     fAll: "ทั้งหมด", fManual: "สินค้าของร้าน", fActive: "กำลังขาย", fHidden: "ซ่อนบนบอท", fPaused: "หยุดชั่วคราว",
-    colName: "ชื่อสินค้า", colSalePrice: "ราคาขาย", colSourcePrice: "ต้นทุน", colUnsold: "คงเหลือ", colSold: "ขายแล้ว", colTotal: "รวม", colActions: "การดำเนินการ",
+    colName: "ชื่อสินค้า", colSalePrice: "ราคาขาย", colSourcePrice: "ต้นทุน", colCtvPrice: "ราคา CTV", colUnsold: "คงเหลือ", colSold: "ขายแล้ว", colTotal: "รวม", colActions: "การดำเนินการ",
     loadError: "ไม่สามารถโหลดรายการสินค้าได้", loadErrorHint: "ลองรีเฟรชแคตาล็อกอีกครั้ง",
     emptyTitle: "ไม่มีสินค้าที่ตรงกัน", emptyHint: "เปลี่ยนตัวกรองหรือสร้างสินค้าของร้าน",
     bManual: "ของร้าน", bSource: "ซิงค์", bOff: "ปิด", bHidden: "ซ่อน", bShown: "แสดง", bOn: "เปิด",
@@ -1123,13 +1123,14 @@ export function ProductsPageStudio({
             if (available !== undefined) payload.available = available;
           }
         }
+      }
 
-        if (isUltra) {
-          payload.internalSourceEnabled = editorForm.internalSourceEnabled;
-          payload.internalSourcePrice = editorForm.internalSourcePrice.trim()
-            ? parseRequiredNumber(editorForm.internalSourcePrice, t.errRequired(t.efWholesale), t.errInvalidNum(t.efWholesale))
-            : null;
-        }
+      // ULTRA wholesale fields áp dụng cho cả manual và source product
+      if (isUltra) {
+        payload.internalSourceEnabled = editorForm.internalSourceEnabled;
+        payload.internalSourcePrice = editorForm.internalSourcePrice.trim()
+          ? parseRequiredNumber(editorForm.internalSourcePrice, t.errRequired(t.efWholesale), t.errInvalidNum(t.efWholesale))
+          : null;
       }
 
       return api.put(`/products/${selectedProduct.id}`, payload);
@@ -2020,17 +2021,18 @@ export function ProductsPageStudio({
             <div>
               {/* Desktop table */}
               <div className="overflow-x-auto">
-              <table className="hidden w-full text-sm lg:table" style={{ tableLayout: "fixed", minWidth: "960px" }}>
+              <table className="hidden w-full text-sm lg:table" style={{ tableLayout: "fixed", minWidth: isUltra ? "1060px" : "960px" }}>
                 <colgroup>
                   <col style={{ width: "36px" }} />
-                  <col style={{ width: "32px" }} />
-                  <col style={{ width: "260px" }} />
-                  <col style={{ width: "136px" }} />
-                  <col style={{ width: "100px" }} />
-                  <col style={{ width: "80px" }} />
-                  <col style={{ width: "72px" }} />
-                  <col style={{ width: "60px" }} />
-                  <col style={{ width: "180px" }} />
+                  <col style={{ width: "40px" }} />
+                  <col style={{ width: isUltra ? "14%" : "18%" }} />
+                  <col style={{ width: isUltra ? "15%" : "16%" }} />
+                  <col style={{ width: isUltra ? "12%" : "13%" }} />
+                  {isUltra && <col style={{ width: "12%" }} />}
+                  <col style={{ width: isUltra ? "11%" : "12%" }} />
+                  <col style={{ width: isUltra ? "11%" : "12%" }} />
+                  <col style={{ width: isUltra ? "11%" : "12%" }} />
+                  <col style={{ width: isUltra ? "14%" : "17%" }} />
                 </colgroup>
                 <thead>
                   <tr style={{ borderBottom: "1px solid var(--bd)", backgroundColor: "var(--inp)" }}>
@@ -2043,14 +2045,17 @@ export function ProductsPageStudio({
                         className="h-3.5 w-3.5 cursor-pointer rounded accent-orange-500"
                       />
                     </th>
-                    <th className="py-2.5 pr-2 text-left text-[10px] font-black uppercase tracking-widest" style={{ color: "var(--tx-f)" }}>#</th>
-                    <th className="px-3 py-2.5 text-left text-[10px] font-black uppercase tracking-widest" style={{ color: "var(--tx-f)" }}>{t.colName}</th>
-                    <th className="px-3 py-2.5 text-right text-[10px] font-black uppercase tracking-widest" style={{ color: "var(--tx-f)" }}>{t.colSalePrice}</th>
-                    <th className="px-3 py-2.5 text-right text-[10px] font-black uppercase tracking-widest" style={{ color: "var(--tx-f)" }}>{t.colSourcePrice}</th>
-                    <th className="px-3 py-2.5 text-right text-[10px] font-black uppercase tracking-widest" style={{ color: "var(--tx-f)" }}>{t.colUnsold}</th>
-                    <th className="px-3 py-2.5 text-right text-[10px] font-black uppercase tracking-widest" style={{ color: "var(--tx-f)" }}>{t.colSold}</th>
-                    <th className="px-3 py-2.5 text-right text-[10px] font-black uppercase tracking-widest" style={{ color: "var(--tx-f)" }}>{t.colTotal}</th>
-                    <th className="py-2.5 pl-3 pr-5 text-right text-[10px] font-black uppercase tracking-widest" style={{ color: "var(--tx-f)" }}>{t.colActions}</th>
+                    <th className="py-2.5 pr-2 text-left text-[10px] font-black uppercase tracking-widest whitespace-nowrap" style={{ color: "var(--tx-f)", width: "1%" }}>#</th>
+                    <th className="px-3 py-2.5 text-left text-[10px] font-black uppercase tracking-widest" style={{ color: "var(--tx-f)", width: "100%" }}>{t.colName}</th>
+                    <th className="px-3 py-2.5 text-right text-[10px] font-black uppercase tracking-widest whitespace-nowrap" style={{ color: "var(--tx-f)", width: "1%" }}>{t.colSalePrice}</th>
+                    <th className="px-3 py-2.5 text-right text-[10px] font-black uppercase tracking-widest whitespace-nowrap" style={{ color: "var(--tx-f)", width: "1%" }}>{t.colSourcePrice}</th>
+                    {isUltra && (
+                      <th className="px-3 py-2.5 text-right text-[10px] font-black uppercase tracking-widest whitespace-nowrap" style={{ color: "var(--tx-f)", width: "1%" }}>{t.colCtvPrice}</th>
+                    )}
+                    <th className="px-3 py-2.5 text-right text-[10px] font-black uppercase tracking-widest whitespace-nowrap" style={{ color: "var(--tx-f)", width: "1%" }}>{t.colUnsold}</th>
+                    <th className="px-3 py-2.5 text-right text-[10px] font-black uppercase tracking-widest whitespace-nowrap" style={{ color: "var(--tx-f)", width: "1%" }}>{t.colSold}</th>
+                    <th className="px-3 py-2.5 text-right text-[10px] font-black uppercase tracking-widest whitespace-nowrap" style={{ color: "var(--tx-f)", width: "1%" }}>{t.colTotal}</th>
+                    <th className="py-2.5 pl-3 pr-5 text-right text-[10px] font-black uppercase tracking-widest whitespace-nowrap" style={{ color: "var(--tx-f)", width: "1%" }}>{t.colActions}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -2102,7 +2107,7 @@ export function ProductsPageStudio({
                               <Package className="h-3.5 w-3.5" />
                             </div>
                             <div className="min-w-0">
-                              <p className="truncate text-[13px] font-black uppercase tracking-tight" style={{ color: "var(--tx)" }}>
+                              <p className="line-clamp-2 break-words text-[13px] font-black uppercase tracking-tight leading-tight" style={{ color: "var(--tx)" }}>
                                 {product.displayName}
                               </p>
                               <div className="mt-1 flex flex-wrap items-center gap-1">
@@ -2140,6 +2145,31 @@ export function ProductsPageStudio({
                             ? (product.sourcePrice ? `$${toUsdt(product.sourcePrice, usdtVndRate)}` : "—")
                             : (product.sourcePrice ? formatCurrency(product.sourcePrice) : "—")}
                         </td>
+
+                        {isUltra && (
+                          <td className="px-3 py-3 text-right text-sm tabular-nums">
+                            {(() => {
+                              const ctvEnabled = (product as any).internalSourceEnabled;
+                              if (!ctvEnabled) {
+                                return <span style={{ color: "var(--tx-f)" }}>—</span>;
+                              }
+                              const ctvPrice = (product as any).internalSourcePrice;
+                              const effective = ctvPrice ?? product.salePrice;
+                              const isDefault = !ctvPrice;
+                              const display = lang === "th"
+                                ? `$${toUsdt(effective, usdtVndRate)}`
+                                : formatCurrency(effective);
+                              return (
+                                <span
+                                  style={{ color: isDefault ? "var(--tx-f)" : "rgb(167,139,250)" }}
+                                  title={isDefault ? "Chưa set giá CTV → dùng giá bán" : undefined}
+                                >
+                                  {display}
+                                </span>
+                              );
+                            })()}
+                          </td>
+                        )}
 
                         <td className="px-3 py-3 text-right">
                           <span className={`text-sm font-black tabular-nums ${product.available === 0 ? "text-rose-500" : "text-orange-400"}`}>

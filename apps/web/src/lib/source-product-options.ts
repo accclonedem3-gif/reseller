@@ -1,16 +1,25 @@
 export const sourceProductFamilyOptions = [
   { value: "CHATGPT", label: "ChatGPT" },
-  { value: "VEO3", label: "Veo 3" },
   { value: "CLAUDE", label: "Claude" },
   { value: "GEMINI", label: "Gemini" },
+  { value: "GROK", label: "Grok" },
+  { value: "PERPLEXITY", label: "Perplexity" },
+  { value: "VEO3", label: "Veo 3" },
+  { value: "KLING", label: "Kling AI" },
+  { value: "HIGGSFIELD", label: "Higgsfield" },
   { value: "CANVA", label: "Canva" },
   { value: "CAPCUT", label: "CapCut" },
-  { value: "GROK", label: "Grok" },
-  { value: "KLING", label: "Kling AI" },
   { value: "ADOBE", label: "Adobe" },
   { value: "SUNO", label: "Suno" },
+  { value: "ELEVENLABS", label: "ElevenLabs" },
   { value: "HEYGEN", label: "HeyGen" },
-  { value: "PERPLEXITY", label: "Perplexity" },
+  { value: "GMAIL", label: "Gmail" },
+  { value: "YOUTUBE", label: "YouTube" },
+  { value: "TIKTOK", label: "TikTok" },
+  { value: "ZOOM", label: "Zoom" },
+  { value: "DUOLINGO", label: "Duolingo" },
+  { value: "HMA", label: "HMA" },
+  { value: "VPN", label: "VPN" },
   { value: "OTHER", label: "Khác" },
 ] as const;
 
@@ -80,6 +89,42 @@ export const sourceProductPackageOptions: Record<string, ReadonlyArray<{ value: 
   ],
   PERPLEXITY: [
     { value: "PERPLEXITY_PRO", label: "Perplexity Pro" },
+  ],
+  GMAIL: [
+    { value: "GMAIL_PERSONAL", label: "Gmail Personal" },
+    { value: "GMAIL_WORKSPACE", label: "Google Workspace" },
+  ],
+  ELEVENLABS: [
+    { value: "ELEVENLABS_STARTER", label: "ElevenLabs Starter" },
+    { value: "ELEVENLABS_CREATOR", label: "ElevenLabs Creator" },
+    { value: "ELEVENLABS_PRO", label: "ElevenLabs Pro" },
+    { value: "ELEVENLABS_SCALE", label: "ElevenLabs Scale" },
+  ],
+  TIKTOK: [
+    { value: "TIKTOK_ADS", label: "TikTok Ads Credit" },
+    { value: "TIKTOK_PRO", label: "TikTok Pro" },
+  ],
+  DUOLINGO: [
+    { value: "DUOLINGO_SUPER", label: "Duolingo Super" },
+    { value: "DUOLINGO_MAX", label: "Duolingo Max" },
+  ],
+  HMA: [
+    { value: "HMA_PRO", label: "HMA VPN Pro" },
+  ],
+  VPN: [
+    { value: "VPN_PRO", label: "VPN Pro" },
+    { value: "VPN_PREMIUM", label: "VPN Premium" },
+  ],
+  ZOOM: [
+    { value: "ZOOM_PRO", label: "Zoom Pro" },
+    { value: "ZOOM_BUSINESS", label: "Zoom Business" },
+  ],
+  YOUTUBE: [
+    { value: "YOUTUBE_PREMIUM", label: "YouTube Premium" },
+    { value: "YOUTUBE_FAMILY", label: "YouTube Family" },
+  ],
+  HIGGSFIELD: [
+    { value: "HIGGSFIELD_PRO", label: "Higgsfield Pro" },
   ],
   OTHER: [],
 };

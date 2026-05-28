@@ -88,6 +88,24 @@ enum WalletLedgerType {
   ADJUST
   WITHDRAW_REJECT_REFUND
   SALE_REVENUE
+  AFFILIATE_LEVEL_1
+  AFFILIATE_LEVEL_2
+  AFFILIATE_CLAWBACK
+  SUBSCRIPTION_PAYMENT
+}
+
+enum TierPlan {
+  MONTHLY
+  QUARTERLY
+  SEMI_ANNUAL
+  ANNUAL
+}
+
+enum TierSubscriptionStatus {
+  ACTIVE
+  EXPIRED
+  REFUNDED
+  CANCELED
 }
 
 enum DepositStatus {
@@ -125,6 +143,7 @@ enum PaymentProvider {
   BINANCE
   OKX
   USDT_TRC20
+  USDT_SOL
   BINANCE_PAY
 }
 
@@ -192,6 +211,15 @@ enum SourceProductFamily {
   SUNO
   HEYGEN
   PERPLEXITY
+  GMAIL
+  ELEVENLABS
+  TIKTOK
+  DUOLINGO
+  HMA
+  VPN
+  ZOOM
+  YOUTUBE
+  HIGGSFIELD
   OTHER
 }
 
@@ -299,6 +327,14 @@ model Seller {
   tier             SellerTier              @default(PRO)
   tierStartedAt    DateTime?               @map("tier_started_at")
   tierExpiresAt    DateTime?               @map("tier_expires_at")
+  referredBySellerId        String?        @map("referred_by_seller_id")
+  referralCode              String?        @unique @map("referral_code")
+  affiliateUnlockedTier     Int            @default(1) @map("affiliate_unlocked_tier")
+  affiliateUnlockedTier2At  DateTime?      @map("affiliate_unlocked_tier_2_at")
+  affiliateUnlockedTier3At  DateTime?      @map("affiliate_unlocked_tier_3_at")
+  autoRenewConfig           Json?          @map("auto_renew_config")
+  signupIp                  String?        @map("signup_ip")
+  signupDeviceFingerprint   String?        @map("signup_device_fingerprint")
   createdAt        DateTime                @default(now()) @map("created_at")
   updatedAt        DateTime                @updatedAt @map("updated_at")
   user             User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -319,8 +355,46 @@ model Seller {
   downstreamSourceOrders      InternalSourceOrder[]        @relation("InternalSourceOrderDownstreamSeller")
   warrantyClaims  WarrantyClaim[]
   affiliateConfigs AffiliateConfig[]
+  referredBy       Seller?                 @relation("SellerReferral", fields: [referredBySellerId], references: [id])
+  referrals        Seller[]                @relation("SellerReferral")
+  tierSubscriptions TierSubscription[]                @relation("TierSubscriptionSeller")
+  level1Subscriptions TierSubscription[]              @relation("TierSubscriptionLevel1Referrer")
+  level2Subscriptions TierSubscription[]              @relation("TierSubscriptionLevel2Referrer")
 
   @@map("sellers")
+}
+
+model TierSubscription {
+  id                      String                  @id @default(cuid())
+  sellerId                String                  @map("seller_id")
+  tier                    SellerTier
+  plan                    TierPlan
+  priceVnd                Decimal                 @map("price_vnd") @db.Decimal(18, 2)
+  startsAt                DateTime                @map("starts_at")
+  endsAt                  DateTime                @map("ends_at")
+  status                  TierSubscriptionStatus  @default(ACTIVE)
+  paymentMethod           String?                 @map("payment_method")
+  paymentTransactionId    String?                 @map("payment_transaction_id")
+  paidFromWalletBalance   Boolean                 @default(false) @map("paid_from_wallet_balance")
+  referrerSellerId        String?                 @map("referrer_seller_id")
+  grandReferrerSellerId   String?                 @map("grand_referrer_seller_id")
+  level1Rate              Decimal?                @map("level_1_rate") @db.Decimal(5, 4)
+  level2Rate              Decimal?                @map("level_2_rate") @db.Decimal(5, 4)
+  level1CommissionVnd     Decimal?                @map("level_1_commission_vnd") @db.Decimal(18, 2)
+  level2CommissionVnd     Decimal?                @map("level_2_commission_vnd") @db.Decimal(18, 2)
+  refundedAt              DateTime?               @map("refunded_at")
+  isAdminGrant            Boolean                 @default(false) @map("is_admin_grant")
+  adminGrantNote          String?                 @map("admin_grant_note")
+  createdAt               DateTime                @default(now()) @map("created_at")
+  updatedAt               DateTime                @updatedAt @map("updated_at")
+  seller                  Seller                  @relation("TierSubscriptionSeller", fields: [sellerId], references: [id], onDelete: Cascade)
+  referrerSeller          Seller?                 @relation("TierSubscriptionLevel1Referrer", fields: [referrerSellerId], references: [id])
+  grandReferrerSeller     Seller?                 @relation("TierSubscriptionLevel2Referrer", fields: [grandReferrerSellerId], references: [id])
+
+  @@index([sellerId, status])
+  @@index([endsAt, status])
+  @@index([referrerSellerId])
+  @@map("tier_subscriptions")
 }
 
 model Shop {
@@ -336,6 +410,7 @@ model Shop {
   storefrontMode    StorefrontMode @default(TELEGRAM_ONLY) @map("storefront_mode")
   storefrontConfigJson Json?       @map("storefront_config_json")
   defaultCurrency   String         @default("VND") @map("default_currency")
+  isTemplate        Boolean        @default(false) @map("is_template")
   lastCatalogSyncAt DateTime?      @map("last_catalog_sync_at")
   createdAt         DateTime       @default(now()) @map("created_at")
   updatedAt         DateTime       @updatedAt @map("updated_at")
@@ -362,6 +437,7 @@ model Shop {
   catalogGroups               ShopCatalogGroup[]
   walletPromotions            WalletPromotion[]
   iconCatalog                 IconCatalog[]
+  botMediaCache               BotMediaCache[]
 
   @@map("shops")
 }
@@ -428,6 +504,7 @@ model PaymentConfig {
   binanceUid                      String?         @map("binance_uid")
   okxUid                          String?         @map("okx_uid")
   usdtTrc20Address                String?         @map("usdt_trc20_address")
+  usdtSolanaAddress               String?         @map("usdt_solana_address")
   usdtVndRateOverride             Decimal?        @map("usdt_vnd_rate_override") @db.Decimal(18, 2)
   // Binance Pay Merchant API (auto flow)
   binancePayApiKeyEncrypted       String?         @map("binance_pay_api_key_encrypted")
@@ -501,6 +578,7 @@ model SourceProduct {
   iconCustomEmojiId     String?             @map("icon_custom_emoji_id")
   iconOutOfStockEmojiId String?             @map("icon_out_of_stock_emoji_id")
   imageUrl              String?             @map("image_url")
+  isSample              Boolean             @default(false) @map("is_sample")
   sourceDeliveryMode    SourceDeliveryMode? @map("source_delivery_mode")
   warrantyPolicy        SourceWarrantyPolicy? @map("warranty_policy")
   stockAlertThreshold  Int       @default(5) @map("stock_alert_threshold")
@@ -568,6 +646,19 @@ model IconCatalog {
 
   @@index([shopId, position])
   @@map("icon_catalog")
+}
+
+model BotMediaCache {
+  id          String   @id @default(cuid())
+  shopId      String   @map("shop_id")
+  mediaKey    String   @map("media_key")
+  fileId      String   @map("file_id")
+  mediaType   String   @map("media_type")
+  createdAt   DateTime @default(now()) @map("created_at")
+  shop        Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@unique([shopId, mediaKey])
+  @@map("bot_media_cache")
 }
 
 model ShopCatalogGroup {

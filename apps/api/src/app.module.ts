@@ -31,6 +31,7 @@ import { InternalSourceService } from "./internal-source/internal-source.service
 import { PaymentService } from "./lib/payment.service";
 import { BinancePayService } from "./lib/binance-pay.service";
 import { OnchainPaymentService } from "./lib/onchain-payment.service";
+import { SolanaPaymentService } from "./lib/solana-payment.service";
 import { QueueService } from "./lib/queue.service";
 import { TelegramBotService } from "./lib/telegram-bot.service.v2";
 import { OrdersController } from "./orders/orders.controller";
@@ -65,6 +66,11 @@ import { IconCatalogService } from "./icon-catalog/icon-catalog.service";
 import { MiniAppController } from "./mini-app/mini-app.controller";
 import { MiniAppService } from "./mini-app/mini-app.service";
 import { GramJsService } from "./lib/gramjs.service";
+import { TiersController } from "./tiers/tiers.controller";
+import { TiersService } from "./tiers/tiers.service";
+import { TierAffiliateService } from "./tiers/tier-affiliate.service";
+import { AdminTemplateController } from "./admin-template/admin-template.controller";
+import { AdminTemplateService } from "./admin-template/admin-template.service";
 
 @Module({
   imports: [
@@ -88,6 +94,7 @@ import { GramJsService } from "./lib/gramjs.service";
     SellerSourceConnectionController,
     SourceProductController,
     UpgradeController,
+    TiersController,
     ProAnalyticsController,
     AffiliateController,
     DevController,
@@ -96,6 +103,7 @@ import { GramJsService } from "./lib/gramjs.service";
     CatalogGroupsController,
     IconCatalogController,
     MiniAppController,
+    AdminTemplateController,
   ],
   providers: [
     AppConfigService,
@@ -103,6 +111,7 @@ import { GramJsService } from "./lib/gramjs.service";
     QueueService,
     BinancePayService,
     OnchainPaymentService,
+    SolanaPaymentService,
     PaymentService,
     TelegramBotService,
     AuthService,
@@ -117,6 +126,8 @@ import { GramJsService } from "./lib/gramjs.service";
     BroadcastsService,
     InternalSourceService,
     UpgradeService,
+    TiersService,
+    TierAffiliateService,
     Reflector,
     JwtAuthGuard,
     RolesGuard,
@@ -137,6 +148,7 @@ import { GramJsService } from "./lib/gramjs.service";
     IconCatalogService,
     MiniAppService,
     GramJsService,
+    AdminTemplateService,
   ],
 })
 export class AppModule implements NestModule {

@@ -154,10 +154,12 @@ export async function telegramAnswerCallbackQuery(
   token: string,
   callbackQueryId: string,
   text?: string,
+  options?: { showAlert?: boolean },
 ) {
   return callTelegramApi(token, "answerCallbackQuery", {
     callback_query_id: callbackQueryId,
     text,
+    ...(options?.showAlert ? { show_alert: true } : {}),
   });
 }
 

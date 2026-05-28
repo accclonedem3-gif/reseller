@@ -6,6 +6,10 @@ export class CreateDepositRequestDto {
   amount!: number;
 
   @IsOptional()
+  @IsEnum(["PAYOS", "USDT_SOL", "BINANCE"])
+  paymentMethod?: "PAYOS" | "USDT_SOL" | "BINANCE";
+
+  @IsOptional()
   @IsString()
   note?: string;
 }

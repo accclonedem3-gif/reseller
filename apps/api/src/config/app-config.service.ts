@@ -73,6 +73,10 @@ export class AppConfigService {
     return process.env.PAYMENT_MODE || "payos";
   }
 
+  get platformDepositShopId() {
+    return process.env.PLATFORM_DEPOSIT_SHOP_ID || null;
+  }
+
   get providerBaseUrl() {
     return process.env.DEFAULT_PROVIDER_BASE_URL || "https://canboso.com";
   }
@@ -103,6 +107,20 @@ export class AppConfigService {
 
   get tronUsdtContractAddress() {
     return process.env.TRON_USDT_CONTRACT_ADDRESS || "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
+  }
+
+  get heliusApiKey() {
+    return process.env.HELIUS_API_KEY || "";
+  }
+
+  get solanaRpcUrl() {
+    const key = this.heliusApiKey;
+    if (key) return `https://mainnet.helius-rpc.com/?api-key=${key}`;
+    return process.env.SOLANA_RPC_URL || "https://api.mainnet-beta.solana.com";
+  }
+
+  get solanaUsdtMintAddress() {
+    return process.env.SOLANA_USDT_MINT || "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB";
   }
 
   get mockProviderEnabled() {

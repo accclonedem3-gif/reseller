@@ -7,6 +7,7 @@ import {
   ChartColumn,
   CheckCircle2,
   ChevronLeft,
+  Crown,
   ChevronRight,
   CreditCard,
   LayoutDashboard,
@@ -55,6 +56,7 @@ const NAV_LABELS = {
     adminOverview: "Tổng quan", adminAccounts: "Tài khoản CTV",
     adminOrders: "Đơn hàng HT", adminSettings: "Cài đặt HT",
     adminIcons: "Thư viện icon",
+    adminTemplate: "Bot Template",
     coreWorkspace: "Vận hành", internalManagement: "Phân tích",
     masterIntelligence: "Master Intelligence",
   },
@@ -69,6 +71,7 @@ const NAV_LABELS = {
     adminOverview: "Overview", adminAccounts: "CTV Accounts",
     adminOrders: "System Orders", adminSettings: "System Settings",
     adminIcons: "Icon Library",
+    adminTemplate: "Bot Template",
     coreWorkspace: "Workspace", internalManagement: "Analytics",
     masterIntelligence: "Master Intelligence",
   },
@@ -83,6 +86,7 @@ const NAV_LABELS = {
     adminOverview: "ภาพรวม", adminAccounts: "บัญชีผู้ขาย",
     adminOrders: "คำสั่งซื้อระบบ", adminSettings: "ตั้งค่าระบบ",
     adminIcons: "คลังไอคอน",
+    adminTemplate: "เทมเพลตบอท",
     coreWorkspace: "พื้นที่ทำงาน", internalManagement: "วิเคราะห์",
     masterIntelligence: "Master Intelligence",
   },
@@ -96,6 +100,7 @@ function buildAdminItems(lang: Lang): readonly NavItem[] {
     { to: "/admin/orders",   label: L.adminOrders,    icon: ShoppingBag },
     { to: "/admin/settings", label: L.adminSettings,  icon: Settings2 },
     { to: "/admin/icons",    label: L.adminIcons,     icon: ImageIcon },
+    { to: "/admin/template-bot", label: L.adminTemplate, icon: Settings2 },
   ];
 }
 
@@ -130,6 +135,7 @@ function buildSellerNavGroups(session: ReturnType<typeof useAuth>["session"], la
 
   insights.push(
     { to: "/reports/revenue",       label: L.revenue,      icon: ChartColumn },
+    { to: "/affiliate",             label: "🎁 Affiliate",  icon: Sparkles },
     { to: "/broadcasts",            label: L.broadcasts,   icon: Bell },
     { to: "/profile",               label: L.profile,      icon: UserCircle2 },
   );
@@ -340,14 +346,14 @@ export function AppShellPrime({ children }: { children: ReactNode }) {
           className="p-4 shrink-0"
           style={{ borderTop: "1px solid var(--bd)", backgroundColor: "var(--surface)" }}
         >
-          {!isSuperAdmin && sellerTier !== "pro" && !collapsed && (
+          {!isSuperAdmin && !collapsed && (
             <button
               type="button"
-              onClick={() => navigate("/upgrade")}
+              onClick={() => navigate("/pricing")}
               className="mb-3 flex w-full items-center justify-center gap-2 rounded-2xl bg-orange-500 py-3 text-[10px] font-black uppercase tracking-[0.22em] text-white shadow-lg shadow-orange-500/20 transition hover:brightness-110"
             >
-              <Sparkles className="size-3.5" />
-              Nâng cấp gói
+              <Crown className="size-3.5" />
+              Nâng cấp / Gia hạn
             </button>
           )}
 

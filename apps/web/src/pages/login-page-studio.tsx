@@ -1,6 +1,6 @@
 import { MessageCircle, Send, ShieldCheck } from "lucide-react";
-import { useState } from "react";
-import { Navigate } from "react-router-dom";
+import { useEffect, useState } from "react";
+import { Navigate, useLocation, useSearchParams } from "react-router-dom";
 
 import { useAuth } from "@/auth/auth-provider";
 import { Button } from "@/components/ui/button";
@@ -9,13 +9,27 @@ import { api } from "@/lib/api";
 
 export function LoginPageStudio() {
   const { login, register, session } = useAuth();
-  const [mode, setMode] = useState<"login" | "forgot" | "register">("login");
+  const [searchParams] = useSearchParams();
+  const location = useLocation();
+  const refFromUrl = searchParams.get("ref") || "";
+  const onRegisterRoute = location.pathname === "/register";
+  const [mode, setMode] = useState<"login" | "forgot" | "register">(refFromUrl || onRegisterRoute ? "register" : "login");
   const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [recoveryEmail, setRecoveryEmail] = useState("");
+  const [referralCodeInput, setReferralCodeInput] = useState(refFromUrl.toUpperCase());
+
+  useEffect(() => {
+    if (refFromUrl) {
+      setReferralCodeInput(refFromUrl.toUpperCase());
+      setMode("register");
+    } else if (onRegisterRoute) {
+      setMode("register");
+    }
+  }, [refFromUrl, onRegisterRoute]);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [devResetLink, setDevResetLink] = useState<string | null>(null);
@@ -72,7 +86,7 @@ export function LoginPageStudio() {
     }
 
     try {
-      await register(username.trim(), email.trim(), password, displayName.trim());
+      await register(username.trim(), email.trim(), password, displayName.trim(), referralCodeInput.trim().toUpperCase() || null);
     } catch (err: any) {
       setError(err?.response?.data?.message || err?.message || "Không thể tạo tài khoản lúc này.");
     } finally {
@@ -329,6 +343,17 @@ export function LoginPageStudio() {
                     />
                   </AuthField>
                 </div>
+
+                <AuthField label="Mã giới thiệu (tuỳ chọn)" htmlFor="referralCode">
+                  <Input
+                    id="referralCode"
+                    type="text"
+                    placeholder="ABC23XYZ"
+                    value={referralCodeInput}
+                    onChange={(e) => setReferralCodeInput(e.target.value.toUpperCase())}
+                    className="font-mono uppercase tracking-wider"
+                  />
+                </AuthField>
 
                 <AuthMessages error={error} notice={notice} devResetLink={devResetLink} />
 
