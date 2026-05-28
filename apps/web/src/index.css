@@ -16,6 +16,7 @@
   --s-act-tx: #c2410c;
   --blob:     rgba(249, 115, 22, 0.06);
   --glow:     rgba(249, 115, 22, 0.08);
+  --primary:  #f97316;
 }
 
 /* ── Dark mode ──────────────────────────────────────────── */
@@ -32,6 +33,7 @@
   --s-act-tx: #fdba74;
   --blob:     rgba(249, 115, 22, 0.05);
   --glow:     rgba(249, 115, 22, 0.08);
+  --primary:  #f97316;
 }
 
 html { scroll-behavior: auto; }

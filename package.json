@@ -16,7 +16,7 @@
     "start:api": "node apps/api/dist/main.js",
     "start:worker": "node apps/worker/dist/main.js",
     "serve:web:dist": "py -3 -m http.server 5173 -d apps/web/dist",
-    "build": "npm run build -w @reseller/shared && npm run build -w @reseller/api && npm run build -w @reseller/worker && npm run build -w @reseller/web",
+    "build": "prisma generate --schema prisma/schema.prisma && npm run build -w @reseller/shared && npm run build -w @reseller/api && npm run build -w @reseller/worker && npm run build -w @reseller/web",
     "typecheck": "npm run typecheck -w @reseller/shared && npm run typecheck -w @reseller/api && npm run typecheck -w @reseller/worker && npm run typecheck -w @reseller/web",
     "db:generate": "prisma generate --schema prisma/schema.prisma",
     "db:migrate": "prisma migrate dev --schema prisma/schema.prisma",

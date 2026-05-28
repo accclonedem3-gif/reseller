@@ -73,6 +73,10 @@ export class AppConfigService {
     return process.env.PAYMENT_MODE || "payos";
   }
 
+  get platformDepositShopId() {
+    return process.env.PLATFORM_DEPOSIT_SHOP_ID || null;
+  }
+
   get providerBaseUrl() {
     return process.env.DEFAULT_PROVIDER_BASE_URL || "https://canboso.com";
   }
@@ -86,7 +90,7 @@ export class AppConfigService {
   }
 
   get usdtVndRate() {
-    return Number(process.env.USDT_VND_RATE || 26000);
+    return Number(process.env.USDT_VND_RATE || 27000);
   }
 
   get usdtPaymentTolerance() {
@@ -105,12 +109,34 @@ export class AppConfigService {
     return process.env.TRON_USDT_CONTRACT_ADDRESS || "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
   }
 
+  get heliusApiKey() {
+    return process.env.HELIUS_API_KEY || "";
+  }
+
+  get solanaRpcUrl() {
+    const key = this.heliusApiKey;
+    if (key) return `https://mainnet.helius-rpc.com/?api-key=${key}`;
+    return process.env.SOLANA_RPC_URL || "https://api.mainnet-beta.solana.com";
+  }
+
+  get solanaUsdtMintAddress() {
+    return process.env.SOLANA_USDT_MINT || "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB";
+  }
+
   get mockProviderEnabled() {
     return String(process.env.MOCK_PROVIDER_ENABLED || "false") === "true";
   }
 
   get mockTelegramEnabled() {
     return String(process.env.MOCK_TELEGRAM_MODE || "false") === "true";
+  }
+
+  get telegramApiId() {
+    return Number(process.env.TELEGRAM_API_ID || 0);
+  }
+
+  get telegramApiHash() {
+    return process.env.TELEGRAM_API_HASH || "";
   }
 
   get catalogSyncIntervalMs() {

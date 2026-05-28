@@ -6,7 +6,9 @@ import {
   NotFoundException,
 } from "@nestjs/common";
 import {
+  ConnectionStatus,
   ConnectionTopupStatus,
+  CustomerWalletLedgerType,
   DownstreamSourceConnectionStatus,
   InternalSourceLedgerType,
   Prisma,
@@ -60,6 +62,11 @@ export class SellerSourceConnectionService {
     }
 
     const downstreamShop = await this.shopsService.getSellerShop(user.id);
+    const downstreamBotConfig = await this.prisma.botConfig.findUnique({
+      where: { shopId: downstreamShop.id },
+      select: { ownerTelegramUserId: true },
+    });
+    const resolvedTelegramChatId = apiKey.telegramChatId || downstreamBotConfig?.ownerTelegramUserId || null;
 
     if (apiKey.shopId === downstreamShop.id) {
       throw new BadRequestException("You cannot connect your shop to its own source key.");
@@ -90,7 +97,7 @@ export class SellerSourceConnectionService {
             data: {
               apiKeyId: apiKey.id,
               status: DownstreamSourceConnectionStatus.ACTIVE,
-              ...(apiKey.telegramChatId ? { downstreamTelegramChatId: apiKey.telegramChatId } : {}),
+              ...(resolvedTelegramChatId ? { downstreamTelegramChatId: resolvedTelegramChatId } : {}),
             },
           })
         : await tx.downstreamSourceConnection.create({
@@ -101,9 +108,8 @@ export class SellerSourceConnectionService {
               downstreamShopId: downstreamShop.id,
               apiKeyId: apiKey.id,
               status: DownstreamSourceConnectionStatus.ACTIVE,
-              balance: toDecimal(0),
               currency: downstreamShop.defaultCurrency,
-              downstreamTelegramChatId: apiKey.telegramChatId || null,
+              downstreamTelegramChatId: resolvedTelegramChatId,
             },
           });
 
@@ -156,10 +162,21 @@ export class SellerSourceConnectionService {
       return null;
     }
 
+    let walletBalance = 0;
+    if (connection.downstreamTelegramChatId) {
+      const wallet = await this.prisma.customerWallet.findFirst({
+        where: {
+          customer: { shopId: connection.upstreamShopId, telegramChatId: connection.downstreamTelegramChatId },
+        },
+        select: { balance: true },
+      });
+      if (wallet) walletBalance = decimalToNumber(wallet.balance);
+    }
+
     return {
       id: connection.id,
       status: connection.status.toLowerCase(),
-      balance: decimalToNumber(connection.balance),
+      balance: walletBalance,
       currency: connection.currency,
       lastCatalogSyncAt: connection.lastCatalogSyncAt,
       lastOrderedAt: connection.lastOrderedAt,
@@ -243,6 +260,9 @@ export class SellerSourceConnectionService {
         internalSourcePrice: p.internalSourcePrice
           ? decimalToNumber(p.internalSourcePrice)
           : null,
+        productIcon: p.productIcon ?? null,
+        iconCustomEmojiId: p.iconCustomEmojiId ?? null,
+        imageUrl: p.imageUrl ?? null,
       },
     }));
 
@@ -375,10 +395,21 @@ export class SellerSourceConnectionService {
     if (topup.status === ConnectionTopupStatus.PAID) {
       const connection = await this.prisma.downstreamSourceConnection.findUnique({
         where: { id: topup.connectionId },
+        select: { id: true, upstreamShopId: true, downstreamTelegramChatId: true },
       });
+      let walletBalance = 0;
+      if (connection?.downstreamTelegramChatId) {
+        const wallet = await this.prisma.customerWallet.findFirst({
+          where: {
+            customer: { shopId: connection.upstreamShopId, telegramChatId: connection.downstreamTelegramChatId },
+          },
+          select: { balance: true },
+        });
+        if (wallet) walletBalance = decimalToNumber(wallet.balance);
+      }
       return {
         topup,
-        balanceAfter: decimalToNumber(connection!.balance),
+        balanceAfter: walletBalance,
         connectionId: topup.connectionId,
         downstreamShopId: topup.downstreamShopId,
         upstreamShopId: topup.upstreamShopId,
@@ -405,26 +436,72 @@ export class SellerSourceConnectionService {
         throw new NotFoundException("Connection not found.");
       }
 
-      const balanceBefore = decimalToNumber(connection.balance);
-      const balanceAfter = balanceBefore + amount;
+      // Credit customer wallet (source of truth)
+      if (connection.downstreamTelegramChatId) {
+        const customer = await tx.customer.findFirst({
+          where: { shopId: connection.upstreamShopId, telegramChatId: connection.downstreamTelegramChatId },
+          include: { wallet: true },
+        });
 
-      await tx.downstreamSourceConnection.update({
-        where: { id: connection.id },
-        data: { balance: toDecimal(balanceAfter) },
-      });
+        if (customer) {
+          let wallet = customer.wallet;
+          if (!wallet) {
+            wallet = await tx.customerWallet.create({
+              data: { customerId: customer.id, balance: toDecimal(0), balanceUsdt: toDecimal(0), currency: "VND" },
+            });
+          }
 
-      await tx.internalSourceLedger.create({
-        data: {
-          connectionId: connection.id,
-          type: InternalSourceLedgerType.TOPUP,
-          amount: toDecimal(amount),
-          balanceBefore: toDecimal(balanceBefore),
-          balanceAfter: toDecimal(balanceAfter),
-          referenceType: "connection_topup_request",
-          referenceId: topup.id,
-          note: "Top up via PayOS payment",
-        },
-      });
+          await tx.$queryRaw(Prisma.sql`SELECT id FROM customer_wallets WHERE id = ${wallet.id} FOR UPDATE`);
+          const walletBefore = decimalToNumber(wallet.balance);
+          const walletAfter = walletBefore + amount;
+
+          await tx.customerWallet.update({
+            where: { id: wallet.id },
+            data: { balance: toDecimal(walletAfter) },
+          });
+
+          await tx.customerWalletLedger.create({
+            data: {
+              customerId: customer.id,
+              walletId: wallet.id,
+              type: CustomerWalletLedgerType.TOPUP,
+              amount: toDecimal(amount),
+              balanceBefore: toDecimal(walletBefore),
+              balanceAfter: toDecimal(walletAfter),
+              referenceType: "connection_topup_request",
+              referenceId: topup.id,
+              note: "Nạp ví qua PayOS (bot đại lý)",
+            },
+          });
+
+            await tx.internalSourceLedger.create({
+            data: {
+              connectionId: connection.id,
+              type: InternalSourceLedgerType.TOPUP,
+              amount: toDecimal(amount),
+              balanceBefore: toDecimal(walletBefore),
+              balanceAfter: toDecimal(walletAfter),
+              referenceType: "connection_topup_request",
+              referenceId: topup.id,
+              note: "Top up via PayOS payment",
+            },
+          });
+        }
+      } else {
+        // No linked customer — record ledger only, no wallet to credit
+        await tx.internalSourceLedger.create({
+          data: {
+            connectionId: connection.id,
+            type: InternalSourceLedgerType.TOPUP,
+            amount: toDecimal(amount),
+            balanceBefore: toDecimal(0),
+            balanceAfter: toDecimal(0),
+            referenceType: "connection_topup_request",
+            referenceId: topup.id,
+            note: "Top up via PayOS payment (no linked customer wallet)",
+          },
+        });
+      }
 
       await tx.connectionTopupRequest.update({
         where: { id: topup.id },
@@ -435,18 +512,49 @@ export class SellerSourceConnectionService {
       });
     });
 
-    const refreshed = await this.prisma.downstreamSourceConnection.findUnique({
+    const refreshedConnection = await this.prisma.downstreamSourceConnection.findUnique({
       where: { id: topup.connectionId },
+      select: { id: true, upstreamShopId: true, downstreamTelegramChatId: true },
     });
+    let walletBalanceAfter = 0;
+    if (refreshedConnection?.downstreamTelegramChatId) {
+      const wallet = await this.prisma.customerWallet.findFirst({
+        where: {
+          customer: {
+            shopId: refreshedConnection.upstreamShopId,
+            telegramChatId: refreshedConnection.downstreamTelegramChatId,
+          },
+        },
+        select: { balance: true },
+      });
+      if (wallet) walletBalanceAfter = decimalToNumber(wallet.balance);
+    }
 
     return {
       topup,
-      balanceAfter: decimalToNumber(refreshed!.balance),
+      balanceAfter: walletBalanceAfter,
       connectionId: topup.connectionId,
       downstreamShopId: topup.downstreamShopId,
       upstreamShopId: topup.upstreamShopId,
       amount,
     };
+  }
+
+  async disconnect(user: AuthenticatedUser) {
+    const shop = await this.shopsService.getSellerShop(user.id);
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.downstreamSourceConnection.updateMany({
+        where: { downstreamShopId: shop.id, status: DownstreamSourceConnectionStatus.ACTIVE },
+        data: { status: DownstreamSourceConnectionStatus.DISABLED },
+      });
+      await tx.providerConfig.updateMany({
+        where: { shopId: shop.id },
+        data: { providerKind: ProviderKind.EXTERNAL, internalSourceConnectionId: null, connectionStatus: ConnectionStatus.DISABLED },
+      });
+    });
+
+    return { ok: true };
   }
 
   private async getConnectionById(id: string) {
@@ -463,10 +571,21 @@ export class SellerSourceConnectionService {
       throw new NotFoundException("Connection not found.");
     }
 
+    let walletBalance = 0;
+    if (connection.downstreamTelegramChatId) {
+      const wallet = await this.prisma.customerWallet.findFirst({
+        where: {
+          customer: { shopId: connection.upstreamShopId, telegramChatId: connection.downstreamTelegramChatId },
+        },
+        select: { balance: true },
+      });
+      if (wallet) walletBalance = decimalToNumber(wallet.balance);
+    }
+
     return {
       id: connection.id,
       status: connection.status.toLowerCase(),
-      balance: decimalToNumber(connection.balance),
+      balance: walletBalance,
       currency: connection.currency,
       lastCatalogSyncAt: connection.lastCatalogSyncAt,
       lastOrderedAt: connection.lastOrderedAt,

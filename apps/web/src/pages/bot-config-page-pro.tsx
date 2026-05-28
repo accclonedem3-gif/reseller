@@ -4,18 +4,14 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { BellOff, BellRing, Bot, Cable, Handshake, KeyRound, ScanSearch, ShieldCheck, Store, Wallet } from "lucide-react";
 
 import { Field } from "@/components/dashboard/field";
-import { SectionHeading } from "@/components/dashboard/section-heading";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
-import { CardHeader } from "@/components/ui/card-header";
 import { InfoHint } from "@/components/ui/info-hint";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/toast";
 import { useAuth } from "@/auth/auth-provider";
 import { api } from "@/lib/api";
-import { formatDate, formatStatusLabel } from "@/lib/format";
+import { formatStatusLabel } from "@/lib/format";
 import { useLang } from "@/lib/lang";
 
 const T = {
@@ -58,6 +54,8 @@ const T = {
     cardBot: "Kết nối bot & nguồn",
     fieldBotDesc: "Token bot seller. Chỉ cần nhập lại khi muốn thay mới.",
     phBotToken: "Nhập BOT_TOKEN",
+    fieldOwnerTelegramDesc: "Telegram User ID của bạn (chủ bot). Dùng để xác thực khi mở cài đặt bot trong Telegram.",
+    phOwnerTelegramUserId: "VD: 123456789",
     ultraTitle: "🏪 Tài khoản ULTRA — Bạn là Tổng sỉ",
     ultraDesc: "PRO seller kết nối kho của bạn qua API key tại trang Source Network. Nếu shop riêng cũng dùng nguồn ngoài, điền buyer key bên dưới.",
     sourceConnectedDesc: (name: string, balance: string) => `Đang kết nối ULTRA: ${name} — Số dư: ${balance}đ`,
@@ -71,6 +69,9 @@ const T = {
     notifSyncDesc: "Bật để bot seller gửi thông báo khi nguồn báo có thêm hàng.",
     toggleOn: "Đang bật",
     toggleOff: "Đang tắt",
+    markupLabel: "% tăng giá so với nguồn",
+    markupDesc: "Giá bán = giá nguồn × (1 + %/100). Để trống = giá nguồn + 10.000đ.",
+    markupPlaceholder: "VD: 15 (tức +15%)",
     cardPayment: "Cài đặt thanh toán",
     payosDesc: "Tạo link thanh toán VNĐ tự động. Lấy key tại dashboard PayOS.",
     phClientId: "Nhập Client ID",
@@ -138,6 +139,8 @@ const T = {
     cardBot: "Bot & Source Connection",
     fieldBotDesc: "Seller bot token. Only re-enter when changing.",
     phBotToken: "Enter BOT_TOKEN",
+    fieldOwnerTelegramDesc: "Your Telegram User ID (bot owner). Used to authenticate when opening bot settings in Telegram.",
+    phOwnerTelegramUserId: "e.g. 123456789",
     ultraTitle: "🏪 ULTRA Account — You are a Wholesaler",
     ultraDesc: "PRO sellers connect to your inventory via API key on the Source Network page. If your own shop also uses an external source, enter the buyer key below.",
     sourceConnectedDesc: (name: string, balance: string) => `Connected to ULTRA: ${name} — Balance: ${balance}`,
@@ -151,6 +154,9 @@ const T = {
     notifSyncDesc: "Enable to forward stock notifications from the source bot to seller bot.",
     toggleOn: "On",
     toggleOff: "Off",
+    markupLabel: "Price markup % vs source",
+    markupDesc: "Sale price = source price × (1 + %/100). Leave empty = source + 10,000₫.",
+    markupPlaceholder: "e.g. 15 (= +15%)",
     cardPayment: "Payment Settings",
     payosDesc: "Auto-generate VND payment links. Get keys from PayOS dashboard.",
     phClientId: "Enter Client ID",
@@ -218,6 +224,8 @@ const T = {
     cardBot: "เชื่อมต่อบอทและแหล่งสินค้า",
     fieldBotDesc: "Token บอทผู้ขาย ใส่ใหม่เฉพาะเมื่อต้องการเปลี่ยน",
     phBotToken: "ใส่ BOT_TOKEN",
+    fieldOwnerTelegramDesc: "Telegram User ID ของคุณ (เจ้าของบอท) ใช้ยืนยันตัวตนเมื่อเปิดการตั้งค่าบอทใน Telegram",
+    phOwnerTelegramUserId: "เช่น 123456789",
     ultraTitle: "🏪 บัญชี ULTRA — คุณคือผู้ค้าส่ง",
     ultraDesc: "ผู้ขาย PRO เชื่อมต่อคลังของคุณผ่าน API key ที่หน้า Source Network หากร้านของคุณใช้แหล่งภายนอกด้วย ให้ใส่ buyer key ด้านล่าง",
     sourceConnectedDesc: (name: string, balance: string) => `เชื่อมต่อ ULTRA: ${name} — ยอดคงเหลือ: ${balance}`,
@@ -231,6 +239,9 @@ const T = {
     notifSyncDesc: "เปิดเพื่อให้บอทผู้ขายส่งการแจ้งเตือนเมื่อแหล่งสินค้ามีสินค้าเพิ่ม",
     toggleOn: "เปิด",
     toggleOff: "ปิด",
+    markupLabel: "% เพิ่มราคาจากแหล่งสินค้า",
+    markupDesc: "ราคาขาย = ราคาต้นทุน × (1 + %/100). ว่าง = ต้นทุน + 10,000₫",
+    markupPlaceholder: "เช่น 15 (= +15%)",
     cardPayment: "ตั้งค่าการชำระเงิน",
     payosDesc: "สร้างลิงก์ชำระเงิน VND อัตโนมัติ รับ key จาก dashboard PayOS",
     phClientId: "ใส่ Client ID",
@@ -265,18 +276,32 @@ type BotConfigForm = {
   shopName: string;
   shopTagline: string;
   botToken: string;
+  ownerTelegramUserId: string;
   providerBaseUrl: string;
   providerBuyerKey: string;
   supportTelegram: string;
   supportZalo: string;
   logoUrl: string;
   sourceNotificationSyncEnabled: boolean;
+  priceMarkupPercent: string;
+  paymentProvider: string;
   payosClientId: string;
   payosApiKey: string;
   payosChecksumKey: string;
+  pay2sPartnerCode: string;
+  pay2sAccessKey: string;
+  pay2sSecretKey: string;
+  pay2sBankAccount: string;
+  pay2sBankId: string;
+  web2mAccountNumber: string;
+  web2mBankCode: string;
+  web2mPassword: string;
+  web2mToken: string;
+  web2mAccessToken: string;
   binanceUid: string;
   okxUid: string;
   usdtTrc20Address: string;
+  usdtSolanaAddress: string;
   usdtVndRateOverride: string;
   binancePersonalApiKey: string;
   binancePersonalSecretKey: string;
@@ -287,29 +312,43 @@ type BotConfigForm = {
 
 function normalizeOptionalValue(value: string) {
   const trimmed = value.trim();
-  return trimmed === "" ? undefined : trimmed;
+  return trimmed === "" ? null : trimmed;
 }
 
 function buildBotConfigPayload(form: BotConfigForm) {
-  const payload: Record<string, string | boolean> = {
+  const payload: Record<string, string | boolean | number | null> = {
     sourceNotificationSyncEnabled: form.sourceNotificationSyncEnabled,
+    priceMarkupPercent: form.priceMarkupPercent.trim() === "" ? null : Number(form.priceMarkupPercent),
   };
 
-  const fields: Array<[Exclude<keyof BotConfigForm, "sourceNotificationSyncEnabled" | "binancePayEnabled">, string]> = [
+  const fields: Array<[Exclude<keyof BotConfigForm, "sourceNotificationSyncEnabled" | "binancePayEnabled" | "priceMarkupPercent">, string]> = [
     ["shopName", "shopName"],
     ["shopTagline", "shopTagline"],
     ["botToken", "botToken"],
+    ["ownerTelegramUserId", "ownerTelegramUserId"],
     ["providerBaseUrl", "providerBaseUrl"],
     ["providerBuyerKey", "providerBuyerKey"],
     ["supportTelegram", "supportTelegram"],
     ["supportZalo", "supportZalo"],
     ["logoUrl", "logoUrl"],
+    ["paymentProvider", "paymentProvider"],
     ["payosClientId", "payosClientId"],
     ["payosApiKey", "payosApiKey"],
     ["payosChecksumKey", "payosChecksumKey"],
+    ["pay2sPartnerCode", "pay2sPartnerCode"],
+    ["pay2sAccessKey", "pay2sAccessKey"],
+    ["pay2sSecretKey", "pay2sSecretKey"],
+    ["pay2sBankAccount", "pay2sBankAccount"],
+    ["pay2sBankId", "pay2sBankId"],
+    ["web2mAccountNumber", "web2mAccountNumber"],
+    ["web2mBankCode", "web2mBankCode"],
+    ["web2mPassword", "web2mPassword"],
+    ["web2mToken", "web2mToken"],
+    ["web2mAccessToken", "web2mAccessToken"],
     ["binanceUid", "binanceUid"],
     ["okxUid", "okxUid"],
     ["usdtTrc20Address", "usdtTrc20Address"],
+    ["usdtSolanaAddress", "usdtSolanaAddress"],
     ["binancePersonalApiKey", "binancePersonalApiKey"],
     ["binancePersonalSecretKey", "binancePersonalSecretKey"],
     ["binancePayApiKey", "binancePayApiKey"],
@@ -317,10 +356,7 @@ function buildBotConfigPayload(form: BotConfigForm) {
   ];
 
   for (const [formKey, payloadKey] of fields) {
-    const nextValue = normalizeOptionalValue(form[formKey] as string);
-    if (nextValue !== undefined) {
-      payload[payloadKey] = nextValue;
-    }
+    payload[payloadKey] = normalizeOptionalValue(form[formKey] as string);
   }
 
   payload.binancePayEnabled = form.binancePayEnabled;
@@ -342,18 +378,32 @@ function getInitialForm(): BotConfigForm {
     shopName: "",
     shopTagline: "",
     botToken: "",
+    ownerTelegramUserId: "",
     providerBaseUrl: "https://canboso.com",
     providerBuyerKey: "",
     supportTelegram: "",
     supportZalo: "",
     logoUrl: "",
     sourceNotificationSyncEnabled: true,
+    priceMarkupPercent: "",
+    paymentProvider: "PAYOS",
     payosClientId: "",
     payosApiKey: "",
     payosChecksumKey: "",
+    pay2sPartnerCode: "",
+    pay2sAccessKey: "",
+    pay2sSecretKey: "",
+    pay2sBankAccount: "",
+    pay2sBankId: "",
+    web2mAccountNumber: "",
+    web2mBankCode: "",
+    web2mPassword: "",
+    web2mToken: "",
+    web2mAccessToken: "",
     binanceUid: "",
     okxUid: "",
     usdtTrc20Address: "",
+    usdtSolanaAddress: "",
     usdtVndRateOverride: "",
     binancePersonalApiKey: "",
     binancePersonalSecretKey: "",
@@ -386,6 +436,7 @@ export function BotConfigPage() {
   const [form, setForm] = useState<BotConfigForm>(getInitialForm);
   const [simulationOutput, setSimulationOutput] = useState("");
   const [sourceKeyInput, setSourceKeyInput] = useState("");
+  const [activeTab, setActiveTab] = useState<"shop" | "bot" | "payment" | "crypto" | "affiliate">("bot");
   const { showToast } = useToast();
 
   const sourceConnectionQuery = useQuery({
@@ -415,18 +466,32 @@ export function BotConfigPage() {
       shopName: configQuery.data.shopName || "",
       shopTagline: configQuery.data.shopTagline || "",
       botToken: "",
+      ownerTelegramUserId: configQuery.data.ownerTelegramUserId || "",
       providerBaseUrl: configQuery.data.providerBaseUrl || "https://canboso.com",
       providerBuyerKey: "",
       supportTelegram: configQuery.data.supportTelegram || "",
       supportZalo: configQuery.data.supportZalo || "",
       logoUrl: configQuery.data.logoUrl || "",
       sourceNotificationSyncEnabled: configQuery.data.sourceNotificationSyncEnabled ?? true,
+      priceMarkupPercent: configQuery.data.priceMarkupPercent != null ? String(configQuery.data.priceMarkupPercent) : "",
+      paymentProvider: String((configQuery.data as any).paymentProvider || "PAYOS").toUpperCase(),
       payosClientId: "",
       payosApiKey: "",
       payosChecksumKey: "",
+      pay2sPartnerCode: "",
+      pay2sAccessKey: "",
+      pay2sSecretKey: "",
+      pay2sBankAccount: (configQuery.data as any).pay2sBankAccount || "",
+      pay2sBankId: (configQuery.data as any).pay2sBankId || "",
+      web2mAccountNumber: (configQuery.data as any).web2mAccountNumber || "",
+      web2mBankCode: (configQuery.data as any).web2mBankCode || "",
+      web2mPassword: "",
+      web2mToken: "",
+      web2mAccessToken: "",
       binanceUid: configQuery.data.binanceUid || "",
       okxUid: configQuery.data.okxUid || "",
       usdtTrc20Address: configQuery.data.usdtTrc20Address || "",
+      usdtSolanaAddress: (configQuery.data as any).usdtSolanaAddress || "",
       usdtVndRateOverride:
         configQuery.data.usdtVndRateOverride !== null && configQuery.data.usdtVndRateOverride !== undefined
           ? String(configQuery.data.usdtVndRateOverride)
@@ -556,433 +621,539 @@ export function BotConfigPage() {
     onError: (error) => showToast({ tone: "error", message: getApiErrorMessage(error, t.toastFallbackError) }),
   });
 
-  return (
-    <div className="space-y-5">
-      <SectionHeading
-        eyebrow={t.eyebrow}
-        title={t.title}
-        description={t.description}
-        gradient="orange"
-        stats={[
-          { icon: Store, label: "Shop", value: configQuery.data?.shopName || t.statShopEmpty, iconCls: "text-amber-400", bgCls: "bg-amber-500/15" },
-          { icon: Bot, label: "Telegram", value: formatStatusLabel(configQuery.data?.telegramWebhookStatus), iconCls: "text-sky-400", bgCls: "bg-sky-500/15" },
-          { icon: Cable, label: "Provider", value: formatStatusLabel(configQuery.data?.providerConnectionStatus), iconCls: "text-emerald-400", bgCls: "bg-emerald-500/15" },
-          { icon: Wallet, label: t.statPayment, value: formatStatusLabel(configQuery.data?.paymentProvider), iconCls: "text-violet-400", bgCls: "bg-violet-500/15" },
-        ]}
-        actions={
-          <Button className="min-w-[220px]" disabled={saveMutation.isPending} onClick={() => {
-            const hasApiKey = form.binancePersonalApiKey.trim().length > 0;
-            const hasSecretKey = form.binancePersonalSecretKey.trim().length > 0;
-            if (hasApiKey !== hasSecretKey) {
-              showToast({ tone: "error", message: t.errorBothKeys });
-              return;
-            }
-            saveMutation.mutate();
-          }}>
-            {saveMutation.isPending ? t.saving : t.saveAll}
-          </Button>
-        }
-      />
+  const _ = simulationOutput; // suppress unused warning
 
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-[20px] px-4 py-3" style={{ background: "var(--surface)", border: "1px solid var(--bd)" }}>
-        <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
-          <div className="flex items-center gap-2">
-            <span className="text-xs" style={{ color: "var(--tx-f)" }}>Telegram</span>
-            <span className="text-xs font-medium" style={{ color: "var(--tx)" }}>
-              {configQuery.data?.telegramBotUsername ? `@${configQuery.data.telegramBotUsername}` : t.telegramNotVerified}
-            </span>
-            <Badge tone={toneByStatus(configQuery.data?.telegramWebhookStatus)}>
-              {formatStatusLabel(configQuery.data?.telegramWebhookStatus)}
-            </Badge>
-          </div>
-          <div className="h-3.5 w-px" style={{ background: "var(--bd)" }} />
-          <div className="flex items-center gap-2">
-            <span className="text-xs" style={{ color: "var(--tx-f)" }}>{t.labelSource}</span>
-            <Badge tone={toneByStatus(configQuery.data?.providerConnectionStatus)}>
-              {formatStatusLabel(configQuery.data?.providerConnectionStatus)}
-            </Badge>
-          </div>
-          <div className="h-3.5 w-px" style={{ background: "var(--bd)" }} />
-          <div className="flex items-center gap-2">
-            <span className="text-xs" style={{ color: "var(--tx-f)" }}>{t.labelPayment}</span>
-            <Badge tone={toneByStatus(configQuery.data?.paymentProvider)}>
-              {formatStatusLabel(configQuery.data?.paymentProvider)}
-            </Badge>
-          </div>
+  return (
+    <div className="space-y-4">
+      {/* Header */}
+      <div className="flex items-center justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-black" style={{ color: "rgb(249,115,22)" }}>{t.title}</h1>
+          <p className="mt-0.5 text-[13px]" style={{ color: "var(--tx-f)" }}>{t.eyebrow}</p>
         </div>
-        <div className="flex flex-wrap gap-2">
-          <Button variant="secondary" disabled={verifyTelegramMutation.isPending} onClick={() => verifyTelegramMutation.mutate()}>
-            <ScanSearch className="h-3.5 w-3.5" />
-            {verifyTelegramMutation.isPending ? t.checkingTelegram : t.checkTelegram}
-          </Button>
-          <Button variant="secondary" disabled={verifyProviderMutation.isPending} onClick={() => verifyProviderMutation.mutate()}>
-            <Cable className="h-3.5 w-3.5" />
-            {verifyProviderMutation.isPending ? t.checkingSource : t.checkSource}
-          </Button>
-          <Button variant="secondary" disabled={syncProductsMutation.isPending} onClick={() => syncProductsMutation.mutate()}>
-            <KeyRound className="h-3.5 w-3.5" />
-            {syncProductsMutation.isPending ? t.syncing : t.syncProducts}
-          </Button>
+        <div className="flex items-center gap-2">
+          {isUltra && (
+            <span className="flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[11px] font-black"
+              style={{ background: "rgba(167,139,250,0.12)", border: "1px solid rgba(167,139,250,0.3)", color: "rgb(167,139,250)" }}>
+              ★ ULTRA · Tổng sỉ
+            </span>
+          )}
+          <button type="button"
+            onClick={async () => {
+              if (!window.confirm("Reset bot về mặc định admin? Tất cả customize (welcome, label, emoji) sẽ bị xoá. Không reset product overrides.")) return;
+              try {
+                await api.post("/admin-template/reset", { alsoResetProductOverrides: false });
+                showToast({ tone: "success", message: "Đã reset về mặc định admin." });
+                queryClient.invalidateQueries({ queryKey: ["bot-config"] });
+              } catch (err: any) {
+                showToast({ tone: "error", message: err?.response?.data?.message || "Không reset được." });
+              }
+            }}
+            className="flex items-center gap-1.5 rounded-xl px-3 py-2 text-[12px] font-black transition hover:opacity-80"
+            style={{ background: "var(--inp)", border: "1px solid var(--bd)", color: "var(--tx-m)" }}>
+            ↻ Reset về mặc định
+          </button>
+          <button type="button" disabled={saveMutation.isPending}
+            onClick={() => {
+              const hasApiKey = form.binancePersonalApiKey.trim().length > 0;
+              const hasSecretKey = form.binancePersonalSecretKey.trim().length > 0;
+              if (hasApiKey !== hasSecretKey) { showToast({ tone: "error", message: t.errorBothKeys }); return; }
+              saveMutation.mutate();
+            }}
+            className="flex items-center gap-1.5 rounded-xl px-4 py-2 text-[12px] font-black transition hover:opacity-80 disabled:opacity-40"
+            style={{ background: "rgb(249,115,22)", color: "#fff" }}>
+            {saveMutation.isPending ? t.saving : t.saveAll}
+          </button>
         </div>
       </div>
 
-      <section className="grid gap-6 lg:grid-cols-2">
-        <div className="space-y-6">
-          <Card>
-            <CardHeader icon={Store} title={t.cardShop} iconCls="text-amber-400" iconBg="bg-amber-500/10" />
-            <div className="mt-0 grid gap-5 sm:grid-cols-2">
+      {/* Status bar */}
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl px-4 py-3" style={{ background: "var(--surface)", border: "1px solid var(--bd)" }}>
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+          <div className="flex items-center gap-1.5">
+            <span className="h-2 w-2 rounded-full" style={{ background: configQuery.data?.telegramWebhookStatus === "verified" ? "rgb(52,211,153)" : "rgb(248,113,113)" }} />
+            <span className="text-[12px]" style={{ color: "var(--tx-f)" }}>Telegram</span>
+            <span className="text-[12px] font-black" style={{ color: "var(--tx)" }}>
+              {configQuery.data?.telegramBotUsername ? `@${configQuery.data.telegramBotUsername}` : t.telegramNotVerified}
+            </span>
+          </div>
+          <div className="h-3 w-px" style={{ background: "var(--bd)" }} />
+          <div className="flex items-center gap-1.5">
+            {configQuery.data?.providerConnectionStatus === "verified"
+              ? <span className="text-[12px] text-emerald-400 font-black">✓</span>
+              : <span className="h-2 w-2 rounded-full bg-slate-500" />}
+            <span className="text-[12px] font-black" style={{ color: "var(--tx)" }}>Nguồn</span>
+          </div>
+          <div className="h-3 w-px" style={{ background: "var(--bd)" }} />
+          <div className="flex items-center gap-1.5">
+            <span className="h-2 w-2 rounded-full bg-amber-400" />
+            <span className="text-[12px]" style={{ color: "var(--tx-f)" }}>Thanh toán</span>
+            <span className="text-[12px] font-black" style={{ color: "var(--tx)" }}>
+              {formatStatusLabel(configQuery.data?.paymentProvider) || "—"}
+            </span>
+          </div>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <button type="button" disabled={verifyTelegramMutation.isPending} onClick={() => verifyTelegramMutation.mutate()}
+            className="flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-[11px] font-black transition hover:opacity-80 disabled:opacity-40"
+            style={{ background: "var(--inp)", border: "1px solid var(--bd)", color: "var(--tx)" }}>
+            <ScanSearch className="h-3.5 w-3.5" />
+            {verifyTelegramMutation.isPending ? t.checkingTelegram : t.checkTelegram}
+          </button>
+          <button type="button" disabled={verifyProviderMutation.isPending} onClick={() => verifyProviderMutation.mutate()}
+            className="flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-[11px] font-black transition hover:opacity-80 disabled:opacity-40"
+            style={{ background: "var(--inp)", border: "1px solid var(--bd)", color: "var(--tx)" }}>
+            <Cable className="h-3.5 w-3.5" />
+            {verifyProviderMutation.isPending ? t.checkingSource : t.checkSource}
+          </button>
+          <button type="button" disabled={syncProductsMutation.isPending} onClick={() => syncProductsMutation.mutate()}
+            className="flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-[11px] font-black transition hover:opacity-80 disabled:opacity-40"
+            style={{ background: "var(--inp)", border: "1px solid var(--bd)", color: "var(--tx)" }}>
+            <KeyRound className="h-3.5 w-3.5" />
+            {syncProductsMutation.isPending ? t.syncing : t.syncProducts}
+          </button>
+        </div>
+      </div>
+
+      {/* Tab nav */}
+      <div className="flex gap-1 rounded-2xl p-1" style={{ background: "var(--surface)", border: "1px solid var(--bd)" }}>
+        {(["shop", "bot", "payment", "crypto", "affiliate"] as const).map((key) => {
+          const label = { shop: "Shop", bot: "Bot & Nguồn", payment: "Thanh toán", crypto: "Crypto", affiliate: "Affiliate" }[key];
+          const active = activeTab === key;
+          return (
+            <button key={key} type="button" onClick={() => setActiveTab(key)}
+              className="relative flex flex-1 items-center justify-center gap-1.5 rounded-xl py-2.5 text-[12px] font-black transition"
+              style={{ background: active ? "rgba(249,115,22,0.1)" : "transparent", color: active ? "rgb(249,115,22)" : "var(--tx-f)", border: active ? "1px solid rgba(249,115,22,0.25)" : "1px solid transparent" }}>
+              {label}
+              {key === "payment" && configQuery.data?.paymentProvider && (
+                <span className="h-1.5 w-1.5 rounded-full bg-amber-400" />
+              )}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Tab content */}
+      <div className="rounded-2xl p-6" style={{ background: "var(--surface)", border: "1px solid var(--bd)" }}>
+
+        {/* ── SHOP ── */}
+        {activeTab === "shop" && (
+          <div>
+            <div className="mb-5 flex items-center gap-2">
+              <div className="flex h-8 w-8 items-center justify-center rounded-xl" style={{ background: "rgba(245,158,11,0.12)" }}>
+                <Store className="h-4 w-4 text-amber-400" />
+              </div>
+              <h2 className="text-base font-black" style={{ color: "var(--tx)" }}>{t.cardShop}</h2>
+            </div>
+            <div className="grid gap-5 sm:grid-cols-2">
               <Field label={t.fieldShopName} hint="Required">
-                <Input
-                  value={form.shopName}
-                  onChange={(e) => setForm((c) => ({ ...c, shopName: e.target.value }))}
-                  placeholder={t.phShopName}
-                />
+                <Input value={form.shopName} onChange={(e) => setForm((c) => ({ ...c, shopName: e.target.value }))} placeholder={t.phShopName} />
               </Field>
               <Field label="Logo URL" hint="Optional">
-                <Input
-                  value={form.logoUrl}
-                  onChange={(e) => setForm((c) => ({ ...c, logoUrl: e.target.value }))}
-                  placeholder="https://..."
-                />
+                <Input value={form.logoUrl} onChange={(e) => setForm((c) => ({ ...c, logoUrl: e.target.value }))} placeholder="https://..." />
               </Field>
               <div className="sm:col-span-2">
                 <Field label={t.fieldTagline} hint="Optional">
-                  <Textarea
-                    className="min-h-[80px]"
-                    value={form.shopTagline}
-                    onChange={(e) => setForm((c) => ({ ...c, shopTagline: e.target.value }))}
-                    placeholder={t.phTagline}
-                  />
+                  <Textarea className="min-h-[80px]" value={form.shopTagline} onChange={(e) => setForm((c) => ({ ...c, shopTagline: e.target.value }))} placeholder={t.phTagline} />
                 </Field>
               </div>
               <Field label={t.fieldTelegramSupport}>
-                <Input
-                  value={form.supportTelegram}
-                  onChange={(e) => setForm((c) => ({ ...c, supportTelegram: e.target.value }))}
-                  placeholder="@support_shop"
-                />
+                <Input value={form.supportTelegram} onChange={(e) => setForm((c) => ({ ...c, supportTelegram: e.target.value }))} placeholder="@support_shop" />
               </Field>
               <Field label={t.fieldZaloSupport}>
-                <Input
-                  value={form.supportZalo}
-                  onChange={(e) => setForm((c) => ({ ...c, supportZalo: e.target.value }))}
-                  placeholder={t.phZalo}
-                />
+                <Input value={form.supportZalo} onChange={(e) => setForm((c) => ({ ...c, supportZalo: e.target.value }))} placeholder={t.phZalo} />
               </Field>
             </div>
-          </Card>
+            <div className="mt-6 flex justify-end">
+              <button type="button" disabled={saveMutation.isPending} onClick={() => saveMutation.mutate()}
+                className="rounded-xl px-4 py-2 text-[12px] font-black transition hover:opacity-80 disabled:opacity-40"
+                style={{ background: "rgb(249,115,22)", color: "#fff" }}>
+                {saveMutation.isPending ? t.saving : "Lưu thay đổi"}
+              </button>
+            </div>
+          </div>
+        )}
 
-          <Card>
-            <CardHeader icon={Bot} title={t.cardBot} iconCls="text-sky-400" iconBg="bg-sky-500/10" />
-            <div className="mt-0 grid gap-5">
-              <Field
-                label="BOT_TOKEN"
-                hint={configQuery.data?.botTokenMasked ? "Encrypted" : "Required"}
-                description={t.fieldBotDesc}
-              >
-                <Input
-                  value={form.botToken}
-                  onChange={(e) => setForm((c) => ({ ...c, botToken: e.target.value }))}
-                  placeholder={configQuery.data?.botTokenMasked || t.phBotToken}
-                />
+        {/* ── BOT & NGUỒN ── */}
+        {activeTab === "bot" && (
+          <div>
+            <div className="mb-5 flex items-center gap-2">
+              <div className="flex h-8 w-8 items-center justify-center rounded-xl" style={{ background: "rgba(56,189,248,0.12)" }}>
+                <Bot className="h-4 w-4 text-sky-400" />
+              </div>
+              <h2 className="text-base font-black" style={{ color: "var(--tx)" }}>{t.cardBot}</h2>
+            </div>
+            <div className="grid gap-5">
+              <Field label="BOT_TOKEN" hint={configQuery.data?.botTokenMasked ? "Đã mã hoá" : "Required"} description={t.fieldBotDesc}>
+                <Input value={form.botToken} onChange={(e) => setForm((c) => ({ ...c, botToken: e.target.value }))} placeholder={configQuery.data?.botTokenMasked || t.phBotToken} />
               </Field>
-
+              <Field label="OWNER_TELEGRAM_USER_ID" hint={configQuery.data?.ownerTelegramUserId ? "Đã lưu" : "Tùy chọn"} description={t.fieldOwnerTelegramDesc}>
+                <Input value={form.ownerTelegramUserId} onChange={(e) => setForm((c) => ({ ...c, ownerTelegramUserId: e.target.value }))} placeholder={configQuery.data?.ownerTelegramUserId || t.phOwnerTelegramUserId} />
+              </Field>
               {isUltra && (
-                <div className="rounded-[16px] border border-violet-400/20 bg-violet-500/10 p-4">
-                  <p className="text-sm font-semibold" style={{ color: "rgb(196,181,253)" }}>{t.ultraTitle}</p>
-                  <p className="mt-2 text-sm leading-6" style={{ color: "var(--tx-m)" }}>
-                    {t.ultraDesc}
-                  </p>
+                <div className="rounded-2xl px-4 py-4" style={{ background: "rgba(167,139,250,0.08)", border: "1px solid rgba(167,139,250,0.2)" }}>
+                  <p className="text-sm font-black" style={{ color: "rgb(196,181,253)" }}>{t.ultraTitle}</p>
+                  <p className="mt-2 text-sm leading-6" style={{ color: "var(--tx-m)" }}>{t.ultraDesc}</p>
                 </div>
               )}
-
-              <Field
-                label="Source key"
-                hint={configQuery.data?.providerBuyerKeyMasked || sourceConnectionQuery.data?.status === "active" ? "Encrypted" : isUltra ? "Optional" : "Required"}
-                description={
-                  sourceConnectionQuery.data?.status === "active"
-                    ? t.sourceConnectedDesc(
-                        sourceConnectionQuery.data.upstreamShop?.name ?? "",
-                        (sourceConnectionQuery.data.balance ?? 0).toLocaleString("vi-VN"),
-                      )
-                    : t.sourceKeyDesc
-                }
-              >
+              <Field label="Source key"
+                hint={configQuery.data?.providerBuyerKeyMasked || sourceConnectionQuery.data?.status === "active" ? "Đã mã hoá" : isUltra ? "Optional" : "Required"}
+                description={sourceConnectionQuery.data?.status === "active"
+                  ? t.sourceConnectedDesc(sourceConnectionQuery.data.upstreamShop?.name ?? "", (sourceConnectionQuery.data.balance ?? 0).toLocaleString("vi-VN"))
+                  : t.sourceKeyDesc}>
                 <div className="flex gap-3">
-                  <Input
-                    value={sourceKeyInput || form.providerBuyerKey}
-                    onChange={(e) => {
-                      const val = e.target.value;
-                      setSourceKeyInput(val);
-                      if (!val.startsWith("isk_")) {
-                        setForm((c) => ({ ...c, providerBuyerKey: val }));
-                      }
-                    }}
-                    placeholder={
-                      sourceConnectionQuery.data?.status === "active"
-                        ? t.phSourceConnected
-                        : configQuery.data?.providerBuyerKeyMasked || t.phSourceKey
-                    }
-                    className="font-mono text-sm"
-                  />
+                  <Input value={sourceKeyInput || form.providerBuyerKey}
+                    onChange={(e) => { const val = e.target.value; setSourceKeyInput(val); if (!val.startsWith("isk_")) setForm((c) => ({ ...c, providerBuyerKey: val })); }}
+                    placeholder={sourceConnectionQuery.data?.status === "active" ? t.phSourceConnected : configQuery.data?.providerBuyerKeyMasked || t.phSourceKey}
+                    className="font-mono text-sm" />
                   {sourceKeyInput.trim().startsWith("isk_") && (
-                    <Button
-                      type="button"
-                      onClick={() => connectSourceMutation.mutate(sourceKeyInput.trim())}
-                      disabled={connectSourceMutation.isPending}
-                    >
-                      {connectSourceMutation.isPending
-                        ? t.connectingSource
-                        : sourceConnectionQuery.data?.status === "active"
-                        ? t.changeKey
-                        : t.connectKey}
+                    <Button type="button" onClick={() => connectSourceMutation.mutate(sourceKeyInput.trim())} disabled={connectSourceMutation.isPending}>
+                      {connectSourceMutation.isPending ? t.connectingSource : sourceConnectionQuery.data?.status === "active" ? t.changeKey : t.connectKey}
                     </Button>
                   )}
                 </div>
               </Field>
-
-              <div className="flex flex-col gap-4 rounded-[22px] px-4 py-4 sm:flex-row sm:items-center sm:justify-between" style={{ background: "var(--inp)", border: "1px solid var(--bd)" }}>
-                <div className="min-w-0">
+              <Field label={t.markupLabel} hint={t.markupDesc}>
+                <Input type="number" min={0} max={500} step={0.1} value={form.priceMarkupPercent}
+                  onChange={(e) => setForm((c) => ({ ...c, priceMarkupPercent: e.target.value }))} placeholder={t.markupPlaceholder} />
+              </Field>
+              <div className="flex flex-col gap-4 rounded-2xl px-4 py-4 sm:flex-row sm:items-center sm:justify-between" style={{ background: "var(--inp)", border: "1px solid var(--bd)" }}>
+                <div>
                   <p className="font-semibold" style={{ color: "var(--tx)" }}>{t.notifSyncLabel}</p>
                   <p className="mt-1 text-sm" style={{ color: "var(--tx-f)" }}>{t.notifSyncDesc}</p>
                 </div>
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={form.sourceNotificationSyncEnabled}
-                  aria-busy={sourceNotificationSyncMutation.isPending}
-                  disabled={sourceNotificationSyncMutation.isPending}
+                <button type="button" role="switch" aria-checked={form.sourceNotificationSyncEnabled}
+                  aria-busy={sourceNotificationSyncMutation.isPending} disabled={sourceNotificationSyncMutation.isPending}
                   onClick={toggleSourceNotificationSync}
-                  className="inline-flex h-12 w-full shrink-0 items-center justify-between gap-3 rounded-[14px] border px-3 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-55 sm:w-[164px]"
+                  className="inline-flex h-12 w-full shrink-0 items-center justify-between gap-3 rounded-2xl border px-3 text-sm font-semibold transition disabled:opacity-55 sm:w-[164px]"
                   style={form.sourceNotificationSyncEnabled
                     ? { borderColor: "rgba(249,115,22,0.3)", background: "rgba(249,115,22,0.08)", color: "var(--tx)" }
-                    : { borderColor: "var(--bd)", background: "var(--surface)", color: "var(--tx-m)" }
-                  }
-                >
-                  <span
-                    className="flex h-8 w-8 items-center justify-center rounded-[10px] transition"
-                    style={form.sourceNotificationSyncEnabled
-                      ? { background: "rgb(249,115,22)", color: "white" }
-                      : { background: "var(--inp)", color: "var(--tx-f)" }
-                    }
-                  >
+                    : { borderColor: "var(--bd)", background: "var(--surface)", color: "var(--tx-m)" }}>
+                  <span className="flex h-8 w-8 items-center justify-center rounded-xl transition"
+                    style={form.sourceNotificationSyncEnabled ? { background: "rgb(249,115,22)", color: "white" } : { background: "var(--inp)", color: "var(--tx-f)" }}>
                     {form.sourceNotificationSyncEnabled ? <BellRing className="h-4 w-4" /> : <BellOff className="h-4 w-4" />}
                   </span>
                   <span>{form.sourceNotificationSyncEnabled ? t.toggleOn : t.toggleOff}</span>
                 </button>
               </div>
             </div>
-          </Card>
-        </div>
+            <div className="mt-6 flex justify-end">
+              <button type="button" disabled={saveMutation.isPending} onClick={() => saveMutation.mutate()}
+                className="rounded-xl px-4 py-2 text-[12px] font-black transition hover:opacity-80 disabled:opacity-40"
+                style={{ background: "rgb(249,115,22)", color: "#fff" }}>
+                {saveMutation.isPending ? t.saving : "Lưu thay đổi"}
+              </button>
+            </div>
+          </div>
+        )}
 
-        <div className="space-y-6">
-          <Card>
-            <CardHeader icon={Wallet} title={t.cardPayment} iconCls="text-violet-400" iconBg="bg-violet-500/10" />
-
-            <div className="mt-0">
-              <p className="text-[11px] font-bold uppercase tracking-widest" style={{ color: "var(--tx-f)" }}>PayOS — VNĐ</p>
-              <p className="mt-1 text-sm" style={{ color: "var(--tx-m)" }}>{t.payosDesc}</p>
-              <div className="mt-4 grid gap-5 sm:grid-cols-2">
-                <Field label="Client ID" hint={configQuery.data?.payosClientIdMasked ? "Encrypted" : "Optional"}>
-                  <Input
-                    value={form.payosClientId}
-                    onChange={(e) => setForm((c) => ({ ...c, payosClientId: e.target.value }))}
-                    placeholder={configQuery.data?.payosClientIdMasked || t.phClientId}
-                  />
-                </Field>
-                <Field label="API Key" hint={configQuery.data?.payosApiKeyMasked ? "Encrypted" : "Optional"}>
-                  <Input
-                    value={form.payosApiKey}
-                    onChange={(e) => setForm((c) => ({ ...c, payosApiKey: e.target.value }))}
-                    placeholder={configQuery.data?.payosApiKeyMasked || t.phApiKey}
-                  />
-                </Field>
-                <div className="sm:col-span-2">
-                  <Field label="Checksum Key" hint={configQuery.data?.payosChecksumKeyMasked ? "Encrypted" : "Optional"}>
-                    <Input
-                      value={form.payosChecksumKey}
-                      onChange={(e) => setForm((c) => ({ ...c, payosChecksumKey: e.target.value }))}
-                      placeholder={configQuery.data?.payosChecksumKeyMasked || t.phChecksumKey}
-                    />
-                  </Field>
-                </div>
+        {/* ── THANH TOÁN ── */}
+        {activeTab === "payment" && (
+          <div>
+            {/* Provider selector */}
+            <div className="mb-6 rounded-2xl p-4" style={{ background: "var(--inp)", border: "1px solid var(--bd)" }}>
+              <p className="mb-3 text-[11px] font-black uppercase tracking-widest" style={{ color: "var(--tx-f)" }}>Cổng thanh toán VNĐ</p>
+              <div className="grid gap-2.5 sm:grid-cols-3">
+                {[
+                  { key: "PAYOS", label: "PayOS", desc: "Nhanh, tin cậy. Phí cao." },
+                  { key: "PAY2S", label: "Pay2s", desc: "Webhook. Phí thấp." },
+                  { key: "WEB2M", label: "Web2m", desc: "Polling. Phí rẻ nhất." },
+                ].map((opt) => {
+                  const isSelected = form.paymentProvider === opt.key;
+                  return (
+                    <button
+                      key={opt.key}
+                      type="button"
+                      onClick={() => setForm((c) => ({ ...c, paymentProvider: opt.key }))}
+                      className="rounded-xl border-2 p-3 text-left transition"
+                      style={{
+                        borderColor: isSelected ? "rgb(249,115,22)" : "var(--bd)",
+                        background: isSelected ? "rgba(249,115,22,0.08)" : "var(--surface)",
+                      }}
+                    >
+                      <div className="flex items-center justify-between">
+                        <p className="text-sm font-black" style={{ color: "var(--tx)" }}>{opt.label}</p>
+                        {isSelected && <span className="text-xs font-bold text-orange-500">● ĐANG DÙNG</span>}
+                      </div>
+                      <p className="mt-0.5 text-[11px]" style={{ color: "var(--tx-f)" }}>{opt.desc}</p>
+                    </button>
+                  );
+                })}
               </div>
             </div>
 
-            <div className="my-6" style={{ borderTop: "1px solid var(--bd)" }} />
-
-            <div>
-              <p className="text-[11px] font-bold uppercase tracking-widest" style={{ color: "var(--tx-f)" }}>USDT / Crypto</p>
-              <p className="mt-1 text-sm" style={{ color: "var(--tx-m)" }}>{t.usdtDesc}</p>
-              <div className="mt-4 grid gap-5 sm:grid-cols-2">
-                <Field label="Binance UID" hint="Optional">
-                  <Input
-                    value={form.binanceUid}
-                    onChange={(e) => setForm((c) => ({ ...c, binanceUid: e.target.value }))}
-                    placeholder={t.phBinanceUid}
-                  />
-                </Field>
-                <Field
-                  label={t.fieldUsdtRate}
-                  hint="Optional"
-                  description={t.usdtRateDesc(configQuery.data?.defaultUsdtVndRate || 26000)}
-                >
-                  <Input
-                    inputMode="decimal"
-                    value={form.usdtVndRateOverride}
-                    onChange={(e) => setForm((c) => ({ ...c, usdtVndRateOverride: e.target.value }))}
-                    placeholder={String(configQuery.data?.defaultUsdtVndRate || 26000)}
-                  />
-                </Field>
-                <div className="sm:col-span-2">
-                  <Field label={t.fieldUsdtAddress} hint="Optional">
-                    <Input
-                      value={form.usdtTrc20Address}
-                      onChange={(e) => setForm((c) => ({ ...c, usdtTrc20Address: e.target.value }))}
-                      placeholder={t.phUsdtAddress}
-                    />
-                  </Field>
-                </div>
-                <Field label="Personal API Key" hint={configQuery.data?.binancePersonalApiKeyMasked ? "Encrypted" : "Optional"}>
-                  <Input
-                    value={form.binancePersonalApiKey}
-                    onChange={(e) => setForm((c) => ({ ...c, binancePersonalApiKey: e.target.value }))}
-                    placeholder={configQuery.data?.binancePersonalApiKeyMasked || t.phApiKey}
-                  />
-                </Field>
-                <Field label="Personal Secret Key" hint={configQuery.data?.binancePersonalSecretKeyMasked ? "Encrypted" : "Optional"}>
-                  <Input
-                    value={form.binancePersonalSecretKey}
-                    onChange={(e) => setForm((c) => ({ ...c, binancePersonalSecretKey: e.target.value }))}
-                    placeholder={configQuery.data?.binancePersonalSecretKeyMasked || t.phApiKey}
-                  />
+            {form.paymentProvider === "PAYOS" && (
+            <>
+            <div className="mb-5 flex items-center gap-2">
+              <div className="flex h-8 w-8 items-center justify-center rounded-xl" style={{ background: "rgba(99,102,241,0.12)" }}>
+                <Wallet className="h-4 w-4 text-violet-400" />
+              </div>
+              <h2 className="text-base font-black" style={{ color: "var(--tx)" }}>PayOS — VNĐ</h2>
+            </div>
+            <div className="mb-4 rounded-2xl px-4 py-3" style={{ background: "rgba(52,211,153,0.06)", border: "1px solid rgba(52,211,153,0.15)" }}>
+              <p className="text-[12px]" style={{ color: "rgb(52,211,153)" }}>ⓘ {t.payosDesc}</p>
+            </div>
+            <div className="grid gap-5 sm:grid-cols-2">
+              <Field label="Client ID" hint={configQuery.data?.payosClientIdMasked ? "Đã mã hoá" : "Optional"}>
+                <Input value={form.payosClientId} onChange={(e) => setForm((c) => ({ ...c, payosClientId: e.target.value }))} placeholder={configQuery.data?.payosClientIdMasked || t.phClientId} />
+              </Field>
+              <Field label="API Key" hint={configQuery.data?.payosApiKeyMasked ? "Đã mã hoá" : "Optional"}>
+                <Input value={form.payosApiKey} onChange={(e) => setForm((c) => ({ ...c, payosApiKey: e.target.value }))} placeholder={configQuery.data?.payosApiKeyMasked || t.phApiKey} />
+              </Field>
+              <div className="sm:col-span-2">
+                <Field label="Checksum Key" hint={configQuery.data?.payosChecksumKeyMasked ? "Đã mã hoá" : "Optional"}>
+                  <Input value={form.payosChecksumKey} onChange={(e) => setForm((c) => ({ ...c, payosChecksumKey: e.target.value }))} placeholder={configQuery.data?.payosChecksumKeyMasked || t.phChecksumKey} />
                 </Field>
               </div>
             </div>
+            <div className="mt-6 flex justify-end">
+              <button type="button" disabled={saveMutation.isPending} onClick={() => saveMutation.mutate()}
+                className="rounded-xl px-4 py-2 text-[12px] font-black transition hover:opacity-80 disabled:opacity-40"
+                style={{ background: "rgb(249,115,22)", color: "#fff" }}>
+                {saveMutation.isPending ? t.saving : "Lưu thay đổi"}
+              </button>
+            </div>
+            </>
+            )}
 
-            <div className="my-6" style={{ borderTop: "1px solid var(--bd)" }} />
-
+            {form.paymentProvider === "PAY2S" && (
             <div>
-              <p className="text-[11px] font-bold uppercase tracking-widest" style={{ color: "var(--tx-f)" }}>Binance Pay Merchant</p>
-              <div className="mt-3">
-                <InfoHint content={t.binancePayHint} label={t.binancePayHintLabel} />
+              <div className="mb-5 flex items-center gap-2">
+                <div className="flex h-8 w-8 items-center justify-center rounded-xl" style={{ background: "rgba(56,189,248,0.12)" }}>
+                  <Wallet className="h-4 w-4 text-sky-400" />
+                </div>
+                <h2 className="text-base font-black" style={{ color: "var(--tx)" }}>Pay2s — VNĐ</h2>
               </div>
-              <div className="mt-4 grid gap-5">
-                <div className="flex flex-col gap-4 rounded-[22px] px-4 py-4 sm:flex-row sm:items-center sm:justify-between" style={{ background: "var(--inp)", border: "1px solid var(--bd)" }}>
-                  <div className="min-w-0">
-                    <p className="font-semibold" style={{ color: "var(--tx)" }}>{t.binancePayAutoLabel}</p>
-                    <p className="mt-1 text-sm" style={{ color: "var(--tx-f)" }}>{t.binancePayAutoDesc}</p>
+              <div className="mb-4 rounded-2xl px-4 py-3" style={{ background: "rgba(56,189,248,0.06)", border: "1px solid rgba(56,189,248,0.15)" }}>
+                <p className="text-[12px]" style={{ color: "rgb(56,189,248)" }}>ⓘ Nhập credentials Pay2s. Để dùng làm cổng thanh toán mặc định, đổi provider ở DB hoặc liên hệ admin.</p>
+              </div>
+              <div className="grid gap-5 sm:grid-cols-2">
+                <Field label="Partner Code" hint={(configQuery.data as any)?.pay2sPartnerCodeMasked ? "Đã mã hoá" : "Optional"}>
+                  <Input value={form.pay2sPartnerCode} onChange={(e) => setForm((c) => ({ ...c, pay2sPartnerCode: e.target.value }))} placeholder={(configQuery.data as any)?.pay2sPartnerCodeMasked || "MOMOXXXX"} />
+                </Field>
+                <Field label="Access Key" hint={(configQuery.data as any)?.pay2sAccessKeyMasked ? "Đã mã hoá" : "Optional"}>
+                  <Input value={form.pay2sAccessKey} onChange={(e) => setForm((c) => ({ ...c, pay2sAccessKey: e.target.value }))} placeholder={(configQuery.data as any)?.pay2sAccessKeyMasked || "AccessKey"} />
+                </Field>
+                <div className="sm:col-span-2">
+                  <Field label="Secret Key" hint={(configQuery.data as any)?.pay2sSecretKeyMasked ? "Đã mã hoá" : "Optional"}>
+                    <Input value={form.pay2sSecretKey} onChange={(e) => setForm((c) => ({ ...c, pay2sSecretKey: e.target.value }))} placeholder={(configQuery.data as any)?.pay2sSecretKeyMasked || "SecretKey"} />
+                  </Field>
+                </div>
+                <Field label="Số tài khoản ngân hàng" hint="Tài khoản đã đăng ký Pay2s">
+                  <Input value={form.pay2sBankAccount} onChange={(e) => setForm((c) => ({ ...c, pay2sBankAccount: e.target.value }))} placeholder="9999000xxxx" />
+                </Field>
+                <Field label="Ngân hàng" hint="Chọn ngân hàng đã đăng ký với Pay2s">
+                  <select
+                    value={form.pay2sBankId}
+                    onChange={(e) => setForm((c) => ({ ...c, pay2sBankId: e.target.value }))}
+                    className="w-full rounded-xl px-3 py-2.5 text-sm outline-none"
+                    style={{ background: "var(--inp)", border: "1px solid var(--bd)", color: "var(--tx)" }}
+                  >
+                    <option value="">-- Chọn ngân hàng --</option>
+                    <option value="VCB">Vietcombank (VCB)</option>
+                    <option value="CTG">VietinBank (CTG)</option>
+                    <option value="TCB">Techcombank (TCB)</option>
+                    <option value="BIDV">BIDV</option>
+                    <option value="ACB">ACB</option>
+                    <option value="MBB">MBBank (MBB)</option>
+                    <option value="TPB">TPBank (TPB)</option>
+                    <option value="VPB">VPBank (VPB)</option>
+                    <option value="STB">Sacombank (STB)</option>
+                    <option value="AGRIBANK">Agribank</option>
+                    <option value="VIB">VIB</option>
+                    <option value="HDB">HDBank (HDB)</option>
+                    <option value="MSB">MSB</option>
+                    <option value="SHB">SHB</option>
+                    <option value="OCB">OCB</option>
+                    <option value="EIB">Eximbank (EIB)</option>
+                    <option value="SCB">SCB</option>
+                    <option value="NAB">Nam A Bank (NAB)</option>
+                    <option value="SEAB">SeABank (SEAB)</option>
+                    <option value="LPB">LPBank (LPB)</option>
+                  </select>
+                </Field>
+              </div>
+              <div className="mt-6 flex justify-end">
+                <button type="button" disabled={saveMutation.isPending} onClick={() => saveMutation.mutate()}
+                  className="rounded-xl px-4 py-2 text-[12px] font-black transition hover:opacity-80 disabled:opacity-40"
+                  style={{ background: "rgb(249,115,22)", color: "#fff" }}>
+                  {saveMutation.isPending ? t.saving : "Lưu thay đổi"}
+                </button>
+              </div>
+            </div>
+            )}
+
+            {form.paymentProvider === "WEB2M" && (
+            <div>
+              <div className="mb-5 flex items-center gap-2">
+                <div className="flex h-8 w-8 items-center justify-center rounded-xl" style={{ background: "rgba(245,158,11,0.12)" }}>
+                  <Wallet className="h-4 w-4 text-amber-400" />
+                </div>
+                <h2 className="text-base font-black" style={{ color: "var(--tx)" }}>Web2m — VNĐ</h2>
+              </div>
+              <div className="mb-4 rounded-2xl px-4 py-3" style={{ background: "rgba(245,158,11,0.06)", border: "1px solid rgba(245,158,11,0.15)" }}>
+                <p className="text-[12px]" style={{ color: "rgb(245,158,11)" }}>ⓘ Tạo WebHook trên dashboard Web2m → URL: <code className="font-mono">https://api.altivoxai.com/api/v1/webhooks/web2m</code> → copy Access Token paste vào đây.</p>
+              </div>
+              <div className="grid gap-5 sm:grid-cols-2">
+                <Field label="Số tài khoản" hint="STK đã đăng ký Web2m">
+                  <Input value={form.web2mAccountNumber} onChange={(e) => setForm((c) => ({ ...c, web2mAccountNumber: e.target.value }))} placeholder="9999000xxxx" />
+                </Field>
+                <Field label="Ngân hàng" hint="Chọn bank Web2m hỗ trợ">
+                  <select
+                    value={form.web2mBankCode}
+                    onChange={(e) => setForm((c) => ({ ...c, web2mBankCode: e.target.value }))}
+                    className="w-full rounded-xl px-3 py-2.5 text-sm outline-none"
+                    style={{ background: "var(--inp)", border: "1px solid var(--bd)", color: "var(--tx)" }}
+                  >
+                    <option value="">-- Chọn ngân hàng --</option>
+                    <option value="vcb">Vietcombank</option>
+                    <option value="bidv">BIDV</option>
+                    <option value="acb">ACB</option>
+                    <option value="mb">MBBank</option>
+                    <option value="tcb">Techcombank</option>
+                    <option value="ctg">VietinBank</option>
+                    <option value="tpb">TPBank</option>
+                  </select>
+                </Field>
+                <div className="sm:col-span-2">
+                  <Field label="Access Token (Bearer)" hint={(configQuery.data as any)?.web2mAccessTokenMasked ? "Đã mã hoá" : "Copy từ webhook entry trên Web2m dashboard"}>
+                    <Input value={form.web2mAccessToken} onChange={(e) => setForm((c) => ({ ...c, web2mAccessToken: e.target.value }))} placeholder={(configQuery.data as any)?.web2mAccessTokenMasked || "eyJ0eXAiOiJKV1QiLCJhbGciOiJ..."} />
+                  </Field>
+                </div>
+              </div>
+              <div className="mt-6 flex justify-end">
+                <button type="button" disabled={saveMutation.isPending} onClick={() => saveMutation.mutate()}
+                  className="rounded-xl px-4 py-2 text-[12px] font-black transition hover:opacity-80 disabled:opacity-40"
+                  style={{ background: "rgb(249,115,22)", color: "#fff" }}>
+                  {saveMutation.isPending ? t.saving : "Lưu thay đổi"}
+                </button>
+              </div>
+            </div>
+            )}
+          </div>
+        )}
+
+        {/* ── CRYPTO ── */}
+        {activeTab === "crypto" && (
+          <div>
+            <div className="mb-5 flex items-center gap-2">
+              <div className="flex h-8 w-8 items-center justify-center rounded-xl text-amber-400 font-black text-sm" style={{ background: "rgba(245,158,11,0.12)" }}>$</div>
+              <h2 className="text-base font-black" style={{ color: "var(--tx)" }}>USDT / Crypto</h2>
+            </div>
+            <div className="mb-4 rounded-2xl px-4 py-3" style={{ background: "rgba(52,211,153,0.06)", border: "1px solid rgba(52,211,153,0.15)" }}>
+              <p className="text-[12px]" style={{ color: "rgb(52,211,153)" }}>ⓘ {t.usdtDesc}</p>
+            </div>
+            <div className="grid gap-5 sm:grid-cols-2">
+              <Field label="Binance UID" hint="Optional">
+                <Input value={form.binanceUid} onChange={(e) => setForm((c) => ({ ...c, binanceUid: e.target.value }))} placeholder={t.phBinanceUid} />
+              </Field>
+              <Field label={t.fieldUsdtRate} hint="Optional" description={t.usdtRateDesc(configQuery.data?.defaultUsdtVndRate || 26000)}>
+                <Input inputMode="decimal" value={form.usdtVndRateOverride} onChange={(e) => setForm((c) => ({ ...c, usdtVndRateOverride: e.target.value }))} placeholder={String(configQuery.data?.defaultUsdtVndRate || 26000)} />
+              </Field>
+              <div className="sm:col-span-2">
+                <Field label={t.fieldUsdtAddress} hint="Optional">
+                  <Input value={form.usdtTrc20Address} onChange={(e) => setForm((c) => ({ ...c, usdtTrc20Address: e.target.value }))} placeholder={t.phUsdtAddress} />
+                </Field>
+              </div>
+              <div className="sm:col-span-2">
+                <Field label="USDT Solana Address" hint="Optional" description="Địa chỉ ví Solana nhận USDT (SPL). Bot sẽ tự dò giao dịch, không cần khách paste tx hash.">
+                  <Input value={form.usdtSolanaAddress} onChange={(e) => setForm((c) => ({ ...c, usdtSolanaAddress: e.target.value }))} placeholder="Ví dụ: 7xKXtg2C...88 ký tự" />
+                </Field>
+              </div>
+              <Field label="Personal API Key" hint={configQuery.data?.binancePersonalApiKeyMasked ? "Đã mã hoá" : "Optional"}>
+                <Input value={form.binancePersonalApiKey} onChange={(e) => setForm((c) => ({ ...c, binancePersonalApiKey: e.target.value }))} placeholder={configQuery.data?.binancePersonalApiKeyMasked || t.phApiKey} />
+              </Field>
+              <Field label="Personal Secret Key" hint={configQuery.data?.binancePersonalSecretKeyMasked ? "Đã mã hoá" : "Optional"}>
+                <Input value={form.binancePersonalSecretKey} onChange={(e) => setForm((c) => ({ ...c, binancePersonalSecretKey: e.target.value }))} placeholder={configQuery.data?.binancePersonalSecretKeyMasked || t.phApiKey} />
+              </Field>
+            </div>
+            <div className="mt-6" style={{ borderTop: "1px solid var(--bd)", paddingTop: 24 }}>
+              <p className="mb-3 text-[11px] font-black uppercase tracking-widest" style={{ color: "var(--tx-f)" }}>Binance Pay Merchant</p>
+              <InfoHint content={t.binancePayHint} label={t.binancePayHintLabel} />
+              <div className="mt-4 flex flex-col gap-4 rounded-2xl px-4 py-4 sm:flex-row sm:items-center sm:justify-between" style={{ background: "var(--inp)", border: "1px solid var(--bd)" }}>
+                <div>
+                  <p className="font-semibold" style={{ color: "var(--tx)" }}>{t.binancePayAutoLabel}</p>
+                  <p className="mt-1 text-sm" style={{ color: "var(--tx-f)" }}>{t.binancePayAutoDesc}</p>
+                </div>
+                <button type="button" role="switch" aria-checked={form.binancePayEnabled}
+                  onClick={() => setForm((c) => ({ ...c, binancePayEnabled: !c.binancePayEnabled }))}
+                  className="inline-flex h-12 w-full shrink-0 items-center justify-between gap-3 rounded-2xl border px-3 text-sm font-semibold transition sm:w-[164px]"
+                  style={form.binancePayEnabled ? { borderColor: "rgba(245,158,11,0.3)", background: "rgba(245,158,11,0.08)", color: "var(--tx)" } : { borderColor: "var(--bd)", background: "var(--surface)", color: "var(--tx-m)" }}>
+                  <span className="flex h-8 w-8 items-center justify-center rounded-xl transition"
+                    style={form.binancePayEnabled ? { background: "rgb(245,158,11)", color: "white" } : { background: "var(--inp)", color: "var(--tx-f)" }}>🟡</span>
+                  <span>{form.binancePayEnabled ? t.toggleOn : t.toggleOff}</span>
+                </button>
+              </div>
+              <div className="mt-4 grid gap-5 sm:grid-cols-2">
+                <Field label="Binance Pay API Key" hint={configQuery.data?.binancePayApiKeyMasked ? "Đã mã hoá" : "Optional"} description={t.binancePayCertDesc}>
+                  <Input value={form.binancePayApiKey} onChange={(e) => setForm((c) => ({ ...c, binancePayApiKey: e.target.value }))} placeholder={configQuery.data?.binancePayApiKeyMasked || t.phApiKey} />
+                </Field>
+                <Field label="Binance Pay Secret Key" hint={configQuery.data?.binancePaySecretKeyMasked ? "Đã mã hoá" : "Optional"} description={t.binancePayEncDesc}>
+                  <Input value={form.binancePaySecretKey} onChange={(e) => setForm((c) => ({ ...c, binancePaySecretKey: e.target.value }))} placeholder={configQuery.data?.binancePaySecretKeyMasked || t.phApiKey} />
+                </Field>
+              </div>
+            </div>
+            <div className="mt-6 flex justify-end">
+              <button type="button" disabled={saveMutation.isPending} onClick={() => saveMutation.mutate()}
+                className="rounded-xl px-4 py-2 text-[12px] font-black transition hover:opacity-80 disabled:opacity-40"
+                style={{ background: "rgb(249,115,22)", color: "#fff" }}>
+                {saveMutation.isPending ? t.saving : "Lưu thay đổi"}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* ── AFFILIATE ── */}
+        {activeTab === "affiliate" && (
+          <div>
+            <div className="mb-5 flex items-center gap-2">
+              <div className="flex h-8 w-8 items-center justify-center rounded-xl" style={{ background: "rgba(249,115,22,0.12)" }}>
+                <Handshake className="h-4 w-4 text-orange-400" />
+              </div>
+              <h2 className="text-base font-black" style={{ color: "var(--tx)" }}>{t.cardAffiliate}</h2>
+            </div>
+            <div className="grid gap-5 sm:grid-cols-2">
+              <button type="button" onClick={() => setAffiliateForm((f) => ({ ...f, enabled: !f.enabled }))}
+                className="flex items-center justify-between rounded-2xl px-4 py-3 transition-all"
+                style={{ background: affiliateForm.enabled ? "rgba(249,115,22,0.08)" : "var(--inp)", border: `1px solid ${affiliateForm.enabled ? "rgba(249,115,22,0.4)" : "var(--bd)"}` }}>
+                <div className="flex items-center gap-3">
+                  <span className="flex h-8 w-8 items-center justify-center rounded-xl text-sm transition-all"
+                    style={{ background: affiliateForm.enabled ? "rgb(249,115,22)" : "var(--surface)", color: affiliateForm.enabled ? "white" : "var(--tx-f)" }}>
+                    {affiliateForm.enabled ? "✓" : "○"}
+                  </span>
+                  <div className="text-left">
+                    <p className="text-sm font-semibold" style={{ color: "var(--tx)" }}>{affiliateForm.enabled ? t.affiliateActive : t.affiliateInactive}</p>
+                    <p className="text-xs" style={{ color: "var(--tx-f)" }}>{t.affiliateToggleHint}</p>
                   </div>
-                  <button
-                    type="button"
-                    role="switch"
-                    aria-checked={form.binancePayEnabled}
-                    onClick={() => setForm((c) => ({ ...c, binancePayEnabled: !c.binancePayEnabled }))}
-                    className="inline-flex h-12 w-full shrink-0 items-center justify-between gap-3 rounded-[14px] border px-3 text-sm font-semibold transition sm:w-[164px]"
-                    style={form.binancePayEnabled
-                      ? { borderColor: "rgba(245,158,11,0.3)", background: "rgba(245,158,11,0.08)", color: "var(--tx)" }
-                      : { borderColor: "var(--bd)", background: "var(--surface)", color: "var(--tx-m)" }
-                    }
-                  >
-                    <span
-                      className="flex h-8 w-8 items-center justify-center rounded-[10px] transition"
-                      style={form.binancePayEnabled
-                        ? { background: "rgb(245,158,11)", color: "white" }
-                        : { background: "var(--inp)", color: "var(--tx-f)" }
-                      }
-                    >🟡</span>
-                    <span>{form.binancePayEnabled ? t.toggleOn : t.toggleOff}</span>
-                  </button>
                 </div>
-                <div className="grid gap-5 sm:grid-cols-2">
-                  <Field
-                    label="Binance Pay API Key"
-                    hint={configQuery.data?.binancePayApiKeyMasked ? "Encrypted" : "Optional"}
-                    description={t.binancePayCertDesc}
-                  >
-                    <Input
-                      value={form.binancePayApiKey}
-                      onChange={(e) => setForm((c) => ({ ...c, binancePayApiKey: e.target.value }))}
-                      placeholder={configQuery.data?.binancePayApiKeyMasked || t.phApiKey}
-                    />
-                  </Field>
-                  <Field
-                    label="Binance Pay Secret Key"
-                    hint={configQuery.data?.binancePaySecretKeyMasked ? "Encrypted" : "Optional"}
-                    description={t.binancePayEncDesc}
-                  >
-                    <Input
-                      value={form.binancePaySecretKey}
-                      onChange={(e) => setForm((c) => ({ ...c, binancePaySecretKey: e.target.value }))}
-                      placeholder={configQuery.data?.binancePaySecretKeyMasked || t.phApiKey}
-                    />
-                  </Field>
+                <div className="h-5 w-9 rounded-full transition-all" style={{ background: affiliateForm.enabled ? "rgb(249,115,22)" : "var(--bd)" }}>
+                  <div className="m-0.5 h-4 w-4 rounded-full bg-white shadow transition-all" style={{ transform: affiliateForm.enabled ? "translateX(16px)" : "translateX(0)" }} />
                 </div>
+              </button>
+              <div className="flex items-center gap-3 rounded-2xl px-4 py-3" style={{ background: "var(--inp)", border: "1px solid var(--bd)" }}>
+                <span className="text-sm font-medium" style={{ color: "var(--tx-f)" }}>{t.affiliateCommission}</span>
+                <Input type="number" min={0} max={100} step={0.5} value={affiliateForm.commissionPct}
+                  onChange={(e) => setAffiliateForm((f) => ({ ...f, commissionPct: e.target.value }))} className="w-20 text-center" />
+                <span className="text-sm font-bold" style={{ color: "rgb(249,115,22)" }}>%</span>
+              </div>
+              <div className="sm:col-span-2">
+                <Field label={t.affiliateProgramLabel} hint={t.affiliateProgramHint}>
+                  <Textarea value={affiliateForm.programText} onChange={(e) => setAffiliateForm((f) => ({ ...f, programText: e.target.value }))}
+                    placeholder={t.affiliateProgramPh(affiliateForm.commissionPct)} rows={3} />
+                </Field>
               </div>
             </div>
-          </Card>
-        </div>
-      </section>
-
-      <Card>
-        <CardHeader icon={Handshake} title={t.cardAffiliate} iconCls="text-orange-400" iconBg="bg-orange-500/10" />
-
-        <div className="mt-4 grid gap-5 sm:grid-cols-2">
-          <button
-            type="button"
-            onClick={() => setAffiliateForm((f) => ({ ...f, enabled: !f.enabled }))}
-            className="flex items-center justify-between rounded-2xl px-4 py-3 transition-all"
-            style={{
-              background: affiliateForm.enabled ? "rgba(249,115,22,0.08)" : "var(--inp)",
-              border: `1px solid ${affiliateForm.enabled ? "rgba(249,115,22,0.4)" : "var(--bd)"}`,
-            }}
-          >
-            <div className="flex items-center gap-3">
-              <span className="flex h-8 w-8 items-center justify-center rounded-xl text-sm transition-all"
-                style={{ background: affiliateForm.enabled ? "rgb(249,115,22)" : "var(--surface)", color: affiliateForm.enabled ? "white" : "var(--tx-f)" }}>
-                {affiliateForm.enabled ? "✓" : "○"}
-              </span>
-              <div className="text-left">
-                <p className="text-sm font-semibold" style={{ color: "var(--tx)" }}>
-                  {affiliateForm.enabled ? t.affiliateActive : t.affiliateInactive}
-                </p>
-                <p className="text-xs" style={{ color: "var(--tx-f)" }}>{t.affiliateToggleHint}</p>
-              </div>
+            <div className="mt-6 flex justify-end">
+              <button type="button" disabled={affiliateMutation.isPending} onClick={() => affiliateMutation.mutate()}
+                className="rounded-xl px-4 py-2 text-[12px] font-black transition hover:opacity-80 disabled:opacity-40"
+                style={{ background: "rgb(249,115,22)", color: "#fff" }}>
+                {affiliateMutation.isPending ? t.affiliateSaving : t.affiliateSave}
+              </button>
             </div>
-            <div className="h-5 w-9 rounded-full transition-all" style={{ background: affiliateForm.enabled ? "rgb(249,115,22)" : "var(--bd)" }}>
-              <div className="m-0.5 h-4 w-4 rounded-full bg-white shadow transition-all" style={{ transform: affiliateForm.enabled ? "translateX(16px)" : "translateX(0)" }} />
-            </div>
-          </button>
-
-          <div className="flex items-center gap-3 rounded-2xl px-4 py-3" style={{ background: "var(--inp)", border: "1px solid var(--bd)" }}>
-            <span className="text-sm font-medium" style={{ color: "var(--tx-f)" }}>{t.affiliateCommission}</span>
-            <Input
-              type="number" min={0} max={100} step={0.5}
-              value={affiliateForm.commissionPct}
-              onChange={(e) => setAffiliateForm((f) => ({ ...f, commissionPct: e.target.value }))}
-              className="w-20 text-center"
-            />
-            <span className="text-sm font-bold" style={{ color: "rgb(249,115,22)" }}>%</span>
           </div>
+        )}
 
-          <div className="sm:col-span-2">
-            <Field label={t.affiliateProgramLabel} hint={t.affiliateProgramHint}>
-              <Textarea
-                value={affiliateForm.programText}
-                onChange={(e) => setAffiliateForm((f) => ({ ...f, programText: e.target.value }))}
-                placeholder={t.affiliateProgramPh(affiliateForm.commissionPct)}
-                rows={3}
-              />
-            </Field>
-          </div>
-        </div>
-
-        <div className="mt-4 flex justify-end">
-          <Button disabled={affiliateMutation.isPending} onClick={() => affiliateMutation.mutate()}>
-            {affiliateMutation.isPending ? t.affiliateSaving : t.affiliateSave}
-          </Button>
-        </div>
-      </Card>
+      </div>
     </div>
   );
 }

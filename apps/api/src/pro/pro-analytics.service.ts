@@ -129,6 +129,20 @@ export class ProAnalyticsService {
       orderBy: { createdAt: "desc" },
     });
 
+    // Batch-fetch wallet balances for all connections
+    const downstreamChatIds = connections
+      .map((c) => c.downstreamTelegramChatId)
+      .filter((id): id is string => !!id);
+
+    const wallets = downstreamChatIds.length > 0
+      ? await this.prisma.customerWallet.findMany({
+          where: { customer: { shopId: shop.id, telegramChatId: { in: downstreamChatIds } } },
+          include: { customer: { select: { telegramChatId: true } } },
+        })
+      : [];
+
+    const walletByChatId = new Map(wallets.map((w) => [w.customer.telegramChatId, decimalToNumber(w.balance)]));
+
     const stats = await Promise.all(
       connections.map(async (conn) => {
         const [totalOrders, revenueResult] = await Promise.all([
@@ -144,13 +158,17 @@ export class ProAnalyticsService {
           }),
         ]);
 
+        const balance = conn.downstreamTelegramChatId
+          ? (walletByChatId.get(conn.downstreamTelegramChatId) ?? 0)
+          : 0;
+
         return {
           id: conn.id,
           downstreamSellerId: conn.downstreamSellerId,
           downstreamSellerName: conn.downstreamSeller.displayName,
           shopName: conn.downstreamShop.name,
           shopSlug: conn.downstreamShop.slug,
-          balance: decimalToNumber(conn.balance),
+          balance,
           currency: conn.currency,
           status: conn.status,
           totalOrders,
@@ -354,6 +372,42 @@ export class ProAnalyticsService {
         createdAt: c.createdAt,
       })),
     };
+  }
+
+  async getChartData(user: AuthenticatedUser, days: number = 30) {
+    const shop = await this.shopsService.getSellerShop(user.id);
+    const end = new Date();
+    const start = new Date();
+    start.setDate(start.getDate() - days + 1);
+    start.setHours(0, 0, 0, 0);
+
+    const orders = await this.prisma.internalSourceOrder.findMany({
+      where: {
+        upstreamShopId: shop.id,
+        status: InternalSourceOrderStatus.DELIVERED,
+        createdAt: { gte: start, lte: end },
+      },
+      select: { totalAmount: true, sourcePriceSnapshot: true, quantity: true, createdAt: true },
+    });
+
+    const byDay = new Map<string, { revenue: number; cost: number }>();
+    for (const o of orders) {
+      const label = o.createdAt.toISOString().slice(0, 10);
+      const existing = byDay.get(label) ?? { revenue: 0, cost: 0 };
+      existing.revenue += decimalToNumber(o.totalAmount);
+      existing.cost += decimalToNumber(o.sourcePriceSnapshot) * o.quantity;
+      byDay.set(label, existing);
+    }
+
+    const result = [];
+    for (let i = days - 1; i >= 0; i--) {
+      const d = new Date();
+      d.setDate(d.getDate() - i);
+      const label = d.toISOString().slice(0, 10);
+      const data = byDay.get(label) ?? { revenue: 0, cost: 0 };
+      result.push({ label, revenue: data.revenue, grossProfit: data.revenue - data.cost });
+    }
+    return result;
   }
 
   async revokeConnection(user: AuthenticatedUser, connectionId: string) {

@@ -25,12 +25,13 @@ import { randomBytes } from "node:crypto";
 
 import { AppConfigService } from "../config/app-config.service";
 import { PrismaService } from "../db/prisma.service";
-import { decimalToNumber, generateSourceOrderCode, hashValue, toDecimal } from "../lib/utils";
+import { decimalToNumber, generateSourceOrderCode, hashValue, splitWalletDebit, toDecimal } from "../lib/utils";
 import { ShopsService } from "../shops/shops.service";
 import { StockAlertService } from "../source/stock-alert.service";
 import type { AuthenticatedUser } from "../types";
 
 import type {
+  AdjustConnectionBalanceDto,
   ConnectInternalSourceDto,
   CreateInternalSourceApiKeyDto,
   DeliverInternalSourceOrderDto,
@@ -92,6 +93,22 @@ export class InternalSourceService {
       },
     });
 
+    const walletBalanceMap = new Map<string, number>();
+    for (const key of keys) {
+      if (key.connection?.downstreamTelegramChatId) {
+        const wallet = await this.prisma.customerWallet.findFirst({
+          where: {
+            customer: {
+              shopId: key.connection.upstreamShopId,
+              telegramChatId: key.connection.downstreamTelegramChatId,
+            },
+          },
+          select: { balance: true },
+        });
+        walletBalanceMap.set(key.connection.id, wallet ? decimalToNumber(wallet.balance) : 0);
+      }
+    }
+
     return keys.map((key) => ({
       id: key.id,
       label: key.label,
@@ -110,7 +127,7 @@ export class InternalSourceService {
             downstreamSellerName: key.connection.downstreamSeller.displayName,
             downstreamShopId: key.connection.downstreamShopId,
             downstreamShopName: key.connection.downstreamShop.name,
-            balance: decimalToNumber(key.connection.balance),
+            balance: walletBalanceMap.get(key.connection.id) ?? 0,
             currency: key.connection.currency,
           }
         : null,
@@ -216,7 +233,18 @@ export class InternalSourceService {
       return null;
     }
 
-    return this.mapConnection(connection);
+    let walletBalance = 0;
+    if (connection.downstreamTelegramChatId) {
+      const wallet = await this.prisma.customerWallet.findFirst({
+        where: {
+          customer: { shopId: connection.upstreamShopId, telegramChatId: connection.downstreamTelegramChatId },
+        },
+        select: { balance: true },
+      });
+      if (wallet) walletBalance = decimalToNumber(wallet.balance);
+    }
+
+    return this.mapConnection(connection, walletBalance);
   }
 
   async listDownstreamConnections(user: AuthenticatedUser) {
@@ -239,17 +267,68 @@ export class InternalSourceService {
       },
     });
 
-    return connections.map((connection) => ({
-      ...this.mapConnection(connection),
-      downstreamShop: connection.downstreamShop
-        ? {
-            id: connection.downstreamShop.id,
-            name: connection.downstreamShop.name,
-            slug: connection.downstreamShop.slug,
-            telegramBotUsername: connection.downstreamShop.botConfig?.telegramBotUsername || null,
-          }
-        : null,
-    }));
+    const chatIds = connections
+      .map((c) => c.apiKey?.telegramChatId)
+      .filter((id): id is string => !!id);
+
+    const customers = chatIds.length > 0
+      ? await this.prisma.customer.findMany({
+          where: { shopId: shop.id, telegramChatId: { in: chatIds } },
+          select: { telegramChatId: true, telegramUsername: true, firstName: true, lastName: true },
+        })
+      : [];
+
+    const customerByChatId = new Map(customers.map((c) => [c.telegramChatId, c]));
+
+    // Batch-fetch wallet balances for all connections
+    const downstreamChatIds = connections
+      .map((c) => c.downstreamTelegramChatId)
+      .filter((id): id is string => !!id);
+
+    const wallets = downstreamChatIds.length > 0
+      ? await this.prisma.customerWallet.findMany({
+          where: {
+            customer: {
+              shopId: shop.id,
+              telegramChatId: { in: downstreamChatIds },
+            },
+          },
+          include: { customer: { select: { telegramChatId: true } } },
+        })
+      : [];
+
+    const walletByChatId = new Map(
+      wallets.map((w) => [w.customer.telegramChatId, decimalToNumber(w.balance)]),
+    );
+
+    return connections.map((connection) => {
+      const customer = connection.apiKey?.telegramChatId
+        ? customerByChatId.get(connection.apiKey.telegramChatId)
+        : undefined;
+
+      const walletBalance = connection.downstreamTelegramChatId
+        ? (walletByChatId.get(connection.downstreamTelegramChatId) ?? 0)
+        : 0;
+
+      return {
+        ...this.mapConnection(connection, walletBalance),
+        downstreamSeller: connection.downstreamSeller
+          ? {
+              id: connection.downstreamSeller.id,
+              displayName: connection.downstreamSeller.displayName,
+              telegramUsername: customer?.telegramUsername ?? null,
+            }
+          : null,
+        downstreamShop: connection.downstreamShop
+          ? {
+              id: connection.downstreamShop.id,
+              name: connection.downstreamShop.name,
+              slug: connection.downstreamShop.slug,
+              telegramBotUsername: connection.downstreamShop.botConfig?.telegramBotUsername ?? null,
+            }
+          : null,
+      };
+    });
   }
 
   async getConnectionLedger(user: AuthenticatedUser, connectionId: string) {
@@ -280,6 +359,97 @@ export class InternalSourceService {
       note: entry.note,
       createdAt: entry.createdAt,
     }));
+  }
+
+  async manualAdjustConnectionBalance(
+    user: AuthenticatedUser,
+    connectionId: string,
+    dto: AdjustConnectionBalanceDto,
+  ) {
+    const shop = await this.getProSellerShopOrThrow(user.id);
+
+    const connection = await this.prisma.downstreamSourceConnection.findFirst({
+      where: { id: connectionId, upstreamShopId: shop.id },
+    });
+
+    if (!connection) {
+      throw new NotFoundException("Connection not found.");
+    }
+
+    if (!connection.downstreamTelegramChatId) {
+      throw new BadRequestException("Connection has no linked customer wallet to adjust.");
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      const customer = await tx.customer.findFirst({
+        where: { shopId: connection.upstreamShopId, telegramChatId: connection.downstreamTelegramChatId! },
+        include: { wallet: true },
+      });
+
+      if (!customer) {
+        throw new NotFoundException("Linked customer not found.");
+      }
+
+      let cWallet = customer.wallet;
+      if (!cWallet) {
+        cWallet = await tx.customerWallet.create({
+          data: { customerId: customer.id, balance: toDecimal(0), balanceUsdt: toDecimal(0), currency: "VND" },
+        });
+      }
+
+      await tx.$queryRaw(
+        Prisma.sql`SELECT id FROM customer_wallets WHERE id = ${cWallet.id} FOR UPDATE`,
+      );
+
+      const balanceBefore = decimalToNumber(cWallet.balance);
+      let balanceAfter: number;
+      let adjustAmount: number;
+
+      if (dto.action === "topup") {
+        adjustAmount = dto.amount;
+        balanceAfter = balanceBefore + dto.amount;
+      } else if (dto.action === "deduct") {
+        adjustAmount = -dto.amount;
+        balanceAfter = Math.max(0, balanceBefore - dto.amount);
+      } else {
+        adjustAmount = dto.amount - balanceBefore;
+        balanceAfter = dto.amount;
+      }
+
+      await tx.customerWallet.update({
+        where: { id: cWallet.id },
+        data: { balance: toDecimal(balanceAfter) },
+      });
+
+      await tx.customerWalletLedger.create({
+        data: {
+          customerId: customer.id,
+          walletId: cWallet.id,
+          type: adjustAmount >= 0 ? "TOPUP" : "SPEND_ORDER",
+          amount: toDecimal(adjustAmount),
+          balanceBefore: toDecimal(balanceBefore),
+          balanceAfter: toDecimal(balanceAfter),
+          referenceType: "manual_adjust",
+          referenceId: user.id,
+          note: dto.note?.trim() || "Manual balance adjustment by source owner",
+        },
+      });
+
+      await tx.internalSourceLedger.create({
+        data: {
+          connectionId: connection.id,
+          type: InternalSourceLedgerType.ADJUST,
+          amount: toDecimal(adjustAmount),
+          balanceBefore: toDecimal(balanceBefore),
+          balanceAfter: toDecimal(balanceAfter),
+          referenceType: "manual_adjust",
+          referenceId: user.id,
+          note: dto.note?.trim() || "Manual balance adjustment by source owner",
+        },
+      });
+    });
+
+    return this.getCurrentConnectionById(connection.id);
   }
 
   async listSourceOrders(user: AuthenticatedUser, status?: string) {
@@ -356,7 +526,6 @@ export class InternalSourceService {
               downstreamShopId: downstreamShop.id,
               apiKeyId: resolvedKey.id,
               status: DownstreamSourceConnectionStatus.ACTIVE,
-              balance: toDecimal(0),
               currency: downstreamShop.defaultCurrency,
             },
           });
@@ -446,8 +615,6 @@ export class InternalSourceService {
         throw new NotFoundException("Internal source connection not found.");
       }
 
-      const connectionBalanceBefore = decimalToNumber(refreshedConnection.balance);
-      const connectionBalanceAfter = connectionBalanceBefore + amount;
       const walletBalanceAfter = balanceBeforeWallet - amount;
 
       await tx.sellerWallet.update({
@@ -471,10 +638,47 @@ export class InternalSourceService {
         },
       });
 
+      // Credit customer wallet (source of truth)
+      let customerWalletBefore = 0;
+      let customerWalletAfter = 0;
+      if (refreshedConnection.downstreamTelegramChatId) {
+        const customer = await tx.customer.findFirst({
+          where: { shopId: refreshedConnection.upstreamShopId, telegramChatId: refreshedConnection.downstreamTelegramChatId },
+          include: { wallet: true },
+        });
+        if (customer) {
+          let cWallet = customer.wallet;
+          if (!cWallet) {
+            cWallet = await tx.customerWallet.create({
+              data: { customerId: customer.id, balance: toDecimal(0), balanceUsdt: toDecimal(0), currency: "VND" },
+            });
+          }
+          await tx.$queryRaw(Prisma.sql`SELECT id FROM customer_wallets WHERE id = ${cWallet.id} FOR UPDATE`);
+          customerWalletBefore = decimalToNumber(cWallet.balance);
+          customerWalletAfter = customerWalletBefore + amount;
+          await tx.customerWallet.update({
+            where: { id: cWallet.id },
+            data: { balance: toDecimal(customerWalletAfter) },
+          });
+          await tx.customerWalletLedger.create({
+            data: {
+              customerId: customer.id,
+              walletId: cWallet.id,
+              type: "TOPUP",
+              amount: toDecimal(amount),
+              balanceBefore: toDecimal(customerWalletBefore),
+              balanceAfter: toDecimal(customerWalletAfter),
+              referenceType: "seller_wallet",
+              referenceId: wallet.id,
+              note: "Nạp ví từ seller wallet (bot nguồn PRO)",
+            },
+          });
+        }
+      }
+
       await tx.downstreamSourceConnection.update({
         where: { id: connection.id },
         data: {
-          balance: toDecimal(connectionBalanceAfter),
           status: DownstreamSourceConnectionStatus.ACTIVE,
         },
       });
@@ -484,8 +688,8 @@ export class InternalSourceService {
           connectionId: connection.id,
           type: InternalSourceLedgerType.TOPUP,
           amount: toDecimal(amount),
-          balanceBefore: toDecimal(connectionBalanceBefore),
-          balanceAfter: toDecimal(connectionBalanceAfter),
+          balanceBefore: toDecimal(customerWalletBefore),
+          balanceAfter: toDecimal(customerWalletAfter),
           referenceType: "seller_wallet",
           referenceId: wallet.id,
           note: "Top up from downstream seller wallet",
@@ -574,6 +778,10 @@ export class InternalSourceService {
       where: {
         shopId: connection.upstreamShopId,
         internalSourceEnabled: true,
+        OR: [
+          { available: null },
+          { available: { gt: 0 } },
+        ],
       },
       include: {
         overrides: {
@@ -587,10 +795,17 @@ export class InternalSourceService {
       },
     });
 
+    const customerDiscount = connection.downstreamTelegramChatId
+      ? await this.prisma.customer.findFirst({
+          where: { shopId: connection.upstreamShopId, telegramChatId: connection.downstreamTelegramChatId },
+          select: { discountPercent: true },
+        }).then((c) => Number(c?.discountPercent ?? 0))
+      : 0;
+
     const response = {
       success: true,
       products: products.map((product) =>
-        this.mapPublishedProduct(product, connection.upstreamSellerId),
+        this.mapPublishedProduct(product, connection.upstreamSellerId, customerDiscount),
       ),
     };
 
@@ -613,12 +828,25 @@ export class InternalSourceService {
   }) {
     const resolvedKey = await this.resolveApiKey(rawKey);
     const connection = this.assertApiKeyUsable(resolvedKey);
+    let walletBalance = 0;
+    if (connection.downstreamTelegramChatId) {
+      const wallet = await this.prisma.customerWallet.findFirst({
+        where: {
+          customer: {
+            shopId: connection.upstreamShopId,
+            telegramChatId: connection.downstreamTelegramChatId,
+          },
+        },
+        select: { balance: true },
+      });
+      if (wallet) walletBalance = decimalToNumber(wallet.balance);
+    }
     const response = {
       success: true,
-      balance: decimalToNumber(connection.balance),
-      balanceVnd: decimalToNumber(connection.balance),
+      balance: walletBalance,
+      balanceVnd: walletBalance,
       balanceUsd: null,
-      balanceText: `${decimalToNumber(connection.balance)} ${connection.currency}`,
+      balanceText: `${walletBalance} ${connection.currency}`,
       walletCurrency: connection.currency,
       usdtBalance: 0,
       updatedAt: connection.updatedAt.toISOString(),
@@ -684,25 +912,42 @@ export class InternalSourceService {
 
     try {
       const created = await this.prisma.$transaction(async (tx) => {
+        if (!connection.downstreamTelegramChatId) {
+          throw new BadRequestException("Connection has no linked customer wallet.");
+        }
+
+        const customer = await tx.customer.findFirst({
+          where: { shopId: connection.upstreamShopId, telegramChatId: connection.downstreamTelegramChatId },
+          include: { wallet: true },
+        });
+
+        if (!customer?.wallet) {
+          throw new BadRequestException("Customer wallet not found.");
+        }
+
         await tx.$queryRaw(
-          Prisma.sql`SELECT id FROM downstream_source_connections WHERE id = ${connection.id} FOR UPDATE`,
+          Prisma.sql`SELECT id FROM customer_wallets WHERE id = ${customer.wallet.id} FOR UPDATE`,
         );
 
         const currentConnection = await tx.downstreamSourceConnection.findUnique({
           where: { id: connection.id },
+          select: { id: true, status: true },
         });
 
         if (!currentConnection) {
           throw new NotFoundException("Internal source connection not found.");
         }
 
-        const balanceBefore = decimalToNumber(currentConnection.balance);
+        const balanceBefore = decimalToNumber(customer.wallet.balance);
+        const commissionBefore = decimalToNumber(customer.wallet.commissionBalance);
 
-        if (balanceBefore < totalAmount) {
+        if (balanceBefore + commissionBefore < totalAmount) {
           throw new BadRequestException("Downstream source balance is not enough.");
         }
 
-        const balanceAfter = balanceBefore - totalAmount;
+        const split = splitWalletDebit(commissionBefore, balanceBefore, totalAmount);
+        const balanceAfter = split.balanceAfter;
+        const commissionAfter = split.commissionAfter;
         const sourceOrderCode = generateSourceOrderCode();
         const order = await tx.internalSourceOrder.create({
           data: {
@@ -727,10 +972,30 @@ export class InternalSourceService {
           },
         });
 
+        await tx.customerWallet.update({
+          where: { id: customer.wallet.id },
+          data: { balance: toDecimal(balanceAfter), commissionBalance: toDecimal(commissionAfter) },
+        });
+
+        await tx.customerWalletLedger.create({
+          data: {
+            customerId: customer.id,
+            walletId: customer.wallet.id,
+            type: "SPEND_ORDER",
+            amount: toDecimal(totalAmount * -1),
+            balanceBefore: toDecimal(balanceBefore),
+            balanceAfter: toDecimal(balanceAfter),
+            commissionBalanceBefore: toDecimal(commissionBefore),
+            commissionBalanceAfter: toDecimal(commissionAfter),
+            referenceType: "internal_source_order",
+            referenceId: order.id,
+            note: "Trừ số dư ví khi đặt hàng qua bot nguồn",
+          },
+        });
+
         await tx.downstreamSourceConnection.update({
           where: { id: connection.id },
           data: {
-            balance: toDecimal(balanceAfter),
             status: DownstreamSourceConnectionStatus.ACTIVE,
             lastOrderedAt: new Date(),
           },
@@ -741,8 +1006,8 @@ export class InternalSourceService {
             connectionId: connection.id,
             type: InternalSourceLedgerType.DEBIT_ORDER,
             amount: toDecimal(totalAmount * -1),
-            balanceBefore: toDecimal(balanceBefore),
-            balanceAfter: toDecimal(balanceAfter),
+            balanceBefore: toDecimal(balanceBefore + commissionBefore),
+            balanceAfter: toDecimal(balanceAfter + commissionAfter),
             referenceType: "internal_source_order",
             referenceId: order.id,
             note: "Debit downstream source balance for internal PRO order",
@@ -1156,24 +1421,52 @@ export class InternalSourceService {
         return;
       }
 
-      const balanceBefore = decimalToNumber(connection.balance);
       const refundAmount = decimalToNumber(order.totalAmount);
-      const balanceAfter = balanceBefore + refundAmount;
+      let walletBefore = 0;
+      let walletAfter = 0;
 
-      await tx.downstreamSourceConnection.update({
-        where: { id: connection.id },
-        data: {
-          balance: toDecimal(balanceAfter),
-        },
-      });
+      if (connection.downstreamTelegramChatId) {
+        const customer = await tx.customer.findFirst({
+          where: { shopId: connection.upstreamShopId, telegramChatId: connection.downstreamTelegramChatId },
+          include: { wallet: true },
+        });
+        if (customer) {
+          let cWallet = customer.wallet;
+          if (!cWallet) {
+            cWallet = await tx.customerWallet.create({
+              data: { customerId: customer.id, balance: toDecimal(0), balanceUsdt: toDecimal(0), currency: "VND" },
+            });
+          }
+          await tx.$queryRaw(Prisma.sql`SELECT id FROM customer_wallets WHERE id = ${cWallet.id} FOR UPDATE`);
+          walletBefore = decimalToNumber(cWallet.balance);
+          walletAfter = walletBefore + refundAmount;
+          await tx.customerWallet.update({
+            where: { id: cWallet.id },
+            data: { balance: toDecimal(walletAfter) },
+          });
+          await tx.customerWalletLedger.create({
+            data: {
+              customerId: customer.id,
+              walletId: cWallet.id,
+              type: "TOPUP",
+              amount: toDecimal(refundAmount),
+              balanceBefore: toDecimal(walletBefore),
+              balanceAfter: toDecimal(walletAfter),
+              referenceType: "internal_source_order",
+              referenceId: order.id,
+              note: reason ?? "Hoàn tiền đơn nguồn",
+            },
+          });
+        }
+      }
 
       await tx.internalSourceLedger.create({
         data: {
           connectionId: connection.id,
           type: InternalSourceLedgerType.REFUND_ORDER,
           amount: toDecimal(refundAmount),
-          balanceBefore: toDecimal(balanceBefore),
-          balanceAfter: toDecimal(balanceAfter),
+          balanceBefore: toDecimal(walletBefore),
+          balanceAfter: toDecimal(walletAfter),
           referenceType: "internal_source_order",
           referenceId: order.id,
           note: reason,
@@ -1185,10 +1478,14 @@ export class InternalSourceService {
   private mapPublishedProduct(
     product: PublishedSourceProduct,
     sellerId: string,
+    discountPercent = 0,
   ) {
     const override = product.overrides.find((item) => item.sellerId === sellerId);
     const displayName = override?.displayName || product.sourceName;
-    const wholesalePrice = decimalToNumber(product.internalSourcePrice || product.sourcePrice);
+    const basePrice = decimalToNumber(product.internalSourcePrice || product.sourcePrice);
+    const wholesalePrice = discountPercent > 0
+      ? Math.round(basePrice * (1 - discountPercent / 100))
+      : basePrice;
 
     return {
       _id: product.id,
@@ -1301,7 +1598,6 @@ export class InternalSourceService {
       },
       connection: {
         id: order.connection.id,
-        balance: decimalToNumber(order.connection.balance),
         currency: order.connection.currency,
       },
     };
@@ -1409,7 +1705,18 @@ export class InternalSourceService {
       throw new NotFoundException("Internal source connection not found.");
     }
 
-    return this.mapConnection(connection);
+    let walletBalance = 0;
+    if (connection.downstreamTelegramChatId) {
+      const wallet = await this.prisma.customerWallet.findFirst({
+        where: {
+          customer: { shopId: connection.upstreamShopId, telegramChatId: connection.downstreamTelegramChatId },
+        },
+        select: { balance: true },
+      });
+      if (wallet) walletBalance = decimalToNumber(wallet.balance);
+    }
+
+    return this.mapConnection(connection, walletBalance);
   }
 
   private mapConnection(
@@ -1422,12 +1729,13 @@ export class InternalSourceService {
         downstreamShop?: true;
       };
     }>,
+    walletBalance = 0,
   ) {
     return {
       id: connection.id,
       status: connection.status.toLowerCase(),
       label: connection.label,
-      balance: decimalToNumber(connection.balance),
+      balance: walletBalance,
       currency: connection.currency,
       lastCatalogSyncAt: connection.lastCatalogSyncAt,
       lastOrderedAt: connection.lastOrderedAt,
@@ -1437,6 +1745,14 @@ export class InternalSourceService {
             id: connection.apiKey.id,
             label: connection.apiKey.label,
             keyPrefix: connection.apiKey.keyPrefix,
+            keySuffix: (() => {
+              try {
+                const raw = decryptSecret(connection.apiKey.keyEncrypted!, this.config.encryptionKey);
+                return raw.slice(-4);
+              } catch {
+                return null;
+              }
+            })(),
             status: connection.apiKey.status.toLowerCase(),
             expiresAt: connection.apiKey.expiresAt,
             lastUsedAt: connection.apiKey.lastUsedAt,
@@ -1465,6 +1781,10 @@ export class InternalSourceService {
               id: connection.downstreamShop.id,
               name: connection.downstreamShop.name,
               slug: connection.downstreamShop.slug,
+              telegramBotUsername:
+                "botConfig" in connection.downstreamShop && connection.downstreamShop.botConfig
+                  ? (connection.downstreamShop.botConfig as any).telegramBotUsername ?? null
+                  : null,
             }
           : null,
     };

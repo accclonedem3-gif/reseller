@@ -34,6 +34,25 @@ export function decimalToNumber(value: Prisma.Decimal | number | string | null |
   return Number(value);
 }
 
+/**
+ * Split a debit amount across commission balance (used first) and main balance.
+ * Commission balance is spend-only (cannot withdraw), so prefer using it.
+ */
+export function splitWalletDebit(
+  commissionBefore: number,
+  balanceBefore: number,
+  amount: number,
+) {
+  const fromCommission = Math.min(commissionBefore, amount);
+  const fromMain = amount - fromCommission;
+  return {
+    fromCommission,
+    fromMain,
+    commissionAfter: commissionBefore - fromCommission,
+    balanceAfter: balanceBefore - fromMain,
+  };
+}
+
 export function formatCurrency(value: number) {
   return new Intl.NumberFormat("vi-VN", {
     style: "currency",

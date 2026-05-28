@@ -181,7 +181,7 @@ export class ShopsService {
       where: { id: shop.id },
       data: {
         name: dto.name ?? undefined,
-        tagline: dto.tagline ?? undefined,
+        tagline: dto.tagline !== undefined ? (dto.tagline?.trim() || null) : undefined,
         supportTelegram: dto.supportTelegram ?? undefined,
         supportZalo: dto.supportZalo ?? undefined,
         logoUrl: dto.logoUrl ?? undefined,
@@ -215,6 +215,9 @@ export class ShopsService {
       ),
       sourceNotificationSyncEnabled:
         providerConfig?.sourceNotificationSyncEnabled ?? true,
+      priceMarkupPercent: providerConfig?.priceMarkupPercent != null
+        ? decimalToNumber(providerConfig.priceMarkupPercent)
+        : null,
       botTokenMasked: maskSecret(
         this.safeDecryptSecret(botConfig?.telegramBotTokenEncrypted),
       ),
@@ -228,9 +231,26 @@ export class ShopsService {
       payosChecksumKeyMasked: maskSecret(
         this.safeDecryptSecret(paymentConfig?.payosChecksumKeyEncrypted),
       ),
+      pay2sPartnerCodeMasked: maskSecret(
+        this.safeDecryptSecret(paymentConfig?.pay2sPartnerCodeEncrypted),
+      ),
+      pay2sAccessKeyMasked: maskSecret(
+        this.safeDecryptSecret(paymentConfig?.pay2sAccessKeyEncrypted),
+      ),
+      pay2sSecretKeyMasked: maskSecret(
+        this.safeDecryptSecret(paymentConfig?.pay2sSecretKeyEncrypted),
+      ),
+      pay2sBankAccount: paymentConfig?.pay2sBankAccount || "",
+      pay2sBankId: paymentConfig?.pay2sBankId || "",
+      web2mAccountNumber: paymentConfig?.web2mAccountNumber || "",
+      web2mBankCode: paymentConfig?.web2mBankCode || "",
+      web2mPasswordMasked: maskSecret(this.safeDecryptSecret(paymentConfig?.web2mPasswordEncrypted)),
+      web2mTokenMasked: maskSecret(this.safeDecryptSecret(paymentConfig?.web2mTokenEncrypted)),
+      web2mAccessTokenMasked: maskSecret(this.safeDecryptSecret(paymentConfig?.web2mAccessTokenEncrypted)),
       binanceUid: paymentConfig?.binanceUid || "",
       okxUid: paymentConfig?.okxUid || "",
       usdtTrc20Address: paymentConfig?.usdtTrc20Address || "",
+      usdtSolanaAddress: paymentConfig?.usdtSolanaAddress || "",
       usdtVndRateOverride: paymentConfig?.usdtVndRateOverride
         ? decimalToNumber(paymentConfig.usdtVndRateOverride)
         : null,
@@ -250,6 +270,7 @@ export class ShopsService {
       binancePayEnabled: paymentConfig?.binancePayEnabled ?? false,
       telegramBotId: botConfig?.telegramBotId || null,
       telegramBotUsername: botConfig?.telegramBotUsername || null,
+      ownerTelegramUserId: botConfig?.ownerTelegramUserId || null,
       telegramWebhookStatus: botConfig?.webhookStatus.toLowerCase() || "disabled",
       telegramDeliveryMode: botConfig?.deliveryMode.toLowerCase() || "polling",
       providerConnectionStatus: providerConfig?.connectionStatus.toLowerCase() || "pending",
@@ -262,6 +283,7 @@ export class ShopsService {
       lastCatalogSyncAt: shop.lastCatalogSyncAt,
       lastTelegramVerifiedAt: botConfig?.lastVerifiedAt || null,
       lastProviderVerifiedAt: providerConfig?.lastVerifiedAt || null,
+      showOutOfStock: (botConfig?.customizationJson as Record<string, unknown> | null)?.showOutOfStock === true,
     };
   }
 
@@ -280,14 +302,19 @@ export class ShopsService {
         where: { id: shop.id },
         data: {
           name: dto.shopName ?? undefined,
-          tagline: dto.shopTagline ?? undefined,
-          supportTelegram: dto.supportTelegram ?? undefined,
-          supportZalo: dto.supportZalo ?? undefined,
-          logoUrl: dto.logoUrl ?? undefined,
+          tagline: dto.shopTagline !== undefined ? (dto.shopTagline?.trim() || null) : undefined,
+          supportTelegram: dto.supportTelegram !== undefined ? (dto.supportTelegram || null) : undefined,
+          supportZalo: dto.supportZalo !== undefined ? (dto.supportZalo || null) : undefined,
+          logoUrl: dto.logoUrl !== undefined ? (dto.logoUrl || null) : undefined,
           storefrontMode: dto.storefrontMode ?? undefined,
           slug: dto.shopName ? slugify(dto.shopName) || shop.slug : undefined,
         },
       });
+
+      const existingCust = (shop.botConfig?.customizationJson as Record<string, unknown> | null) ?? {};
+      const custPatch: Record<string, unknown> = {};
+      if (dto.showOutOfStock !== undefined) custPatch.showOutOfStock = dto.showOutOfStock;
+      const mergedCust = Object.keys(custPatch).length > 0 ? { ...existingCust, ...custPatch } : undefined;
 
       await tx.botConfig.upsert({
         where: { shopId: shop.id },
@@ -295,14 +322,18 @@ export class ShopsService {
           telegramBotTokenEncrypted: dto.botToken
             ? encryptSecret(dto.botToken, encryptionKey)
             : undefined,
+          ownerTelegramUserId: dto.ownerTelegramUserId ?? undefined,
+          ...(mergedCust !== undefined ? { customizationJson: mergedCust as Prisma.InputJsonValue } : {}),
         },
         create: {
           shopId: shop.id,
           telegramBotTokenEncrypted: dto.botToken
             ? encryptSecret(dto.botToken, encryptionKey)
             : "",
+          ownerTelegramUserId: dto.ownerTelegramUserId ?? null,
           webhookStatus: "DISABLED",
           deliveryMode: "POLLING",
+          ...(mergedCust !== undefined ? { customizationJson: mergedCust as Prisma.InputJsonValue } : {}),
         },
       });
 
@@ -320,6 +351,9 @@ export class ShopsService {
               }
             : {}),
           sourceNotificationSyncEnabled: dto.sourceNotificationSyncEnabled,
+          priceMarkupPercent: dto.priceMarkupPercent !== undefined
+            ? (dto.priceMarkupPercent === null ? null : toDecimal(dto.priceMarkupPercent))
+            : undefined,
         },
         create: {
           shopId: shop.id,
@@ -331,18 +365,24 @@ export class ShopsService {
           providerKind: ProviderKind.EXTERNAL,
           sourceWebhookKey: this.createSourceWebhookKey(),
           sourceNotificationSyncEnabled: dto.sourceNotificationSyncEnabled ?? true,
+          priceMarkupPercent: dto.priceMarkupPercent != null ? toDecimal(dto.priceMarkupPercent) : null,
           connectionStatus: "PENDING",
         },
       });
 
+      const explicitProvider = dto.paymentProvider && ["PAYOS", "PAY2S", "WEB2M", "BINANCE_PAY", "MOCK", "BINANCE", "OKX", "USDT_TRC20"].includes(dto.paymentProvider)
+        ? (dto.paymentProvider as any)
+        : undefined;
+
       await tx.paymentConfig.upsert({
         where: { shopId: shop.id },
         update: {
-          provider: shouldUsePayOS
-            ? "PAYOS"
-            : dto.binancePayEnabled === true || (dto.binancePayApiKey && dto.binancePaySecretKey)
-              ? "BINANCE_PAY"
-              : undefined,
+          provider: explicitProvider
+            ?? (shouldUsePayOS
+              ? "PAYOS"
+              : dto.binancePayEnabled === true || (dto.binancePayApiKey && dto.binancePaySecretKey)
+                ? "BINANCE_PAY"
+                : undefined),
           payosClientIdEncrypted: dto.payosClientId
             ? encryptSecret(dto.payosClientId, encryptionKey)
             : undefined,
@@ -352,9 +392,32 @@ export class ShopsService {
           payosChecksumKeyEncrypted: dto.payosChecksumKey
             ? encryptSecret(dto.payosChecksumKey, encryptionKey)
             : undefined,
+          pay2sPartnerCodeEncrypted: dto.pay2sPartnerCode
+            ? encryptSecret(dto.pay2sPartnerCode, encryptionKey)
+            : undefined,
+          pay2sAccessKeyEncrypted: dto.pay2sAccessKey
+            ? encryptSecret(dto.pay2sAccessKey, encryptionKey)
+            : undefined,
+          pay2sSecretKeyEncrypted: dto.pay2sSecretKey
+            ? encryptSecret(dto.pay2sSecretKey, encryptionKey)
+            : undefined,
+          pay2sBankAccount: dto.pay2sBankAccount ?? undefined,
+          pay2sBankId: dto.pay2sBankId ?? undefined,
+          web2mAccountNumber: dto.web2mAccountNumber ?? undefined,
+          web2mBankCode: dto.web2mBankCode ?? undefined,
+          web2mPasswordEncrypted: dto.web2mPassword
+            ? encryptSecret(dto.web2mPassword, encryptionKey)
+            : undefined,
+          web2mTokenEncrypted: dto.web2mToken
+            ? encryptSecret(dto.web2mToken, encryptionKey)
+            : undefined,
+          web2mAccessTokenEncrypted: dto.web2mAccessToken
+            ? encryptSecret(dto.web2mAccessToken, encryptionKey)
+            : undefined,
           binanceUid: dto.binanceUid ?? undefined,
           okxUid: dto.okxUid ?? undefined,
           usdtTrc20Address: dto.usdtTrc20Address ?? undefined,
+          usdtSolanaAddress: dto.usdtSolanaAddress ?? undefined,
           usdtVndRateOverride,
           binancePersonalApiKeyEncrypted: dto.binancePersonalApiKey
             ? encryptSecret(dto.binancePersonalApiKey, encryptionKey)
@@ -373,11 +436,12 @@ export class ShopsService {
         create: {
           shopId: shop.id,
           provider:
-            shouldUsePayOS || this.config.paymentMode === "payos"
+            explicitProvider
+            ?? (shouldUsePayOS || this.config.paymentMode === "payos"
               ? "PAYOS"
               : dto.binancePayApiKey && dto.binancePaySecretKey
                 ? "BINANCE_PAY"
-                : "MOCK",
+                : "MOCK"),
           payosClientIdEncrypted: dto.payosClientId
             ? encryptSecret(dto.payosClientId, encryptionKey)
             : null,
@@ -387,9 +451,32 @@ export class ShopsService {
           payosChecksumKeyEncrypted: dto.payosChecksumKey
             ? encryptSecret(dto.payosChecksumKey, encryptionKey)
             : null,
+          pay2sPartnerCodeEncrypted: dto.pay2sPartnerCode
+            ? encryptSecret(dto.pay2sPartnerCode, encryptionKey)
+            : null,
+          pay2sAccessKeyEncrypted: dto.pay2sAccessKey
+            ? encryptSecret(dto.pay2sAccessKey, encryptionKey)
+            : null,
+          pay2sSecretKeyEncrypted: dto.pay2sSecretKey
+            ? encryptSecret(dto.pay2sSecretKey, encryptionKey)
+            : null,
+          pay2sBankAccount: dto.pay2sBankAccount ?? null,
+          pay2sBankId: dto.pay2sBankId ?? null,
+          web2mAccountNumber: dto.web2mAccountNumber ?? null,
+          web2mBankCode: dto.web2mBankCode ?? null,
+          web2mPasswordEncrypted: dto.web2mPassword
+            ? encryptSecret(dto.web2mPassword, encryptionKey)
+            : null,
+          web2mTokenEncrypted: dto.web2mToken
+            ? encryptSecret(dto.web2mToken, encryptionKey)
+            : null,
+          web2mAccessTokenEncrypted: dto.web2mAccessToken
+            ? encryptSecret(dto.web2mAccessToken, encryptionKey)
+            : null,
           binanceUid: dto.binanceUid ?? null,
           okxUid: dto.okxUid ?? null,
           usdtTrc20Address: dto.usdtTrc20Address ?? null,
+          usdtSolanaAddress: dto.usdtSolanaAddress ?? null,
           usdtVndRateOverride: usdtVndRateOverride ?? null,
           binancePersonalApiKeyEncrypted: dto.binancePersonalApiKey
             ? encryptSecret(dto.binancePersonalApiKey, encryptionKey)
@@ -481,6 +568,27 @@ export class ShopsService {
   async verifyProvider(user: AuthenticatedUser) {
     const shop = await this.getSellerShop(user.id);
     const providerConfig = shop.providerConfig;
+
+    if (providerConfig?.providerKind === ProviderKind.INTERNAL) {
+      const connectionId = providerConfig.internalSourceConnectionId;
+      const connection = connectionId
+        ? await this.prisma.downstreamSourceConnection.findUnique({ where: { id: connectionId } })
+        : null;
+      const isActive = connection?.status === "ACTIVE";
+      await this.prisma.providerConfig.update({
+        where: { shopId: shop.id },
+        data: {
+          connectionStatus: isActive ? "VERIFIED" : "FAILED",
+          lastVerifiedAt: new Date(),
+        },
+      });
+      const catalog = await this.getCatalogViewForShop(shop.id);
+      return {
+        ...(await this.getBotConfig(user)),
+        providerSampleSize: catalog.length,
+      };
+    }
+
     const buyerKey = decryptSecret(
       providerConfig?.buyerKeyEncrypted,
       this.config.encryptionKey,
@@ -607,28 +715,87 @@ export class ShopsService {
       throw new NotFoundException("Shop or provider config not found.");
     }
 
-    const buyerKey = decryptSecret(
-      shop.providerConfig.buyerKeyEncrypted,
-      this.config.encryptionKey,
-    );
-
-    if (!buyerKey) {
-      throw new BadRequestException("Provider buyer key is missing.");
-    }
-
     let products: ProviderProduct[];
-    if (this.config.mockProviderEnabled && isMockBuyerKey(buyerKey)) {
-      products = getMockProviderProducts();
+
+    if (shop.providerConfig.providerKind === ProviderKind.INTERNAL) {
+      const connectionId = shop.providerConfig.internalSourceConnectionId;
+      if (!connectionId) {
+        throw new BadRequestException("Internal source connection not configured.");
+      }
+      const connection = await this.prisma.downstreamSourceConnection.findUnique({
+        where: { id: connectionId },
+      });
+      if (!connection || connection.status !== "ACTIVE") {
+        throw new BadRequestException("Internal source connection is not active.");
+      }
+      const upstreamProducts = await this.prisma.sourceProduct.findMany({
+        where: { shopId: connection.upstreamShopId, internalSourceEnabled: true },
+        orderBy: { createdAt: "asc" },
+      });
+      const connCustomer = connection.downstreamTelegramChatId
+        ? await this.prisma.customer.findFirst({
+            where: { shopId: connection.upstreamShopId, telegramChatId: connection.downstreamTelegramChatId },
+            select: { discountPercent: true },
+          })
+        : null;
+      const connDiscount = Number(connCustomer?.discountPercent ?? 0);
+      products = upstreamProducts.map((p) => ({
+        externalId: p.id,
+        sourceName: p.sourceName,
+        sourceRawName: p.sourceRawName || p.sourceName,
+        description: p.sourceDescription,
+        rawDescription: p.sourceDescription,
+        price: (() => {
+          const base = p.internalSourcePrice != null ? Number(p.internalSourcePrice) : Number(p.sourcePrice);
+          return connDiscount > 0 ? Math.round(base * (1 - connDiscount / 100)) : base;
+        })(),
+        available: p.available,
+        hidden: false,
+        isSlotProduct: false,
+        requiresCustomerEmail: false,
+        requiresSlotMonths: false,
+        slotDurations: [],
+        quantityFixed: 1,
+        walletCurrency: "VND",
+        metadata: {
+          productFamily: p.productFamily ?? null,
+          productFamilyOther: p.productFamilyOther ?? null,
+          productPackage: (p as any).productPackage ?? null,
+          accountType: p.accountType ?? null,
+          accountTypeOther: p.accountTypeOther ?? null,
+          durationType: p.durationType ?? null,
+          durationTypeOther: p.durationTypeOther ?? null,
+          sourceDeliveryMode: p.sourceDeliveryMode ?? null,
+          deliveryMode: p.sourceDeliveryMode ?? null,
+          warrantyPolicy: p.warrantyPolicy ?? null,
+          internalSourceEnabled: p.internalSourceEnabled,
+          internalSourcePrice: p.internalSourcePrice != null ? Number(p.internalSourcePrice) : null,
+        },
+      }));
     } else {
-      try {
-        products = await fetchProviderProducts({
-          baseUrl: shop.providerConfig.baseUrl,
-          buyerKey,
-        });
-      } catch (error) {
-        throw new BadRequestException(this.formatProviderError(error));
+      const buyerKey = decryptSecret(
+        shop.providerConfig.buyerKeyEncrypted,
+        this.config.encryptionKey,
+      );
+
+      if (!buyerKey) {
+        throw new BadRequestException("Provider buyer key is missing.");
+      }
+
+      if (this.config.mockProviderEnabled && isMockBuyerKey(buyerKey)) {
+        products = getMockProviderProducts();
+      } else {
+        try {
+          products = await fetchProviderProducts({
+            baseUrl: shop.providerConfig.baseUrl,
+            buyerKey,
+          });
+        } catch (error) {
+          throw new BadRequestException(this.formatProviderError(error));
+        }
       }
     }
+
     const result = await this.applyCatalogProducts(shop, products);
 
     return result.synced;
@@ -666,11 +833,18 @@ export class ShopsService {
       where: { shopId: shop.id },
       select: {
         externalProductId: true,
+        providerName: true,
         available: true,
         sourcePrice: true,
+        sourceDescriptionLocked: true,
+        productIcon: true,
+        iconCustomEmojiId: true,
+        imageUrl: true,
+        productFamily: true,
+        metadataJson: true,
         overrides: {
           where: { sellerId: shop.sellerId },
-          select: { salePrice: true },
+          select: { salePrice: true, displayNameLocked: true, salePriceLocked: true },
           take: 1,
         },
       },
@@ -681,13 +855,39 @@ export class ShopsService {
     const stockNotifications: CatalogStockNotification[] = [];
     const syncedAt = new Date();
 
+    // Pre-load admin template defaults once for the whole batch (perf)
+    const adminTplDefaults = await this.loadAdminTemplateProductDefaultsByFamily();
+
     for (const product of normalizedProducts) {
       const previous = existingByExternalId.get(product.externalId);
       const nextAvailable = product.hidden ? 0 : this.normalizeNullableNumber(product.available);
-      const businessFields =
-        shop.providerConfig.providerKind === ProviderKind.INTERNAL
-          ? this.extractSyncedSourceBusinessFields(product.metadata)
-          : {};
+      const rawBusinessFields = this.extractSyncedSourceBusinessFields(product.metadata);
+      // Auto-detect family: ưu tiên dữ liệu DB cũ → metadata → name detect
+      const detectedFamily = previous?.productFamily
+        ?? rawBusinessFields.productFamily
+        ?? this.detectFamilyFromName(product.sourceName)
+        ?? undefined;
+      // Inject admin template defaults nhưng KHÔNG ghi đè giá trị seller đã set
+      const adminMatch = detectedFamily ? adminTplDefaults[detectedFamily] : null;
+      const businessFields = {
+        ...rawBusinessFields,
+        productFamily: detectedFamily,
+        // Ưu tiên: previous (seller đã set) → canboso → admin template
+        productIcon:
+          previous?.productIcon
+            ?? rawBusinessFields.productIcon
+            ?? adminMatch?.icon
+            ?? undefined,
+        iconCustomEmojiId:
+          previous?.iconCustomEmojiId
+            ?? rawBusinessFields.iconCustomEmojiId
+            ?? adminMatch?.customEmojiId
+            ?? undefined,
+        imageUrl:
+          previous?.imageUrl
+            ?? rawBusinessFields.imageUrl
+            ?? (adminMatch?.media?.type === "photo" ? (adminMatch.media.url ?? undefined) : undefined),
+      };
       const sourceProduct = await this.prisma.sourceProduct.upsert({
         where: {
           shopId_externalProductId: {
@@ -698,12 +898,17 @@ export class ShopsService {
         update: {
           sourceName: product.sourceName,
           sourceRawName: product.sourceRawName || product.sourceName,
-          sourceDescription: product.description || product.rawDescription,
+          ...(previous?.sourceDescriptionLocked ? {} : { sourceDescription: product.description || product.rawDescription }),
           sourcePrice: toDecimal(product.price),
           available: nextAvailable,
           totalCount: nextAvailable ?? 0,
           ...businessFields,
-          metadataJson: product.metadata as Prisma.InputJsonValue,
+          metadataJson: {
+            ...(product.metadata as Record<string, unknown>),
+            ...(previous?.metadataJson && typeof previous.metadataJson === "object" && !Array.isArray(previous.metadataJson)
+              ? { usageInstructions: (previous.metadataJson as Record<string, unknown>).usageInstructions ?? null }
+              : {}),
+          } as Prisma.InputJsonValue,
           syncedAt,
         },
         create: {
@@ -723,16 +928,24 @@ export class ShopsService {
         },
       });
 
+      const markupPercent = shop.providerConfig.priceMarkupPercent != null
+        ? Number(shop.providerConfig.priceMarkupPercent)
+        : null;
       const oldSourcePrice = previous?.sourcePrice != null ? Number(previous.sourcePrice) : null;
       const existingSalePrice = previous?.overrides?.[0]?.salePrice != null
         ? Number(previous.overrides[0].salePrice)
         : null;
-      let newSalePrice: number;
-      if (oldSourcePrice !== null && existingSalePrice !== null) {
+      const salePriceLocked = previous?.overrides?.[0]?.salePriceLocked ?? false;
+      let newSalePrice: number | undefined;
+      if (!salePriceLocked && markupPercent !== null && markupPercent > 0) {
+        newSalePrice = product.price * (1 + markupPercent / 100);
+      } else if (oldSourcePrice !== null && existingSalePrice !== null) {
         const delta = product.price - oldSourcePrice;
-        newSalePrice = Math.max(product.price + 30000, existingSalePrice + delta);
-      } else {
-        newSalePrice = product.price + 30000;
+        newSalePrice = salePriceLocked
+          ? Math.max(product.price, existingSalePrice + delta)
+          : Math.max(product.price + 10000, existingSalePrice + delta);
+      } else if (!salePriceLocked) {
+        newSalePrice = product.price + 10000;
       }
 
       await this.prisma.sellerProductOverride.upsert({
@@ -743,14 +956,19 @@ export class ShopsService {
           },
         },
         update: {
-          salePrice: toDecimal(newSalePrice),
+          ...(newSalePrice !== undefined ? { salePrice: toDecimal(newSalePrice) } : {}),
+          ...(previous?.overrides?.[0]?.displayNameLocked
+            ? {}
+            : { displayName: product.sourceRawName || product.sourceName }),
         },
         create: {
           sellerId: shop.sellerId,
           shopId: shop.id,
           sourceProductId: sourceProduct.id,
-          displayName: product.sourceName,
-          salePrice: toDecimal(product.price + 30000),
+          displayName: product.sourceRawName || product.sourceName,
+          salePrice: toDecimal(markupPercent != null && markupPercent > 0
+            ? product.price * (1 + markupPercent / 100)
+            : product.price + 10000),
           enabled: true,
           hidden: false,
         },
@@ -771,7 +989,7 @@ export class ShopsService {
         if (addedQuantity > 0 && Number(nextAvailable) > 0) {
           stockNotifications.push({
             sourceProductId: sourceProduct.id,
-            displayName: product.sourceName,
+            displayName: product.sourceRawName || product.sourceName,
             addedQuantity,
             available: Number(nextAvailable),
           });
@@ -781,17 +999,21 @@ export class ShopsService {
 
     const incomingExternalIds = new Set(normalizedProducts.map((p) => p.externalId));
     const staleExternalIds = existingProducts
-      .filter((p) => !incomingExternalIds.has(p.externalProductId))
+      .filter((p) => p.providerName !== "manual" && !incomingExternalIds.has(p.externalProductId))
       .map((p) => p.externalProductId);
 
     if (staleExternalIds.length > 0) {
+      const staleProducts = await this.prisma.sourceProduct.findMany({
+        where: { shopId: shop.id, externalProductId: { in: staleExternalIds }, providerName: { not: "manual" } },
+        select: { id: true },
+      });
+      const staleIds = staleProducts.map((p) => p.id);
       await this.prisma.sourceProduct.updateMany({
-        where: {
-          shopId: shop.id,
-          externalProductId: { in: staleExternalIds },
-        },
+        where: { id: { in: staleIds } },
         data: { available: 0 },
       });
+      // Don't toggle override.enabled/hidden — those are user-controlled.
+      // available = 0 alone is enough to hide from bot (bot filters by available > 0).
     }
 
     await this.prisma.shop.update({
@@ -825,7 +1047,7 @@ export class ShopsService {
     };
   }
 
-  private async notifyCatalogStockUpdates(
+  async notifyCatalogStockUpdates(
     shopId: string,
     encryptedBotToken: string | null,
     notifications: CatalogStockNotification[],
@@ -843,32 +1065,79 @@ export class ShopsService {
       return 0;
     }
 
-    const customers = await this.prisma.customer.findMany({
-      where: { shopId },
-      select: {
-        telegramChatId: true,
-      },
-    });
+    const [customers, sourceProducts, shop] = await Promise.all([
+      this.prisma.customer.findMany({
+        where: { shopId },
+        select: { telegramChatId: true, preferredLanguage: true },
+      }),
+      this.prisma.sourceProduct.findMany({
+        where: { shopId },
+        select: { id: true, iconCustomEmojiId: true },
+      }),
+      this.prisma.shop.findUnique({
+        where: { id: shopId },
+        select: { botConfig: { select: { customizationJson: true } } },
+      }),
+    ]);
 
     if (customers.length === 0) {
       return 0;
     }
 
+    const productById = new Map(sourceProducts.map((p) => [p.id, p]));
+    const rawCust = shop?.botConfig?.customizationJson;
+    const custJson = (rawCust && typeof rawCust === "object" && !Array.isArray(rawCust)) ? rawCust as Record<string, unknown> : {};
+    const custEmojis = (custJson["buttonEmojis"] && typeof custJson["buttonEmojis"] === "object") ? custJson["buttonEmojis"] as Record<string, string> : {};
+    const custLabels = (custJson["buttonLabels"] && typeof custJson["buttonLabels"] === "object") ? custJson["buttonLabels"] as Record<string, Record<string, string>> : {};
+    const custEmojiIds = (custJson["buttonEmojiIds"] && typeof custJson["buttonEmojiIds"] === "object") ? custJson["buttonEmojiIds"] as Record<string, string> : {};
+
+    const msgEmojiIds = (custJson["messageEmojiIds"] && typeof custJson["messageEmojiIds"] === "object") ? custJson["messageEmojiIds"] as Record<string, string> : {};
+
+    const buildBtn = (key: string, fallbackEmoji: string, fallbackVi: string, fallbackEn: string, fallbackTh: string, cbData: string, lang: string) => {
+      const custLabel = custLabels[key]?.[lang];
+      const custEmoji = custEmojis[key];
+      const custEmojiId = custEmojiIds[key];
+      const fallbackText = lang === "en" ? fallbackEn : lang === "th" ? fallbackTh : fallbackVi;
+      const text = custLabel ? ((custEmoji ? `${custEmoji} ` : "") + custLabel) : `${custEmoji ?? fallbackEmoji} ${fallbackText}`;
+      const btn: Record<string, string> = { text, callback_data: cbData };
+      if (custEmojiId) btn["icon_custom_emoji_id"] = custEmojiId;
+      return btn;
+    };
+
     for (const customer of customers) {
+      const lang = customer.preferredLanguage === "en" ? "en" : customer.preferredLanguage === "th" ? "th" : "vi";
+      const labelAdded = lang === "en" ? "Added" : lang === "th" ? "เพิ่ม" : "Thêm";
+      const labelStock = lang === "en" ? "Current stock" : lang === "th" ? "สต็อกปัจจุบัน" : "Tồn kho hiện tại";
+      const headerLine = lang === "en" ? "📢 Restock notification!" : lang === "th" ? "📢 แจ้งเตือนสินค้าเข้าใหม่!" : "📢 Thông báo nhập kho!";
+      const addedIcon = msgEmojiIds["stockAdded"]
+        ? `<tg-emoji emoji-id="${msgEmojiIds["stockAdded"]}">➕</tg-emoji>`
+        : "➕";
+
       for (const item of notifications) {
+        const product = productById.get(item.sourceProductId);
+        const iconEmojiId = product?.iconCustomEmojiId ?? null;
+        const productNameLine = iconEmojiId
+          ? `<tg-emoji emoji-id="${iconEmojiId}">📦</tg-emoji> ${item.displayName}`
+          : `📦 ${item.displayName}`;
+        const cbData = `buy:${item.sourceProductId}`;
+        const useHtml = !!(iconEmojiId || msgEmojiIds["stockAdded"]);
+
         await telegramSendMessage(
           token,
           customer.telegramChatId,
           [
-            `📦 ${item.displayName}`,
-            `➕ Thêm: ${item.addedQuantity}`,
-            `📦 Tồn kho hiện tại: ${item.available}`,
+            headerLine,
+            "",
+            productNameLine,
+            `${addedIcon} ${labelAdded}: ${item.addedQuantity}`,
+            `📦 ${labelStock}: ${item.available}`,
           ].join("\n"),
           {
+            parse_mode: useHtml ? "HTML" : undefined,
             reply_markup: {
-              inline_keyboard: [
-                [{ text: "🛒 Mua ngay", callback_data: `buy:${item.sourceProductId}` }],
-              ],
+              inline_keyboard: [[
+                buildBtn("buyNow", "🛒", "Mua ngay", "Buy now", "ซื้อเลย", cbData, lang),
+              ]],
             },
           },
         ).catch(() => undefined);
@@ -1160,8 +1429,58 @@ export class ShopsService {
   }
 
   private normalizeNullableNumber(value: unknown) {
+    if (value === null || value === undefined) return null;
     const numeric = Number(value);
     return Number.isFinite(numeric) ? numeric : null;
+  }
+
+  /**
+   * Auto-detect SourceProductFamily từ tên sản phẩm (keyword matching).
+   * Dùng khi canboso sync không gửi productFamily metadata.
+   */
+  private detectFamilyFromName(name: string | null | undefined): SourceProductFamily | null {
+    if (!name) return null;
+    const n = String(name).toLowerCase();
+    // Thứ tự match: keyword cụ thể trước, generic sau
+    if (/\b(chatgpt|gpt[\s-]*plus|gpt[\s-]*pro|gpt[\s-]*team|openai)\b/.test(n)) return SourceProductFamily.CHATGPT;
+    if (/\b(claude|anthropic)\b/.test(n)) return SourceProductFamily.CLAUDE;
+    if (/\b(gemini|google[\s-]*ai|bard)\b/.test(n)) return SourceProductFamily.GEMINI;
+    if (/\b(grok|xai|x[\s-]*ai)\b/.test(n)) return SourceProductFamily.GROK;
+    if (/\b(perplexity|pplx)\b/.test(n)) return SourceProductFamily.PERPLEXITY;
+    if (/\b(veo[\s-]*3|veo3)\b/.test(n)) return SourceProductFamily.VEO3;
+    if (/\b(kling)\b/.test(n)) return SourceProductFamily.KLING;
+    if (/\b(higgsfield|higgs[\s-]*field|higg)\b/.test(n)) return SourceProductFamily.HIGGSFIELD;
+    if (/\b(canva)\b/.test(n)) return SourceProductFamily.CANVA;
+    if (/\b(capcut|cap[\s-]*cut)\b/.test(n)) return SourceProductFamily.CAPCUT;
+    if (/\b(adobe|photoshop|illustrator|premiere|lightroom|creative[\s-]*cloud|after[\s-]*effects)\b/.test(n)) return SourceProductFamily.ADOBE;
+    if (/\b(suno)\b/.test(n)) return SourceProductFamily.SUNO;
+    if (/\b(eleven[\s-]*labs|elevenlabs|11labs|eleven)\b/.test(n)) return SourceProductFamily.ELEVENLABS;
+    if (/\b(heygen|hey[\s-]*gen)\b/.test(n)) return SourceProductFamily.HEYGEN;
+    if (/\b(gmail|google[\s-]*workspace|gworkspace)\b/.test(n)) return SourceProductFamily.GMAIL;
+    if (/\b(youtube|yt[\s-]*premium|yt[\s-]*family)\b/.test(n)) return SourceProductFamily.YOUTUBE;
+    if (/\b(tiktok|tik[\s-]*tok)\b/.test(n)) return SourceProductFamily.TIKTOK;
+    if (/\b(zoom)\b/.test(n)) return SourceProductFamily.ZOOM;
+    if (/\b(duolingo|duo[\s-]*lingo)\b/.test(n)) return SourceProductFamily.DUOLINGO;
+    if (/\b(hidemyass|hma)\b/.test(n)) return SourceProductFamily.HMA;
+    if (/\b(vpn|nordvpn|expressvpn|surfshark|protonvpn|cyberghost)\b/.test(n)) return SourceProductFamily.VPN;
+    return null;
+  }
+
+  /**
+   * Load admin template's productDefaultsByFamily map (cached briefly via Prisma query).
+   * Returns empty object if no template exists.
+   */
+  private async loadAdminTemplateProductDefaultsByFamily(): Promise<Record<string, any>> {
+    try {
+      const tpl = await this.prisma.shop.findFirst({
+        where: { isTemplate: true },
+        select: { botConfig: { select: { customizationJson: true } } },
+      });
+      const cust = (tpl?.botConfig?.customizationJson as Record<string, any>) ?? null;
+      return (cust?.productDefaultsByFamily as Record<string, any>) ?? {};
+    } catch {
+      return {};
+    }
   }
 
   private extractSyncedSourceBusinessFields(metadata: Record<string, unknown>) {
@@ -1204,6 +1523,9 @@ export class ShopsService {
           : null,
       sourceDeliveryMode,
       warrantyPolicy,
+      productIcon: metadata.productIcon ? String(metadata.productIcon) : undefined,
+      iconCustomEmojiId: metadata.iconCustomEmojiId ? String(metadata.iconCustomEmojiId) : undefined,
+      imageUrl: metadata.imageUrl ? String(metadata.imageUrl) : undefined,
     };
   }
 
@@ -1271,18 +1593,18 @@ export class ShopsService {
     return shop;
   }
 
-  async getCatalogViewForShop(shopId: string) {
+  async getCatalogViewForShop(shopId: string, sortByAvailable = true) {
     const products = await this.prisma.sourceProduct.findMany({
       where: { shopId },
       include: {
         overrides: true,
       },
-      orderBy: {
-        createdAt: "asc",
-      },
+      orderBy: sortByAvailable
+        ? [{ available: { sort: "desc", nulls: "first" } }, { createdAt: "asc" }]
+        : [{ createdAt: "asc" }],
     });
 
-    return products.map((product) => {
+    const mapped = products.map((product) => {
       const override = product.overrides[0];
       const metadata =
         product.metadataJson && typeof product.metadataJson === "object" && !Array.isArray(product.metadataJson)
@@ -1296,7 +1618,7 @@ export class ShopsService {
         sourceProductId: product.externalProductId,
         providerName: product.providerName,
         sourceName: product.sourceName,
-        displayName: override?.displayName || product.sourceName,
+        displayName: override?.displayName || product.sourceRawName || product.sourceName,
         description: product.sourceDescription,
         sourcePrice: decimalToNumber(product.sourcePrice),
         salePrice: decimalToNumber(override?.salePrice || product.sourcePrice),
@@ -1310,14 +1632,20 @@ export class ShopsService {
         salePriceUsd: override?.salePriceUsd ? decimalToNumber(override.salePriceUsd) : null,
         promoText: override?.promoText || null,
         isManual,
+        isShared: metadata.shared === true,
+        sharedContent: typeof metadata.sharedContent === "string" ? metadata.sharedContent : null,
+        usageInstructions: typeof metadata.usageInstructions === "string" ? metadata.usageInstructions : null,
         deliveryText:
           typeof metadata.deliveryText === "string" ? metadata.deliveryText : null,
+        deliveryFormatHint:
+          typeof metadata.deliveryFormatHint === "string" ? metadata.deliveryFormatHint : null,
         internalSourceEnabled: product.internalSourceEnabled,
         internalSourcePrice: product.internalSourcePrice
           ? decimalToNumber(product.internalSourcePrice)
           : null,
         productFamily: product.productFamily?.toLowerCase() || null,
         productFamilyOther: product.productFamilyOther || null,
+        productPackage: (product as any).productPackage || null,
         accountType: product.accountType?.toLowerCase() || null,
         accountTypeOther: product.accountTypeOther || null,
         durationType: product.durationType?.toLowerCase() || null,
@@ -1325,8 +1653,39 @@ export class ShopsService {
         sourceDeliveryMode: product.sourceDeliveryMode?.toLowerCase() || null,
         warrantyPolicy: product.warrantyPolicy?.toLowerCase() || null,
         productIcon: product.productIcon || null,
+        iconCustomEmojiId: product.iconCustomEmojiId || null,
+        iconOutOfStockEmojiId: product.iconOutOfStockEmojiId || null,
+        imageUrl: product.imageUrl || null,
         syncedAt: product.syncedAt,
+        groupId: override?.groupId ?? null,
+        position: override?.position ?? 0,
+        createdAt: product.createdAt,
+        promoType: (product as any).promoType || null,
+        promoBuyN: (product as any).promoBuyN ?? null,
+        promoGetM: (product as any).promoGetM ?? null,
+        promoBulkMinQty: (product as any).promoBulkMinQty ?? null,
+        promoBulkDiscountPct: (product as any).promoBulkDiscountPct ? decimalToNumber((product as any).promoBulkDiscountPct) : null,
+        promoStartAt: (product as any).promoStartAt ?? null,
+        promoEndAt: (product as any).promoEndAt ?? null,
+        promoBannerUrl: (product as any).promoBannerUrl ?? null,
       };
+    });
+    // Sort by manual position first, then by sortByAvailable / createdAt
+    return mapped.sort((a, b) => {
+      if (a.position !== b.position) return a.position - b.position;
+      if (sortByAvailable) {
+        const av = a.available === null ? Number.MAX_SAFE_INTEGER : a.available;
+        const bv = b.available === null ? Number.MAX_SAFE_INTEGER : b.available;
+        if (av !== bv) return bv - av;
+      }
+      return a.createdAt.getTime() - b.createdAt.getTime();
+    });
+  }
+
+  async getCatalogGroupsForShop(shopId: string) {
+    return this.prisma.shopCatalogGroup.findMany({
+      where: { shopId },
+      orderBy: [{ position: "asc" }, { createdAt: "asc" }],
     });
   }
 
@@ -1350,7 +1709,18 @@ export class ShopsService {
         include: { upstreamShop: true },
       });
       if (!connection) throw new BadRequestException("Internal source connection not found.");
-      const balance = decimalToNumber(connection.balance);
+
+      let balance = 0;
+      if (connection.downstreamTelegramChatId) {
+        const wallet = await this.prisma.customerWallet.findFirst({
+          where: {
+            customer: { shopId: connection.upstreamShopId, telegramChatId: connection.downstreamTelegramChatId },
+          },
+          select: { balance: true },
+        });
+        if (wallet) balance = decimalToNumber(wallet.balance);
+      }
+
       return {
         success: true,
         walletCurrency: connection.currency,
@@ -1401,6 +1771,28 @@ export class ShopsService {
       });
     } catch (error) {
       throw new BadRequestException(this.formatProviderError(error));
+    }
+  }
+
+  async checkExternalProductStock(shopId: string, externalProductId: string | null): Promise<boolean> {
+    if (!externalProductId) return true;
+    const shop = await this.getSellerShopByShopId(shopId);
+    if (!shop.providerConfig || shop.providerConfig.providerKind !== ProviderKind.EXTERNAL) return true;
+    const buyerKey = decryptSecret(shop.providerConfig.buyerKeyEncrypted, this.config.encryptionKey);
+    if (!buyerKey) return true;
+    if (String(process.env.MOCK_PROVIDER_ENABLED || "false") === "true" && isMockBuyerKey(buyerKey)) return true;
+    try {
+      const products = await fetchProviderProducts({
+        baseUrl: shop.providerConfig.baseUrl,
+        buyerKey,
+        timeoutMs: 5000,
+      });
+      const found = products.find((p) => p.externalId === externalProductId);
+      if (!found || found.hidden) return false;
+      if (found.available !== null && found.available <= 0) return false;
+      return true;
+    } catch {
+      return true;
     }
   }
 

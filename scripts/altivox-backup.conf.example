@@ -1,0 +1,29 @@
+# /etc/altivox-backup.conf
+# Cấp quyền: chmod 600 /etc/altivox-backup.conf
+# Chỉ root đọc — chứa BOT_TOKEN và passphrase nhạy cảm
+
+# Bot riêng để gửi backup (tạo qua @BotFather)
+BOT_TOKEN="123456789:AAEhBP0av28cVxxxxxxxxxxxxxxxxxxx"
+
+# Chat ID nhận backup (lấy qua @userinfobot — chat riêng với mình)
+# Hoặc channel private (-100xxxxxxxxxx)
+CHAT_ID="123456789"
+
+# Passphrase mã hoá backup — TUYỆT ĐỐI KHÔNG ĐƯỢC MẤT
+# Tối thiểu 32 ký tự, lưu thêm 1 bản ở password manager
+ENCRYPTION_PASSPHRASE="thay-bang-passphrase-cua-anh-toi-thieu-32-ky-tu"
+
+# Postgres (mặc định OK)
+POSTGRES_CONTAINER="reseller-platform-postgres"
+POSTGRES_DB="reseller_platform"
+POSTGRES_USER="postgres"
+
+# Đường dẫn app
+APP_ROOT="/opt/reseller-platform"
+
+# Giữ backup bao nhiêu ngày
+RETENTION_DAYS=3
+
+# Log files
+MSG_LOG="/var/log/altivox-backup-messages.log"
+ERR_LOG="/var/log/altivox-backup.log"

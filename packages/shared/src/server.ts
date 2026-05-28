@@ -3,6 +3,8 @@ export * from "./types";
 export * from "./server/encryption";
 export * from "./server/provider";
 export * from "./server/payos";
+export * from "./server/pay2s";
+export * from "./server/web2m";
 export * from "./server/telegram";
 export * from "./server/mock";
 export * from "./server/internal-auth";

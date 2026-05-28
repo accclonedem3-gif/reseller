@@ -74,8 +74,20 @@ export class InternalSourceAuthMiddleware implements NestMiddleware {
 
     const isWriteRequest = req.method === "POST" || req.method === "PUT" || req.method === "PATCH";
     if (isWriteRequest) {
-      const balance = Number(apiKey.connection.balance);
-      if (balance <= 0) {
+      let walletBalance = 0;
+      if (apiKey.connection.downstreamTelegramChatId) {
+        const wallet = await this.prisma.customerWallet.findFirst({
+          where: {
+            customer: {
+              shopId: apiKey.connection.upstreamShopId,
+              telegramChatId: apiKey.connection.downstreamTelegramChatId,
+            },
+          },
+          select: { balance: true },
+        });
+        walletBalance = wallet ? Number(wallet.balance) : 0;
+      }
+      if (walletBalance <= 0) {
         throw new ForbiddenException(
           "Số dư kết nối bằng 0. Vui lòng nạp tiền vào bot nguồn PRO trước khi đặt hàng.",
         );

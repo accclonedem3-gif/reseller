@@ -31,6 +31,7 @@ import { InternalSourceService } from "./internal-source/internal-source.service
 import { PaymentService } from "./lib/payment.service";
 import { BinancePayService } from "./lib/binance-pay.service";
 import { OnchainPaymentService } from "./lib/onchain-payment.service";
+import { SolanaPaymentService } from "./lib/solana-payment.service";
 import { QueueService } from "./lib/queue.service";
 import { TelegramBotService } from "./lib/telegram-bot.service.v2";
 import { OrdersController } from "./orders/orders.controller";
@@ -43,6 +44,7 @@ import { ShopsController } from "./shops/shops.controller";
 import { ShopsService } from "./shops/shops.service";
 import { WalletController } from "./wallet/wallet.controller";
 import { WalletService } from "./wallet/wallet.service";
+import { WalletPromotionService } from "./wallet/wallet-promotion.service";
 import { WebhooksController } from "./webhooks/webhooks.controller";
 import { UpgradeController } from "./upgrade/upgrade.controller";
 import { UpgradeService } from "./upgrade/upgrade.service";
@@ -55,6 +57,20 @@ import { AffiliateController } from "./affiliate/affiliate.controller";
 import { AffiliateService } from "./affiliate/affiliate.service";
 import { AdminController } from "./admin/admin.controller";
 import { AdminService } from "./admin/admin.service";
+import { CustomersController } from "./customers/customers.controller";
+import { CustomersService } from "./customers/customers.service";
+import { CatalogGroupsController } from "./catalog-groups/catalog-groups.controller";
+import { CatalogGroupsService } from "./catalog-groups/catalog-groups.service";
+import { IconCatalogController } from "./icon-catalog/icon-catalog.controller";
+import { IconCatalogService } from "./icon-catalog/icon-catalog.service";
+import { MiniAppController } from "./mini-app/mini-app.controller";
+import { MiniAppService } from "./mini-app/mini-app.service";
+import { GramJsService } from "./lib/gramjs.service";
+import { TiersController } from "./tiers/tiers.controller";
+import { TiersService } from "./tiers/tiers.service";
+import { TierAffiliateService } from "./tiers/tier-affiliate.service";
+import { AdminTemplateController } from "./admin-template/admin-template.controller";
+import { AdminTemplateService } from "./admin-template/admin-template.service";
 
 @Module({
   imports: [
@@ -78,10 +94,16 @@ import { AdminService } from "./admin/admin.service";
     SellerSourceConnectionController,
     SourceProductController,
     UpgradeController,
+    TiersController,
     ProAnalyticsController,
     AffiliateController,
     DevController,
     AdminController,
+    CustomersController,
+    CatalogGroupsController,
+    IconCatalogController,
+    MiniAppController,
+    AdminTemplateController,
   ],
   providers: [
     AppConfigService,
@@ -89,6 +111,7 @@ import { AdminService } from "./admin/admin.service";
     QueueService,
     BinancePayService,
     OnchainPaymentService,
+    SolanaPaymentService,
     PaymentService,
     TelegramBotService,
     AuthService,
@@ -96,12 +119,15 @@ import { AdminService } from "./admin/admin.service";
     CustomerWalletService,
     ProductsService,
     WalletService,
+    WalletPromotionService,
     WarrantyService,
     OrdersService,
     ReportsService,
     BroadcastsService,
     InternalSourceService,
     UpgradeService,
+    TiersService,
+    TierAffiliateService,
     Reflector,
     JwtAuthGuard,
     RolesGuard,
@@ -117,6 +143,12 @@ import { AdminService } from "./admin/admin.service";
     ProAnalyticsService,
     AffiliateService,
     AdminService,
+    CustomersService,
+    CatalogGroupsService,
+    IconCatalogService,
+    MiniAppService,
+    GramJsService,
+    AdminTemplateService,
   ],
 })
 export class AppModule implements NestModule {

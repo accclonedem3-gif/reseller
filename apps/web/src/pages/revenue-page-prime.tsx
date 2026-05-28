@@ -1,48 +1,37 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
+  Area,
+  AreaChart,
   CartesianGrid,
-  Line,
-  LineChart,
   ReferenceLine,
   ResponsiveContainer,
   Tooltip,
   XAxis,
   YAxis,
 } from "recharts";
-import {
-  BarChart3,
-  CalendarRange,
-  CircleDollarSign,
-  PackageCheck,
-  Sparkles,
-  TrendingUp,
-} from "lucide-react";
+import { RefreshCw } from "lucide-react";
 
-import { SectionHeading } from "@/components/dashboard/section-heading";
-import { Card } from "@/components/ui/card";
-import { CardHeader } from "@/components/ui/card-header";
 import { api } from "@/lib/api";
 import { formatCurrency } from "@/lib/format";
 import { useLang } from "@/lib/lang";
 
 const T = {
   vi: {
-    eyebrow: "Phân tích tài chính",
     title: "Doanh thu",
-    desc: "Theo dõi doanh thu và lợi nhuận theo khoảng thời gian tùy chỉnh.",
+    subtitle: "Phân tích tài chính",
     statRevenue: "Doanh thu gộp",
     statProfit: "Lợi nhuận ước tính",
     statDelivered: "Đơn đã giao",
-    statAvg: "TB / ngày",
+    statAvg: "Trung bình / ngày",
     chartTitle: "Biểu đồ doanh thu",
     periodToday: "Hôm nay",
     periodWeek: "Tuần này",
     periodMonth: "Tháng này",
     periodCustom: "Tùy chỉnh",
     legendRevenue: "Doanh thu",
-    legendProfit: "Lợi nhuận ước tính",
-    legendAvg: (v: string) => `---- TB: ${v}`,
+    legendProfit: "Lợi nhuận",
+    legendAvg: (v: string) => `TB: ${v}`,
     loading: "Đang tải...",
     noDataTitle: "Không có dữ liệu trong khoảng này",
     noDataToday: "Hôm nay chưa có đơn hoàn thành.",
@@ -62,26 +51,27 @@ const T = {
     dailyTitle: "Chi tiết theo ngày",
     dailyDays: (n: number) => `${n} ngày`,
     dailyEmpty: "Chưa có dữ liệu trong khoảng thời gian đã chọn.",
-    dailySub: (orders: number, profit: string) => `${orders} đơn • LN ${profit}`,
+    dailySub: (orders: number, profit: string) => `${orders} đơn · LN ${profit}`,
     tooltipRevenue: "Doanh thu",
     tooltipProfit: "Lợi nhuận",
+    exportReport: "Xuất báo cáo",
+    refresh: "Làm mới",
   },
   en: {
-    eyebrow: "Financial analytics",
     title: "Revenue",
-    desc: "Track revenue and profit over a custom time range.",
+    subtitle: "Financial analytics",
     statRevenue: "Gross revenue",
     statProfit: "Estimated profit",
     statDelivered: "Delivered orders",
-    statAvg: "Avg / day",
+    statAvg: "Average / day",
     chartTitle: "Revenue chart",
     periodToday: "Today",
     periodWeek: "This week",
     periodMonth: "This month",
     periodCustom: "Custom",
     legendRevenue: "Revenue",
-    legendProfit: "Estimated profit",
-    legendAvg: (v: string) => `---- Avg: ${v}`,
+    legendProfit: "Profit",
+    legendAvg: (v: string) => `Avg: ${v}`,
     loading: "Loading...",
     noDataTitle: "No data in this range",
     noDataToday: "No completed orders today.",
@@ -101,14 +91,15 @@ const T = {
     dailyTitle: "Daily breakdown",
     dailyDays: (n: number) => `${n} days`,
     dailyEmpty: "No data in the selected time range.",
-    dailySub: (orders: number, profit: string) => `${orders} orders • Profit ${profit}`,
+    dailySub: (orders: number, profit: string) => `${orders} orders · Profit ${profit}`,
     tooltipRevenue: "Revenue",
     tooltipProfit: "Profit",
+    exportReport: "Export report",
+    refresh: "Refresh",
   },
   th: {
-    eyebrow: "การวิเคราะห์การเงิน",
     title: "รายได้",
-    desc: "ติดตามรายได้และกำไรตามช่วงเวลาที่กำหนดเอง",
+    subtitle: "การวิเคราะห์การเงิน",
     statRevenue: "รายได้รวม",
     statProfit: "กำไรโดยประมาณ",
     statDelivered: "คำสั่งซื้อที่จัดส่งแล้ว",
@@ -119,8 +110,8 @@ const T = {
     periodMonth: "เดือนนี้",
     periodCustom: "กำหนดเอง",
     legendRevenue: "รายได้",
-    legendProfit: "กำไรโดยประมาณ",
-    legendAvg: (v: string) => `---- เฉลี่ย: ${v}`,
+    legendProfit: "กำไร",
+    legendAvg: (v: string) => `เฉลี่ย: ${v}`,
     loading: "กำลังโหลด...",
     noDataTitle: "ไม่มีข้อมูลในช่วงนี้",
     noDataToday: "วันนี้ยังไม่มีคำสั่งซื้อที่เสร็จสิ้น",
@@ -140,9 +131,11 @@ const T = {
     dailyTitle: "รายละเอียดรายวัน",
     dailyDays: (n: number) => `${n} วัน`,
     dailyEmpty: "ไม่มีข้อมูลในช่วงเวลาที่เลือก",
-    dailySub: (orders: number, profit: string) => `${orders} คำสั่ง • กำไร ${profit}`,
+    dailySub: (orders: number, profit: string) => `${orders} คำสั่ง · กำไร ${profit}`,
     tooltipRevenue: "รายได้",
     tooltipProfit: "กำไร",
+    exportReport: "ส่งออกรายงาน",
+    refresh: "รีเฟรช",
   },
 };
 
@@ -152,97 +145,54 @@ type RevenuePoint = {
   estimatedProfit: number;
   deliveredOrders: number;
 };
-
-type ProfitSummary = {
-  today: number;
-  last7d: number;
-  last30d: number;
-  last90d: number;
-  allTime: number;
-};
-
+type ProfitSummary = { today: number; last7d: number; last30d: number; last90d: number; allTime: number };
 type RevenueResponse = {
   summary: { grossRevenue: number; estimatedProfit: number; deliveredOrders: number };
   series: RevenuePoint[];
   profitSummary: ProfitSummary;
 };
-
 type Period = "today" | "week" | "month" | "custom";
 
-function pad(n: number) {
-  return String(n).padStart(2, "0");
-}
-function fmtDate(d: Date) {
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-}
+function pad(n: number) { return String(n).padStart(2, "0"); }
+function fmtDate(d: Date) { return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; }
 function getDateRange(period: Period, custom: { start: string; end: string }) {
   const now = new Date();
-  if (period === "today") {
-    const s = fmtDate(now);
-    return { startDate: s, endDate: s };
-  }
+  if (period === "today") { const s = fmtDate(now); return { startDate: s, endDate: s }; }
   if (period === "week") {
-    const mon = new Date(now);
-    mon.setDate(now.getDate() - ((now.getDay() + 6) % 7));
+    const mon = new Date(now); mon.setDate(now.getDate() - ((now.getDay() + 6) % 7));
     return { startDate: fmtDate(mon), endDate: fmtDate(now) };
   }
-  if (period === "month") {
-    return {
-      startDate: fmtDate(new Date(now.getFullYear(), now.getMonth(), 1)),
-      endDate: fmtDate(now),
-    };
-  }
-  const fallbackStart = fmtDate(new Date(now.getFullYear(), now.getMonth(), 1));
-  const fallbackEnd = fmtDate(now);
-  return {
-    startDate: custom.start || fallbackStart,
-    endDate: custom.end || fallbackEnd,
-  };
+  if (period === "month") return { startDate: fmtDate(new Date(now.getFullYear(), now.getMonth(), 1)), endDate: fmtDate(now) };
+  const fb = fmtDate(new Date(now.getFullYear(), now.getMonth(), 1));
+  return { startDate: custom.start || fb, endDate: custom.end || fmtDate(now) };
 }
 
 const compactFmt = new Intl.DateTimeFormat("vi-VN", { day: "2-digit", month: "2-digit" });
 const fullFmt = new Intl.DateTimeFormat("vi-VN", { day: "2-digit", month: "2-digit", year: "numeric" });
+function fmtShort(label: string) { const d = new Date(`${label}T00:00:00`); return Number.isNaN(d.getTime()) ? label : compactFmt.format(d); }
+function fmtFull(label: string) { const d = new Date(`${label}T00:00:00`); return Number.isNaN(d.getTime()) ? label : fullFmt.format(d); }
 
-function fmtShort(label: string) {
-  const d = new Date(`${label}T00:00:00`);
-  return Number.isNaN(d.getTime()) ? label : compactFmt.format(d);
-}
-function fmtFull(label: string) {
-  const d = new Date(`${label}T00:00:00`);
-  return Number.isNaN(d.getTime()) ? label : fullFmt.format(d);
-}
-
-function ChartTooltip({
-  active,
-  payload,
-  label,
-  t,
-}: {
-  active?: boolean;
-  payload?: Array<{ dataKey?: string; value?: number }>;
-  label?: string;
-  t: typeof T["vi"];
+function ChartTooltip({ active, payload, label, t }: {
+  active?: boolean; payload?: Array<{ dataKey?: string; value?: number }>; label?: string; t: typeof T["vi"];
 }) {
   if (!active || !payload?.length || !label) return null;
   const rev = Number(payload.find((e) => e.dataKey === "grossRevenue")?.value || 0);
   const prof = Number(payload.find((e) => e.dataKey === "estimatedProfit")?.value || 0);
   return (
-    <div className="min-w-[220px] rounded-[18px] border border-white/10 bg-[#0a1220]/95 p-4 shadow-[0_24px_70px_rgba(2,6,23,0.42)] backdrop-blur-xl">
-      <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-slate-400">{fmtFull(label)}</p>
-      <div className="mt-3 space-y-2.5">
+    <div className="min-w-[200px] rounded-2xl p-4 shadow-2xl" style={{ background: "var(--surface)", border: "1px solid var(--bd)" }}>
+      <p className="text-[10px] font-black uppercase tracking-widest mb-3" style={{ color: "var(--tx-f)" }}>{fmtFull(label)}</p>
+      <div className="space-y-2">
         <div className="flex items-center justify-between gap-4">
-          <span className="flex items-center gap-2 text-sm text-slate-300">
-            <span className="h-2 w-2 rounded-full bg-emerald-400" />
-            {t.tooltipRevenue}
+          <span className="flex items-center gap-2 text-[12px]" style={{ color: "var(--tx-f)" }}>
+            <span className="h-2 w-2 rounded-full bg-emerald-400" />{t.tooltipRevenue}
           </span>
-          <span className="text-sm font-semibold text-white">{formatCurrency(rev)}</span>
+          <span className="text-[12px] font-black text-emerald-400">{formatCurrency(rev)}</span>
         </div>
         <div className="flex items-center justify-between gap-4">
-          <span className="flex items-center gap-2 text-sm text-slate-300">
-            <span className="h-2 w-2 rounded-full bg-orange-400" />
-            {t.tooltipProfit}
+          <span className="flex items-center gap-2 text-[12px]" style={{ color: "var(--tx-f)" }}>
+            <span className="h-2 w-2 rounded-full bg-orange-400" />{t.tooltipProfit}
           </span>
-          <span className="text-sm font-semibold text-orange-400">{formatCurrency(prof)}</span>
+          <span className="text-[12px] font-black text-orange-400">{formatCurrency(prof)}</span>
         </div>
       </div>
     </div>
@@ -260,16 +210,12 @@ export function RevenuePagePrime() {
 
   const query = useQuery<RevenueResponse>({
     queryKey: ["reports", "revenue", startDate, endDate],
-    queryFn: async () =>
-      (await api.get("/reports/revenue", { params: { startDate, endDate } })).data,
+    queryFn: async () => (await api.get("/reports/revenue", { params: { startDate, endDate } })).data,
     enabled: period !== "custom" || (!!custom.start && !!custom.end),
   });
 
   const PERIOD_LABELS: Record<Period, string> = {
-    today: t.periodToday,
-    week: t.periodWeek,
-    month: t.periodMonth,
-    custom: t.periodCustom,
+    today: t.periodToday, week: t.periodWeek, month: t.periodMonth, custom: t.periodCustom,
   };
 
   const series = query.data?.series || [];
@@ -277,7 +223,6 @@ export function RevenuePagePrime() {
     () => series.map((item) => ({ ...item, shortLabel: fmtShort(item.label), fullLabel: fmtFull(item.label) })),
     [series],
   );
-
   const chartRenderData = useMemo(() => {
     if (chartData.length !== 1) return chartData;
     const [pt] = chartData;
@@ -288,294 +233,242 @@ export function RevenuePagePrime() {
     ];
   }, [chartData]);
 
-  const averageRevenue =
-    chartData.length > 0
-      ? Math.round(chartData.reduce((s, i) => s + Number(i.grossRevenue || 0), 0) / chartData.length)
-      : 0;
-
-  const averageProfit =
-    chartData.length > 0
-      ? Math.round(chartData.reduce((s, i) => s + Number(i.estimatedProfit || 0), 0) / chartData.length)
-      : 0;
-
+  const averageRevenue = chartData.length > 0
+    ? Math.round(chartData.reduce((s, i) => s + Number(i.grossRevenue || 0), 0) / chartData.length) : 0;
+  const averageProfit = chartData.length > 0
+    ? Math.round(chartData.reduce((s, i) => s + Number(i.estimatedProfit || 0), 0) / chartData.length) : 0;
   const bestDay = useMemo(
     () => chartData.reduce<(typeof chartData)[number] | null>(
-      (cur, item) => (!cur || item.grossRevenue > cur.grossRevenue ? item : cur),
-      null,
-    ),
-    [chartData],
+      (cur, item) => (!cur || item.grossRevenue > cur.grossRevenue ? item : cur), null,
+    ), [chartData],
   );
 
   const summary = query.data?.summary;
   const ps = query.data?.profitSummary;
 
+  const periodBtn = (p: Period) => {
+    const active = period === p;
+    return (
+      <button key={p} type="button" onClick={() => setPeriod(p)}
+        className="rounded-full px-4 py-1.5 text-[12px] font-black transition"
+        style={active
+          ? { border: "1.5px solid rgb(249,115,22)", color: "rgb(249,115,22)", background: "transparent" }
+          : { border: "1.5px solid transparent", color: "var(--tx-f)", background: "transparent" }
+        }>
+        {PERIOD_LABELS[p]}
+      </button>
+    );
+  };
+
+  const statCard = (label: string, value: string, desc: string, valueColor: string, borderColor: string) => (
+    <div className="rounded-2xl p-5" style={{ background: "var(--surface)", border: "1px solid var(--bd)", borderLeft: `3px solid ${borderColor}` }}>
+      <p className="text-[10px] font-black uppercase tracking-widest" style={{ color: "var(--tx-f)" }}>{label}</p>
+      <p className="mt-2 text-2xl font-black tabular-nums" style={{ color: valueColor }}>{value}</p>
+      <p className="mt-1 text-[11px]" style={{ color: "var(--tx-f)" }}>{desc}</p>
+    </div>
+  );
+
+  const periodLabel = (() => {
+    if (period === "today") return "Hôm nay";
+    if (period === "week") { const now = new Date(); return `Tháng ${now.getMonth() + 1} · ${now.getFullYear()}`; }
+    if (period === "month") { const now = new Date(); return `Tháng ${now.getMonth() + 1} · ${now.getFullYear()}`; }
+    return custom.start ? `${fmtShort(custom.start)} → ${fmtShort(custom.end)}` : "—";
+  })();
+
   return (
     <div className="space-y-5">
-      <SectionHeading
-        eyebrow={t.eyebrow}
-        title={t.title}
-        description={t.desc}
-        gradient="amber"
-        stats={[
-          { icon: CircleDollarSign, label: t.statRevenue, value: formatCurrency(summary?.grossRevenue || 0), iconCls: "text-amber-400", bgCls: "bg-amber-500/15" },
-          { icon: BarChart3, label: t.statProfit, value: formatCurrency(summary?.estimatedProfit || 0), iconCls: "text-orange-400", bgCls: "bg-orange-500/15" },
-          { icon: PackageCheck, label: t.statDelivered, value: String(summary?.deliveredOrders || 0), iconCls: "text-sky-400", bgCls: "bg-sky-500/15" },
-          { icon: CalendarRange, label: t.statAvg, value: formatCurrency(averageRevenue), iconCls: "text-violet-400", bgCls: "bg-violet-500/15" },
-        ]}
-      />
+      {/* Header */}
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-black" style={{ color: "rgb(249,115,22)" }}>{t.title}</h1>
+          <p className="mt-0.5 text-[13px]" style={{ color: "var(--tx-f)" }}>{t.subtitle}</p>
+        </div>
+        <div className="flex flex-wrap items-center gap-1">
+          {(["today", "week", "month", "custom"] as Period[]).map(periodBtn)}
+          {period === "custom" && (
+            <div className="flex items-center gap-2 ml-2">
+              <input type="date" value={custom.start} onChange={(e) => setCustom((r) => ({ ...r, start: e.target.value }))}
+                className="rounded-xl px-3 py-1.5 text-[12px] outline-none"
+                style={{ background: "var(--inp)", border: "1px solid var(--bd)", color: "var(--tx)" }} />
+              <span className="text-[12px]" style={{ color: "var(--tx-f)" }}>→</span>
+              <input type="date" value={custom.end} onChange={(e) => setCustom((r) => ({ ...r, end: e.target.value }))}
+                className="rounded-xl px-3 py-1.5 text-[12px] outline-none"
+                style={{ background: "var(--inp)", border: "1px solid var(--bd)", color: "var(--tx)" }} />
+            </div>
+          )}
+          <button type="button" disabled={query.isFetching} onClick={() => void query.refetch()}
+            className="ml-1 flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-[12px] font-black transition hover:opacity-80"
+            style={{ background: "var(--primary)", color: "#fff" }}>
+            <RefreshCw className={`h-3.5 w-3.5 ${query.isFetching ? "animate-spin" : ""}`} />
+            {t.refresh}
+          </button>
+        </div>
+      </div>
 
-      <section className="grid gap-6 xl:grid-cols-[minmax(0,1.25fr)_360px]">
-        {/* ── Chart card ── */}
-        <Card className="overflow-hidden">
-          <CardHeader
-            icon={TrendingUp}
-            title={t.chartTitle}
-            iconCls="text-amber-400"
-            iconBg="bg-amber-500/10"
-          />
+      {/* 4 stat cards */}
+      <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
+        {statCard(t.statRevenue, formatCurrency(summary?.grossRevenue || 0), periodLabel, "rgb(52,211,153)", "rgb(52,211,153)")}
+        {statCard(t.statProfit, formatCurrency(summary?.estimatedProfit || 0), "Sau khi trừ giá vốn", "rgb(249,115,22)", "rgb(249,115,22)")}
+        {statCard(t.statDelivered, String(summary?.deliveredOrders || 0), "Trong kỳ này", "rgb(56,189,248)", "rgb(56,189,248)")}
+        {statCard(t.statAvg, formatCurrency(averageRevenue), `${chartData.length} ngày có phát sinh`, "rgb(167,139,250)", "rgb(139,92,246)")}
+      </div>
 
-          {/* Period selector */}
-          <div className="mt-4 flex flex-wrap items-center gap-2">
-            {(["today", "week", "month", "custom"] as Period[]).map((p) => (
-              <button
-                key={p}
-                type="button"
-                onClick={() => setPeriod(p)}
-                className="rounded-full px-4 py-1.5 text-xs font-bold uppercase tracking-wide transition-all"
-                style={
-                  period === p
-                    ? { background: "rgb(249,115,22)", color: "#fff", border: "1px solid transparent" }
-                    : { background: "var(--inp)", color: "var(--tx-m)", border: "1px solid var(--bd)" }
-                }
-              >
-                {PERIOD_LABELS[p]}
-              </button>
-            ))}
+      {/* Main 2-col layout */}
+      <div className="grid gap-5 xl:grid-cols-[minmax(0,1.35fr)_340px]">
 
-            {period === "custom" && (
-              <div className="flex items-center gap-2">
-                <input
-                  type="date"
-                  value={custom.start}
-                  onChange={(e) => setCustom((r) => ({ ...r, start: e.target.value }))}
-                  className="rounded-xl px-3 py-1.5 text-xs font-medium outline-none"
-                  style={{ background: "var(--inp)", border: "1px solid var(--bd)", color: "var(--tx)" }}
-                />
-                <span className="text-xs" style={{ color: "var(--tx-f)" }}>→</span>
-                <input
-                  type="date"
-                  value={custom.end}
-                  onChange={(e) => setCustom((r) => ({ ...r, end: e.target.value }))}
-                  className="rounded-xl px-3 py-1.5 text-xs font-medium outline-none"
-                  style={{ background: "var(--inp)", border: "1px solid var(--bd)", color: "var(--tx)" }}
-                />
-              </div>
-            )}
-          </div>
-
-          {/* Legend */}
-          <div className="mt-4 flex flex-wrap items-center gap-3 text-sm">
-            <span className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-slate-950/35 px-3 py-1.5 text-slate-200">
-              <span className="h-2 w-2 rounded-full bg-emerald-400" />
-              {t.legendRevenue}
-            </span>
-            <span className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-slate-950/35 px-3 py-1.5 text-slate-200">
-              <span className="h-2 w-2 rounded-full bg-orange-400" />
-              {t.legendProfit}
-            </span>
-            {averageRevenue > 0 && (
-              <span className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-slate-950/35 px-3 py-1.5 text-slate-400">
-                {t.legendAvg(formatCurrency(averageRevenue))}
+        {/* Chart card */}
+        <div className="rounded-2xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--bd)" }}>
+          {/* Card header */}
+          <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-4" style={{ borderBottom: "1px solid var(--bd)" }}>
+            <h2 className="text-base font-black" style={{ color: "var(--tx)" }}>{t.chartTitle}</h2>
+            <div className="flex flex-wrap items-center gap-3 text-[12px]">
+              <span className="flex items-center gap-1.5" style={{ color: "var(--tx-f)" }}>
+                <span className="inline-block h-[2px] w-5 rounded-full bg-emerald-400" />
+                {t.legendRevenue}
               </span>
-            )}
+              <span className="flex items-center gap-1.5" style={{ color: "var(--tx-f)" }}>
+                <span className="inline-block h-[2px] w-5 rounded-full bg-orange-400" />
+                {t.legendProfit}
+              </span>
+              {averageRevenue > 0 && (
+                <span className="flex items-center gap-1.5" style={{ color: "var(--tx-f)" }}>
+                  <span className="inline-block h-[2px] w-5 rounded-full opacity-60" style={{ background: "rgb(249,115,22)", borderTop: "2px dashed rgb(249,115,22)" }} />
+                  {t.legendAvg(formatCurrency(averageRevenue))}
+                </span>
+              )}
+            </div>
           </div>
 
-          {/* Chart */}
-          <div className="mt-5 h-[360px]">
+          {/* Chart area */}
+          <div className="px-2 pt-4 pb-2" style={{ height: 320 }}>
             {query.isLoading ? (
               <div className="flex h-full items-center justify-center">
                 <p className="text-sm" style={{ color: "var(--tx-f)" }}>{t.loading}</p>
               </div>
             ) : chartData.length === 0 ? (
-              <div className="flex h-full flex-col items-center justify-center gap-3 rounded-[20px] border border-dashed border-white/10 bg-slate-950/25 text-center">
+              <div className="flex h-full flex-col items-center justify-center gap-3 rounded-2xl" style={{ border: "1px dashed var(--bd)" }}>
                 <span className="text-4xl">📊</span>
-                <p className="font-semibold text-white">{t.noDataTitle}</p>
-                <p className="max-w-xs text-sm text-slate-400">
-                  {period === "today"
-                    ? t.noDataToday
-                    : period === "week"
-                      ? t.noDataWeek
-                      : t.noDataOther}
+                <p className="font-black" style={{ color: "var(--tx)" }}>{t.noDataTitle}</p>
+                <p className="text-sm" style={{ color: "var(--tx-f)" }}>
+                  {period === "today" ? t.noDataToday : period === "week" ? t.noDataWeek : t.noDataOther}
                 </p>
               </div>
             ) : (
               <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={chartRenderData} margin={{ top: 12, right: 18, left: -16, bottom: 0 }}>
-                  <CartesianGrid stroke="rgba(148,163,184,0.10)" vertical={false} />
-                  <XAxis
-                    dataKey="shortLabel"
-                    stroke="rgba(148,163,184,0.72)"
-                    tickLine={false}
-                    axisLine={false}
-                    tickFormatter={(v) => v || ""}
-                  />
-                  <YAxis
-                    stroke="rgba(148,163,184,0.72)"
-                    tickLine={false}
-                    axisLine={false}
-                    width={70}
-                    tickFormatter={(v) =>
-                      v >= 1_000_000 ? `${(v / 1_000_000).toFixed(1)}tr` : v >= 1000 ? `${Math.round(v / 1000)}k` : `${v}`
-                    }
-                  />
+                <AreaChart data={chartRenderData} margin={{ top: 10, right: 10, left: -12, bottom: 0 }}>
+                  <defs>
+                    <linearGradient id="gradRevenue" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="rgb(52,211,153)" stopOpacity={0.25} />
+                      <stop offset="95%" stopColor="rgb(52,211,153)" stopOpacity={0.02} />
+                    </linearGradient>
+                    <linearGradient id="gradProfit" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="rgb(249,115,22)" stopOpacity={0.2} />
+                      <stop offset="95%" stopColor="rgb(249,115,22)" stopOpacity={0.02} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid stroke="rgba(148,163,184,0.08)" vertical={false} />
+                  <XAxis dataKey="shortLabel" stroke="rgba(148,163,184,0.5)" tickLine={false} axisLine={false}
+                    tickFormatter={(v) => v || ""} style={{ fontSize: 11 }} />
+                  <YAxis stroke="rgba(148,163,184,0.5)" tickLine={false} axisLine={false} width={64}
+                    style={{ fontSize: 11 }}
+                    tickFormatter={(v) => v >= 1_000_000 ? `${(v / 1_000_000).toFixed(1)}tr` : v >= 1000 ? `${Math.round(v / 1000)}k` : `${v}`} />
                   {averageRevenue > 0 && (
-                    <ReferenceLine y={averageRevenue} stroke="rgba(52,211,153,0.28)" strokeDasharray="6 6" />
+                    <ReferenceLine y={averageRevenue} stroke="rgba(249,115,22,0.4)" strokeDasharray="6 4" />
                   )}
                   <Tooltip content={<ChartTooltip t={t} />} />
-                  <Line
-                    type="monotone"
-                    dataKey="grossRevenue"
-                    stroke="#34D399"
-                    strokeWidth={2.8}
-                    dot={{ r: 3.5, fill: "#34D399", stroke: "#121A2E", strokeWidth: 2 }}
-                    activeDot={{ r: 6, fill: "#34D399", stroke: "#fff", strokeWidth: 2 }}
-                    isAnimationActive={false}
-                  />
-                  <Line
-                    type="monotone"
-                    dataKey="estimatedProfit"
-                    stroke="#f97316"
-                    strokeWidth={2.2}
-                    dot={{ r: 3, fill: "#f97316", stroke: "#121A2E", strokeWidth: 2 }}
-                    activeDot={{ r: 5.5, fill: "#f97316", stroke: "#fff", strokeWidth: 2 }}
-                    isAnimationActive={false}
-                  />
-                </LineChart>
+                  <Area type="monotone" dataKey="grossRevenue" stroke="rgb(52,211,153)" strokeWidth={2.5}
+                    fill="url(#gradRevenue)" dot={false} activeDot={{ r: 5, fill: "rgb(52,211,153)", stroke: "#fff", strokeWidth: 2 }} />
+                  <Area type="monotone" dataKey="estimatedProfit" stroke="rgb(249,115,22)" strokeWidth={2}
+                    fill="url(#gradProfit)" dot={false} activeDot={{ r: 4.5, fill: "rgb(249,115,22)", stroke: "#fff", strokeWidth: 2 }} />
+                </AreaChart>
               </ResponsiveContainer>
             )}
           </div>
 
-          {/* Best day + avg summary row */}
+          {/* Bottom 3 mini-cards */}
           {chartData.length > 0 && (
-            <div className="mt-4 grid grid-cols-3 gap-3">
+            <div className="grid grid-cols-3 gap-0" style={{ borderTop: "1px solid var(--bd)" }}>
               {[
-                { label: t.summaryBestDay, value: bestDay ? formatCurrency(bestDay.grossRevenue) : "—", sub: bestDay?.fullLabel },
-                { label: t.summaryAvgProfit, value: formatCurrency(averageProfit), sub: t.summaryAvgSub(chartData.length) },
-                { label: t.summaryTotalProfit, value: formatCurrency(summary?.estimatedProfit || 0), sub: t.summaryTotalSub(summary?.deliveredOrders || 0), accent: true },
-              ].map(({ label, value, sub, accent }) => (
-                <div
-                  key={label}
-                  className="rounded-[14px] px-3.5 py-3"
-                  style={{
-                    background: accent ? "rgba(249,115,22,0.06)" : "var(--inp)",
-                    border: `1px solid ${accent ? "rgba(249,115,22,0.22)" : "var(--bd)"}`,
-                  }}
-                >
-                  <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">{label}</p>
-                  <p
-                    className="mt-1.5 text-sm font-bold tabular-nums"
-                    style={{ color: accent ? "rgb(249,115,22)" : "var(--tx)" }}
-                  >
-                    {value}
-                  </p>
-                  {sub && <p className="mt-0.5 text-[11px] text-slate-500">{sub}</p>}
+                { label: t.summaryBestDay, value: bestDay ? formatCurrency(bestDay.grossRevenue) : "—", sub: bestDay?.fullLabel, color: "rgb(52,211,153)" },
+                { label: t.summaryAvgProfit, value: formatCurrency(averageProfit), sub: t.summaryAvgSub(chartData.length), color: "var(--tx)" },
+                { label: t.summaryTotalProfit, value: formatCurrency(summary?.estimatedProfit || 0), sub: t.summaryTotalSub(summary?.deliveredOrders || 0), color: "rgb(249,115,22)" },
+              ].map(({ label, value, sub, color }, i) => (
+                <div key={label} className="px-5 py-4"
+                  style={{ borderRight: i < 2 ? "1px solid var(--bd)" : undefined }}>
+                  <p className="text-[10px] font-black uppercase tracking-widest" style={{ color: "var(--tx-f)" }}>{label}</p>
+                  <p className="mt-1.5 text-[15px] font-black tabular-nums" style={{ color }}>{value}</p>
+                  {sub && <p className="mt-0.5 text-[11px]" style={{ color: "var(--tx-f)" }}>{sub}</p>}
                 </div>
               ))}
             </div>
           )}
-        </Card>
+        </div>
 
-        {/* ── Right column ── */}
+        {/* Right column */}
         <div className="space-y-5">
-          {/* Profit by fixed periods */}
-          <Card>
-            <CardHeader
-              icon={Sparkles}
-              title={t.milestoneTitle}
-              iconCls="text-orange-400"
-              iconBg="bg-orange-500/10"
-            />
-            <div className="mt-3 grid grid-cols-2 gap-2.5">
-              {([
-                { label: t.milestoneToday, value: ps?.today ?? 0 },
-                { label: t.milestone7d, value: ps?.last7d ?? 0 },
-                { label: t.milestone30d, value: ps?.last30d ?? 0 },
-                { label: t.milestone90d, value: ps?.last90d ?? 0 },
-              ] as const).map(({ label, value }) => (
-                <div
-                  key={label}
-                  className="rounded-[14px] px-3.5 py-3"
-                  style={{ background: "var(--inp)", border: "1px solid var(--bd)" }}
-                >
-                  <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">{label}</p>
-                  <p
-                    className="mt-1.5 text-sm font-bold tabular-nums"
-                    style={{ color: value > 0 ? "rgb(249,115,22)" : "var(--tx-f)" }}
-                  >
-                    {value > 0 ? formatCurrency(value) : "—"}
-                  </p>
-                </div>
-              ))}
+          {/* Milestone card */}
+          <div className="rounded-2xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--bd)" }}>
+            <div className="px-5 py-4" style={{ borderBottom: "1px solid var(--bd)" }}>
+              <h2 className="text-base font-black" style={{ color: "var(--tx)" }}>{t.milestoneTitle}</h2>
             </div>
-            <div
-              className="mt-2.5 flex items-center justify-between rounded-[14px] px-3.5 py-3"
-              style={{ background: "rgba(249,115,22,0.06)", border: "1px solid rgba(249,115,22,0.2)" }}
-            >
-              <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-orange-400">
-                {t.milestoneAll}
-              </p>
-              <p className="text-sm font-bold tabular-nums text-orange-400">
-                {(ps?.allTime ?? 0) > 0 ? formatCurrency(ps!.allTime) : "—"}
-              </p>
+            <div className="p-4 space-y-2">
+              <div className="grid grid-cols-2 gap-2">
+                {([
+                  { label: t.milestoneToday, value: ps?.today ?? 0 },
+                  { label: t.milestone7d, value: ps?.last7d ?? 0 },
+                  { label: t.milestone30d, value: ps?.last30d ?? 0 },
+                  { label: t.milestone90d, value: ps?.last90d ?? 0 },
+                ] as const).map(({ label, value }) => (
+                  <div key={label} className="rounded-xl px-3.5 py-3" style={{ background: "var(--inp)", border: "1px solid var(--bd)" }}>
+                    <p className="text-[10px] font-black uppercase tracking-widest" style={{ color: "var(--tx-f)" }}>{label}</p>
+                    <p className="mt-1.5 text-[13px] font-black tabular-nums"
+                      style={{ color: value > 0 ? "rgb(249,115,22)" : "var(--tx-f)" }}>
+                      {value > 0 ? formatCurrency(value) : "—"}
+                    </p>
+                  </div>
+                ))}
+              </div>
+              <div className="flex items-center justify-between rounded-xl px-3.5 py-3"
+                style={{ background: "rgba(249,115,22,0.08)", border: "1px solid rgba(249,115,22,0.25)" }}>
+                <p className="text-[10px] font-black uppercase tracking-widest text-orange-400">{t.milestoneAll}</p>
+                <p className="text-[15px] font-black tabular-nums text-orange-400">
+                  {(ps?.allTime ?? 0) > 0 ? formatCurrency(ps!.allTime) : "—"}
+                </p>
+              </div>
             </div>
-          </Card>
+          </div>
 
           {/* Daily breakdown */}
-          <Card>
-            <CardHeader
-              icon={CalendarRange}
-              title={t.dailyTitle}
-              iconCls="text-violet-400"
-              iconBg="bg-violet-500/10"
-              right={
-                <span
-                  className="rounded-full px-2.5 py-0.5 text-[11px] font-semibold"
-                  style={{ background: "var(--inp)", border: "1px solid var(--bd)", color: "var(--tx-m)" }}
-                >
-                  {t.dailyDays(chartData.length)}
-                </span>
-              }
-            />
-            <div className="space-y-2 max-h-[420px] overflow-y-auto custom-scrollbar pr-0.5">
+          <div className="rounded-2xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--bd)" }}>
+            <div className="flex items-center justify-between px-5 py-4" style={{ borderBottom: "1px solid var(--bd)" }}>
+              <h2 className="text-base font-black" style={{ color: "var(--tx)" }}>{t.dailyTitle}</h2>
+              <span className="rounded-full px-2.5 py-0.5 text-[11px] font-black"
+                style={{ background: "var(--inp)", border: "1px solid var(--bd)", color: "var(--tx-f)" }}>
+                {t.dailyDays(chartData.length)}
+              </span>
+            </div>
+            <div className="max-h-[420px] overflow-y-auto custom-scrollbar divide-y" style={{ borderColor: "var(--bd)" }}>
               {chartData.length === 0 ? (
-                <p className="py-3 text-sm text-slate-500">
-                  {t.dailyEmpty}
-                </p>
+                <p className="px-5 py-4 text-sm" style={{ color: "var(--tx-f)" }}>{t.dailyEmpty}</p>
               ) : (
                 [...chartData].reverse().map((item) => (
-                  <div
-                    key={item.label}
-                    className="flex items-center justify-between gap-3 rounded-[14px] px-3.5 py-3"
-                    style={{ background: "var(--inp)", border: "1px solid var(--bd)" }}
-                  >
+                  <div key={item.label} className="flex items-center justify-between gap-3 px-5 py-3.5">
                     <div>
-                      <p className="text-sm font-semibold" style={{ color: "var(--tx)" }}>
-                        {item.fullLabel}
-                      </p>
-                      <p className="mt-0.5 text-[11px] text-slate-500">
+                      <p className="text-[13px] font-black" style={{ color: "var(--tx)" }}>{item.fullLabel}</p>
+                      <p className="mt-0.5 text-[11px]" style={{ color: "var(--tx-f)" }}>
                         {t.dailySub(item.deliveredOrders, formatCurrency(item.estimatedProfit || 0))}
                       </p>
                     </div>
-                    <p className="text-base font-bold tabular-nums text-emerald-400">
+                    <p className="text-[14px] font-black tabular-nums text-emerald-400">
                       {formatCurrency(item.grossRevenue || 0)}
                     </p>
                   </div>
                 ))
               )}
             </div>
-          </Card>
+          </div>
         </div>
-      </section>
+      </div>
     </div>
   );
 }

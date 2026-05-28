@@ -1,9 +1,13 @@
-import { IsNumber, IsOptional, IsString, Min, MinLength } from "class-validator";
+import { IsDateString, IsEnum, IsNumber, IsOptional, IsString, Max, Min, MinLength } from "class-validator";
 
 export class CreateDepositRequestDto {
   @IsNumber()
   @Min(1000)
   amount!: number;
+
+  @IsOptional()
+  @IsEnum(["PAYOS", "USDT_SOL", "BINANCE"])
+  paymentMethod?: "PAYOS" | "USDT_SOL" | "BINANCE";
 
   @IsOptional()
   @IsString()
@@ -30,4 +34,30 @@ export class CreateWithdrawRequestDto {
   @IsOptional()
   @IsString()
   note?: string;
+}
+
+export class AdjustCustomerWalletDto {
+  @IsEnum(["topup", "deduct", "set"])
+  action!: "topup" | "deduct" | "set";
+
+  @IsNumber()
+  @Min(0)
+  amount!: number;
+
+  @IsOptional()
+  @IsEnum(["VND", "USDT"])
+  currency?: "VND" | "USDT";
+}
+
+export class CreateWalletPromotionDto {
+  @IsNumber()
+  @Min(0.01)
+  @Max(100)
+  bonusPercent!: number;
+
+  @IsDateString()
+  startAt!: string;
+
+  @IsDateString()
+  endAt!: string;
 }

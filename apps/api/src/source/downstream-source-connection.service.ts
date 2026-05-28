@@ -53,7 +53,6 @@ export class DownstreamSourceConnectionService {
         downstreamShopId,
         apiKeyId,
         status: DownstreamSourceConnectionStatus.ACTIVE,
-        balance: toDecimal(0),
         currency: upstreamShop?.defaultCurrency ?? "VND",
       },
     });
@@ -84,10 +83,6 @@ export class DownstreamSourceConnectionService {
     }
 
     return this.prisma.$transaction(async (tx) => {
-      await tx.$queryRaw(
-        Prisma.sql`SELECT id FROM downstream_source_connections WHERE id = ${connectionId} FOR UPDATE`,
-      );
-
       const connection = await tx.downstreamSourceConnection.findUnique({
         where: { id: connectionId },
       });
@@ -96,12 +91,46 @@ export class DownstreamSourceConnectionService {
         throw new NotFoundException("Connection not found.");
       }
 
-      const balanceBefore = decimalToNumber(connection.balance);
+      if (!connection.downstreamTelegramChatId) {
+        throw new BadRequestException("Connection has no linked customer wallet.");
+      }
+
+      const customer = await tx.customer.findFirst({
+        where: { shopId: connection.upstreamShopId, telegramChatId: connection.downstreamTelegramChatId },
+        include: { wallet: true },
+      });
+
+      if (!customer) {
+        throw new NotFoundException("Linked customer not found.");
+      }
+
+      let wallet = customer.wallet;
+      if (!wallet) {
+        wallet = await tx.customerWallet.create({
+          data: { customerId: customer.id, balance: toDecimal(0), balanceUsdt: toDecimal(0), currency: "VND" },
+        });
+      }
+
+      await tx.$queryRaw(Prisma.sql`SELECT id FROM customer_wallets WHERE id = ${wallet.id} FOR UPDATE`);
+
+      const balanceBefore = decimalToNumber(wallet.balance);
       const balanceAfter = balanceBefore + amount;
 
-      await tx.downstreamSourceConnection.update({
-        where: { id: connectionId },
+      await tx.customerWallet.update({
+        where: { id: wallet.id },
         data: { balance: toDecimal(balanceAfter) },
+      });
+
+      await tx.customerWalletLedger.create({
+        data: {
+          customerId: customer.id,
+          walletId: wallet.id,
+          type: "TOPUP",
+          amount: toDecimal(amount),
+          balanceBefore: toDecimal(balanceBefore),
+          balanceAfter: toDecimal(balanceAfter),
+          note: note ?? "Nạp ví từ ULTRA",
+        },
       });
 
       const ledger = await tx.internalSourceLedger.create({
@@ -125,10 +154,6 @@ export class DownstreamSourceConnectionService {
     }
 
     return this.prisma.$transaction(async (tx) => {
-      await tx.$queryRaw(
-        Prisma.sql`SELECT id FROM downstream_source_connections WHERE id = ${connectionId} FOR UPDATE`,
-      );
-
       const connection = await tx.downstreamSourceConnection.findUnique({
         where: { id: connectionId },
       });
@@ -137,17 +162,37 @@ export class DownstreamSourceConnectionService {
         throw new NotFoundException("Connection not found.");
       }
 
-      const balanceBefore = decimalToNumber(connection.balance);
+      if (!connection.downstreamTelegramChatId) {
+        throw new BadRequestException("Connection has no linked customer wallet.");
+      }
+
+      const customer = await tx.customer.findFirst({
+        where: { shopId: connection.upstreamShopId, telegramChatId: connection.downstreamTelegramChatId },
+        include: { wallet: true },
+      });
+
+      if (!customer?.wallet) {
+        throw new BadRequestException("Customer wallet not found.");
+      }
+
+      await tx.$queryRaw(Prisma.sql`SELECT id FROM customer_wallets WHERE id = ${customer.wallet.id} FOR UPDATE`);
+
+      const balanceBefore = decimalToNumber(customer.wallet.balance);
 
       if (balanceBefore < amount) {
-        throw new BadRequestException("Insufficient source balance.");
+        throw new BadRequestException("Insufficient balance.");
       }
 
       const balanceAfter = balanceBefore - amount;
 
+      await tx.customerWallet.update({
+        where: { id: customer.wallet.id },
+        data: { balance: toDecimal(balanceAfter) },
+      });
+
       await tx.downstreamSourceConnection.update({
         where: { id: connectionId },
-        data: { balance: toDecimal(balanceAfter), lastOrderedAt: new Date() },
+        data: { lastOrderedAt: new Date() },
       });
 
       const ledger = await tx.internalSourceLedger.create({
@@ -170,16 +215,30 @@ export class DownstreamSourceConnectionService {
   async getBalance(connectionId: string) {
     const connection = await this.prisma.downstreamSourceConnection.findUnique({
       where: { id: connectionId },
-      select: { id: true, balance: true, currency: true, updatedAt: true },
+      select: { id: true, currency: true, updatedAt: true, upstreamShopId: true, downstreamTelegramChatId: true },
     });
 
     if (!connection) {
       throw new NotFoundException("Connection not found.");
     }
 
+    let balance = 0;
+    if (connection.downstreamTelegramChatId) {
+      const wallet = await this.prisma.customerWallet.findFirst({
+        where: {
+          customer: {
+            shopId: connection.upstreamShopId,
+            telegramChatId: connection.downstreamTelegramChatId,
+          },
+        },
+        select: { balance: true },
+      });
+      if (wallet) balance = decimalToNumber(wallet.balance);
+    }
+
     return {
       connectionId: connection.id,
-      balance: decimalToNumber(connection.balance),
+      balance,
       currency: connection.currency,
       updatedAt: connection.updatedAt,
     };

@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Inject, Post, UseGuards } from "@nestjs/common";
+import { Body, Controller, Delete, Get, Inject, Post, UseGuards } from "@nestjs/common";
 import { IsInt, IsNotEmpty, IsString, Min, MinLength } from "class-validator";
 
 import { CurrentUser } from "../common/decorators/current-user.decorator";
@@ -47,6 +47,11 @@ export class SellerSourceConnectionController {
   @Post("sync-catalog")
   syncCatalog(@CurrentUser() user: AuthenticatedUser) {
     return this.service.syncCatalog(user);
+  }
+
+  @Delete()
+  disconnect(@CurrentUser() user: AuthenticatedUser) {
+    return this.service.disconnect(user);
   }
 
   @Post("topup-payos")

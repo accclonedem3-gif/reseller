@@ -343,6 +343,9 @@ function buildSupportContactLines(shop, language = "vi") {
     return lines;
 }
 function buildDeliveredAccountMessage(input) {
+    const formatHint = typeof input.metadata?.deliveryFormatHint === "string" && input.metadata.deliveryFormatHint.trim()
+        ? input.metadata.deliveryFormatHint.trim()
+        : null;
     const lines = input.language === "en"
         ? [
             "✅ Payment confirmed",
@@ -351,9 +354,10 @@ function buildDeliveredAccountMessage(input) {
             `Quantity: ${input.quantity}`,
             "",
             "🔐 Account information:",
+            ...(formatHint ? [`Format: ${escapeTelegramHtml(formatHint)}`, ""] : []),
             `<pre>${escapeTelegramHtml(input.deliveredText)}</pre>`,
+            ...(input.metadata?.usageInstructions ? ["", escapeTelegramHtml(String(input.metadata.usageInstructions))] : []),
             "",
-            "Please change the password right after logging in for safety.",
             "A detailed bill will be sent in the next message.",
         ]
         : [
@@ -363,9 +367,10 @@ function buildDeliveredAccountMessage(input) {
             `Số lượng: ${input.quantity}`,
             "",
             "🔐 Thông tin tài khoản:",
+            ...(formatHint ? [`Format: ${escapeTelegramHtml(formatHint)}`, ""] : []),
             `<pre>${escapeTelegramHtml(input.deliveredText)}</pre>`,
+            ...(input.metadata?.usageInstructions ? ["", escapeTelegramHtml(String(input.metadata.usageInstructions))] : []),
             "",
-            "Vui lòng đổi mật khẩu ngay sau khi đăng nhập để bảo đảm an toàn.",
             "Hóa đơn chi tiết sẽ được gửi ở tin nhắn tiếp theo.",
         ];
     return lines.join("\n");
@@ -420,13 +425,11 @@ function buildManualPendingMessage(input) {
         : (input.language === "en"
             ? [
                 "The payment has been recorded successfully.",
-                "Your order is waiting for manual handling from the seller.",
-                "The seller will process and deliver the account within a few minutes.",
+                "Please contact admin and send your email to upgrade your account 👇",
             ]
             : [
                 "Thanh toán đã được ghi nhận thành công.",
-                "Đơn hàng đang chờ seller xử lý thủ công.",
-                "Seller sẽ xử lý và giao tài khoản trong ít phút tới.",
+                "Vui lòng liên hệ admin và gửi email để được nâng cấp chính chủ 👇",
             ]);
     return [
         input.language === "en" ? "✅ Payment confirmed" : "✅ Thanh toán thành công",
@@ -789,7 +792,16 @@ async function syncCatalogForShop(shopId) {
         select: {
             id: true,
             externalProductId: true,
+            providerName: true,
             available: true,
+            sourcePrice: true,
+            sourceDescriptionLocked: true,
+            metadataJson: true,
+            overrides: {
+                where: { sellerId: shop.sellerId },
+                select: { salePrice: true, displayNameLocked: true, salePriceLocked: true },
+                take: 1,
+            },
         },
     });
     const existingByExternalId = new Map(existingProducts.map((item) => [item.externalProductId, item]));
@@ -810,12 +822,17 @@ async function syncCatalogForShop(shopId) {
             update: {
                 sourceName: product.sourceName,
                 sourceRawName: product.sourceRawName,
-                sourceDescription: product.description || product.rawDescription,
+                ...(previous?.sourceDescriptionLocked ? {} : { sourceDescription: product.description || product.rawDescription }),
                 sourcePrice: toDecimal(product.price),
-                available: product.available,
+                available: product.hidden ? 0 : product.available,
                 ...businessFields,
                 syncedAt,
-                metadataJson: product.metadata,
+                metadataJson: {
+                    ...(product.metadata && typeof product.metadata === "object" && !Array.isArray(product.metadata) ? product.metadata : {}),
+                    ...(previous?.metadataJson && typeof previous.metadataJson === "object" && !Array.isArray(previous.metadataJson)
+                        ? { usageInstructions: previous.metadataJson.usageInstructions ?? null }
+                        : {}),
+                },
             },
             create: {
                 shopId: shop.id,
@@ -825,7 +842,7 @@ async function syncCatalogForShop(shopId) {
                 sourceRawName: product.sourceRawName,
                 sourceDescription: product.description || product.rawDescription,
                 sourcePrice: toDecimal(product.price),
-                available: product.available,
+                available: product.hidden ? 0 : product.available,
                 totalCount: product.available || 0,
                 internalSourceEnabled: shop.seller?.tier === "ULTRA",
                 ...businessFields,
@@ -833,6 +850,21 @@ async function syncCatalogForShop(shopId) {
                 syncedAt,
             },
         });
+        const markupPercent = shop.providerConfig.priceMarkupPercent != null ? Number(shop.providerConfig.priceMarkupPercent) : null;
+        const oldSourcePrice = previous?.sourcePrice != null ? Number(previous.sourcePrice) : null;
+        const existingSalePrice = previous?.overrides?.[0]?.salePrice != null ? Number(previous.overrides[0].salePrice) : null;
+        const salePriceLocked = previous?.overrides?.[0]?.salePriceLocked ?? false;
+        let updatedSalePrice;
+        if (!salePriceLocked && markupPercent !== null && markupPercent > 0) {
+            updatedSalePrice = toDecimal(product.price * (1 + markupPercent / 100));
+        } else if (oldSourcePrice !== null && existingSalePrice !== null) {
+            const delta = product.price - oldSourcePrice;
+            updatedSalePrice = toDecimal(salePriceLocked
+                ? Math.max(product.price, existingSalePrice + delta)
+                : Math.max(product.price + 10000, existingSalePrice + delta));
+        } else if (!salePriceLocked) {
+            updatedSalePrice = toDecimal(product.price + (shop.providerConfig.providerKind === "INTERNAL" ? 30000 : 10000));
+        }
         await prisma.sellerProductOverride.upsert({
             where: {
                 sellerId_sourceProductId: {
@@ -840,15 +872,20 @@ async function syncCatalogForShop(shopId) {
                     sourceProductId: sourceProduct.id,
                 },
             },
-            update: shop.providerConfig.providerKind === "INTERNAL"
-                ? { salePrice: toDecimal(product.price + 30000) }
-                : {},
+            update: {
+                ...(previous?.overrides?.[0]?.displayNameLocked
+                    ? {}
+                    : { displayName: product.sourceRawName || product.sourceName }),
+                ...(updatedSalePrice ? { salePrice: updatedSalePrice } : {}),
+            },
             create: {
                 sellerId: shop.sellerId,
                 shopId: shop.id,
                 sourceProductId: sourceProduct.id,
-                displayName: product.sourceName,
-                salePrice: toDecimal(product.price + (shop.providerConfig.providerKind === "INTERNAL" ? 30000 : 25000)),
+                displayName: product.sourceRawName || product.sourceName,
+                salePrice: toDecimal(markupPercent != null && markupPercent > 0
+                    ? product.price * (1 + markupPercent / 100)
+                    : product.price + (shop.providerConfig.providerKind === "INTERNAL" ? 30000 : 10000)),
                 enabled: true,
                 hidden: false,
             },
@@ -864,9 +901,28 @@ async function syncCatalogForShop(shopId) {
         if (addedQuantity > 0 && Number(nextAvailable) > 0) {
             stockNotifications.push({
                 sourceProductId: sourceProduct.id,
-                displayName: product.sourceName,
+                displayName: product.sourceRawName || product.sourceName,
                 addedQuantity,
                 available: Number(nextAvailable),
+            });
+        }
+    }
+    // Mark products that disappeared from upstream as out-of-stock
+    if (products.length > 0) {
+        const currentProvName = shop.providerConfig.providerName;
+        const fetchedIdSet = new Set(products.map((p) => p.externalId));
+        const candidates = await prisma.sourceProduct.findMany({
+            where: { shopId: shop.id, providerName: currentProvName },
+            select: { id: true, externalProductId: true, available: true },
+        });
+        const staleIds = candidates
+            .filter((sp) => !fetchedIdSet.has(sp.externalProductId))
+            .filter((sp) => (sp.available ?? 0) > 0)
+            .map((sp) => sp.id);
+        if (staleIds.length > 0) {
+            await prisma.sourceProduct.updateMany({
+                where: { id: { in: staleIds } },
+                data: { available: 0, syncedAt },
             });
         }
     }
@@ -876,16 +932,9 @@ async function syncCatalogForShop(shopId) {
             select: { id: true, soldCount: true },
         });
         if (staleProducts.length > 0) {
-            const deletableIds = staleProducts.filter((p) => !p.soldCount || p.soldCount === 0).map((p) => p.id);
-            const disableIds = staleProducts.filter((p) => p.soldCount && p.soldCount > 0).map((p) => p.id);
-            if (deletableIds.length > 0) {
-                await prisma.sellerProductOverride.deleteMany({ where: { sourceProductId: { in: deletableIds } } });
-                await prisma.sourceProduct.deleteMany({ where: { id: { in: deletableIds } } });
-            }
-            if (disableIds.length > 0) {
-                await prisma.sourceProduct.updateMany({ where: { id: { in: disableIds } }, data: { available: 0 } });
-                await prisma.sellerProductOverride.updateMany({ where: { shopId: shop.id, sourceProductId: { in: disableIds } }, data: { enabled: false } });
-            }
+            const allStaleIds = staleProducts.map((p) => p.id);
+            await prisma.sourceProduct.updateMany({ where: { id: { in: allStaleIds } }, data: { available: 0 } });
+            await prisma.sellerProductOverride.updateMany({ where: { shopId: shop.id, sourceProductId: { in: allStaleIds } }, data: { enabled: false, hidden: true } });
         }
     }
     await prisma.shop.update({
@@ -925,22 +974,60 @@ async function notifyCatalogStockUpdates(shopId, encryptedBotToken, notification
         (String(process.env.MOCK_TELEGRAM_MODE || "false") === "true" && (0, server_1.isMockBotToken)(token))) {
         return 0;
     }
-    const customers = await prisma.customer.findMany({
-        where: { shopId },
-        select: {
-            telegramChatId: true,
-        },
-    });
+    const [customers, sourceProducts, shop] = await Promise.all([
+        prisma.customer.findMany({
+            where: { shopId },
+            select: { telegramChatId: true, preferredLanguage: true },
+        }),
+        prisma.sourceProduct.findMany({
+            where: { shopId },
+            select: { id: true, iconCustomEmojiId: true },
+        }),
+        prisma.shop.findUnique({
+            where: { id: shopId },
+            select: { botConfig: { select: { customizationJson: true } } },
+        }),
+    ]);
+    const productById = new Map(sourceProducts.map((p) => [p.id, p]));
+    const rawCust = shop?.botConfig?.customizationJson;
+    const custJson = (rawCust && typeof rawCust === "object" && !Array.isArray(rawCust)) ? rawCust : {};
+    const custEmojis = (custJson.buttonEmojis && typeof custJson.buttonEmojis === "object") ? custJson.buttonEmojis : {};
+    const custLabels = (custJson.buttonLabels && typeof custJson.buttonLabels === "object") ? custJson.buttonLabels : {};
+    const custEmojiIds = (custJson.buttonEmojiIds && typeof custJson.buttonEmojiIds === "object") ? custJson.buttonEmojiIds : {};
+    const msgEmojiIds = (custJson.messageEmojiIds && typeof custJson.messageEmojiIds === "object") ? custJson.messageEmojiIds : {};
+    const buildBtn = (key, fallbackEmoji, fallbackTextVi, fallbackTextEn, fallbackTextTh, cbData, lang) => {
+        const custLabel = custLabels[key]?.[lang];
+        const custEmoji = custEmojis[key];
+        const custEmojiId = custEmojiIds[key];
+        const fallbackText = lang === "en" ? fallbackTextEn : lang === "th" ? fallbackTextTh : fallbackTextVi;
+        const text = custLabel ? ((custEmoji ? `${custEmoji} ` : "") + custLabel) : `${custEmoji ?? fallbackEmoji} ${fallbackText}`;
+        const btn = { text, callback_data: cbData };
+        if (custEmojiId) btn.icon_custom_emoji_id = custEmojiId;
+        return btn;
+    };
     let sentCount = 0;
     for (const customer of customers) {
+        const lang = customer.preferredLanguage === "en" ? "en" : customer.preferredLanguage === "th" ? "th" : "vi";
         for (const item of notifications) {
-            await (0, server_1.telegramSendMessage)(token, customer.telegramChatId, [
-                `📦 ${item.displayName}`,
-                `➕ Thêm: ${item.addedQuantity}`,
-                `📦 Tồn kho hiện tại: ${item.available}`,
-            ].join("\n"), {
+            const product = productById.get(item.sourceProductId);
+            if (!product) continue;
+            const displayName = item.displayName || "";
+            const productNameLine = product.iconCustomEmojiId
+                ? `<tg-emoji emoji-id="${product.iconCustomEmojiId}">📦</tg-emoji> ${displayName}`
+                : `📦 ${displayName}`;
+            const headerLine = lang === "en" ? "📢 Restock notification!" : lang === "th" ? "📢 แจ้งเตือนสินค้าเข้าใหม่!" : "📢 Thông báo nhập kho!";
+            const addedIcon = msgEmojiIds.stockAdded ? `<tg-emoji emoji-id="${msgEmojiIds.stockAdded}">➕</tg-emoji>` : "➕";
+            const addedLabel = lang === "en" ? "Added" : lang === "th" ? "เพิ่ม" : "Thêm";
+            const addedLine = `${addedIcon} ${addedLabel}: ${item.addedQuantity}`;
+            const stockLine = lang === "en" ? `📦 Current stock: ${item.available}` : lang === "th" ? `📦 สต็อกปัจจุบัน: ${item.available}` : `📦 Tồn kho hiện tại: ${item.available}`;
+            const cbData = `buy:${item.sourceProductId}`;
+            const useHtml = !!(product.iconCustomEmojiId || msgEmojiIds.stockAdded);
+            await (0, server_1.telegramSendMessage)(token, customer.telegramChatId, [headerLine, "", productNameLine, addedLine, stockLine].join("\n"), {
+                parse_mode: useHtml ? "HTML" : undefined,
                 reply_markup: {
-                    inline_keyboard: [[{ text: "🛒 Mua ngay", callback_data: `buy:${item.sourceProductId}` }]],
+                    inline_keyboard: [[
+                        buildBtn("buyNow", "🛒", "Mua ngay", "Buy now", "ซื้อเลย", cbData, lang),
+                    ]],
                 },
             }).catch(() => undefined);
             sentCount += 1;
@@ -994,10 +1081,17 @@ async function debitConnectionBalance(connectionId, amount, orderId) {
         // Lock wallet row — CustomerWallet is source of truth
         await tx.$queryRaw`SELECT id FROM customer_wallets WHERE id = ${customer.wallet.id} FOR UPDATE`;
         const walletBefore = Number(customer.wallet.balance);
-        const walletAfter = Math.max(0, walletBefore - amount);
+        const commissionBefore = Number(customer.wallet.commissionBalance);
+        // Deduct commission balance first, then main balance
+        const fromCommission = Math.min(commissionBefore, amount);
+        const fromMain = amount - fromCommission;
+        const walletAfter = Math.max(0, walletBefore - fromMain);
+        const commissionAfter = Math.max(0, commissionBefore - fromCommission);
+        const walletUsdtBefore = Number(customer.wallet.balanceUsdt);
+        const walletUsdtAfter = Math.max(0, walletUsdtBefore - fromMain / 27000);
         await tx.customerWallet.update({
             where: { id: customer.wallet.id },
-            data: { balance: walletAfter },
+            data: { balance: walletAfter, commissionBalance: commissionAfter, balanceUsdt: walletUsdtAfter },
         });
         await tx.customerWalletLedger.create({
             data: {
@@ -1007,16 +1101,16 @@ async function debitConnectionBalance(connectionId, amount, orderId) {
                 amount: -amount,
                 balanceBefore: walletBefore,
                 balanceAfter: walletAfter,
+                commissionBalanceBefore: commissionBefore,
+                commissionBalanceAfter: commissionAfter,
                 referenceType: "order",
                 referenceId: orderId,
                 note: "Trừ số dư ví khi bot đại lý ra đơn",
             },
         });
-        // Sync connection balance = wallet balance (no independent calculation)
-        const connBalBefore = Number(connection.balance);
         await tx.downstreamSourceConnection.update({
             where: { id: connectionId },
-            data: { balance: walletAfter, lastOrderedAt: new Date() },
+            data: { lastOrderedAt: new Date() },
         });
         await tx.internalSourceLedger.create({
             data: {
@@ -1024,11 +1118,49 @@ async function debitConnectionBalance(connectionId, amount, orderId) {
                 connectionId,
                 type: "DEBIT_ORDER",
                 amount: -amount,
-                balanceBefore: connBalBefore,
-                balanceAfter: walletAfter,
+                balanceBefore: walletBefore + commissionBefore,
+                balanceAfter: walletAfter + commissionAfter,
                 referenceType: "order",
                 referenceId: orderId,
                 note: "Auto debit from downstream order delivery",
+            },
+        });
+    });
+}
+async function creditAffiliateCommission(orderId) {
+    const order = await prisma.order.findUnique({
+        where: { id: orderId },
+        select: { id: true, shopId: true, customerId: true, totalSaleAmount: true, affiliateCommission: true, customer: { select: { referredById: true } } },
+    });
+    if (!order?.customer?.referredById) return;
+    if (order.affiliateCommission != null && Number(order.affiliateCommission) > 0) return;
+    const config = await prisma.affiliateConfig.findUnique({ where: { shopId: order.shopId } });
+    if (!config?.enabled || !config.commissionPct) return;
+    const commission = Math.round(Number(order.totalSaleAmount) * Number(config.commissionPct) / 100);
+    if (commission <= 0) return;
+    await prisma.$transaction(async (tx) => {
+        await tx.order.update({ where: { id: orderId }, data: { affiliateCommission: commission, affiliateCustomerId: order.customer.referredById } });
+        const wallet = await tx.customerWallet.findUnique({ where: { customerId: order.customer.referredById } });
+        if (!wallet) return;
+        await tx.$queryRaw`SELECT id FROM customer_wallets WHERE id = ${wallet.id} FOR UPDATE`;
+        const fresh = await tx.customerWallet.findUnique({ where: { id: wallet.id } });
+        if (!fresh) return;
+        const balance = Number(fresh.balance);
+        const commissionBefore = Number(fresh.commissionBalance);
+        const commissionAfter = commissionBefore + commission;
+        await tx.customerWallet.update({ where: { id: wallet.id }, data: { commissionBalance: commissionAfter } });
+        await tx.customerWalletLedger.create({
+            data: {
+                customerId: order.customer.referredById,
+                walletId: wallet.id,
+                type: "AFFILIATE_COMMISSION",
+                amount: commission,
+                balanceBefore: balance,
+                balanceAfter: balance,
+                commissionBalanceBefore: commissionBefore,
+                commissionBalanceAfter: commissionAfter,
+                referenceType: "order",
+                referenceId: orderId,
             },
         });
     });
@@ -1080,6 +1212,50 @@ async function processPurchase(job) {
         sourceMetadata.manual === true;
     if (isManualProduct) {
         const botToken = (0, server_1.decryptSecret)(order.shop.botConfig?.telegramBotTokenEncrypted, process.env.APP_ENCRYPTION_KEY || "change-me-32-byte-key");
+        // Shared content delivery: same content for all buyers, stock is a counter
+        if (sourceMetadata.shared === true && typeof sourceMetadata.sharedContent === "string" && sourceMetadata.sharedContent.trim()) {
+            const deliveredText = sourceMetadata.sharedContent.trim();
+            const currentAvailable = order.sourceProduct.available ?? 0;
+            const newAvailable = Math.max(0, currentAvailable - order.quantity);
+            const deliveredAt = new Date();
+            await prisma.$transaction(async (tx) => {
+                await tx.order.update({
+                    where: { id: order.id },
+                    data: { status: "DELIVERED", deliveredAccountText: deliveredText, deliveredAt, failureReason: null },
+                });
+                await tx.orderEvent.create({
+                    data: {
+                        orderId: order.id,
+                        eventType: "shared_product_delivered",
+                        payloadJson: { deliveredAt, quantity: order.quantity },
+                    },
+                });
+                await tx.sourceProduct.update({
+                    where: { id: order.sourceProductId },
+                    data: { soldCount: { increment: order.quantity }, available: newAvailable },
+                });
+            });
+            await snapshotWarrantyForDeliveredOrder(order.id);
+            await creditAffiliateCommission(order.id).catch(() => undefined);
+            if (botToken && !(String(process.env.MOCK_TELEGRAM_MODE || "false") === "true" && (0, server_1.isMockBotToken)(botToken))) {
+                await deleteQrMessage(botToken, order);
+                await sendDeliveredOrderMessages({
+                    botToken,
+                    chatId: order.customer.telegramChatId,
+                    orderCode: order.orderCode,
+                    productName: order.productNameSnapshot,
+                    quantity: order.quantity,
+                    amount: order.totalSaleAmount,
+                    deliveredText,
+                    deliveredAt,
+                    language: normalizeLanguage(order.customer?.preferredLanguage),
+                    sourceDescription: order.sourceProduct?.sourceDescription,
+                    metadata: sourceMetadata,
+                    shop: { supportTelegram: order.shop.supportTelegram, supportZalo: order.shop.supportZalo },
+                });
+            }
+            return;
+        }
         const deliveryEntries = readManualDeliveryEntries(sourceMetadata);
         if (deliveryEntries.length >= order.quantity) {
             const deliveredEntries = deliveryEntries.slice(0, order.quantity);
@@ -1123,6 +1299,7 @@ async function processPurchase(job) {
                 });
             });
             await snapshotWarrantyForDeliveredOrder(order.id);
+            await creditAffiliateCommission(order.id).catch(() => undefined);
             if (botToken &&
                 !(String(process.env.MOCK_TELEGRAM_MODE || "false") === "true" &&
                     (0, server_1.isMockBotToken)(botToken))) {
@@ -1168,6 +1345,12 @@ async function processPurchase(job) {
                         },
                     },
                 });
+                if (order.sourceProductId && order.sourceProduct?.available !== null && order.sourceProduct?.available !== undefined) {
+                    await tx.sourceProduct.update({
+                        where: { id: order.sourceProductId },
+                        data: { available: { decrement: order.quantity } },
+                    });
+                }
             });
             if (botToken &&
                 !(String(process.env.MOCK_TELEGRAM_MODE || "false") === "true" &&
@@ -1203,6 +1386,12 @@ async function processPurchase(job) {
                     },
                 },
             });
+            if (order.sourceProductId && order.sourceProduct?.available !== null && order.sourceProduct?.available !== undefined) {
+                await tx.sourceProduct.update({
+                    where: { id: order.sourceProductId },
+                    data: { available: { decrement: order.quantity } },
+                });
+            }
         });
         if (botToken &&
             !(String(process.env.MOCK_TELEGRAM_MODE || "false") === "true" &&
@@ -1221,8 +1410,236 @@ async function processPurchase(job) {
         }
         return;
     }
+    // INTERNAL source: pull delivery entries directly from upstream ULTRA product
+    if (providerConfig.providerKind === "INTERNAL" && providerConfig.internalSourceConnectionId) {
+        const botToken = (0, server_1.decryptSecret)(order.shop.botConfig?.telegramBotTokenEncrypted, process.env.APP_ENCRYPTION_KEY || "change-me-32-byte-key");
+        const upstreamProduct = await prisma.sourceProduct.findUnique({
+            where: { id: order.sourceProduct.externalProductId },
+        });
+        const upstreamMetadata = upstreamProduct?.metadataJson && typeof upstreamProduct.metadataJson === "object" && !Array.isArray(upstreamProduct.metadataJson)
+            ? upstreamProduct.metadataJson
+            : {};
+        const deliveryEntries = readManualDeliveryEntries(upstreamMetadata);
+        if (deliveryEntries.length >= order.quantity) {
+            const deliveredEntries = deliveryEntries.slice(0, order.quantity);
+            const remainingEntries = deliveryEntries.slice(order.quantity);
+            const deliveredText = deliveredEntries.join("\n\n");
+            const remainingDeliveryText = normalizeManualDeliveryText(remainingEntries.join("\n\n")) || null;
+            const deliveredAt = new Date();
+            await prisma.$transaction(async (tx) => {
+                await tx.order.update({
+                    where: { id: order.id },
+                    data: { status: "DELIVERED", deliveredAccountText: deliveredText, deliveredAt, failureReason: null },
+                });
+                await tx.orderEvent.create({
+                    data: {
+                        orderId: order.id,
+                        eventType: "internal_source_delivered",
+                        payloadJson: { deliveredCount: deliveredEntries.length },
+                    },
+                });
+                await tx.sourceProduct.update({
+                    where: { id: order.sourceProductId },
+                    data: {
+                        soldCount: { increment: order.quantity },
+                        available: order.sourceProduct.available === null ? undefined : { decrement: order.quantity },
+                    },
+                });
+                if (upstreamProduct) {
+                    await tx.sourceProduct.update({
+                        where: { id: upstreamProduct.id },
+                        data: {
+                            soldCount: { increment: order.quantity },
+                            available: remainingEntries.length,
+                            metadataJson: {
+                                ...upstreamMetadata,
+                                manual: true,
+                                deliveryEntries: remainingEntries,
+                                deliveryText: remainingDeliveryText,
+                            },
+                        },
+                    });
+                }
+            });
+            await snapshotWarrantyForDeliveredOrder(order.id);
+            await creditAffiliateCommission(order.id).catch(() => undefined);
+            const totalSourceAmount = Number(order.totalSourceAmount || 0);
+            if (totalSourceAmount > 0) {
+                await debitConnectionBalance(providerConfig.internalSourceConnectionId, totalSourceAmount, order.id).catch(() => undefined);
+            }
+            if (botToken && !(String(process.env.MOCK_TELEGRAM_MODE || "false") === "true" && (0, server_1.isMockBotToken)(botToken))) {
+                await deleteQrMessage(botToken, order);
+                await sendDeliveredOrderMessages({
+                    botToken,
+                    chatId: order.customer.telegramChatId,
+                    orderCode: order.orderCode,
+                    productName: order.productNameSnapshot,
+                    quantity: order.quantity,
+                    amount: order.totalSaleAmount,
+                    deliveredText,
+                    deliveredAt,
+                    language: customerLanguage,
+                    sourceDescription: order.sourceProduct?.sourceDescription,
+                    metadata: sourceMetadata,
+                    shop: { supportTelegram: order.shop.supportTelegram, supportZalo: order.shop.supportZalo },
+                });
+            }
+            return;
+        }
+        // No manual delivery entries — check if upstream shop can purchase from Canboso
+        const connection = await prisma.downstreamSourceConnection.findUnique({
+            where: { id: providerConfig.internalSourceConnectionId },
+            include: { upstreamShop: { include: { providerConfig: true } } },
+        });
+        const upstreamProviderConfig = connection?.upstreamShop?.providerConfig;
+        if (upstreamProviderConfig?.providerKind === "EXTERNAL" && upstreamProduct?.externalProductId) {
+            const upstreamBuyerKey = (0, server_1.decryptSecret)(upstreamProviderConfig.buyerKeyEncrypted, process.env.APP_ENCRYPTION_KEY || "change-me-32-byte-key");
+            const upstreamResult = await (0, server_1.purchaseFromProvider)({
+                baseUrl: upstreamProviderConfig.baseUrl,
+                buyerKey: upstreamBuyerKey,
+                timeoutMs: 60000,
+            }, {
+                productId: upstreamProduct.externalProductId,
+                quantity: order.quantity,
+                clientOrderCode: order.orderCode,
+            });
+            if (upstreamResult.success && upstreamResult.deliveredText) {
+                const deliveredAt = new Date();
+                await prisma.$transaction(async (tx) => {
+                    await tx.order.update({
+                        where: { id: order.id },
+                        data: {
+                            status: "DELIVERED",
+                            deliveredAccountText: upstreamResult.deliveredText,
+                            deliveredAt,
+                            internalSourceOrderId: upstreamResult.providerOrderId || undefined,
+                            internalSourceOrderCode: upstreamResult.providerOrderCode || undefined,
+                            failureReason: null,
+                        },
+                    });
+                    await tx.orderEvent.create({
+                        data: {
+                            orderId: order.id,
+                            eventType: "internal_via_canboso_delivered",
+                            payloadJson: {
+                                deliveredText: upstreamResult.deliveredText,
+                                providerOrderId: upstreamResult.providerOrderId || null,
+                                providerOrderCode: upstreamResult.providerOrderCode || null,
+                            },
+                        },
+                    });
+                    await tx.sourceProduct.update({
+                        where: { id: order.sourceProductId },
+                        data: {
+                            soldCount: { increment: order.quantity },
+                            available: order.sourceProduct.available === null ? undefined : { decrement: order.quantity },
+                        },
+                    });
+                });
+                await snapshotWarrantyForDeliveredOrder(order.id);
+                await creditAffiliateCommission(order.id).catch(() => undefined);
+                const totalSourceAmount = Number(order.totalSourceAmount || 0);
+                if (totalSourceAmount > 0) {
+                    await debitConnectionBalance(providerConfig.internalSourceConnectionId, totalSourceAmount, order.id).catch(() => undefined);
+                }
+                if (botToken && !(String(process.env.MOCK_TELEGRAM_MODE || "false") === "true" && (0, server_1.isMockBotToken)(botToken))) {
+                    await deleteQrMessage(botToken, order);
+                    await sendDeliveredOrderMessages({
+                        botToken,
+                        chatId: order.customer.telegramChatId,
+                        orderCode: order.orderCode,
+                        productName: order.productNameSnapshot,
+                        quantity: order.quantity,
+                        amount: order.totalSaleAmount,
+                        deliveredText: upstreamResult.deliveredText,
+                        deliveredAt,
+                        language: customerLanguage,
+                        sourceDescription: order.sourceProduct?.sourceDescription,
+                        metadata: sourceMetadata,
+                        shop: { supportTelegram: order.shop.supportTelegram, supportZalo: order.shop.supportZalo },
+                    });
+                }
+                return;
+            }
+            await prisma.$transaction(async (tx) => {
+                await tx.order.update({
+                    where: { id: order.id },
+                    data: {
+                        status: upstreamResult.outOfStock || upstreamResult.pending ? "PAID_WAITING_STOCK" : "FAILED",
+                        failureReason: upstreamResult.message || "Upstream Canboso purchase failed.",
+                        internalSourceOrderId: upstreamResult.providerOrderId || undefined,
+                        internalSourceOrderCode: upstreamResult.providerOrderCode || undefined,
+                    },
+                });
+                await tx.orderEvent.create({
+                    data: {
+                        orderId: order.id,
+                        eventType: upstreamResult.outOfStock || upstreamResult.pending ? "upstream_out_of_stock" : "upstream_failed",
+                        payloadJson: {
+                            message: upstreamResult.message || "Upstream Canboso purchase failed.",
+                            providerOrderId: upstreamResult.providerOrderId || null,
+                            providerOrderCode: upstreamResult.providerOrderCode || null,
+                        },
+                    },
+                });
+            });
+            if (botToken && !(String(process.env.MOCK_TELEGRAM_MODE || "false") === "true" && (0, server_1.isMockBotToken)(botToken))) {
+                await (0, server_1.telegramSendMessage)(botToken, order.customer.telegramChatId, buildManualPendingMessage({
+                    language: customerLanguage,
+                    orderCode: order.orderCode,
+                    productName: order.productNameSnapshot,
+                    quantity: order.quantity,
+                    shortage: upstreamResult.outOfStock ?? false,
+                    shop: { supportTelegram: order.shop.supportTelegram, supportZalo: order.shop.supportZalo },
+                })).catch(() => undefined);
+            }
+            return;
+        }
+        // Upstream has no stock — wait for ULTRA to add entries
+        await prisma.$transaction(async (tx) => {
+            await tx.order.update({
+                where: { id: order.id },
+                data: { status: "PAID_WAITING_STOCK", failureReason: "Nguon san pham chua co hang. Dang cho bo sung." },
+            });
+            await tx.orderEvent.create({
+                data: {
+                    orderId: order.id,
+                    eventType: "internal_source_out_of_stock",
+                    payloadJson: { message: "Upstream INTERNAL source has no delivery entries." },
+                },
+            });
+        });
+        if (botToken && !(String(process.env.MOCK_TELEGRAM_MODE || "false") === "true" && (0, server_1.isMockBotToken)(botToken))) {
+            await (0, server_1.telegramSendMessage)(botToken, order.customer.telegramChatId, buildManualPendingMessage({
+                language: customerLanguage,
+                orderCode: order.orderCode,
+                productName: order.productNameSnapshot,
+                quantity: order.quantity,
+                shortage: false,
+                shop: { supportTelegram: order.shop.supportTelegram, supportZalo: order.shop.supportZalo },
+            })).catch(() => undefined);
+        }
+        return;
+    }
     const buyerKey = (0, server_1.decryptSecret)(providerConfig.buyerKeyEncrypted, process.env.APP_ENCRYPTION_KEY || "change-me-32-byte-key");
     const botToken = (0, server_1.decryptSecret)(order.shop.botConfig?.telegramBotTokenEncrypted, process.env.APP_ENCRYPTION_KEY || "change-me-32-byte-key");
+    // Pre-purchase stock check for EXTERNAL provider
+    if (providerConfig.providerKind === "EXTERNAL" && order.sourceProduct?.externalProductId &&
+        !(String(process.env.MOCK_PROVIDER_ENABLED || "false") === "true" && (0, server_1.isMockBuyerKey)(buyerKey))) {
+        try {
+            const catalog = await (0, server_1.fetchProviderProducts)({ baseUrl: providerConfig.baseUrl, buyerKey, timeoutMs: 5000 });
+            const entry = catalog.find((p) => p.externalId === order.sourceProduct.externalProductId);
+            if (!entry || entry.hidden || (entry.available !== null && entry.available <= 0)) {
+                await prisma.order.update({
+                    where: { id: order.id },
+                    data: { status: "PAID_WAITING_STOCK", failureReason: "San pham tam het hang ben nha cung cap. Tu dong thu lai khi co hang." },
+                });
+                return;
+            }
+        } catch {
+            // fail-open: nếu không check được thì cứ tiếp tục mua
+        }
+    }
     const result = String(process.env.MOCK_PROVIDER_ENABLED || "false") === "true" && (0, server_1.isMockBuyerKey)(buyerKey)
         ? (0, server_1.purchaseFromMockProvider)({
             productId: order.sourceProduct.externalProductId,
@@ -1231,6 +1648,7 @@ async function processPurchase(job) {
         : await (0, server_1.purchaseFromProvider)({
             baseUrl: providerConfig.baseUrl,
             buyerKey,
+            timeoutMs: 60000,
         }, {
             productId: order.sourceProduct.externalProductId,
             quantity: order.quantity,
@@ -1276,6 +1694,7 @@ async function processPurchase(job) {
             });
         });
         await snapshotWarrantyForDeliveredOrder(order.id);
+        await creditAffiliateCommission(order.id).catch(() => undefined);
         if (providerConfig.providerKind === "INTERNAL" && providerConfig.internalSourceConnectionId) {
             const totalSourceAmount = Number(order.totalSourceAmount || 0);
             if (totalSourceAmount > 0) {
@@ -1424,6 +1843,7 @@ async function reconcilePendingInternalSourceOrders() {
                     });
                 });
                 await snapshotWarrantyForDeliveredOrder(order.id);
+                await creditAffiliateCommission(order.id).catch(() => undefined);
                 const botToken = (0, server_1.decryptSecret)(order.shop.botConfig?.telegramBotTokenEncrypted, process.env.APP_ENCRYPTION_KEY || "change-me-32-byte-key");
                 const sourceMetadata = order.sourceProduct?.metadataJson &&
                     typeof order.sourceProduct.metadataJson === "object" &&
@@ -1484,6 +1904,66 @@ async function reconcilePendingInternalSourceOrders() {
         }
     }
 }
+function computeNextRunAt(sendTime, frequency, repeatDay) {
+    const [h, m] = sendTime.split(":").map(Number);
+    const now = new Date();
+    if (frequency === "weekly") {
+        const targetDay = repeatDay ?? 1;
+        const currentDay = now.getDay();
+        let daysUntil = (targetDay - currentDay + 7) % 7;
+        const candidate = new Date(now.getFullYear(), now.getMonth(), now.getDate() + daysUntil, h, m, 0, 0);
+        if (candidate <= now) daysUntil += 7;
+        return new Date(now.getFullYear(), now.getMonth(), now.getDate() + daysUntil, h, m, 0, 0);
+    }
+    const next = new Date(now.getFullYear(), now.getMonth(), now.getDate(), h, m, 0, 0);
+    if (next <= now) next.setDate(next.getDate() + 1);
+    return next;
+}
+async function sweepScheduledBroadcasts(broadcastQueue) {
+    const now = new Date();
+    // Fire one-time SCHEDULED broadcasts
+    const dueBroadcasts = await prisma.broadcast.findMany({
+        where: { status: "SCHEDULED", scheduledAt: { lte: now } },
+    });
+    for (const b of dueBroadcasts) {
+        const totalTargets = await prisma.customer.count({ where: { shopId: b.shopId } });
+        await prisma.broadcast.update({
+            where: { id: b.id },
+            data: { status: "QUEUED", totalTargets },
+        });
+        await broadcastQueue.add(server_1.JOBS.broadcast, { broadcastId: b.id });
+        console.log(`[scheduler] Fired scheduled broadcast ${b.id}`);
+    }
+    // Fire recurring schedules
+    const dueSchedules = await prisma.broadcastSchedule.findMany({
+        where: { isActive: true, nextRunAt: { lte: now } },
+        include: { shop: { include: { botConfig: true } } },
+    });
+    for (const sched of dueSchedules) {
+        const totalTargets = await prisma.customer.count({ where: { shopId: sched.shopId } });
+        const broadcast = await prisma.broadcast.create({
+            data: {
+                shopId: sched.shopId,
+                sellerId: sched.sellerId,
+                scheduleId: sched.id,
+                title: sched.title,
+                message: sched.message,
+                imageUrl: sched.imageUrl,
+                status: "QUEUED",
+                totalTargets,
+            },
+        });
+        await broadcastQueue.add(server_1.JOBS.broadcast, { broadcastId: broadcast.id });
+        await prisma.broadcastSchedule.update({
+            where: { id: sched.id },
+            data: {
+                lastRunAt: now,
+                nextRunAt: computeNextRunAt(sched.sendTime, sched.frequency, sched.repeatDay),
+            },
+        });
+        console.log(`[scheduler] Fired recurring schedule ${sched.id} → broadcast ${broadcast.id}`);
+    }
+}
 async function processBroadcast(job) {
     const broadcast = await prisma.broadcast.findUnique({
         where: { id: job.data.broadcastId },
@@ -1503,6 +1983,12 @@ async function processBroadcast(job) {
             shopId: broadcast.shopId,
         },
     });
+    const alreadySentIds = new Set(
+        (await prisma.broadcastLog.findMany({
+            where: { broadcastId: broadcast.id, status: "SENT" },
+            select: { customerId: true },
+        })).map((l) => l.customerId)
+    );
     await prisma.broadcast.update({
         where: { id: broadcast.id },
         data: {
@@ -1510,14 +1996,25 @@ async function processBroadcast(job) {
         },
     });
     const botToken = (0, server_1.decryptSecret)(broadcast.shop.botConfig?.telegramBotTokenEncrypted, process.env.APP_ENCRYPTION_KEY || "change-me-32-byte-key");
-    let sentCount = 0;
+    let sentCount = broadcast.sentCount ?? 0;
     let failedCount = 0;
     for (const customer of customers) {
+        if (alreadySentIds.has(customer.id)) continue;
         try {
             if (botToken &&
                 !(String(process.env.MOCK_TELEGRAM_MODE || "false") === "true" &&
                     (0, server_1.isMockBotToken)(botToken))) {
-                await (0, server_1.telegramSendMessage)(botToken, customer.telegramChatId, broadcast.message);
+                if (broadcast.imageUrl) {
+                    const MAX_CAPTION = 1024;
+                    if (broadcast.message.length <= MAX_CAPTION) {
+                        await (0, server_1.telegramSendPhoto)(botToken, customer.telegramChatId, broadcast.imageUrl, { caption: broadcast.message });
+                    } else {
+                        await (0, server_1.telegramSendPhoto)(botToken, customer.telegramChatId, broadcast.imageUrl, {});
+                        await (0, server_1.telegramSendMessage)(botToken, customer.telegramChatId, broadcast.message);
+                    }
+                } else {
+                    await (0, server_1.telegramSendMessage)(botToken, customer.telegramChatId, broadcast.message);
+                }
             }
             sentCount += 1;
             await prisma.broadcastLog.upsert({
@@ -1564,7 +2061,7 @@ async function processBroadcast(job) {
     await prisma.broadcast.update({
         where: { id: broadcast.id },
         data: {
-            status: failedCount > 0 && sentCount === 0 ? "FAILED" : "COMPLETED",
+            status: failedCount > 0 && sentCount === (broadcast.sentCount ?? 0) ? "FAILED" : "COMPLETED",
             sentCount,
             failedCount,
             sentAt: new Date(),
@@ -1829,6 +2326,24 @@ async function expireSellerTiers() {
     });
     console.log(`[worker] Expired ${expired.length} PRO seller(s) → FREE.`);
 }
+async function runTierAutoRenewals() {
+    const baseUrl = (process.env.APP_PUBLIC_URL || "http://localhost:3000").replace(/\/$/, "");
+    const internalToken = process.env.INTERNAL_API_TOKEN || "";
+    if (!internalToken) return;
+    try {
+        const res = await axios_1.default.post(
+            `${baseUrl}/api/v1/tiers/internal/run-auto-renewals`,
+            {},
+            { headers: { "x-internal-token": internalToken, "Content-Type": "application/json" }, timeout: 60000 },
+        );
+        if (res.data && (res.data.renewed > 0 || res.data.failed > 0)) {
+            console.log(`[worker] Tier auto-renew: ${res.data.renewed} renewed, ${res.data.failed} failed`);
+        }
+    } catch (error) {
+        console.error("[worker] Tier auto-renew request failed:", formatError(error));
+    }
+}
+
 async function expireSellerDepositRequests() {
     const expiredRequests = await prisma.depositRequest.findMany({
         where: {
@@ -1858,6 +2373,690 @@ async function expireSellerDepositRequests() {
         });
     }
 }
+async function pollWeb2mShops(purchaseQueue) {
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const shops = await prisma.paymentConfig.findMany({
+        where: {
+            provider: "WEB2M",
+            web2mAccountNumber: { not: null },
+            web2mBankCode: { not: null },
+            web2mPasswordEncrypted: { not: null },
+            web2mTokenEncrypted: { not: null },
+        },
+        select: {
+            shopId: true,
+            web2mAccountNumber: true,
+            web2mBankCode: true,
+            web2mPasswordEncrypted: true,
+            web2mTokenEncrypted: true,
+        },
+    });
+    if (shops.length === 0) return;
+    const encryptionKey = process.env.ENCRYPTION_KEY || "";
+
+    for (const config of shops) {
+        const pendingPayments = await prisma.paymentTransaction.findMany({
+            where: {
+                provider: "WEB2M",
+                status: "PENDING",
+                createdAt: { gte: since },
+                paymentTarget: { shop: { id: config.shopId } } as any,
+            } as any,
+            select: { externalOrderCode: true, amount: true },
+            take: 100,
+        }).catch(async () => {
+            // Fallback: just match by externalOrderCode globally for this shop's transactions
+            return prisma.paymentTransaction.findMany({
+                where: { provider: "WEB2M", status: "PENDING", createdAt: { gte: since } },
+                select: { externalOrderCode: true, amount: true },
+                take: 200,
+            });
+        });
+        if (pendingPayments.length === 0) continue;
+
+        let password = "";
+        let token = "";
+        try {
+            password = config.web2mPasswordEncrypted ? (0, server_1.decryptSecret)(config.web2mPasswordEncrypted, encryptionKey) : "";
+            token = config.web2mTokenEncrypted ? (0, server_1.decryptSecret)(config.web2mTokenEncrypted, encryptionKey) : "";
+        } catch {
+            continue;
+        }
+        const accountNumber = config.web2mAccountNumber || "";
+        const bankCode = (config.web2mBankCode || "").toLowerCase();
+        if (!accountNumber || !bankCode || !password || !token) continue;
+
+        let txns: { id: string; amount: number; description: string }[] = [];
+        try {
+            txns = await (0, server_1.fetchWeb2mTransactions)({ accountNumber, bankCode, password, token });
+        } catch (error) {
+            console.error(`[worker] Web2m poll failed for shop ${config.shopId}:`, formatError(error));
+            continue;
+        }
+
+        for (const txn of txns) {
+            if (txn.amount <= 0) continue;
+            const normalized = String(txn.description || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+            if (!normalized) continue;
+            for (const p of pendingPayments) {
+                const code = String(p.externalOrderCode).toUpperCase().replace(/[^A-Z0-9]/g, "");
+                if (!code) continue;
+                const last6 = code.slice(-6);
+                const codeMatches = normalized.includes(code) || (last6.length === 6 && normalized.includes(last6));
+                if (!codeMatches) continue;
+                if (Math.abs(Number(p.amount) - txn.amount) > 1) continue;
+
+                // Mark payment + order PAID
+                try {
+                    await prisma.$transaction(async (tx) => {
+                        const ptx = await tx.paymentTransaction.findUnique({
+                            where: { externalOrderCode: p.externalOrderCode },
+                        });
+                        if (!ptx || ptx.status !== "PENDING") return;
+                        const paidAt = new Date();
+                        await tx.paymentTransaction.update({
+                            where: { id: ptx.id },
+                            data: { status: "PAID", paidAt, rawPayloadJson: { web2m: true, txn } },
+                        });
+                        const order = await tx.order.findFirst({
+                            where: { paymentTransaction: { externalOrderCode: p.externalOrderCode } },
+                        });
+                        if (order && order.status === "AWAITING_PAYMENT") {
+                            await tx.order.update({
+                                where: { id: order.id },
+                                data: { paymentStatus: "PAID", status: "PAID", paidAt },
+                            });
+                            await tx.orderEvent.create({
+                                data: {
+                                    orderId: order.id,
+                                    eventType: "payment_completed",
+                                    payloadJson: { sweptBy: "worker_web2m_poll", web2m: true, txn },
+                                },
+                            });
+                            // Enqueue purchase job
+                            try {
+                                await purchaseQueue.add(server_1.JOBS.processPurchase, { orderId: order.id }, {
+                                    jobId: `purchase-${order.id}-${Date.now()}`,
+                                    removeOnComplete: 100,
+                                    removeOnFail: 100,
+                                });
+                            } catch (e) {
+                                console.error(`[worker] Enqueue purchase failed for order ${order.id}:`, formatError(e));
+                            }
+                        }
+                    });
+                } catch (error) {
+                    console.error(`[worker] Web2m mark paid failed for ${p.externalOrderCode}:`, formatError(error));
+                }
+                break;
+            }
+        }
+    }
+}
+function getTronGridApiBaseUrl() {
+    return process.env.TRONGRID_API_BASE_URL || "https://api.trongrid.io";
+}
+
+function getTronGridApiKey() {
+    return process.env.TRONGRID_API_KEY || "";
+}
+
+function getTronUsdtContractAddress() {
+    return process.env.TRON_USDT_CONTRACT_ADDRESS || "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
+}
+
+function buildTronGridHeaders() {
+    const headers = { "Content-Type": "application/json" };
+    const key = getTronGridApiKey();
+    if (key) headers["TRON-PRO-API-KEY"] = key;
+    return headers;
+}
+
+async function getRecentTrc20TransfersTo(address, sinceMs) {
+    const url = new URL(`/v1/accounts/${encodeURIComponent(address)}/transactions/trc20`, getTronGridApiBaseUrl());
+    url.searchParams.set("only_confirmed", "true");
+    url.searchParams.set("only_to", "true");
+    url.searchParams.set("limit", "50");
+    url.searchParams.set("order_by", "block_timestamp,desc");
+    url.searchParams.set("contract_address", getTronUsdtContractAddress());
+    url.searchParams.set("min_timestamp", String(sinceMs));
+    try {
+        const response = await fetch(url, { method: "GET", headers: buildTronGridHeaders() });
+        if (!response.ok) return [];
+        const payload = await response.json();
+        const rows = Array.isArray(payload.data) ? payload.data : [];
+        return rows.map((row) => {
+            const txHash = String(row.transaction_id || row.hash || row.transaction || "").trim();
+            const decimals = Number(row.token_info?.decimals ?? row.decimals ?? 6);
+            const rawAmount = row.value ?? row.amount ?? "0";
+            const amountUsdt = Number(rawAmount) / Math.pow(10, decimals);
+            const blockTimestamp = Number(row.block_timestamp || 0);
+            const fromAddress = String(row.from || "").trim();
+            const toAddress = String(row.to || "").trim();
+            const confirmed = String(row.confirmed || "").toLowerCase() === "true" || row.confirmed === true;
+            const finalResult = String(row.final_result || row.contract_ret || "SUCCESS").toUpperCase();
+            return { txHash, amountUsdt, blockTimestamp, fromAddress, toAddress, confirmed, finalResult };
+        }).filter((t) => t.confirmed && t.finalResult.includes("SUCCESS") && t.txHash);
+    } catch (_) {
+        return [];
+    }
+}
+
+async function scanTrc20UsdtPayments() {
+    const configs = await prisma.paymentConfig.findMany({
+        where: { usdtTrc20Address: { not: null } },
+        select: { shopId: true, usdtTrc20Address: true },
+    });
+    if (configs.length === 0) return;
+    const sinceMs = Date.now() - 60 * 60 * 1000;
+
+    for (const cfg of configs) {
+        const wallet = String(cfg.usdtTrc20Address || "").trim();
+        if (!wallet) continue;
+
+        const [pendingPayments, pendingTopups] = await Promise.all([
+            prisma.paymentTransaction.findMany({
+                where: {
+                    provider: "USDT_TRC20",
+                    status: "PENDING",
+                    createdAt: { gte: new Date(sinceMs) },
+                    order: { shopId: cfg.shopId },
+                },
+                select: { id: true, externalOrderCode: true, rawPayloadJson: true, createdAt: true },
+            }),
+            prisma.customerWalletTopup.findMany({
+                where: {
+                    provider: "USDT_TRC20",
+                    status: "PENDING",
+                    shopId: cfg.shopId,
+                    createdAt: { gte: new Date(sinceMs) },
+                },
+                select: { id: true, externalOrderCode: true, rawPayloadJson: true, createdAt: true },
+            }),
+        ]);
+        if (pendingPayments.length === 0 && pendingTopups.length === 0) continue;
+
+        const amountToOrder = new Map();
+        for (const p of pendingPayments) {
+            const amt = Number((p.rawPayloadJson)?.manualCrypto?.usdtAmount || 0);
+            if (amt > 0) amountToOrder.set(Number(amt.toFixed(2)), { type: "order", record: p });
+        }
+        const amountToTopup = new Map();
+        for (const t of pendingTopups) {
+            const amt = Number((t.rawPayloadJson)?.manualCrypto?.usdtAmount || 0);
+            if (amt > 0 && !amountToOrder.has(Number(amt.toFixed(2)))) {
+                amountToTopup.set(Number(amt.toFixed(2)), { type: "topup", record: t });
+            }
+        }
+
+        const transfers = await getRecentTrc20TransfersTo(wallet, sinceMs);
+        for (const transfer of transfers) {
+            if (transfer.toAddress !== wallet) continue;
+            // Check tx hash not reused
+            const [usedTx, usedTopup] = await Promise.all([
+                prisma.paymentTransaction.findFirst({ where: { cryptoTxHash: transfer.txHash }, select: { id: true } }),
+                prisma.customerWalletTopup.findFirst({ where: { cryptoTxHash: transfer.txHash }, select: { id: true } }),
+            ]);
+            if (usedTx || usedTopup) continue;
+
+            const matchOrder = amountToOrder.get(Number(transfer.amountUsdt.toFixed(2)));
+            if (matchOrder) {
+                try {
+                    await prisma.paymentTransaction.update({
+                        where: { id: matchOrder.record.id },
+                        data: {
+                            status: "PAID",
+                            paidAt: new Date(),
+                            cryptoTxHash: transfer.txHash,
+                            rawPayloadJson: {
+                                ...(matchOrder.record.rawPayloadJson),
+                                autoDetect: {
+                                    source: "trc20_auto_scan",
+                                    txHash: transfer.txHash,
+                                    amountUsdt: transfer.amountUsdt,
+                                    detectedAt: new Date().toISOString(),
+                                },
+                            },
+                        },
+                    });
+                    const payment = await prisma.paymentTransaction.findUnique({
+                        where: { id: matchOrder.record.id },
+                        include: { order: true },
+                    });
+                    if (payment?.order) {
+                        await prisma.order.update({
+                            where: { id: payment.orderId },
+                            data: { paymentStatus: "PAID", status: "PAID", paidAt: new Date() },
+                        });
+                        await prisma.orderEvent.create({
+                            data: {
+                                orderId: payment.orderId,
+                                eventType: "payment_completed",
+                                payloadJson: {
+                                    source: "trc20_auto_scan",
+                                    txHash: transfer.txHash,
+                                    externalOrderCode: matchOrder.record.externalOrderCode,
+                                },
+                            },
+                        });
+                        await purchaseQueueRef?.add(server_1.JOBS.purchaseUpstream, { orderId: payment.orderId }).catch(() => undefined);
+                        console.log(`[worker] TRC20 auto-detected order ${matchOrder.record.externalOrderCode} → PAID (${transfer.amountUsdt} USDT, tx ${transfer.txHash.slice(0, 16)}...)`);
+                    }
+                    amountToOrder.delete(Number(transfer.amountUsdt.toFixed(2)));
+                } catch (error) {
+                    console.error(`[worker] TRC20 auto-confirm order failed:`, formatError(error));
+                }
+                continue;
+            }
+            const matchTopup = amountToTopup.get(Number(transfer.amountUsdt.toFixed(2)));
+            if (matchTopup) {
+                try {
+                    await prisma.customerWalletTopup.update({
+                        where: { id: matchTopup.record.id },
+                        data: { cryptoTxHash: transfer.txHash },
+                    });
+                    const topup = await prisma.customerWalletTopup.findUnique({
+                        where: { id: matchTopup.record.id },
+                        include: { wallet: true },
+                    });
+                    if (topup) {
+                        await prisma.$transaction(async (tx) => {
+                            await tx.customerWalletTopup.update({
+                                where: { id: topup.id },
+                                data: { status: "PAID", paidAt: new Date() },
+                            });
+                            const wallet = await tx.customerWallet.findUnique({ where: { id: topup.walletId } });
+                            if (wallet) {
+                                const balBefore = Number(wallet.balance);
+                                const balAfter = balBefore + Number(topup.amount);
+                                await tx.customerWallet.update({ where: { id: wallet.id }, data: { balance: toDecimal(balAfter) } });
+                                await tx.customerWalletLedger.create({
+                                    data: {
+                                        customerId: topup.customerId,
+                                        walletId: wallet.id,
+                                        type: "TOPUP",
+                                        amount: toDecimal(Number(topup.amount)),
+                                        balanceBefore: toDecimal(balBefore),
+                                        balanceAfter: toDecimal(balAfter),
+                                        commissionBalanceBefore: wallet.commissionBalance,
+                                        commissionBalanceAfter: wallet.commissionBalance,
+                                        referenceType: "topup",
+                                        referenceId: topup.id,
+                                    },
+                                });
+                            }
+                        });
+                        console.log(`[worker] TRC20 auto-detected topup ${matchTopup.record.externalOrderCode} → PAID (${transfer.amountUsdt} USDT)`);
+                    }
+                    amountToTopup.delete(Number(transfer.amountUsdt.toFixed(2)));
+                } catch (error) {
+                    console.error(`[worker] TRC20 auto-confirm topup failed:`, formatError(error));
+                }
+            }
+            if (amountToOrder.size === 0 && amountToTopup.size === 0) break;
+        }
+    }
+}
+
+function getSolanaRpcUrl() {
+    const key = process.env.HELIUS_API_KEY;
+    if (key) return `https://mainnet.helius-rpc.com/?api-key=${key}`;
+    return process.env.SOLANA_RPC_URL || "https://api.mainnet-beta.solana.com";
+}
+
+function getSolanaUsdtMint() {
+    return process.env.SOLANA_USDT_MINT || "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB";
+}
+
+async function solanaRpc(method, params) {
+    const response = await fetch(getSolanaRpcUrl(), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+    });
+    if (!response.ok) return null;
+    const json = await response.json();
+    if (json.error) return null;
+    return json.result;
+}
+
+async function getUsdtTokenAccountsOfWallet(walletAddress) {
+    const result = await solanaRpc("getTokenAccountsByOwner", [
+        walletAddress,
+        { mint: getSolanaUsdtMint() },
+        { encoding: "jsonParsed", commitment: "confirmed" },
+    ]);
+    if (!result?.value) return [];
+    return result.value.map((a) => a.pubkey);
+}
+
+async function getSignaturesForAccount(accountAddress, limit = 30) {
+    const result = await solanaRpc("getSignaturesForAddress", [
+        accountAddress,
+        { limit, commitment: "confirmed" },
+    ]);
+    if (!Array.isArray(result)) return [];
+    return result.filter((s) => !s.err).map((s) => ({ signature: s.signature, blockTime: s.blockTime }));
+}
+
+async function getSolanaTransaction(signature) {
+    return solanaRpc("getTransaction", [
+        signature,
+        { encoding: "jsonParsed", commitment: "confirmed", maxSupportedTransactionVersion: 0 },
+    ]);
+}
+
+async function extractUsdtTransfers(tx, expectedReceiverWallet) {
+    const meta = tx?.meta;
+    if (!meta || meta.err) return [];
+    const usdtMint = getSolanaUsdtMint();
+    const instructions = tx.transaction?.message?.instructions ?? [];
+    const innerInstructions = (meta.innerInstructions ?? []).flatMap((i) => i.instructions ?? []);
+    const allInstructions = [...instructions, ...innerInstructions];
+    const transfers = [];
+    for (const inst of allInstructions) {
+        if (inst.program !== "spl-token" || !inst.parsed) continue;
+        const type = inst.parsed.type;
+        if (type !== "transfer" && type !== "transferChecked") continue;
+        const info = inst.parsed.info;
+        const mint = info.mint;
+        if (type === "transferChecked" && mint !== usdtMint) continue;
+        // For plain transfer, check via postTokenBalances
+        if (type === "transfer") {
+            const postBalances = meta.postTokenBalances ?? [];
+            const destBalance = postBalances.find((b) => b.mint === usdtMint && b.owner === expectedReceiverWallet);
+            if (!destBalance) continue;
+        }
+        const decimals = info.tokenAmount?.decimals ?? 6;
+        const rawAmount = info.amount ?? info.tokenAmount?.amount ?? "0";
+        const amountUsdt = Number(rawAmount) / Math.pow(10, decimals);
+        // Resolve destination owner
+        let toOwner = "";
+        const postBalances = meta.postTokenBalances ?? [];
+        const destBalance = postBalances.find((b) => b.mint === usdtMint && b.owner === expectedReceiverWallet);
+        if (destBalance) toOwner = destBalance.owner;
+        if (toOwner !== expectedReceiverWallet) continue;
+        transfers.push({ amountUsdt, toOwner, signature: tx.transaction?.signatures?.[0] || "" });
+    }
+    return transfers;
+}
+
+async function scanSolanaUsdtPayments() {
+    // Find all shops with usdt_solana_address configured
+    const configs = await prisma.paymentConfig.findMany({
+        where: { usdtSolanaAddress: { not: null } },
+        select: { shopId: true, usdtSolanaAddress: true },
+    });
+    if (configs.length === 0) return;
+    const sinceMs = Date.now() - 60 * 60 * 1000; // last 1 hour
+    const platformDepositShopId = process.env.PLATFORM_DEPOSIT_SHOP_ID || null;
+
+    for (const cfg of configs) {
+        const wallet = String(cfg.usdtSolanaAddress || "").trim();
+        if (!wallet) continue;
+        const isPlatformShop = platformDepositShopId && cfg.shopId === platformDepositShopId;
+
+        // Find pending USDT_SOL payments + topups + deposit requests for this shop
+        const [pendingPayments, pendingTopups, pendingDeposits] = await Promise.all([
+            prisma.paymentTransaction.findMany({
+                where: {
+                    provider: "USDT_SOL",
+                    status: "PENDING",
+                    createdAt: { gte: new Date(sinceMs) },
+                    order: { shopId: cfg.shopId },
+                },
+                select: { id: true, externalOrderCode: true, rawPayloadJson: true, createdAt: true },
+            }),
+            prisma.customerWalletTopup.findMany({
+                where: {
+                    provider: "USDT_SOL",
+                    status: "PENDING",
+                    shopId: cfg.shopId,
+                    createdAt: { gte: new Date(sinceMs) },
+                },
+                select: { id: true, externalOrderCode: true, rawPayloadJson: true, createdAt: true },
+            }),
+            isPlatformShop
+                ? prisma.depositRequest.findMany({
+                    where: {
+                        provider: "USDT_SOL",
+                        status: "PENDING",
+                        createdAt: { gte: new Date(sinceMs) },
+                    },
+                    select: { id: true, externalOrderCode: true, rawPayloadJson: true, createdAt: true, note: true },
+                })
+                : Promise.resolve([]),
+        ]);
+        if (pendingPayments.length === 0 && pendingTopups.length === 0 && pendingDeposits.length === 0) continue;
+
+        // Build amount → record map
+        const amountToOrder = new Map();
+        for (const p of pendingPayments) {
+            const amt = Number((p.rawPayloadJson)?.manualCrypto?.usdtAmount || 0);
+            if (amt > 0) amountToOrder.set(amt, { type: "order", record: p });
+        }
+        const amountToTopup = new Map();
+        for (const t of pendingTopups) {
+            const amt = Number((t.rawPayloadJson)?.manualCrypto?.usdtAmount || 0);
+            if (amt > 0 && !amountToOrder.has(amt)) amountToTopup.set(amt, { type: "topup", record: t });
+        }
+        const amountToDeposit = new Map();
+        for (const d of pendingDeposits) {
+            const amt = Number((d.rawPayloadJson)?.manualCrypto?.usdtAmount || 0);
+            if (amt > 0 && !amountToOrder.has(amt) && !amountToTopup.has(amt)) {
+                amountToDeposit.set(amt, { type: "deposit", record: d });
+            }
+        }
+
+        // Fetch recent USDT transfers to this wallet
+        const tokenAccounts = await getUsdtTokenAccountsOfWallet(wallet);
+        if (tokenAccounts.length === 0) continue;
+
+        const seenSignatures = new Set();
+        for (const ata of tokenAccounts) {
+            const sigs = await getSignaturesForAccount(ata, 30);
+            for (const sig of sigs) {
+                if (seenSignatures.has(sig.signature)) continue;
+                seenSignatures.add(sig.signature);
+                if (sig.blockTime && sig.blockTime * 1000 < sinceMs) continue;
+                // Check tx hash not already used
+                const [usedTx, usedTopup] = await Promise.all([
+                    prisma.paymentTransaction.findFirst({ where: { cryptoTxHash: sig.signature }, select: { id: true } }),
+                    prisma.customerWalletTopup.findFirst({ where: { cryptoTxHash: sig.signature }, select: { id: true } }),
+                ]);
+                if (usedTx || usedTopup) continue;
+
+                const tx = await getSolanaTransaction(sig.signature);
+                if (!tx) continue;
+                const transfers = await extractUsdtTransfers(tx, wallet);
+                if (transfers.length === 0) continue;
+
+                for (const transfer of transfers) {
+                    const matchOrder = amountToOrder.get(Number(transfer.amountUsdt.toFixed(2)));
+                    if (matchOrder) {
+                        try {
+                            await prisma.paymentTransaction.update({
+                                where: { id: matchOrder.record.id },
+                                data: {
+                                    status: "PAID",
+                                    paidAt: new Date(),
+                                    cryptoTxHash: sig.signature,
+                                    rawPayloadJson: {
+                                        ...(matchOrder.record.rawPayloadJson),
+                                        autoDetect: {
+                                            source: "solana_auto_scan",
+                                            signature: sig.signature,
+                                            amountUsdt: transfer.amountUsdt,
+                                            detectedAt: new Date().toISOString(),
+                                        },
+                                    },
+                                },
+                            });
+                            // Use raw SQL to find order & call markPaymentCompleted-like logic
+                            const payment = await prisma.paymentTransaction.findUnique({
+                                where: { id: matchOrder.record.id },
+                                include: { order: true },
+                            });
+                            if (payment?.order) {
+                                await prisma.order.update({
+                                    where: { id: payment.orderId },
+                                    data: { paymentStatus: "PAID", status: "PAID", paidAt: new Date() },
+                                });
+                                await prisma.orderEvent.create({
+                                    data: {
+                                        orderId: payment.orderId,
+                                        eventType: "payment_completed",
+                                        payloadJson: {
+                                            source: "solana_auto_scan",
+                                            signature: sig.signature,
+                                            externalOrderCode: matchOrder.record.externalOrderCode,
+                                        },
+                                    },
+                                });
+                                // Enqueue purchase job
+                                await purchaseQueueRef?.add(server_1.JOBS.purchaseUpstream, { orderId: payment.orderId }).catch(() => undefined);
+                                console.log(`[worker] Solana auto-detected order ${matchOrder.record.externalOrderCode} → PAID (${transfer.amountUsdt} USDT, sig ${sig.signature.slice(0, 16)}...)`);
+                            }
+                            amountToOrder.delete(Number(transfer.amountUsdt.toFixed(2)));
+                        } catch (error) {
+                            console.error(`[worker] Solana auto-confirm order failed:`, formatError(error));
+                        }
+                        continue;
+                    }
+                    const matchDeposit = amountToDeposit.get(Number(transfer.amountUsdt.toFixed(2)));
+                    if (matchDeposit) {
+                        try {
+                            const baseUrl = (process.env.APP_PUBLIC_URL || "http://localhost:3000").replace(/\/$/, "");
+                            const internalToken = process.env.INTERNAL_API_TOKEN || "";
+                            await axios_1.default.post(
+                                `${baseUrl}/api/v1/webhooks/internal-crypto-confirm/${encodeURIComponent(matchDeposit.record.externalOrderCode || "")}`,
+                                {
+                                    signature: sig.signature,
+                                    amountUsdt: transfer.amountUsdt,
+                                    source: "solana_auto_scan",
+                                },
+                                {
+                                    headers: { "x-internal-token": internalToken, "Content-Type": "application/json" },
+                                    timeout: 20000,
+                                },
+                            );
+                            console.log(`[worker] Solana auto-detected deposit ${matchDeposit.record.externalOrderCode} → confirmed (${transfer.amountUsdt} USDT)`);
+                            amountToDeposit.delete(Number(transfer.amountUsdt.toFixed(2)));
+                        } catch (error) {
+                            console.error(`[worker] Solana auto-confirm deposit failed:`, formatError(error));
+                        }
+                        continue;
+                    }
+                    const matchTopup = amountToTopup.get(Number(transfer.amountUsdt.toFixed(2)));
+                    if (matchTopup) {
+                        try {
+                            await prisma.customerWalletTopup.update({
+                                where: { id: matchTopup.record.id },
+                                data: { cryptoTxHash: sig.signature },
+                            });
+                            // We need customer wallet credit — call API endpoint via internal POST? For now, raw update + ledger
+                            const topup = await prisma.customerWalletTopup.findUnique({
+                                where: { id: matchTopup.record.id },
+                                include: { wallet: true },
+                            });
+                            if (topup) {
+                                await prisma.$transaction(async (tx) => {
+                                    await tx.customerWalletTopup.update({
+                                        where: { id: topup.id },
+                                        data: { status: "PAID", paidAt: new Date() },
+                                    });
+                                    const wallet = await tx.customerWallet.findUnique({ where: { id: topup.walletId } });
+                                    if (wallet) {
+                                        const balBefore = Number(wallet.balance);
+                                        const balAfter = balBefore + Number(topup.amount);
+                                        await tx.customerWallet.update({ where: { id: wallet.id }, data: { balance: toDecimal(balAfter) } });
+                                        await tx.customerWalletLedger.create({
+                                            data: {
+                                                customerId: topup.customerId,
+                                                walletId: wallet.id,
+                                                type: "TOPUP",
+                                                amount: toDecimal(Number(topup.amount)),
+                                                balanceBefore: toDecimal(balBefore),
+                                                balanceAfter: toDecimal(balAfter),
+                                                commissionBalanceBefore: wallet.commissionBalance,
+                                                commissionBalanceAfter: wallet.commissionBalance,
+                                                referenceType: "topup",
+                                                referenceId: topup.id,
+                                            },
+                                        });
+                                    }
+                                });
+                                console.log(`[worker] Solana auto-detected topup ${matchTopup.record.externalOrderCode} → PAID (${transfer.amountUsdt} USDT)`);
+                            }
+                            amountToTopup.delete(Number(transfer.amountUsdt.toFixed(2)));
+                        } catch (error) {
+                            console.error(`[worker] Solana auto-confirm topup failed:`, formatError(error));
+                        }
+                    }
+                }
+
+                if (amountToOrder.size === 0 && amountToTopup.size === 0 && amountToDeposit.size === 0) break;
+            }
+            if (amountToOrder.size === 0 && amountToTopup.size === 0 && amountToDeposit.size === 0) break;
+        }
+    }
+}
+
+let purchaseQueueRef = null;
+
+async function expireAwaitingPaymentOrders() {
+    const now = Date.now();
+    const vndCutoff = new Date(now - 5 * 60 * 1000);
+    const cryptoCutoff = new Date(now - 30 * 60 * 1000);
+    const orders = await prisma.order.findMany({
+        where: { status: "AWAITING_PAYMENT", createdAt: { lte: vndCutoff } },
+        include: {
+            customer: true,
+            shop: { include: { botConfig: true } },
+            paymentTransaction: true,
+        },
+        orderBy: { createdAt: "asc" },
+        take: 50,
+    });
+    for (const order of orders) {
+        const isCryptoProvider = order.paymentTransaction?.provider === "USDT_TRC20"
+            || order.paymentTransaction?.provider === "BINANCE"
+            || order.paymentTransaction?.provider === "OKX";
+        const cutoff = isCryptoProvider ? cryptoCutoff : vndCutoff;
+        if (order.createdAt > cutoff) continue;
+        const timeoutLabel = isCryptoProvider ? "30 phut" : "5 phut";
+        const updated = await prisma.order.updateMany({
+            where: { id: order.id, status: "AWAITING_PAYMENT" },
+            data: { status: "FAILED", failureReason: `Don hang het han thanh toan (${timeoutLabel}).` },
+        });
+        if (updated.count === 0) continue;
+        const botToken = (0, server_1.decryptSecret)(order.shop.botConfig?.telegramBotTokenEncrypted, process.env.APP_ENCRYPTION_KEY || "change-me-32-byte-key");
+        if (!botToken || !order.customer?.telegramChatId) continue;
+        const qrMessageId = order.paymentTransaction?.qrTelegramMessageId;
+        if (qrMessageId) {
+            await (0, server_1.telegramDeleteMessage)(botToken, order.customer.telegramChatId, qrMessageId).catch(() => undefined);
+        }
+        const lang = normalizeLanguage(order.customer?.preferredLanguage);
+        const msg = lang === "en"
+            ? [
+                "❌ Order cancelled",
+                `Order code: ${order.orderCode}`,
+                `Product: ${order.productNameSnapshot}`,
+                "",
+                "The order has been automatically cancelled because payment was not completed within 5 minutes.",
+                "Please place a new order if you still wish to purchase.",
+            ].join("\n")
+            : [
+                "❌ Đơn hàng đã bị hủy",
+                `Mã đơn: ${order.orderCode}`,
+                `Sản phẩm: ${order.productNameSnapshot}`,
+                "",
+                "Đơn hàng tự động hủy do không thanh toán trong vòng 5 phút.",
+                "Vui lòng đặt lại nếu bạn vẫn muốn mua.",
+            ].join("\n");
+        await (0, server_1.telegramSendMessage)(botToken, order.customer.telegramChatId, msg).catch(() => undefined);
+    }
+}
 async function bootstrap() {
     const redis = await waitForInfrastructure();
     globalRedis = redis;
@@ -1866,6 +3065,10 @@ async function bootstrap() {
     });
     globalSyncQueue = syncQueue;
     const purchaseQueue = new bullmq_1.Queue(server_1.QUEUES.purchaseUpstream, {
+        connection: redis,
+    });
+    purchaseQueueRef = purchaseQueue;
+    const broadcastQueue = new bullmq_1.Queue(server_1.QUEUES.broadcast, {
         connection: redis,
     });
     const syncWorker = new bullmq_1.Worker(server_1.QUEUES.syncCatalog, async (job) => {
@@ -1960,6 +3163,37 @@ async function bootstrap() {
         });
     }, 15 * 60 * 1000);
     void expireSellerTiers().catch(() => undefined);
+    setInterval(() => {
+        void runTierAutoRenewals().catch((error) => {
+            console.error("[worker] Tier auto-renew failed:", formatError(error));
+        });
+    }, 6 * 60 * 60 * 1000); // mỗi 6 giờ
+    void runTierAutoRenewals().catch(() => undefined);
+    setInterval(() => {
+        void sweepScheduledBroadcasts(broadcastQueue).catch((error) => {
+            console.error("[worker] Broadcast schedule sweep failed:", formatError(error));
+        });
+    }, 60 * 1000);
+    void sweepScheduledBroadcasts(broadcastQueue).catch(() => undefined);
+    setInterval(() => {
+        void expireAwaitingPaymentOrders().catch((error) => {
+            console.error("[worker] Awaiting payment expiry sweep failed:", formatError(error));
+        });
+    }, 30 * 1000);
+    void expireAwaitingPaymentOrders().catch(() => undefined);
+    setInterval(() => {
+        void scanSolanaUsdtPayments().catch((error) => {
+            console.error("[worker] Solana auto-detect sweep failed:", formatError(error));
+        });
+    }, 30 * 1000);
+    void scanSolanaUsdtPayments().catch(() => undefined);
+    setInterval(() => {
+        void scanTrc20UsdtPayments().catch((error) => {
+            console.error("[worker] TRC20 auto-detect sweep failed:", formatError(error));
+        });
+    }, 30 * 1000);
+    void scanTrc20UsdtPayments().catch(() => undefined);
+    // Web2m polling removed — replaced by webhook /api/v1/webhooks/web2m
     console.log(`[worker] Started queue workers and Telegram poller. Catalog sync concurrency=${Math.max(1, Math.floor(CATALOG_SYNC_CONCURRENCY))}, scheduler tick=${CATALOG_SCHEDULER_TICK_MS}ms, target interval=${CATALOG_SYNC_INTERVAL_MS}ms.`);
 }
 bootstrap().catch((error) => {

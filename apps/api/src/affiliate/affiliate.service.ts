@@ -80,11 +80,11 @@ export class AffiliateService {
         },
       });
 
-      const wallet = await tx.customerWallet.findUnique({
+      const wallet = await tx.customerWallet.upsert({
         where: { customerId: affiliateCustomerId },
+        update: {},
+        create: { customerId: affiliateCustomerId },
       });
-
-      if (!wallet) return;
 
       await tx.$queryRaw(
         Prisma.sql`SELECT id FROM customer_wallets WHERE id = ${wallet.id} FOR UPDATE`,
@@ -93,12 +93,13 @@ export class AffiliateService {
       const fresh = await tx.customerWallet.findUnique({ where: { id: wallet.id } });
       if (!fresh) return;
 
-      const balanceBefore = decimalToNumber(fresh.balance);
-      const balanceAfter = balanceBefore + amount;
+      const balance = decimalToNumber(fresh.balance);
+      const commissionBefore = decimalToNumber(fresh.commissionBalance);
+      const commissionAfter = commissionBefore + amount;
 
       await tx.customerWallet.update({
         where: { id: wallet.id },
-        data: { balance: toDecimal(balanceAfter) },
+        data: { commissionBalance: toDecimal(commissionAfter) },
       });
 
       await tx.customerWalletLedger.create({
@@ -107,8 +108,10 @@ export class AffiliateService {
           walletId: wallet.id,
           type: "AFFILIATE_COMMISSION",
           amount: toDecimal(amount),
-          balanceBefore: toDecimal(balanceBefore),
-          balanceAfter: toDecimal(balanceAfter),
+          balanceBefore: toDecimal(balance),
+          balanceAfter: toDecimal(balance),
+          commissionBalanceBefore: toDecimal(commissionBefore),
+          commissionBalanceAfter: toDecimal(commissionAfter),
           referenceType: "order",
           referenceId: orderId,
         },
@@ -134,15 +137,24 @@ export class AffiliateService {
         c.telegram_username,
         c.first_name,
         c.last_name,
-        COUNT(DISTINCT d.id)::bigint AS downline_count,
-        SUM(o.affiliate_commission)::text AS total_commission
+        COALESCE(dl.downline_count, 0)::bigint AS downline_count,
+        COALESCE(ord.total_commission, 0)::text AS total_commission
       FROM customers c
-      LEFT JOIN customers d ON d.referred_by_id = c.id AND d.shop_id = ${shop.id}
-      LEFT JOIN orders o ON o.affiliate_customer_id = c.id AND o.shop_id = ${shop.id}
+      LEFT JOIN (
+        SELECT referred_by_id, COUNT(*)::bigint AS downline_count
+        FROM customers
+        WHERE shop_id = ${shop.id} AND referred_by_id IS NOT NULL
+        GROUP BY referred_by_id
+      ) dl ON dl.referred_by_id = c.id
+      LEFT JOIN (
+        SELECT affiliate_customer_id, SUM(affiliate_commission) AS total_commission
+        FROM orders
+        WHERE shop_id = ${shop.id} AND affiliate_customer_id IS NOT NULL
+        GROUP BY affiliate_customer_id
+      ) ord ON ord.affiliate_customer_id = c.id
       WHERE c.shop_id = ${shop.id}
-      GROUP BY c.id, c.telegram_username, c.first_name, c.last_name
-      HAVING COUNT(DISTINCT d.id) > 0 OR SUM(o.affiliate_commission) > 0
-      ORDER BY downline_count DESC, SUM(o.affiliate_commission) DESC NULLS LAST
+        AND (COALESCE(dl.downline_count, 0) > 0 OR COALESCE(ord.total_commission, 0) > 0)
+      ORDER BY downline_count DESC, total_commission DESC NULLS LAST
       LIMIT ${limit}
     `;
 

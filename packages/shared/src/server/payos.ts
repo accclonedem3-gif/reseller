@@ -18,10 +18,18 @@ export interface CreatePaymentLinkInput {
   expiredAt?: number;
 }
 
+export interface PayOSBankInfo {
+  accountNumber: string;
+  accountName: string;
+  bin: string;
+  description: string;
+}
+
 export interface PaymentLinkResult {
   checkoutUrl: string;
   qrCode: string;
   providerResponse: unknown;
+  bankInfo?: PayOSBankInfo;
 }
 
 export interface PaymentLinkStatusResult {
@@ -124,10 +132,21 @@ export async function createPayOSPaymentLink(
     throw new Error(response.data?.desc || "PayOS returned an invalid response.");
   }
 
+  const bankInfo: PayOSBankInfo | undefined =
+    data.accountNumber
+      ? {
+          accountNumber: String(data.accountNumber || ""),
+          accountName: String(data.accountName || ""),
+          bin: String(data.bin || ""),
+          description: String(data.description || ""),
+        }
+      : undefined;
+
   return {
     checkoutUrl: data.checkoutUrl,
     qrCode: data.qrCode,
     providerResponse: response.data,
+    bankInfo,
   };
 }
 

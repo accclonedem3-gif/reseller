@@ -107,41 +107,81 @@ function normalizeAvailable(value: unknown) {
   return Number.isFinite(numeric) ? numeric : null;
 }
 
-function formatDeliveredAccounts(deliveredAccounts: unknown) {
+const LOGIN_KEYS = new Set(["user", "email", "username", "login", "account"]);
+const PASSWORD_KEYS = new Set(["password", "pass", "pwd"]);
+const SKIP_KEYS = new Set([
+  "id", "status", "type",
+  "created_at", "updated_at", "createdAt", "updatedAt",
+  "productItemId", "deliveredAt",
+]);
+
+function extractAccountExtras(typed: Record<string, unknown>, usedValues: Set<string>): string[] {
+  return Object.entries(typed)
+    .filter(([k]) => !LOGIN_KEYS.has(k) && !PASSWORD_KEYS.has(k) && !SKIP_KEYS.has(k))
+    .map(([, v]) => String(v || "").trim())
+    .filter((v) => v && !usedValues.has(v));
+}
+
+function formatDeliveredAccounts(deliveredAccounts: unknown): string | null {
   if (!Array.isArray(deliveredAccounts) || deliveredAccounts.length === 0) {
     return null;
   }
 
-  return deliveredAccounts
-    .map((item, index) => {
+  const lines = deliveredAccounts
+    .map((item) => {
+      if (typeof item === "string") {
+        return item.trim() || null;
+      }
+
       if (!item || typeof item !== "object") {
         return null;
       }
 
       const typed = item as Record<string, unknown>;
-      const login =
-        String(
-          typed.user || typed.email || typed.username || typed.login || "",
-        ).trim() || "";
-      const password =
-        String(typed.password || typed.pass || typed.secret || "").trim() || "";
-      const primary = login && password ? `${login}:${password}` : login || password;
-      const extraLines = [];
 
-      if (typed.verifyEmail) {
-        extraLines.push(`Email khôi phục: ${String(typed.verifyEmail)}`);
-      }
+      const login = [...LOGIN_KEYS]
+        .map((k) => String(typed[k] || "").trim())
+        .find(Boolean) ?? "";
 
-      if (typed.deliveredAt) {
-        extraLines.push(`Thời gian giao: ${String(typed.deliveredAt)}`);
-      }
+      const password = [...PASSWORD_KEYS]
+        .map((k) => String(typed[k] || "").trim())
+        .find(Boolean) ?? "";
 
-      return [`Tài khoản ${index + 1}: ${primary}`, ...extraLines]
-        .filter(Boolean)
-        .join("\n");
+      const usedValues = new Set([login, password].filter(Boolean));
+      const extras = extractAccountExtras(typed, usedValues);
+
+      const parts = [login, password, ...extras].filter(Boolean);
+      return parts.length > 0 ? parts.join(" | ") : null;
     })
-    .filter(Boolean)
-    .join("\n\n");
+    .filter(Boolean) as string[];
+
+  return lines.length > 0 ? lines.join("\n\n") : null;
+}
+
+function mergeDeliveredText(deliveredText: string, deliveredAccounts: unknown): string {
+  const accountsText = formatDeliveredAccounts(deliveredAccounts);
+  if (!accountsText) return deliveredText;
+
+  // extract extra values from accounts that aren't already in deliveredText
+  const textLower = deliveredText.toLowerCase();
+  const extras: string[] = [];
+
+  if (Array.isArray(deliveredAccounts)) {
+    for (const item of deliveredAccounts) {
+      if (!item || typeof item !== "object") continue;
+      const typed = item as Record<string, unknown>;
+      const usedValues = new Set<string>();
+      const itemExtras = extractAccountExtras(typed, usedValues);
+      for (const v of itemExtras) {
+        if (!textLower.includes(v.toLowerCase())) {
+          extras.push(v);
+        }
+      }
+    }
+  }
+
+  if (extras.length === 0) return deliveredText;
+  return `${deliveredText} | ${extras.join(" | ")}`;
 }
 
 function isOutOfStock(payload: unknown, statusCode?: number) {
@@ -300,12 +340,14 @@ export async function purchaseFromProvider(
       };
     }
 
+    const rawDeliveredText = String(response.data?.deliveredText || "").trim();
+    const deliveredText = rawDeliveredText
+      ? mergeDeliveredText(rawDeliveredText, response.data.deliveredAccounts)
+      : formatDeliveredAccounts(response.data.deliveredAccounts);
+
     return {
       success: true,
-      deliveredText:
-        formatDeliveredAccounts(response.data.deliveredAccounts) ||
-        String(response.data?.deliveredText || "").trim() ||
-        null,
+      deliveredText: deliveredText || null,
       outOfStock: false,
       pending: Boolean(response.data?.pending),
       providerOrderId: String(response.data?.orderId || "").trim() || null,

@@ -3,10 +3,14 @@ import { Transform } from "class-transformer";
 import {
   IsBoolean,
   IsEnum,
+  IsNumber,
   IsOptional,
   IsString,
   IsUrl,
+  Max,
+  Min,
   MinLength,
+  ValidateIf,
 } from "class-validator";
 
 function emptyStringToUndefined({
@@ -30,9 +34,9 @@ export class UpdateShopDto {
   name?: string;
 
   @IsOptional()
-  @Transform(emptyStringToUndefined)
+  @ValidateIf((o) => o.tagline != null)
   @IsString()
-  tagline?: string;
+  tagline?: string | null;
 
   @IsOptional()
   @Transform(emptyStringToUndefined)
@@ -62,14 +66,19 @@ export class UpdateBotConfigDto {
   shopName?: string;
 
   @IsOptional()
-  @Transform(emptyStringToUndefined)
+  @ValidateIf((o) => o.shopTagline != null)
   @IsString()
-  shopTagline?: string;
+  shopTagline?: string | null;
 
   @IsOptional()
   @Transform(emptyStringToUndefined)
   @IsString()
   botToken?: string;
+
+  @IsOptional()
+  @Transform(emptyStringToUndefined)
+  @IsString()
+  ownerTelegramUserId?: string;
 
   @IsOptional()
   @Transform(emptyStringToUndefined)
@@ -104,6 +113,22 @@ export class UpdateBotConfigDto {
   sourceNotificationSyncEnabled?: boolean;
 
   @IsOptional()
+  @Transform(({ value }) => {
+    if (value === null || value === undefined || value === "") return null;
+    const n = Number(value);
+    return Number.isFinite(n) ? n : null;
+  })
+  @IsNumber()
+  @Min(0)
+  @Max(500)
+  priceMarkupPercent?: number | null;
+
+  @IsOptional()
+  @Transform(emptyStringToUndefined)
+  @IsString()
+  paymentProvider?: string;
+
+  @IsOptional()
   @Transform(emptyStringToUndefined)
   @IsString()
   payosClientId?: string;
@@ -121,6 +146,56 @@ export class UpdateBotConfigDto {
   @IsOptional()
   @Transform(emptyStringToUndefined)
   @IsString()
+  pay2sPartnerCode?: string;
+
+  @IsOptional()
+  @Transform(emptyStringToUndefined)
+  @IsString()
+  pay2sAccessKey?: string;
+
+  @IsOptional()
+  @Transform(emptyStringToUndefined)
+  @IsString()
+  pay2sSecretKey?: string;
+
+  @IsOptional()
+  @Transform(emptyStringToUndefined)
+  @IsString()
+  pay2sBankAccount?: string;
+
+  @IsOptional()
+  @Transform(emptyStringToUndefined)
+  @IsString()
+  pay2sBankId?: string;
+
+  @IsOptional()
+  @Transform(emptyStringToUndefined)
+  @IsString()
+  web2mAccountNumber?: string;
+
+  @IsOptional()
+  @Transform(emptyStringToUndefined)
+  @IsString()
+  web2mBankCode?: string;
+
+  @IsOptional()
+  @Transform(emptyStringToUndefined)
+  @IsString()
+  web2mPassword?: string;
+
+  @IsOptional()
+  @Transform(emptyStringToUndefined)
+  @IsString()
+  web2mToken?: string;
+
+  @IsOptional()
+  @Transform(emptyStringToUndefined)
+  @IsString()
+  web2mAccessToken?: string;
+
+  @IsOptional()
+  @Transform(emptyStringToUndefined)
+  @IsString()
   binanceUid?: string;
 
   @IsOptional()
@@ -132,6 +207,11 @@ export class UpdateBotConfigDto {
   @Transform(emptyStringToUndefined)
   @IsString()
   usdtTrc20Address?: string;
+
+  @IsOptional()
+  @Transform(emptyStringToUndefined)
+  @IsString()
+  usdtSolanaAddress?: string;
 
   @IsOptional()
   @IsString()
@@ -164,4 +244,8 @@ export class UpdateBotConfigDto {
   @IsOptional()
   @IsEnum(StorefrontMode)
   storefrontMode?: StorefrontMode;
+
+  @IsOptional()
+  @IsBoolean()
+  showOutOfStock?: boolean;
 }

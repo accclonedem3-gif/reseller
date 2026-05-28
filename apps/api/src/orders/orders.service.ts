@@ -1,3 +1,4 @@
+import { randomUUID } from "crypto";
 import {
   BadRequestException,
   Inject,
@@ -11,6 +12,7 @@ import {
   PaymentTransactionStatus,
   ProviderKind,
   Prisma,
+  WalletLedgerType,
 } from "@prisma/client";
 import {
   decryptSecret,
@@ -26,6 +28,7 @@ import {
   decimalToNumber,
   generateExternalPaymentCode,
   generateOrderCode,
+  splitWalletDebit,
   toDecimal,
 } from "../lib/utils";
 import { ShopsService } from "../shops/shops.service";
@@ -184,6 +187,8 @@ export class OrdersService {
       checkoutUrl: order.paymentTransaction?.checkoutUrl || payment.checkoutUrl,
       qrCode: order.paymentTransaction?.qrCode || payment.qrCode,
       manualCrypto: payment.manualCrypto,
+      bankInfo: payment.bankInfo,
+      isManualNoDelivery: prepared.isManual && !prepared.hasAutoDelivery,
     };
   }
 
@@ -219,12 +224,17 @@ export class OrdersService {
       }
 
       const balanceBefore = decimalToNumber(currentWallet.balance);
+      const commissionBefore = decimalToNumber(currentWallet.commissionBalance);
 
-      if (balanceBefore < prepared.totalSaleAmount) {
+      if (balanceBefore + commissionBefore < prepared.totalSaleAmount) {
         throw new BadRequestException("Your wallet balance is not enough. Please top up first.");
       }
 
-      const balanceAfter = balanceBefore - prepared.totalSaleAmount;
+      const split = splitWalletDebit(commissionBefore, balanceBefore, prepared.totalSaleAmount);
+      const balanceAfter = split.balanceAfter;
+      const commissionAfter = split.commissionAfter;
+      const usdtBefore = decimalToNumber(currentWallet.balanceUsdt);
+      const usdtAfter = Math.max(0, usdtBefore - split.fromMain / 27000);
 
       const order = await tx.order.create({
         data: {
@@ -283,6 +293,8 @@ export class OrdersService {
         },
         data: {
           balance: toDecimal(balanceAfter),
+          commissionBalance: toDecimal(commissionAfter),
+          balanceUsdt: toDecimal(usdtAfter),
         },
       });
 
@@ -294,6 +306,8 @@ export class OrdersService {
           amount: toDecimal(prepared.totalSaleAmount),
           balanceBefore: toDecimal(balanceBefore),
           balanceAfter: toDecimal(balanceAfter),
+          commissionBalanceBefore: toDecimal(commissionBefore),
+          commissionBalanceAfter: toDecimal(commissionAfter),
           referenceType: "order",
           referenceId: order.id,
           note: "Paid order from Telegram customer wallet",
@@ -323,6 +337,7 @@ export class OrdersService {
     return {
       order: await this.getOrderById(created.orderId),
       walletBalanceAfter: created.walletBalanceAfter,
+      isManualNoDelivery: prepared.isManual && !prepared.hasAutoDelivery,
     };
   }
 
@@ -455,6 +470,10 @@ export class OrdersService {
       throw new NotFoundException("Product not found.");
     }
 
+    if (product.isSample) {
+      throw new BadRequestException("Sản phẩm mẫu (template), không thể mua được.");
+    }
+
     const override = product.overrides[0];
     const quantity = Number(input.quantity);
 
@@ -498,19 +517,78 @@ export class OrdersService {
       },
     });
 
-    const salePrice = decimalToNumber(override?.salePrice || product.sourcePrice);
+    const baseSalePrice = decimalToNumber(override?.salePrice || product.sourcePrice);
+    const [ctvApiKey, downstreamConn] = await Promise.all([
+      this.prisma.internalSourceApiKey.findFirst({
+        where: { shopId: input.shopId, telegramChatId: input.telegramChatId, status: "ACTIVE" },
+        select: { id: true },
+      }),
+      this.prisma.downstreamSourceConnection.findFirst({
+        where: { upstreamShopId: input.shopId, downstreamTelegramChatId: input.telegramChatId, status: "ACTIVE" },
+        select: { id: true },
+      }),
+    ]);
+    const ctvBlocked = customer.isCtv === false;
+    const isCtvCustomer = !ctvBlocked && ((customer.isCtv ?? false) || ctvApiKey != null || downstreamConn != null);
+    const discountPercent = Number(customer.discountPercent ?? 0);
+    const ctvPrice =
+      isCtvCustomer && product.internalSourceEnabled && product.internalSourcePrice != null
+        ? decimalToNumber(product.internalSourcePrice)
+        : null;
+    const discountedPrice =
+      isCtvCustomer && discountPercent > 0
+        ? Math.round(baseSalePrice * (1 - discountPercent / 100))
+        : null;
+    const salePrice = ctvPrice ?? discountedPrice ?? baseSalePrice;
     const sourcePrice = decimalToNumber(product.sourcePrice);
-    const totalSaleAmount = salePrice * quantity;
-    const totalSourceAmount = sourcePrice * quantity;
+
+    // Promo logic — check active window first
+    const promoType = (product as any).promoType as string | null;
+    const promoBuyN = Number((product as any).promoBuyN || 0);
+    const promoGetM = Number((product as any).promoGetM || 0);
+    const promoBulkMinQty = Number((product as any).promoBulkMinQty || 0);
+    const promoBulkDiscountPct = Number((product as any).promoBulkDiscountPct || 0);
+    const promoStartAt = (product as any).promoStartAt ? new Date((product as any).promoStartAt) : null;
+    const promoEndAt = (product as any).promoEndAt ? new Date((product as any).promoEndAt) : null;
+    const now = new Date();
+    const promoActive =
+      (!promoStartAt || now >= promoStartAt) &&
+      (!promoEndAt || now <= promoEndAt);
+
+    let bonusUnits = 0;
+    let promoDiscount = 0;
+    if (promoActive) {
+      if (promoType === "BUY_N_GET_M" && promoBuyN > 0 && promoGetM > 0 && quantity >= promoBuyN) {
+        bonusUnits = promoGetM;
+      } else if (promoType === "BULK_DISCOUNT" && promoBulkMinQty > 0 && promoBulkDiscountPct > 0 && quantity >= promoBulkMinQty) {
+        promoDiscount = Math.floor(salePrice * quantity * promoBulkDiscountPct / 100);
+      }
+    }
+
+    const effectiveQuantity = quantity + bonusUnits;
+    const totalSaleAmount = Math.max(0, salePrice * quantity - promoDiscount);
+    const totalSourceAmount = sourcePrice * effectiveQuantity;
     const metadata =
       product.metadataJson && typeof product.metadataJson === "object" && !Array.isArray(product.metadataJson)
         ? (product.metadataJson as Record<string, unknown>)
         : {};
     const isManual =
       String(product.providerName || "").toLowerCase() === "manual" || metadata.manual === true;
+    const deliveryEntries = metadata.deliveryEntries;
+    const isSharedProduct = metadata.shared === true && typeof metadata.sharedContent === "string" && (metadata.sharedContent as string).trim().length > 0;
+    const hasAutoDelivery = isSharedProduct || (Array.isArray(deliveryEntries) && deliveryEntries.length > 0);
 
     if (!isManual) {
-      const providerBalance = await this.shopsService.getProviderBalanceForShopId(input.shopId);
+      const [providerBalance, isInStock] = await Promise.all([
+        this.shopsService.getProviderBalanceForShopId(input.shopId),
+        this.shopsService.checkExternalProductStock(input.shopId, product.externalProductId),
+      ]);
+
+      if (!isInStock) {
+        throw new BadRequestException(
+          "San pham tam het hang ben nha cung cap. Vui long thu lai sau.",
+        );
+      }
 
       if (providerBalance.balance < totalSourceAmount) {
         throw new BadRequestException(
@@ -523,12 +601,17 @@ export class OrdersService {
       shop,
       product,
       customer,
-      quantity,
+      quantity: effectiveQuantity,        // include bonus units for delivery/stock
+      paidQuantity: quantity,              // what customer paid for
+      bonusUnits,
+      promoDiscount,
       salePrice,
       sourcePrice,
       totalSaleAmount,
       totalSourceAmount,
       productNameSnapshot: override?.displayName || product.sourceName,
+      isManual,
+      hasAutoDelivery,
     };
   }
 
@@ -619,10 +702,58 @@ export class OrdersService {
           } as Prisma.InputJsonValue,
         },
       });
+
+      if (order.sourceProductId) {
+        await tx.sourceProduct.update({
+          where: { id: order.sourceProductId },
+          data: {
+            soldCount: { increment: order.quantity },
+            ...(order.sourceProduct?.available !== null && order.sourceProduct?.available !== undefined
+              ? { available: { decrement: order.quantity } }
+              : {}),
+          },
+        });
+      }
     });
 
     await this.warrantyService.snapshotWarrantyForDeliveredOrder(order.id);
     await this.creditAffiliateCommission(order.id);
+
+    if (
+      order.sourceProviderKindSnapshot === ProviderKind.INTERNAL &&
+      order.shop.providerConfig?.internalSourceConnectionId
+    ) {
+      if (order.sourceProduct?.externalProductId) {
+        await this.prisma.sourceProduct.update({
+          where: { id: order.sourceProduct.externalProductId },
+          data: {
+            soldCount: { increment: order.quantity },
+            available: { decrement: order.quantity },
+          },
+        }).catch(() => undefined);
+      }
+      const totalSourceAmount = decimalToNumber(order.totalSourceAmount);
+      if (totalSourceAmount > 0) {
+        await this.debitConnectionBalance(
+          order.shop.providerConfig.internalSourceConnectionId,
+          totalSourceAmount,
+          order.id,
+        ).catch(() => undefined);
+      }
+    }
+
+    const revenueAmount = decimalToNumber(order.totalSaleAmount);
+    if (revenueAmount > 0) {
+      await this.walletService.creditWallet(
+        order.shop.sellerId,
+        revenueAmount,
+        WalletLedgerType.SALE_REVENUE,
+        "order",
+        order.id,
+        "Doanh thu đơn hàng thủ công",
+      ).catch(() => undefined);
+    }
+
     await this.sendSellerResolvedMessage(order, "completed");
 
     return this.getOrderById(order.id);
@@ -751,9 +882,11 @@ export class OrdersService {
       },
       include: {
         customer: true,
+        sourceProduct: { select: { id: true, available: true, externalProductId: true } },
         shop: {
           include: {
             botConfig: true,
+            providerConfig: true,
           },
         },
       },
@@ -865,6 +998,78 @@ export class OrdersService {
             .join("\n");
 
     await telegramSendMessage(token, order.customer.telegramChatId, text).catch(() => undefined);
+  }
+
+  private async debitConnectionBalance(connectionId: string, amount: number, orderId: string) {
+    await this.prisma.$transaction(async (tx) => {
+      const connection = await tx.downstreamSourceConnection.findUnique({ where: { id: connectionId } });
+      if (!connection || !connection.downstreamTelegramChatId) return;
+
+      const customer = await tx.customer.findFirst({
+        where: {
+          shopId: connection.upstreamShopId,
+          telegramChatId: connection.downstreamTelegramChatId,
+        },
+        include: { wallet: true },
+      });
+      if (!customer?.wallet) return;
+
+      await tx.$queryRaw(
+        Prisma.sql`SELECT id FROM customer_wallets WHERE id = ${customer.wallet.id} FOR UPDATE`,
+      );
+
+      const walletBefore = decimalToNumber(customer.wallet.balance);
+      const commissionBefore = decimalToNumber(customer.wallet.commissionBalance);
+      const split = splitWalletDebit(commissionBefore, walletBefore, amount);
+      const walletAfter = split.balanceAfter;
+      const commissionAfter = split.commissionAfter;
+      const walletUsdtBefore = decimalToNumber(customer.wallet.balanceUsdt);
+      const walletUsdtAfter = Math.max(0, walletUsdtBefore - split.fromMain / 27000);
+
+      await tx.customerWallet.update({
+        where: { id: customer.wallet.id },
+        data: {
+          balance: toDecimal(walletAfter),
+          commissionBalance: toDecimal(commissionAfter),
+          balanceUsdt: toDecimal(walletUsdtAfter),
+        },
+      });
+
+      await tx.customerWalletLedger.create({
+        data: {
+          customerId: customer.id,
+          walletId: customer.wallet.id,
+          type: CustomerWalletLedgerType.SPEND_ORDER,
+          amount: toDecimal(-amount),
+          balanceBefore: toDecimal(walletBefore),
+          balanceAfter: toDecimal(walletAfter),
+          commissionBalanceBefore: toDecimal(commissionBefore),
+          commissionBalanceAfter: toDecimal(commissionAfter),
+          referenceType: "order",
+          referenceId: orderId,
+          note: "Trừ số dư ví khi bot đại lý ra đơn (seller confirm thủ công)",
+        },
+      });
+
+      await tx.downstreamSourceConnection.update({
+        where: { id: connectionId },
+        data: { lastOrderedAt: new Date() },
+      });
+
+      await tx.internalSourceLedger.create({
+        data: {
+          id: randomUUID(),
+          connectionId,
+          type: "DEBIT_ORDER",
+          amount: toDecimal(-amount),
+          balanceBefore: toDecimal(walletBefore),
+          balanceAfter: toDecimal(walletAfter),
+          referenceType: "order",
+          referenceId: orderId,
+          note: "Auto debit from downstream order delivery (manual confirm)",
+        },
+      });
+    });
   }
 
   private async creditAffiliateCommission(orderId: string) {

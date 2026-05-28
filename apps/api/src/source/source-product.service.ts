@@ -48,6 +48,8 @@ type SourceProductRow = {
   updatedAt: Date;
 };
 
+type OverridePartial = { salePrice?: Prisma.Decimal | null; displayName?: string | null } | null | undefined;
+
 @Injectable()
 export class SourceProductService {
   constructor(
@@ -63,23 +65,59 @@ export class SourceProductService {
     const shop = await this.shopsService.getSellerShop(user.id);
     const products = await this.prisma.sourceProduct.findMany({
       where: { shopId: shop.id, providerName: "pro_source" },
+      include: { overrides: { where: { sellerId: shop.sellerId }, take: 1 } },
       orderBy: { createdAt: "desc" },
     });
-    return products.map((p) => this.mapProduct(p));
+    return products.map((p) => this.mapProduct(p, p.overrides[0]));
+  }
+
+  /**
+   * Lookup admin template defaults — match family first, fallback to sourceName.
+   * Returns null if no template or no match.
+   */
+  private async getAdminTemplateDefaults(args: { family?: string | null; sourceName?: string | null }) {
+    try {
+      const tpl = await this.prisma.shop.findFirst({
+        where: { isTemplate: true },
+        select: { botConfig: { select: { customizationJson: true } } },
+      });
+      const cust = (tpl?.botConfig?.customizationJson as Record<string, any>) ?? null;
+      if (!cust) return null;
+      if (args.family) {
+        const byFamily = (cust.productDefaultsByFamily ?? {}) as Record<string, any>;
+        if (byFamily[args.family]) return byFamily[args.family];
+      }
+      if (args.sourceName) {
+        const byName = (cust.productDefaultsByName ?? {}) as Record<string, any>;
+        if (byName[args.sourceName]) return byName[args.sourceName];
+      }
+      return null;
+    } catch {
+      return null;
+    }
   }
 
   async create(user: AuthenticatedUser, dto: CreateSourceProductDto) {
     this.validateOtherFields(dto);
     const shop = await this.shopsService.getSellerShop(user.id);
+    const cleanedName = dto.sourceName.trim();
+    const templateDefault = await this.getAdminTemplateDefaults({ family: dto.productFamily as any, sourceName: cleanedName });
+    // If admin set media as photo → use it as imageUrl. For video/animation, imageUrl stays null.
+    const inheritedImageUrl =
+      templateDefault?.media?.type === "photo" && typeof templateDefault.media.url === "string"
+        ? (templateDefault.media.url as string)
+        : null;
     const product = await this.prisma.sourceProduct.create({
       data: {
         shopId: shop.id,
         externalProductId: `pro_${randomBytes(8).toString("hex")}`,
         providerName: "pro_source",
-        productIcon: dto.productIcon?.trim() || null,
-        sourceName: dto.sourceName.trim(),
-        sourceRawName: dto.sourceRawName?.trim() || dto.sourceName.trim(),
-        sourceDescription: dto.sourceDescription?.trim() || null,
+        productIcon: dto.productIcon?.trim() || templateDefault?.icon || null,
+        iconCustomEmojiId: templateDefault?.customEmojiId || null,
+        imageUrl: inheritedImageUrl,
+        sourceName: cleanedName,
+        sourceRawName: dto.sourceRawName?.trim() || cleanedName,
+        sourceDescription: dto.sourceDescription?.trim() || templateDefault?.description || null,
         sourcePrice: toDecimal(dto.sourcePrice),
         available: dto.available ?? null,
         internalSourceEnabled: dto.internalSourceEnabled ?? true,
@@ -88,6 +126,7 @@ export class SourceProductService {
         productFamily: dto.productFamily,
         productFamilyOther:
           dto.productFamily === "OTHER" ? dto.productFamilyOther?.trim() || null : null,
+        productPackage: dto.productPackage?.trim() || null,
         accountType: dto.accountType,
         accountTypeOther:
           dto.accountType === "OTHER" ? dto.accountTypeOther?.trim() || null : null,
@@ -98,7 +137,26 @@ export class SourceProductService {
         warrantyPolicy: dto.warrantyPolicy,
       },
     });
-    return this.mapProduct(product);
+    const retailPrice = dto.salePrice ?? dto.sourcePrice;
+    const overrideDisplayName = dto.displayName?.trim() || dto.sourceName.trim();
+    const override = await this.prisma.sellerProductOverride.upsert({
+      where: { sellerId_sourceProductId: { sellerId: shop.sellerId, sourceProductId: product.id } },
+      create: {
+        sellerId: shop.sellerId,
+        shopId: shop.id,
+        sourceProductId: product.id,
+        displayName: overrideDisplayName,
+        salePrice: toDecimal(retailPrice),
+        hidden: false,
+        enabled: true,
+      },
+      update: {
+        displayName: overrideDisplayName,
+        salePrice: toDecimal(retailPrice),
+      },
+    });
+    this.triggerDownstreamSync(shop.id).catch(() => {});
+    return this.mapProduct(product, override);
   }
 
   async update(user: AuthenticatedUser, id: string, dto: UpdateSourceProductDto) {
@@ -133,6 +191,7 @@ export class SourceProductService {
             : dto.productFamily != null
               ? null
               : undefined,
+        productPackage: dto.productPackage !== undefined ? (dto.productPackage?.trim() || null) : undefined,
         accountType: dto.accountType ?? undefined,
         accountTypeOther:
           dto.accountType === "OTHER"
@@ -151,8 +210,24 @@ export class SourceProductService {
         warrantyPolicy: dto.warrantyPolicy ?? undefined,
       },
     });
+    const updatedOverride = await this.prisma.sellerProductOverride.upsert({
+      where: { sellerId_sourceProductId: { sellerId: shop.sellerId, sourceProductId: updated.id } },
+      create: {
+        sellerId: shop.sellerId,
+        shopId: shop.id,
+        sourceProductId: updated.id,
+        displayName: dto.displayName?.trim() || updated.sourceName,
+        salePrice: dto.salePrice != null ? toDecimal(dto.salePrice) : updated.sourcePrice,
+        hidden: false,
+        enabled: true,
+      },
+      update: {
+        ...(dto.displayName !== undefined ? { displayName: dto.displayName?.trim() || null } : {}),
+        ...(dto.salePrice !== undefined ? { salePrice: toDecimal(dto.salePrice) } : {}),
+      },
+    });
     this.triggerDownstreamSync(shop.id).catch(() => {});
-    return this.mapProduct(updated);
+    return this.mapProduct(updated, updatedOverride);
   }
 
   async remove(user: AuthenticatedUser, id: string) {
@@ -218,14 +293,20 @@ export class SourceProductService {
     }
   }
 
-  private mapProduct(product: SourceProductRow) {
+  private mapProduct(product: SourceProductRow, override?: OverridePartial) {
+    const salePrice = override?.salePrice != null
+      ? decimalToNumber(override.salePrice)
+      : decimalToNumber(product.sourcePrice);
+    const displayName = override?.displayName || product.sourceRawName || product.sourceName;
     return {
       id: product.id,
       productIcon: product.productIcon,
       sourceName: product.sourceName,
+      displayName,
       sourceRawName: product.sourceRawName,
       sourceDescription: product.sourceDescription,
       sourcePrice: decimalToNumber(product.sourcePrice),
+      salePrice,
       available: product.available,
       internalSourceEnabled: product.internalSourceEnabled,
       internalSourcePrice:
@@ -234,6 +315,7 @@ export class SourceProductService {
           : null,
       productFamily: product.productFamily,
       productFamilyOther: product.productFamilyOther,
+      productPackage: (product as any).productPackage ?? null,
       accountType: product.accountType,
       accountTypeOther: product.accountTypeOther,
       durationType: product.durationType,
@@ -259,6 +341,7 @@ export class SourceProductService {
     });
     for (const conn of connections) {
       await this.queueService.addSyncCatalogJob(conn.downstreamShopId);
+      this.shopsService.syncCatalogForShop(conn.downstreamShopId).catch(() => {});
     }
   }
 }

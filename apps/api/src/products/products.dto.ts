@@ -6,6 +6,7 @@ import {
   IsNumber,
   IsOptional,
   IsString,
+  Max,
   Min,
   ValidateIf,
 } from "class-validator";
@@ -76,6 +77,18 @@ export class UpdateProductDto {
 
   @IsOptional()
   @IsBoolean()
+  isShared?: boolean;
+
+  @IsOptional()
+  @IsString()
+  sharedContent?: string;
+
+  @IsOptional()
+  @IsString()
+  deliveryFormatHint?: string;
+
+  @IsOptional()
+  @IsBoolean()
   internalSourceEnabled?: boolean;
 
   @IsOptional()
@@ -114,6 +127,63 @@ export class UpdateProductDto {
   @IsOptional()
   @IsEnum(SourceWarrantyPolicy)
   warrantyPolicy?: SourceWarrantyPolicy;
+
+  @IsOptional()
+  @IsString()
+  imageUrl?: string;
+
+  @IsOptional()
+  @IsString()
+  productIcon?: string;
+
+  @IsOptional()
+  @IsString()
+  iconCustomEmojiId?: string;
+
+  @IsOptional()
+  @IsString()
+  usageInstructions?: string;
+
+  @IsOptional()
+  @IsString()
+  promoType?: string;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  promoBuyN?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  promoGetM?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  promoBulkMinQty?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Max(100)
+  promoBulkDiscountPct?: number;
+
+  @IsOptional()
+  @IsString()
+  promoStartAt?: string;
+
+  @IsOptional()
+  @IsString()
+  promoEndAt?: string;
+
+  @IsOptional()
+  @IsString()
+  promoBannerUrl?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  resetToSource?: boolean;
 }
 
 export class CreateManualProductDto {
@@ -160,6 +230,18 @@ export class CreateManualProductDto {
 
   @IsOptional()
   @IsBoolean()
+  isShared?: boolean;
+
+  @IsOptional()
+  @IsString()
+  sharedContent?: string;
+
+  @IsOptional()
+  @IsString()
+  deliveryFormatHint?: string;
+
+  @IsOptional()
+  @IsBoolean()
   internalSourceEnabled?: boolean;
 
   @IsOptional()
@@ -174,6 +256,10 @@ export class CreateManualProductDto {
   @ValidateIf((input: CreateManualProductDto) => input.productFamily === SourceProductFamily.OTHER)
   @IsString()
   productFamilyOther?: string;
+
+  @IsOptional()
+  @IsString()
+  productPackage?: string;
 
   @IsOptional()
   @IsEnum(SourceAccountType)
@@ -198,6 +284,22 @@ export class CreateManualProductDto {
   @IsOptional()
   @IsEnum(SourceWarrantyPolicy)
   warrantyPolicy?: SourceWarrantyPolicy;
+
+  @IsOptional()
+  @IsString()
+  imageUrl?: string;
+
+  @IsOptional()
+  @IsString()
+  productIcon?: string;
+
+  @IsOptional()
+  @IsString()
+  iconCustomEmojiId?: string;
+
+  @IsOptional()
+  @IsString()
+  usageInstructions?: string;
 }
 
 export class PurgeDeliveredInventoryDto {

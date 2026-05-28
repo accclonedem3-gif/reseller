@@ -7,6 +7,7 @@ import {
   EyeOff,
   PackagePlus,
   Save,
+  Search,
   ShieldCheck,
   Sparkles,
   TrendingUp,
@@ -30,9 +31,11 @@ import { useLang } from "@/lib/lang";
 import { localizeProductName } from "@/lib/product-name";
 import {
   sourceAccountTypeOptions,
+  buildAutoProductName,
   sourceDeliveryModeOptions,
   sourceDurationTypeOptions,
   sourceProductFamilyOptions,
+  sourceProductPackageOptions,
   sourceWarrantyPolicyOptions,
 } from "@/lib/source-product-options";
 
@@ -115,6 +118,7 @@ const T = {
     hintManual: "Bạn tự giao tài khoản cho khách sau khi có đơn.",
     iconTitle: "Chọn icon",
     saving: "Đang lưu...",
+    fGroup: "Thêm vào danh mục", phGroup: "— Không chọn —",
   },
   en: {
     gateTitle: "ULTRA-only feature",
@@ -192,6 +196,7 @@ const T = {
     hintManual: "You manually deliver the account to the customer after each order.",
     iconTitle: "Pick icon",
     saving: "Saving...",
+    fGroup: "Add to catalog", phGroup: "— None —",
   },
   th: {
     gateTitle: "ฟีเจอร์สำหรับ ULTRA เท่านั้น",
@@ -269,8 +274,11 @@ const T = {
     hintManual: "คุณส่งบัญชีให้ลูกค้าด้วยตนเองหลังจากมีออเดอร์",
     iconTitle: "เลือกไอคอน",
     saving: "กำลังบันทึก...",
+    fGroup: "เพิ่มในหมวดหมู่", phGroup: "— ไม่เลือก —",
   },
 };
+
+type CatalogGroup = { id: string; name: string; position: number; _count: { overrides: number } };
 
 type SourceProduct = {
   id: string;
@@ -317,12 +325,14 @@ type SourceProductForm = {
   internalSourceEnabled: boolean;
   productFamily: string;
   productFamilyOther: string;
+  productPackage: string;
   accountType: string;
   accountTypeOther: string;
   durationType: string;
   durationTypeOther: string;
   sourceDeliveryMode: string;
   warrantyPolicy: string;
+  groupId: string | null;
 };
 
 const emptyForm: SourceProductForm = {
@@ -339,12 +349,14 @@ const emptyForm: SourceProductForm = {
   internalSourceEnabled: true,
   productFamily: "",
   productFamilyOther: "",
+  productPackage: "",
   accountType: "",
   accountTypeOther: "",
   durationType: "",
   durationTypeOther: "",
   sourceDeliveryMode: "MANUAL",
   warrantyPolicy: "KBH",
+  groupId: null,
 };
 
 function getApiErrorMessage(error: unknown, fallback: string) {
@@ -377,6 +389,7 @@ function buildSourcePayload(form: SourceProductForm) {
     productFamily: normalizeEnumValue(form.productFamily),
     productFamilyOther:
       form.productFamily === "OTHER" ? form.productFamilyOther.trim() || undefined : undefined,
+    productPackage: form.productPackage.trim() || undefined,
     accountType: normalizeEnumValue(form.accountType),
     accountTypeOther:
       form.accountType === "OTHER" ? form.accountTypeOther.trim() || undefined : undefined,
@@ -405,12 +418,14 @@ function buildFormFromProduct(product: SourceProduct): SourceProductForm {
     internalSourceEnabled: Boolean(product.internalSourceEnabled),
     productFamily: product.productFamily?.toUpperCase() || "",
     productFamilyOther: product.productFamilyOther || "",
+    productPackage: (product as any).productPackage || "",
     accountType: product.accountType?.toUpperCase() || "",
     accountTypeOther: product.accountTypeOther || "",
     durationType: product.durationType?.toUpperCase() || "",
     durationTypeOther: product.durationTypeOther || "",
     sourceDeliveryMode: product.sourceDeliveryMode?.toUpperCase() || "MANUAL",
     warrantyPolicy: product.warrantyPolicy?.toUpperCase() || "KBH",
+    groupId: null,
   };
 }
 
@@ -665,6 +680,7 @@ function ProductForm({
   onSubmit,
   submitLabel,
   mode,
+  groups = [],
 }: {
   form: SourceProductForm;
   setForm: React.Dispatch<React.SetStateAction<SourceProductForm>>;
@@ -672,6 +688,7 @@ function ProductForm({
   onSubmit: () => void;
   submitLabel: string;
   mode: "edit" | "create";
+  groups?: CatalogGroup[];
 }) {
   const { lang } = useLang();
   const t = T[lang];
@@ -747,15 +764,54 @@ function ProductForm({
 
       <SectionDivider label={t.secCategory} />
 
-      <div className="grid gap-3 sm:grid-cols-3">
+      <div className="grid gap-3 sm:grid-cols-2">
         <Field label={t.fieldFamily}>
           <SelectBox
             value={form.productFamily}
-            onChange={(v) => setForm((f) => ({ ...f, productFamily: v, productFamilyOther: v === "OTHER" ? f.productFamilyOther : "" }))}
+            onChange={(v) =>
+              setForm((f) => ({
+                ...f,
+                productFamily: v,
+                productFamilyOther: v === "OTHER" ? f.productFamilyOther : "",
+                productPackage: "", // reset package when family changes
+              }))
+            }
             options={sourceProductFamilyOptions}
             placeholder={t.phFamily}
           />
         </Field>
+        <Field label="Gói sản phẩm" hintPlacement="top">
+          <SelectBox
+            value={form.productPackage}
+            onChange={(v) => {
+              setForm((f) => {
+                const autoName = buildAutoProductName({
+                  productFamily: f.productFamily,
+                  productPackage: v,
+                  durationType: f.durationType,
+                  warrantyPolicy: f.warrantyPolicy,
+                });
+                return {
+                  ...f,
+                  productPackage: v,
+                  // Auto-fill displayName chỉ khi user chưa gõ
+                  displayName: f.displayName.trim() ? f.displayName : autoName,
+                };
+              });
+            }}
+            options={[...(sourceProductPackageOptions[form.productFamily] || [])]}
+            placeholder={form.productFamily ? "Chọn gói..." : "Chọn dòng SP trước"}
+          />
+        </Field>
+      </div>
+
+      {form.productFamily === "OTHER" && (
+        <Field label={t.fieldFamilyOther}>
+          <Input value={form.productFamilyOther} onChange={(e) => set("productFamilyOther", e.target.value)} placeholder={t.phFamilyOther} />
+        </Field>
+      )}
+
+      <div className="grid gap-3 sm:grid-cols-2">
         <Field label={t.fieldAccountType}>
           <SelectBox
             value={form.accountType}
@@ -767,18 +823,28 @@ function ProductForm({
         <Field label={t.fieldDuration}>
           <SelectBox
             value={form.durationType}
-            onChange={(v) => setForm((f) => ({ ...f, durationType: v, durationTypeOther: v === "OTHER" ? f.durationTypeOther : "" }))}
+            onChange={(v) =>
+              setForm((f) => {
+                const autoName = buildAutoProductName({
+                  productFamily: f.productFamily,
+                  productPackage: f.productPackage,
+                  durationType: v,
+                  warrantyPolicy: f.warrantyPolicy,
+                });
+                return {
+                  ...f,
+                  durationType: v,
+                  durationTypeOther: v === "OTHER" ? f.durationTypeOther : "",
+                  displayName: f.displayName.trim() ? f.displayName : autoName,
+                };
+              })
+            }
             options={sourceDurationTypeOptions}
             placeholder={t.phDuration}
           />
         </Field>
       </div>
 
-      {form.productFamily === "OTHER" && (
-        <Field label={t.fieldFamilyOther}>
-          <Input value={form.productFamilyOther} onChange={(e) => set("productFamilyOther", e.target.value)} placeholder={t.phFamilyOther} />
-        </Field>
-      )}
       {form.accountType === "OTHER" && (
         <Field label={t.fieldAccountTypeOther}>
           <Input value={form.accountTypeOther} onChange={(e) => set("accountTypeOther", e.target.value)} placeholder={t.phAccountTypeOther} />
@@ -801,7 +867,26 @@ function ProductForm({
         </div>
         <div className="space-y-3">
           <Field label={t.fieldWarranty}>
-            <SelectBox value={form.warrantyPolicy} onChange={(v) => set("warrantyPolicy", v)} options={sourceWarrantyPolicyOptions} placeholder={t.phWarranty} />
+            <SelectBox
+              value={form.warrantyPolicy}
+              onChange={(v) =>
+                setForm((f) => {
+                  const autoName = buildAutoProductName({
+                    productFamily: f.productFamily,
+                    productPackage: f.productPackage,
+                    durationType: f.durationType,
+                    warrantyPolicy: v,
+                  });
+                  return {
+                    ...f,
+                    warrantyPolicy: v,
+                    displayName: f.displayName.trim() ? f.displayName : autoName,
+                  };
+                })
+              }
+              options={sourceWarrantyPolicyOptions}
+              placeholder={t.phWarranty}
+            />
           </Field>
           {form.sourceDeliveryMode !== "MANUAL" && (
             <Field label={t.fieldAvailable} description={t.fieldAvailableDesc} hintPlacement="top">
@@ -854,6 +939,22 @@ function ProductForm({
         </>
       )}
 
+      {mode === "create" && groups.length > 0 && (
+        <Field label={t.fGroup}>
+          <select
+            value={form.groupId ?? ""}
+            onChange={(e) => setForm((c) => ({ ...c, groupId: e.target.value || null }))}
+            className="w-full rounded-[14px] border px-3 py-2.5 text-sm font-medium transition"
+            style={{ backgroundColor: "var(--inp)", borderColor: "var(--bd)", color: "var(--tx)" }}
+          >
+            <option value="">{t.phGroup}</option>
+            {groups.map((g) => (
+              <option key={g.id} value={g.id}>{g.name}</option>
+            ))}
+          </select>
+        </Field>
+      )}
+
       <div className="pt-2">
         <Button disabled={isPending} onClick={onSubmit}>
           {mode === "edit" ? <Save className="h-4 w-4" /> : <PackagePlus className="h-4 w-4" />}
@@ -895,7 +996,23 @@ export function SourceProductsPage({
     enabled: canManageInternalSource,
   });
 
+  const groupsQuery = useQuery<CatalogGroup[]>({
+    queryKey: ["catalog-groups"],
+    queryFn: async () => (await api.get("/catalog-groups")).data,
+  });
+  const groups = groupsQuery.data || [];
+
   const products = productsQuery.data || [];
+  const [productSearch, setProductSearch] = useState("");
+  const filteredProducts = useMemo(() => {
+    const q = productSearch.trim().toLowerCase();
+    if (!q) return products;
+    return products.filter((p) => {
+      const name = localizeProductName(p.displayName, lang).toLowerCase();
+      const rawName = (p.sourceName || "").toLowerCase();
+      return name.includes(q) || rawName.includes(q);
+    });
+  }, [products, productSearch, lang]);
   const selectedProduct = products.find((item) => item.id === selectedId) || null;
 
   useEffect(() => {
@@ -921,7 +1038,16 @@ export function SourceProductsPage({
   });
 
   const createMutation = useMutation({
-    mutationFn: async () => api.post("/products/manual", buildSourcePayload(manualForm)),
+    mutationFn: async () => {
+      const capturedGroupId = manualForm.groupId;
+      const response = await api.post("/products/manual", buildSourcePayload(manualForm));
+      if (capturedGroupId) {
+        try {
+          await api.post("/catalog-groups/bulk-assign", { productIds: [response.data.id], groupId: capturedGroupId });
+        } catch { /* ignore */ }
+      }
+      return response;
+    },
     onSuccess: async () => {
       showToast({ tone: "success", message: t.toastCreated });
       setManualForm({ ...emptyForm, internalSourceEnabled: true });
@@ -946,7 +1072,7 @@ export function SourceProductsPage({
               <Crown className="h-3 w-3" />
               {t.eyebrow}
             </div>
-            <h1 className="text-2xl font-black tracking-tight text-white">{t.title}</h1>
+            <h1 className="text-2xl font-black tracking-tight" style={{ color: "rgb(249,115,22)" }}>{t.title}</h1>
             <p className="mt-1 text-sm" style={{ color: "var(--tx-f)" }}>{t.desc}</p>
           </div>
           <div className="flex flex-wrap gap-3">
@@ -965,12 +1091,31 @@ export function SourceProductsPage({
               <h2 className="mt-0.5 text-base font-bold" style={{ color: "var(--tx)" }}>{t.listTitle}</h2>
             </div>
             <span className="rounded-full border border-white/10 px-2.5 py-0.5 text-xs font-semibold" style={{ color: "var(--tx-f)", backgroundColor: "var(--inp)" }}>
-              {products.length}
+              {productSearch.trim() ? `${filteredProducts.length}/${products.length}` : products.length}
             </span>
           </div>
 
+          <div className="relative mb-3">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
+            <Input
+              value={productSearch}
+              onChange={(e) => setProductSearch(e.target.value)}
+              placeholder="Tìm sản phẩm..."
+              className="pl-9"
+            />
+            {productSearch && (
+              <button
+                type="button"
+                onClick={() => setProductSearch("")}
+                className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-1 text-slate-500 transition hover:bg-white/5 hover:text-slate-300"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            )}
+          </div>
+
           <div className="flex-1 space-y-2 overflow-y-auto pr-0.5" style={{ maxHeight: 560 }}>
-            {products.length === 0 ? (
+            {filteredProducts.length === 0 ? (
               <div className="flex flex-col items-center justify-center gap-3 rounded-[16px] border border-dashed border-white/8 py-10 text-center">
                 <div className="flex h-12 w-12 items-center justify-center rounded-[14px] border border-violet-400/20 bg-violet-500/10">
                   <PackagePlus className="h-5 w-5 text-violet-300" />
@@ -980,7 +1125,7 @@ export function SourceProductsPage({
                   <p className="mt-0.5 text-xs" style={{ color: "var(--tx-f)" }}>{t.emptyDesc}</p>
                 </div>
               </div>
-            ) : products.map((product) => {
+            ) : filteredProducts.map((product) => {
               const isSelected = product.id === selectedId;
               const icon = product.productIcon || (product.isManual ? "📦" : "🔄");
               const wholesalePrice = product.internalSourcePrice ?? product.sourcePrice;
@@ -1105,7 +1250,7 @@ export function SourceProductsPage({
 
       {createPortal(
         <div
-          className={`fixed inset-0 z-[200] flex items-center justify-center p-4 transition-all duration-300 ${createOpen ? "pointer-events-auto" : "pointer-events-none"}`}
+          className={`fixed inset-0 z-[80] flex items-center justify-center p-4 transition-all duration-300 ${createOpen ? "pointer-events-auto" : "pointer-events-none"}`}
           style={{ backgroundColor: createOpen ? "rgba(0,0,0,0.5)" : "rgba(0,0,0,0)" }}
           onClick={() => setCreateOpen(false)}
         >
@@ -1148,6 +1293,7 @@ export function SourceProductsPage({
                 onSubmit={() => createMutation.mutate()}
                 submitLabel={t.createLabel}
                 mode="create"
+                groups={groups}
               />
             </div>
           </div>

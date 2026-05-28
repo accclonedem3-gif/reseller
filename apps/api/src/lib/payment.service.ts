@@ -2,10 +2,16 @@ import { BadRequestException, Inject, Injectable, NotFoundException } from "@nes
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { PaymentProvider } from "@prisma/client";
 import {
+  buildVietQrImageUrl,
+  createPay2sPaymentLink,
   createPayOSPaymentLink,
   decryptSecret,
+  fetchWeb2mTransactions,
   getPayOSPaymentLinkStatus,
+  type Pay2sBankInfo,
   type PaymentLinkResult,
+  type PayOSBankInfo,
+  type Web2mTransaction,
 } from "@reseller/shared/server";
 
 import { AppConfigService } from "../config/app-config.service";
@@ -78,11 +84,12 @@ export class PaymentService {
     checkoutUrl: string;
     qrCode: string | null;
     providerPayload: unknown;
+    bankInfo?: PayOSBankInfo;
     manualCrypto?: {
-      provider: "BINANCE" | "OKX" | "USDT_TRC20";
+      provider: "BINANCE" | "OKX" | "USDT_TRC20" | "USDT_SOL";
       uid?: string | null;
       address?: string | null;
-      network?: "TRC20" | null;
+      network?: "TRC20" | "SOLANA" | null;
       usdtAmount: number;
       usdtVndRate: number;
       note: string;
@@ -113,7 +120,8 @@ export class PaymentService {
     if (
       provider === PaymentProvider.BINANCE ||
       provider === PaymentProvider.OKX ||
-      provider === PaymentProvider.USDT_TRC20
+      provider === PaymentProvider.USDT_TRC20 ||
+      provider === PaymentProvider.USDT_SOL
     ) {
       return await this.createManualCryptoPaymentLink(provider, paymentConfig as any, input);
     }
@@ -142,6 +150,64 @@ export class PaymentService {
         checkoutUrl: response.checkoutUrl,
         qrCode: response.qrCode,
         providerPayload: response.providerResponse,
+        bankInfo: response.bankInfo,
+      };
+    }
+
+    if (provider === PaymentProvider.WEB2M) {
+      const creds = this.resolveWeb2mPaymentCredentials(paymentConfig);
+      const orderInfo = input.description.replace(/[^A-Za-z0-9]/g, "").slice(0, 32)
+        || `ORD${input.externalOrderCode.slice(-6)}`;
+      const qrUrl = buildVietQrImageUrl({
+        bankCode: creds.bankCode,
+        accountNumber: creds.accountNumber,
+        amount: Math.round(input.amount),
+        description: orderInfo,
+      });
+      const bankInfo: PayOSBankInfo = {
+        accountNumber: creds.accountNumber,
+        accountName: "",
+        bin: creds.bankCode.toUpperCase(),
+        description: orderInfo,
+      };
+      return {
+        provider,
+        checkoutUrl: qrUrl,
+        qrCode: qrUrl,
+        providerPayload: { web2m: true, orderInfo, amount: input.amount },
+        bankInfo,
+      };
+    }
+
+    if (provider === PaymentProvider.PAY2S) {
+      const credentials = this.resolvePay2sCredentials(paymentConfig);
+      const reconcileToken = this.buildPublicReconcileToken(input.externalOrderCode);
+      const paymentStatusQuery = `orderCode=${encodeURIComponent(input.externalOrderCode)}&rt=${encodeURIComponent(reconcileToken)}`;
+
+      const response = await createPay2sPaymentLink(credentials, {
+        orderCode: input.externalOrderCode,
+        orderId: input.externalOrderCode,
+        amount: Math.round(input.amount),
+        description: input.description.replace(/[^A-Za-z0-9]/g, "").slice(0, 32) || `ORD${input.externalOrderCode.slice(-6)}`,
+        redirectUrl: `${this.config.webPublicUrl}/payments/success?${paymentStatusQuery}`,
+        ipnUrl: `${this.config.appPublicUrl}/api/v1/webhooks/pay2s`,
+      });
+
+      const bankInfo: PayOSBankInfo | undefined = response.bankInfo
+        ? {
+            accountNumber: response.bankInfo.accountNumber,
+            accountName: response.bankInfo.accountName,
+            bin: response.bankInfo.bankId,
+            description: input.description,
+          }
+        : undefined;
+
+      return {
+        provider,
+        checkoutUrl: response.checkoutUrl,
+        qrCode: response.qrCode,
+        providerPayload: response.providerResponse,
+        bankInfo,
       };
     }
 
@@ -163,6 +229,7 @@ export class PaymentService {
       binanceUid: string | null;
       okxUid: string | null;
       usdtTrc20Address: string | null;
+      usdtSolanaAddress?: string | null;
       usdtVndRateOverride?: unknown;
       binancePersonalApiKeyEncrypted?: string | null;
       binancePersonalSecretKeyEncrypted?: string | null;
@@ -173,12 +240,14 @@ export class PaymentService {
       amount: number;
     },
   ) {
-    const cryptoProvider: "BINANCE" | "OKX" | "USDT_TRC20" =
+    const cryptoProvider: "BINANCE" | "OKX" | "USDT_TRC20" | "USDT_SOL" =
       provider === PaymentProvider.BINANCE
         ? "BINANCE"
         : provider === PaymentProvider.OKX
           ? "OKX"
-          : "USDT_TRC20";
+          : provider === PaymentProvider.USDT_SOL
+            ? "USDT_SOL"
+            : "USDT_TRC20";
     const uid = String(
       cryptoProvider === "BINANCE"
         ? paymentConfig?.binanceUid || ""
@@ -189,14 +258,20 @@ export class PaymentService {
     const address = String(
       cryptoProvider === "USDT_TRC20"
         ? paymentConfig?.usdtTrc20Address || ""
-        : "",
+        : cryptoProvider === "USDT_SOL"
+          ? paymentConfig?.usdtSolanaAddress || ""
+          : "",
     ).trim();
 
     if (cryptoProvider === "USDT_TRC20" && !address) {
       throw new BadRequestException("USDT TRC20 address is not configured.");
     }
 
-    if (cryptoProvider !== "USDT_TRC20" && !uid) {
+    if (cryptoProvider === "USDT_SOL" && !address) {
+      throw new BadRequestException("USDT Solana address is not configured.");
+    }
+
+    if (cryptoProvider !== "USDT_TRC20" && cryptoProvider !== "USDT_SOL" && !uid) {
       throw new BadRequestException(
         cryptoProvider === "BINANCE"
           ? "Binance UID is not configured."
@@ -215,7 +290,7 @@ export class PaymentService {
       paymentConfig?.binancePersonalSecretKeyEncrypted
     ) {
       hasPersonalApi = true;
-      
+
       const recentPending = await this.prisma.paymentTransaction.findMany({
         where: {
           provider: PaymentProvider.BINANCE,
@@ -242,19 +317,97 @@ export class PaymentService {
       usdtAmount = targetUsdt;
     }
 
+    // Anti-collision for USDT_TRC20 (auto-detect needs unique amounts to match)
+    if (cryptoProvider === "USDT_TRC20") {
+      const [recentPendingOrders, recentPendingTopups] = await Promise.all([
+        this.prisma.paymentTransaction.findMany({
+          where: {
+            provider: PaymentProvider.USDT_TRC20,
+            status: "PENDING",
+            createdAt: { gte: new Date(Date.now() - 60 * 60 * 1000) },
+            order: { shopId: input.shopId },
+          },
+          select: { rawPayloadJson: true },
+        }),
+        this.prisma.customerWalletTopup.findMany({
+          where: {
+            provider: PaymentProvider.USDT_TRC20,
+            status: "PENDING",
+            shopId: input.shopId,
+            createdAt: { gte: new Date(Date.now() - 60 * 60 * 1000) },
+          },
+          select: { rawPayloadJson: true },
+        }),
+      ]);
+      const usedAmounts = new Set<number>();
+      for (const t of [...recentPendingOrders, ...recentPendingTopups]) {
+        const payload = t.rawPayloadJson as any;
+        const amount = Number(payload?.manualCrypto?.usdtAmount || 0);
+        if (amount > 0) usedAmounts.add(amount);
+      }
+      let offset = 0;
+      let targetUsdt = usdtAmount;
+      while (usedAmounts.has(targetUsdt) && offset < 99) {
+        offset += 0.01;
+        targetUsdt = this.ceilToDecimals(usdtAmount + offset, 2);
+      }
+      usdtAmount = targetUsdt;
+    }
+
+    // Anti-collision for USDT_SOL (auto-detect needs unique amounts to match)
+    if (cryptoProvider === "USDT_SOL") {
+      const [recentPendingOrders, recentPendingTopups] = await Promise.all([
+        this.prisma.paymentTransaction.findMany({
+          where: {
+            provider: PaymentProvider.USDT_SOL,
+            status: "PENDING",
+            createdAt: { gte: new Date(Date.now() - 60 * 60 * 1000) },
+            order: { shopId: input.shopId },
+          },
+          select: { rawPayloadJson: true },
+        }),
+        this.prisma.customerWalletTopup.findMany({
+          where: {
+            provider: PaymentProvider.USDT_SOL,
+            status: "PENDING",
+            shopId: input.shopId,
+            createdAt: { gte: new Date(Date.now() - 60 * 60 * 1000) },
+          },
+          select: { rawPayloadJson: true },
+        }),
+      ]);
+      const usedAmounts = new Set<number>();
+      for (const t of [...recentPendingOrders, ...recentPendingTopups]) {
+        const payload = t.rawPayloadJson as any;
+        const amount = Number(payload?.manualCrypto?.usdtAmount || 0);
+        if (amount > 0) usedAmounts.add(amount);
+      }
+      let offset = 0;
+      let targetUsdt = usdtAmount;
+      while (usedAmounts.has(targetUsdt) && offset < 99) {
+        offset += 0.01;
+        targetUsdt = this.ceilToDecimals(usdtAmount + offset, 2);
+      }
+      usdtAmount = targetUsdt;
+    }
+
     const note = input.externalOrderCode;
     const manualCrypto = {
       provider: cryptoProvider,
       uid: uid || null,
       address: address || null,
-      network: cryptoProvider === "USDT_TRC20" ? ("TRC20" as const) : null,
+      network: cryptoProvider === "USDT_TRC20"
+        ? ("TRC20" as const)
+        : cryptoProvider === "USDT_SOL"
+          ? ("SOLANA" as const)
+          : null,
       usdtAmount,
       usdtVndRate: rate,
       note,
       hasPersonalApi,
     };
     const checkoutUrl = `manual-crypto://${cryptoProvider.toLowerCase()}/${input.externalOrderCode}`;
-    const qrCode = cryptoProvider === "USDT_TRC20"
+    const qrCode = cryptoProvider === "USDT_TRC20" || cryptoProvider === "USDT_SOL"
       ? `qrdata:${address}`
       : null;
 
@@ -338,6 +491,213 @@ export class PaymentService {
     };
   }
 
+  /**
+   * Find a shop's PaymentConfig by matching the Web2m access token (Bearer header value).
+   * Used to authenticate the Web2m webhook callback.
+   */
+  async findShopByWeb2mAccessToken(bearer: string): Promise<{ shopId: string } | null> {
+    if (!bearer) return null;
+    const configs = await this.prisma.paymentConfig.findMany({
+      where: {
+        provider: PaymentProvider.WEB2M,
+        web2mAccessTokenEncrypted: { not: null },
+      },
+      select: { shopId: true, web2mAccessTokenEncrypted: true },
+    });
+    for (const c of configs) {
+      const stored = this.safeDecryptSecret(c.web2mAccessTokenEncrypted);
+      if (stored && stored === bearer) {
+        return { shopId: c.shopId };
+      }
+    }
+    return null;
+  }
+
+  /**
+   * List PENDING Web2m payments for a shop within a time window.
+   */
+  async listPendingWeb2mPayments(shopId: string, since: Date) {
+    const rows = await this.prisma.paymentTransaction.findMany({
+      where: {
+        provider: PaymentProvider.WEB2M,
+        status: "PENDING",
+        createdAt: { gte: since },
+      },
+      select: {
+        externalOrderCode: true,
+        amount: true,
+        order: { select: { orderCode: true } },
+      },
+      take: 200,
+    });
+    return rows.map((r) => ({
+      externalOrderCode: r.externalOrderCode,
+      amount: r.amount,
+      orderCode: (r as any).order?.orderCode ?? null,
+    }));
+  }
+
+  /**
+   * Resolve Web2m credentials needed to render a VietQR for a NEW payment.
+   * Webhook-based flow only needs account + bank code (no IB password / API token).
+   */
+  private resolveWeb2mPaymentCredentials(paymentConfig: {
+    web2mAccountNumber: string | null;
+    web2mBankCode: string | null;
+  } | null) {
+    const accountNumber = paymentConfig?.web2mAccountNumber || process.env.WEB2M_ACCOUNT_NUMBER || "";
+    const bankCode = (paymentConfig?.web2mBankCode || process.env.WEB2M_BANK_CODE || "").toLowerCase();
+    if (!accountNumber || !bankCode) {
+      throw new BadRequestException("Web2m configuration is incomplete (missing bank account or bank code).");
+    }
+    return { accountNumber, bankCode };
+  }
+
+  private resolveWeb2mCredentials(paymentConfig: {
+    web2mAccountNumber: string | null;
+    web2mBankCode: string | null;
+    web2mPasswordEncrypted: string | null;
+    web2mTokenEncrypted: string | null;
+  } | null) {
+    const accountNumber =
+      paymentConfig?.web2mAccountNumber || process.env.WEB2M_ACCOUNT_NUMBER || "";
+    const bankCode =
+      (paymentConfig?.web2mBankCode || process.env.WEB2M_BANK_CODE || "").toLowerCase();
+    const password =
+      this.safeDecryptSecret(paymentConfig?.web2mPasswordEncrypted) ||
+      process.env.WEB2M_PASSWORD ||
+      "";
+    const token =
+      this.safeDecryptSecret(paymentConfig?.web2mTokenEncrypted) ||
+      process.env.WEB2M_TOKEN ||
+      "";
+
+    if (!accountNumber || !bankCode || !password || !token) {
+      throw new BadRequestException("Web2m configuration is incomplete.");
+    }
+
+    return { accountNumber, bankCode, password, token };
+  }
+
+  /**
+   * Poll Web2m bank API for new transactions and match them against pending payments
+   * for the given shop. Called by worker every N seconds.
+   * Returns array of externalOrderCodes that were marked PAID.
+   */
+  async pollWeb2mForShop(shopId: string): Promise<string[]> {
+    const paymentConfig = await this.prisma.paymentConfig.findUnique({ where: { shopId } });
+    if (!paymentConfig || paymentConfig.provider !== PaymentProvider.WEB2M) return [];
+
+    let creds;
+    try {
+      creds = this.resolveWeb2mCredentials(paymentConfig);
+    } catch {
+      return [];
+    }
+
+    let transactions: Web2mTransaction[];
+    try {
+      transactions = await fetchWeb2mTransactions(creds);
+    } catch {
+      return [];
+    }
+    if (transactions.length === 0) return [];
+
+    // Get pending Web2m payments for this shop (last 24 hours)
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const pending = await this.prisma.paymentTransaction.findMany({
+      where: {
+        provider: PaymentProvider.WEB2M,
+        status: "PENDING",
+        createdAt: { gte: since },
+      },
+      select: { externalOrderCode: true, amount: true },
+      take: 200,
+    });
+
+    const matched: string[] = [];
+    for (const txn of transactions) {
+      if (txn.amount <= 0) continue;
+      const normalized = txn.description.toUpperCase().replace(/[^A-Z0-9]/g, "");
+      if (!normalized) continue;
+      for (const p of pending) {
+        const code = String(p.externalOrderCode).toUpperCase().replace(/[^A-Z0-9]/g, "");
+        if (!code) continue;
+        const last6 = code.slice(-6);
+        const codeMatches = normalized.includes(code) || (last6.length === 6 && normalized.includes(last6));
+        if (!codeMatches) continue;
+        const expectedAmount = Number(p.amount);
+        if (Math.abs(expectedAmount - txn.amount) > 1) continue;
+        matched.push(p.externalOrderCode);
+        break; // each transaction matches at most 1 payment
+      }
+    }
+
+    return matched;
+  }
+
+  /**
+   * Find a PENDING Pay2s payment whose externalOrderCode (or its last 6 chars) appears in
+   * the transfer content and whose amount matches. Used for the bank balance webhook
+   * where Pay2s reports any incoming credit to the shop's bank account.
+   */
+  async findPay2sPendingByContent(content: string, amount: number): Promise<string | null> {
+    const normalized = content.toUpperCase().replace(/[^A-Z0-9]/g, "");
+    if (!normalized) return null;
+
+    const pending = await this.prisma.paymentTransaction.findMany({
+      where: {
+        provider: PaymentProvider.PAY2S,
+        status: "PENDING",
+      },
+      select: { externalOrderCode: true, amount: true },
+      orderBy: { createdAt: "desc" },
+      take: 100,
+    });
+
+    for (const p of pending) {
+      const code = String(p.externalOrderCode).toUpperCase().replace(/[^A-Z0-9]/g, "");
+      if (!code) continue;
+      const last6 = code.slice(-6);
+      const codeMatches = normalized.includes(code) || (last6.length === 6 && normalized.includes(last6));
+      if (!codeMatches) continue;
+      const expectedAmount = Number(p.amount);
+      // tolerance ±1 VND for rounding
+      if (Math.abs(expectedAmount - amount) <= 1) {
+        return p.externalOrderCode;
+      }
+    }
+    return null;
+  }
+
+  async getPay2sCredentialsForExternalOrderCode(externalOrderCode: string) {
+    const target = await this.resolvePaymentStatusTarget(externalOrderCode);
+    if (!target || target.provider !== PaymentProvider.PAY2S) {
+      return {
+        partnerCode: process.env.PAY2S_PARTNER_CODE || "",
+        accessKey: process.env.PAY2S_ACCESS_KEY || "",
+        secretKey: process.env.PAY2S_SECRET_KEY || "",
+      };
+    }
+    const paymentConfig = await this.prisma.paymentConfig.findUnique({
+      where: { shopId: target.shopId },
+    });
+    return {
+      partnerCode:
+        this.safeDecryptSecret(paymentConfig?.pay2sPartnerCodeEncrypted) ||
+        process.env.PAY2S_PARTNER_CODE ||
+        "",
+      accessKey:
+        this.safeDecryptSecret(paymentConfig?.pay2sAccessKeyEncrypted) ||
+        process.env.PAY2S_ACCESS_KEY ||
+        "",
+      secretKey:
+        this.safeDecryptSecret(paymentConfig?.pay2sSecretKeyEncrypted) ||
+        process.env.PAY2S_SECRET_KEY ||
+        "",
+    };
+  }
+
   async getPayOSChecksumKeyForExternalOrderCode(externalOrderCode: string) {
     const target = await this.resolvePaymentStatusTarget(externalOrderCode);
 
@@ -356,6 +716,37 @@ export class PaymentService {
       process.env.PAYOS_CHECKSUM_KEY ||
       ""
     );
+  }
+
+  private resolvePay2sCredentials(paymentConfig: {
+    pay2sPartnerCodeEncrypted: string | null;
+    pay2sAccessKeyEncrypted: string | null;
+    pay2sSecretKeyEncrypted: string | null;
+    pay2sBankAccount: string | null;
+    pay2sBankId: string | null;
+  } | null) {
+    const partnerCode =
+      this.safeDecryptSecret(paymentConfig?.pay2sPartnerCodeEncrypted) ||
+      process.env.PAY2S_PARTNER_CODE ||
+      "";
+    const accessKey =
+      this.safeDecryptSecret(paymentConfig?.pay2sAccessKeyEncrypted) ||
+      process.env.PAY2S_ACCESS_KEY ||
+      "";
+    const secretKey =
+      this.safeDecryptSecret(paymentConfig?.pay2sSecretKeyEncrypted) ||
+      process.env.PAY2S_SECRET_KEY ||
+      "";
+    const bankAccount =
+      paymentConfig?.pay2sBankAccount || process.env.PAY2S_BANK_ACCOUNT || "";
+    const bankId =
+      paymentConfig?.pay2sBankId || process.env.PAY2S_BANK_ID || "";
+
+    if (!partnerCode || !accessKey || !secretKey || !bankAccount || !bankId) {
+      throw new BadRequestException("Pay2s configuration is incomplete.");
+    }
+
+    return { partnerCode, accessKey, secretKey, bankAccount, bankId };
   }
 
   private resolvePayOSCredentials(paymentConfig: {

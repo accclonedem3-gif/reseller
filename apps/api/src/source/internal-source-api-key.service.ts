@@ -102,14 +102,29 @@ export class InternalSourceApiKeyService {
     return { success: true, id: key.id };
   }
 
-  async getActiveKeyForLabel(shopId: string, labelContains: string) {
+  async getActiveKeyForTelegramChatId(shopId: string, telegramChatId: string) {
     return this.prisma.internalSourceApiKey.findFirst({
       where: {
         shopId,
         status: InternalSourceApiKeyStatus.ACTIVE,
-        label: { contains: labelContains },
+        telegramChatId,
+        keyEncrypted: { not: null },
       },
-      orderBy: { createdAt: "asc" },
+      orderBy: { createdAt: "desc" },
+    });
+  }
+
+  async revokeAllBotKeysForChatId(shopId: string, telegramChatId: string) {
+    await this.prisma.internalSourceApiKey.updateMany({
+      where: {
+        shopId,
+        telegramChatId,
+        status: InternalSourceApiKeyStatus.ACTIVE,
+      },
+      data: {
+        status: InternalSourceApiKeyStatus.REVOKED,
+        revokedAt: new Date(),
+      },
     });
   }
 
@@ -126,6 +141,22 @@ export class InternalSourceApiKeyService {
       },
       orderBy: { createdAt: "desc" },
     });
+
+    const walletBalanceMap = new Map<string, number>();
+    for (const key of keys) {
+      if (key.connection?.downstreamTelegramChatId) {
+        const wallet = await this.prisma.customerWallet.findFirst({
+          where: {
+            customer: {
+              shopId: key.connection.upstreamShopId,
+              telegramChatId: key.connection.downstreamTelegramChatId,
+            },
+          },
+          select: { balance: true },
+        });
+        walletBalanceMap.set(key.connection.id, wallet ? decimalToNumber(wallet.balance) : 0);
+      }
+    }
 
     return keys.map((key) => ({
       id: key.id,
@@ -145,7 +176,7 @@ export class InternalSourceApiKeyService {
             downstreamSellerName: key.connection.downstreamSeller.displayName,
             downstreamShopId: key.connection.downstreamShopId,
             downstreamShopName: key.connection.downstreamShop.name,
-            balance: decimalToNumber(key.connection.balance),
+            balance: walletBalanceMap.get(key.connection.id) ?? 0,
             currency: key.connection.currency,
           }
         : null,

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { createPortal } from "react-dom";
 import { useQuery } from "@tanstack/react-query";
 import { Search, X, ChevronLeft, ChevronRight } from "lucide-react";
 
@@ -59,8 +60,8 @@ function DetailDrawer({ orderId, onClose }: { orderId: string; onClose: () => vo
     queryFn: () => api.get(`/admin/orders/${orderId}`).then((r) => r.data),
   });
 
-  return (
-    <div className="fixed inset-0 z-50 flex justify-end" onClick={onClose}>
+  return createPortal(
+    <div className="fixed inset-0 z-[80] flex justify-end" style={{ background: "rgba(0,0,0,0.55)" }} onClick={onClose}>
       <div
         className="h-full w-full max-w-lg overflow-y-auto bg-[#121a2e] border-l border-white/8 p-6 shadow-2xl"
         onClick={(e) => e.stopPropagation()}
@@ -144,7 +145,8 @@ function DetailDrawer({ orderId, onClose }: { orderId: string; onClose: () => vo
           </div>
         )}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 

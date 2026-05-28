@@ -18,6 +18,14 @@ class OverviewQueryDto {
   period?: AnalyticsPeriod;
 }
 
+class ChartQueryDto {
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(7)
+  days?: number;
+}
+
 class WarrantyHistoryQueryDto {
   @IsOptional()
   @Type(() => Number)
@@ -87,6 +95,11 @@ export class ProAnalyticsController {
   @Get("top-products")
   getTopProducts(@CurrentUser() user: AuthenticatedUser) {
     return this.service.getTopProducts(user);
+  }
+
+  @Get("chart")
+  getChart(@CurrentUser() user: AuthenticatedUser, @Query() query: ChartQueryDto) {
+    return this.service.getChartData(user, query.days ?? 30);
   }
 
   @Get("warranty-history")

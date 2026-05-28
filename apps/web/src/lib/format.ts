@@ -65,6 +65,8 @@ const enumLabelMap: Record<string, string> = {
   hybrid: "Telegram + Web",
   web_only: "Chỉ Web",
   payos: "PayOS",
+  pay2s: "Pay2s",
+  web2m: "Web2m",
   binance: "Binance",
   okx: "OKX",
   binance_pay: "Binance Pay",

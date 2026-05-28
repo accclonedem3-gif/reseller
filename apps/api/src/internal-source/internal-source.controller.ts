@@ -5,6 +5,7 @@ import {
   Inject,
   Param,
   Post,
+  Put,
   Query,
   Req,
   UseGuards,
@@ -21,6 +22,7 @@ import { SellerTierGuard } from "../common/guards/seller-tier.guard";
 import type { AuthenticatedUser } from "../types";
 
 import {
+  AdjustConnectionBalanceDto,
   ConnectInternalSourceDto,
   CreateInternalSourceApiKeyDto,
   DeliverInternalSourceOrderDto,
@@ -107,6 +109,18 @@ export class InternalSourceController {
     @Param("id") id: string,
   ) {
     return this.internalSourceService.getConnectionLedger(user, id);
+  }
+
+  @Put("source/connections/downstream/:id/adjust")
+  @UseGuards(JwtAuthGuard, SellerTierGuard, SellerCapabilitiesGuard)
+  @RequireSellerTier(SellerTier.ULTRA)
+  @RequireSellerCapabilities("source_internal_manage")
+  adjustConnectionBalance(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param("id") id: string,
+    @Body() body: AdjustConnectionBalanceDto,
+  ) {
+    return this.internalSourceService.manualAdjustConnectionBalance(user, id, body);
   }
 
   @Get("source/orders")

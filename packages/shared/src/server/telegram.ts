@@ -103,6 +103,38 @@ export async function telegramSendPhoto(
   });
 }
 
+export async function telegramSendPhotoBuffer(
+  token: string,
+  chatId: string | number,
+  photoBuffer: Buffer,
+  options?: Record<string, unknown>,
+): Promise<{ message_id: number }> {
+  const form = new FormData();
+  form.append("chat_id", String(chatId));
+  const ab = photoBuffer.buffer.slice(photoBuffer.byteOffset, photoBuffer.byteOffset + photoBuffer.byteLength) as ArrayBuffer;
+  form.append("photo", new Blob([ab], { type: "image/png" }), "qr.png");
+  for (const [key, value] of Object.entries(options || {})) {
+    if (value !== undefined && value !== null) {
+      form.append(key, typeof value === "object" ? JSON.stringify(value) : String(value));
+    }
+  }
+  let response: any;
+  try {
+    response = await axios.post(
+      `https://api.telegram.org/bot${token}/sendPhoto`,
+      form,
+      { timeout: 15000 },
+    );
+  } catch (err: any) {
+    const desc = err?.response?.data?.description || err?.message || String(err);
+    throw new Error(`Telegram API method sendPhoto (buffer) failed: ${desc}`);
+  }
+  if (!response.data?.ok) {
+    throw new Error(`Telegram API method sendPhoto (buffer) failed: ${response.data?.description || "unknown"}`);
+  }
+  return response.data.result as { message_id: number };
+}
+
 export async function telegramEditMessageText(
   token: string,
   chatId: string | number,
@@ -122,10 +154,12 @@ export async function telegramAnswerCallbackQuery(
   token: string,
   callbackQueryId: string,
   text?: string,
+  options?: { showAlert?: boolean },
 ) {
   return callTelegramApi(token, "answerCallbackQuery", {
     callback_query_id: callbackQueryId,
     text,
+    ...(options?.showAlert ? { show_alert: true } : {}),
   });
 }
 

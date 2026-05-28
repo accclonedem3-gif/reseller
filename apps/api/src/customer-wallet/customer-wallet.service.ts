@@ -8,9 +8,11 @@ import {
   CustomerWalletLedgerType,
   DownstreamSourceConnectionStatus,
   InternalSourceLedgerType,
+  PaymentProvider,
   PaymentTransactionStatus,
   Prisma,
 } from "@prisma/client";
+import { WalletPromotionService } from "../wallet/wallet-promotion.service";
 
 import { PrismaService } from "../db/prisma.service";
 import { PaymentService } from "../lib/payment.service";
@@ -22,6 +24,8 @@ import {
 import { ShopsService } from "../shops/shops.service";
 
 const TOPUP_EXPIRY_MS = 5 * 60 * 1000;
+const TOPUP_EXPIRY_TRC20_MS = 60 * 60 * 1000;
+const USDT_VND_RATE = 27000;
 
 type TelegramCustomerProfile = {
   telegramUserId: string;
@@ -40,6 +44,8 @@ export class CustomerWalletService {
     private readonly shopsService: ShopsService,
     @Inject(PaymentService)
     private readonly paymentService: PaymentService,
+    @Inject(WalletPromotionService)
+    private readonly promotionService: WalletPromotionService,
   ) {}
 
   async getWalletSummaryForTelegram(shopId: string, telegramUserId: string) {
@@ -63,7 +69,10 @@ export class CustomerWalletService {
 
     return {
       balance: decimalToNumber(customer?.wallet?.balance),
+      commissionBalance: decimalToNumber(customer?.wallet?.commissionBalance),
       currency: customer?.wallet?.currency || "VND",
+      telegramUsername: customer?.telegramUsername || null,
+      telegramChatId: customer?.telegramChatId || null,
       pendingTopups: (customer?.walletTopups || [])
         .filter((topup) => topup.status === PaymentTransactionStatus.PENDING)
         .map((topup) => this.mapTopup(topup, topup.shopId)),
@@ -75,6 +84,7 @@ export class CustomerWalletService {
     shopId: string;
     amount: number;
     customer: TelegramCustomerProfile;
+    providerOverride?: import("@prisma/client").PaymentProvider;
   }) {
     const amount = Number(input.amount);
 
@@ -96,14 +106,21 @@ export class CustomerWalletService {
     });
 
     const externalOrderCode = generateExternalPaymentCode();
-    const expiresAt = new Date(Date.now() + TOPUP_EXPIRY_MS);
+    const isTrc20 = input.providerOverride === PaymentProvider.USDT_TRC20;
+    const expiresAt = new Date(Date.now() + (isTrc20 ? TOPUP_EXPIRY_TRC20_MS : TOPUP_EXPIRY_MS));
     const payment = await this.paymentService.createPaymentLink({
       shopId: input.shopId,
       externalOrderCode,
       amount,
       description: `NAPVI-${externalOrderCode.slice(-6)}`,
       expiredAt: expiresAt,
+      providerOverride: input.providerOverride,
     });
+
+    // Snapshot active promotion at payment creation time
+    const activePromo = await this.promotionService.getActivePromotion(input.shopId);
+    const bonusPercent = activePromo ? activePromo.bonusPercent : null;
+    const bonusAmount = bonusPercent !== null ? Math.floor(amount * bonusPercent / 100) : null;
 
     const topup = await this.prisma.customerWalletTopup.create({
       data: {
@@ -117,6 +134,8 @@ export class CustomerWalletService {
         qrCode: payment.qrCode,
         status: PaymentTransactionStatus.PENDING,
         expiresAt,
+        bonusPercent: bonusPercent !== null ? toDecimal(bonusPercent) : null,
+        bonusAmount: bonusAmount !== null ? toDecimal(bonusAmount) : null,
         rawPayloadJson: payment.providerPayload as Prisma.InputJsonValue,
       },
     });
@@ -124,6 +143,8 @@ export class CustomerWalletService {
     return {
       topup: this.mapTopup(topup, topup.shopId),
       walletBalance: decimalToNumber(wallet.balance),
+      bankInfo: payment.bankInfo,
+      manualCrypto: payment.manualCrypto,
     };
   }
 
@@ -186,7 +207,16 @@ export class CustomerWalletService {
       );
 
       const balanceBefore = decimalToNumber(currentTopup.wallet.balance);
-      const balanceAfter = balanceBefore + decimalToNumber(currentTopup.amount);
+      const topupAmount = decimalToNumber(currentTopup.amount);
+      const bonusAmount = currentTopup.bonusAmount ? decimalToNumber(currentTopup.bonusAmount) : 0;
+      const balanceAfter = balanceBefore + topupAmount + bonusAmount;
+      const usdtBefore = decimalToNumber(currentTopup.wallet.balanceUsdt);
+      const rawPayloadTyped = rawPayload != null && typeof rawPayload === "object" ? rawPayload as Record<string, unknown> : null;
+      const actualAmountUsdt = typeof rawPayloadTyped?.amountUsdt === "number" && Number.isFinite(rawPayloadTyped.amountUsdt as number)
+        ? rawPayloadTyped.amountUsdt as number
+        : null;
+      const usdtDelta = actualAmountUsdt ?? topupAmount / USDT_VND_RATE;
+      const usdtAfter = usdtBefore + usdtDelta;
 
       const updatedWallet = await tx.customerWallet.update({
         where: {
@@ -194,20 +224,55 @@ export class CustomerWalletService {
         },
         data: {
           balance: toDecimal(balanceAfter),
+          balanceUsdt: toDecimal(usdtAfter),
         },
       });
+
+      const mainBalanceAfter = balanceBefore + topupAmount;
+      await tx.customerWalletLedger.create({
+        data: {
+          customerId: currentTopup.customerId,
+          walletId: currentTopup.walletId,
+          type: CustomerWalletLedgerType.TOPUP,
+          currency: "VND",
+          amount: currentTopup.amount,
+          balanceBefore: toDecimal(balanceBefore),
+          balanceAfter: toDecimal(mainBalanceAfter),
+          referenceType: "customer_wallet_topup",
+          referenceId: currentTopup.id,
+          note: "Top up wallet from Telegram bot",
+        },
+      });
+
+      if (bonusAmount > 0) {
+        await tx.customerWalletLedger.create({
+          data: {
+            customerId: currentTopup.customerId,
+            walletId: currentTopup.walletId,
+            type: CustomerWalletLedgerType.TOPUP_BONUS,
+            currency: "VND",
+            amount: toDecimal(bonusAmount),
+            balanceBefore: toDecimal(mainBalanceAfter),
+            balanceAfter: toDecimal(balanceAfter),
+            referenceType: "customer_wallet_topup",
+            referenceId: currentTopup.id,
+            note: `Bonus ${decimalToNumber(currentTopup.bonusPercent!)}% khuyến mãi nạp ví`,
+          },
+        });
+      }
 
       await tx.customerWalletLedger.create({
         data: {
           customerId: currentTopup.customerId,
           walletId: currentTopup.walletId,
           type: CustomerWalletLedgerType.TOPUP,
-          amount: currentTopup.amount,
-          balanceBefore: toDecimal(balanceBefore),
-          balanceAfter: toDecimal(balanceAfter),
+          currency: "USDT",
+          amount: toDecimal(usdtDelta),
+          balanceBefore: toDecimal(usdtBefore),
+          balanceAfter: toDecimal(usdtAfter),
           referenceType: "customer_wallet_topup",
           referenceId: currentTopup.id,
-          note: "Top up wallet from Telegram bot",
+          note: "Auto-sync USDT from VND topup",
         },
       });
 
@@ -240,30 +305,20 @@ export class CustomerWalletService {
         },
       });
       if (connection) {
-        await this.prisma.$transaction(async (tx) => {
-          await tx.$queryRaw(
-            Prisma.sql`SELECT id FROM downstream_source_connections WHERE id = ${connection.id} FOR UPDATE`,
-          );
-          const current = await tx.downstreamSourceConnection.findUnique({ where: { id: connection.id } });
-          if (!current) return;
-          const balanceBefore = decimalToNumber(current.balance);
-          const balanceAfter = balanceBefore + decimalToNumber(topup.amount);
-          await tx.downstreamSourceConnection.update({
-            where: { id: connection.id },
-            data: { balance: toDecimal(balanceAfter) },
-          });
-          await tx.internalSourceLedger.create({
-            data: {
-              connectionId: connection.id,
-              type: InternalSourceLedgerType.TOPUP,
-              amount: topup.amount,
-              balanceBefore: toDecimal(balanceBefore),
-              balanceAfter: toDecimal(balanceAfter),
-              referenceType: "customer_wallet_topup",
-              referenceId: topup.id,
-              note: "Auto credit from customer wallet top-up in upstream bot",
-            },
-          });
+        // Record in InternalSourceLedger for audit — wallet is already credited above
+        const walletAfter = decimalToNumber(result.balanceAfter ?? 0);
+        const topupAmount = decimalToNumber(topup.amount);
+        this.prisma.internalSourceLedger.create({
+          data: {
+            connectionId: connection.id,
+            type: InternalSourceLedgerType.TOPUP,
+            amount: topup.amount,
+            balanceBefore: toDecimal(walletAfter - topupAmount),
+            balanceAfter: toDecimal(walletAfter),
+            referenceType: "customer_wallet_topup",
+            referenceId: topup.id,
+            note: "Auto credit from customer wallet top-up in upstream bot",
+          },
         }).catch(() => undefined);
       }
     }
@@ -365,6 +420,8 @@ export class CustomerWalletService {
     expiresAt: Date;
     createdAt: Date;
     paidAt: Date | null;
+    bonusPercent?: Prisma.Decimal | null;
+    bonusAmount?: Prisma.Decimal | null;
   }, shopId?: string) {
     return {
       id: topup.id,
@@ -378,6 +435,8 @@ export class CustomerWalletService {
       expiresAt: topup.expiresAt,
       createdAt: topup.createdAt,
       paidAt: topup.paidAt,
+      bonusPercent: topup.bonusPercent ? decimalToNumber(topup.bonusPercent) : null,
+      bonusAmount: topup.bonusAmount ? decimalToNumber(topup.bonusAmount) : null,
     };
   }
 }

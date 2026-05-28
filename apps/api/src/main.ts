@@ -87,7 +87,10 @@ async function bootstrap() {
     }),
   );
   app.setGlobalPrefix(API_PREFIX);
-  app.use("/uploads", (await import("express")).default.static(uploadsDir));
+  app.use("/uploads", (_req: any, res: any, next: any) => {
+    res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
+    next();
+  }, (await import("express")).default.static(uploadsDir));
 
   const appPublicUrl = config.appPublicUrl;
   const swaggerConfig = new DocumentBuilder()

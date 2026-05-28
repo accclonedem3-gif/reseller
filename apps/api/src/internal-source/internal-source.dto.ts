@@ -1,9 +1,12 @@
 import { Transform } from "class-transformer";
 import {
   IsDateString,
+  IsIn,
   IsInt,
+  IsNumber,
   IsOptional,
   IsString,
+  Max,
   Min,
   MinLength,
 } from "class-validator";
@@ -86,3 +89,18 @@ export class FailInternalSourceOrderDto {
   @MinLength(3)
   reason!: string;
 }
+
+export class AdjustConnectionBalanceDto {
+  @IsIn(["topup", "deduct", "set"])
+  action!: "topup" | "deduct" | "set";
+
+  @IsNumber()
+  @Min(0)
+  amount!: number;
+
+  @IsOptional()
+  @Transform(emptyStringToUndefined)
+  @IsString()
+  note?: string;
+}
+

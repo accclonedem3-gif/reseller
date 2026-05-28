@@ -63,6 +63,10 @@ export class CreateSourceProductDto {
   @IsString()
   productFamilyOther?: string;
 
+  @IsOptional()
+  @IsString()
+  productPackage?: string;
+
   @IsEnum(SourceAccountType)
   accountType!: SourceAccountType;
 
@@ -84,6 +88,16 @@ export class CreateSourceProductDto {
 
   @IsEnum(SourceWarrantyPolicy)
   warrantyPolicy!: SourceWarrantyPolicy;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  salePrice?: number;
+
+  @IsOptional()
+  @Transform(trimString)
+  @IsString()
+  displayName?: string;
 
   @IsOptional()
   @IsBoolean()
@@ -148,6 +162,10 @@ export class UpdateSourceProductDto {
   productFamilyOther?: string;
 
   @IsOptional()
+  @IsString()
+  productPackage?: string;
+
+  @IsOptional()
   @IsEnum(SourceAccountType)
   accountType?: SourceAccountType;
 
@@ -172,6 +190,16 @@ export class UpdateSourceProductDto {
   @IsOptional()
   @IsEnum(SourceWarrantyPolicy)
   warrantyPolicy?: SourceWarrantyPolicy;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  salePrice?: number;
+
+  @IsOptional()
+  @Transform(trimString)
+  @IsString()
+  displayName?: string;
 
   @IsOptional()
   @IsBoolean()

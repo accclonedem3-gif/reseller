@@ -7,12 +7,14 @@ import {
   ChartColumn,
   CheckCircle2,
   ChevronLeft,
+  Crown,
   ChevronRight,
   CreditCard,
   LayoutDashboard,
   LogOut,
   Moon,
   Package,
+  Image as ImageIcon,
   Settings2,
   ShieldCheck,
   ShieldPlus,
@@ -24,6 +26,8 @@ import {
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
+import { api } from "@/lib/api";
 
 import { useAuth } from "@/auth/auth-provider";
 import { ReadOnlyNotice } from "@/components/ui/read-only-notice";
@@ -37,42 +41,52 @@ type NavItem = {
   to: string;
   label: string;
   icon: typeof LayoutDashboard;
+  badge?: number;
 };
 
 const NAV_LABELS = {
   vi: {
     overview: "Tổng quan", botConfig: "Cấu hình bot", products: "Sản phẩm",
-    sourceNetwork: "Kết nối nguồn", pendingOrders: "Đơn chờ xử lý",
-    orders: "Đơn hàng", wallet: "Ví seller", warranty: "Bảo hành",
-    proAnalytics: "Phân tích PRO", topBuyers: "Top người mua",
+    sourceNetwork: "Quản lý CTV", pendingOrders: "Đơn chờ xử lý",
+    orders: "Đơn hàng", wallet: "Quản lý người dùng bot", warranty: "Bảo hành",
+    proAnalytics: "Phân tích ULTRA", topBuyers: "Top người mua",
     topReferrers: "Top giới thiệu", revenue: "Doanh thu",
+    customers: "Khách hàng",
     broadcasts: "Thông báo bot", profile: "Hồ sơ",
     adminOverview: "Tổng quan", adminAccounts: "Tài khoản CTV",
     adminOrders: "Đơn hàng HT", adminSettings: "Cài đặt HT",
+    adminIcons: "Thư viện icon",
+    adminTemplate: "Bot Template",
     coreWorkspace: "Vận hành", internalManagement: "Phân tích",
     masterIntelligence: "Master Intelligence",
   },
   en: {
     overview: "Overview", botConfig: "Bot Config", products: "Products",
-    sourceNetwork: "Source Network", pendingOrders: "Pending Orders",
-    orders: "Orders", wallet: "Wallet", warranty: "Warranty",
-    proAnalytics: "PRO Analytics", topBuyers: "Top Buyers",
+    sourceNetwork: "Manage CTV", pendingOrders: "Pending Orders",
+    orders: "Orders", wallet: "Manage Bot Users", warranty: "Warranty",
+    proAnalytics: "ULTRA Analytics", topBuyers: "Top Buyers",
     topReferrers: "Top Referrers", revenue: "Revenue",
+    customers: "Customers",
     broadcasts: "Broadcasts", profile: "Profile",
     adminOverview: "Overview", adminAccounts: "CTV Accounts",
     adminOrders: "System Orders", adminSettings: "System Settings",
+    adminIcons: "Icon Library",
+    adminTemplate: "Bot Template",
     coreWorkspace: "Workspace", internalManagement: "Analytics",
     masterIntelligence: "Master Intelligence",
   },
   th: {
     overview: "ภาพรวม", botConfig: "ตั้งค่าบอท", products: "สินค้า",
-    sourceNetwork: "เครือข่ายแหล่งสินค้า", pendingOrders: "คำสั่งซื้อรอดำเนินการ",
-    orders: "คำสั่งซื้อ", wallet: "กระเป๋าเงิน", warranty: "การรับประกัน",
-    proAnalytics: "วิเคราะห์ PRO", topBuyers: "ผู้ซื้อสูงสุด",
+    sourceNetwork: "จัดการ CTV", pendingOrders: "คำสั่งซื้อรอดำเนินการ",
+    orders: "คำสั่งซื้อ", wallet: "จัดการผู้ใช้บอท", warranty: "การรับประกัน",
+    proAnalytics: "วิเคราะห์ ULTRA", topBuyers: "ผู้ซื้อสูงสุด",
     topReferrers: "ผู้แนะนำสูงสุด", revenue: "รายได้",
+    customers: "ลูกค้า",
     broadcasts: "ประกาศบอท", profile: "โปรไฟล์",
     adminOverview: "ภาพรวม", adminAccounts: "บัญชีผู้ขาย",
     adminOrders: "คำสั่งซื้อระบบ", adminSettings: "ตั้งค่าระบบ",
+    adminIcons: "คลังไอคอน",
+    adminTemplate: "เทมเพลตบอท",
     coreWorkspace: "พื้นที่ทำงาน", internalManagement: "วิเคราะห์",
     masterIntelligence: "Master Intelligence",
   },
@@ -85,10 +99,12 @@ function buildAdminItems(lang: Lang): readonly NavItem[] {
     { to: "/admin/ctv",      label: L.adminAccounts,  icon: ShieldPlus },
     { to: "/admin/orders",   label: L.adminOrders,    icon: ShoppingBag },
     { to: "/admin/settings", label: L.adminSettings,  icon: Settings2 },
+    { to: "/admin/icons",    label: L.adminIcons,     icon: ImageIcon },
+    { to: "/admin/template-bot", label: L.adminTemplate, icon: Settings2 },
   ];
 }
 
-function buildSellerNavGroups(session: ReturnType<typeof useAuth>["session"], lang: Lang) {
+function buildSellerNavGroups(session: ReturnType<typeof useAuth>["session"], lang: Lang, warrantyCount = 0) {
   const L = NAV_LABELS[lang];
   const operations: NavItem[] = [
     { to: "/",           label: L.overview,    icon: LayoutDashboard },
@@ -110,7 +126,7 @@ function buildSellerNavGroups(session: ReturnType<typeof useAuth>["session"], la
   );
 
   if (hasSellerCapability(session, "warranty_manage"))
-    operations.push({ to: "/warranty", label: L.warranty, icon: ShieldCheck });
+    operations.push({ to: "/warranty", label: L.warranty, icon: ShieldCheck, badge: warrantyCount || undefined });
 
   const insights: NavItem[] = [];
 
@@ -118,9 +134,8 @@ function buildSellerNavGroups(session: ReturnType<typeof useAuth>["session"], la
     insights.push({ to: "/pro-analytics", label: L.proAnalytics, icon: BarChart3 });
 
   insights.push(
-    { to: "/reports/top-buyers",    label: L.topBuyers,    icon: Users },
-    { to: "/reports/top-referrers", label: L.topReferrers, icon: Users },
     { to: "/reports/revenue",       label: L.revenue,      icon: ChartColumn },
+    { to: "/affiliate",             label: "🎁 Affiliate",  icon: Sparkles },
     { to: "/broadcasts",            label: L.broadcasts,   icon: Bell },
     { to: "/profile",               label: L.profile,      icon: UserCircle2 },
   );
@@ -204,9 +219,18 @@ export function AppShellPrime({ children }: { children: ReactNode }) {
     (isSuperAdmin ? "Quản trị viên" : session?.user.email) ||
     "Seller";
 
+  const warrantyQuery = useQuery({
+    queryKey: ["warranty-claims-count"],
+    queryFn: async () => (await api.get("/warranty/claims", { params: { status: "PENDING" } })).data,
+    refetchInterval: 60000,
+    retry: false,
+    enabled: !isSuperAdmin,
+  });
+  const warrantyCount = Array.isArray(warrantyQuery.data) ? warrantyQuery.data.length : 0;
+
   const navGroups  = isSuperAdmin
     ? [{ title: NAV_LABELS[lang].masterIntelligence, items: buildAdminItems(lang) }]
-    : buildSellerNavGroups(session, lang);
+    : buildSellerNavGroups(session, lang, warrantyCount);
   const currentItems = navGroups.flatMap((g) => g.items);
   const currentLabel =
     currentItems.find((item) => isItemActive(location.pathname, item.to))?.label ||
@@ -274,7 +298,7 @@ export function AppShellPrime({ children }: { children: ReactNode }) {
                   {group.title}
                 </p>
               )}
-              <div className="space-y-1.5">
+              <div className="space-y-1">
                 {group.items.map((item) => {
                   const active = isItemActive(location.pathname, item.to);
                   return (
@@ -283,19 +307,30 @@ export function AppShellPrime({ children }: { children: ReactNode }) {
                       to={item.to}
                       title={collapsed ? item.label : undefined}
                       className={cn(
-                        "flex items-center gap-4 h-14 rounded-2xl transition-all duration-300 group",
-                        collapsed ? "justify-center px-0" : "px-4",
+                        "relative flex items-center gap-3 h-11 rounded-xl transition-all duration-200 group",
+                        collapsed ? "justify-center px-0" : "px-3",
                       )}
                       style={
                         active
-                          ? { backgroundColor: "var(--s-act)", color: "var(--s-act-tx)" }
+                          ? { backgroundColor: "rgba(249,115,22,0.1)", color: "var(--tx)" }
                           : { color: "var(--tx-m)" }
                       }
                     >
-                      <item.icon className="size-6 min-w-[24px] shrink-0" />
+                      {/* Left orange indicator */}
+                      {active && (
+                        <span className="absolute left-0 top-1/2 -translate-y-1/2 h-5 w-[3px] rounded-r-full bg-orange-500" />
+                      )}
+                      <item.icon
+                        className={cn("size-5 min-w-[20px] shrink-0 transition-colors", active ? "text-orange-500" : "group-hover:text-orange-400")}
+                      />
                       {!collapsed && (
-                        <span className="font-bold text-sm tracking-tight uppercase">
+                        <span className={cn("flex-1 text-[13px] font-bold tracking-tight transition-colors", active ? "text-orange-50" : "group-hover:text-[var(--tx)]")}>
                           {item.label}
+                        </span>
+                      )}
+                      {!collapsed && item.badge != null && item.badge > 0 && (
+                        <span className="flex h-5 min-w-[20px] items-center justify-center rounded-full bg-orange-500 px-1.5 text-[10px] font-black text-white shadow-sm">
+                          {item.badge > 99 ? "99+" : item.badge}
                         </span>
                       )}
                     </NavLink>
@@ -311,14 +346,14 @@ export function AppShellPrime({ children }: { children: ReactNode }) {
           className="p-4 shrink-0"
           style={{ borderTop: "1px solid var(--bd)", backgroundColor: "var(--surface)" }}
         >
-          {!isSuperAdmin && sellerTier !== "pro" && !collapsed && (
+          {!isSuperAdmin && !collapsed && (
             <button
               type="button"
-              onClick={() => navigate("/upgrade")}
+              onClick={() => navigate("/pricing")}
               className="mb-3 flex w-full items-center justify-center gap-2 rounded-2xl bg-orange-500 py-3 text-[10px] font-black uppercase tracking-[0.22em] text-white shadow-lg shadow-orange-500/20 transition hover:brightness-110"
             >
-              <Sparkles className="size-3.5" />
-              Nâng cấp gói
+              <Crown className="size-3.5" />
+              Nâng cấp / Gia hạn
             </button>
           )}
 
