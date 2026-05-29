@@ -57,6 +57,13 @@ async function main() {
     _count: { _all: true },
   });
 
+  const allLedgerGroups = await prisma.customerWalletLedger.groupBy({
+    by: ["type"],
+    where: { customerId },
+    _sum: { amount: true },
+    _count: { _all: true },
+  });
+
   const referredCount = await prisma.customer.count({
     where: { referredById: customerId },
   });
@@ -77,34 +84,46 @@ async function main() {
   console.log(`Orders earned:   ${lifetimeEarned._count._all}`);
   console.log(`Referred count:  ${referredCount}`);
   console.log("");
-  console.log("=== Ledger (event log) ===");
-  console.log(`Commission credited (ledger sum): ${fmt(ledgerCommission._sum.amount || 0)}  (${ledgerCommission._count._all} entries)`);
-  console.log(`Spent on orders:                  ${fmt(spendLedger._sum.amount || 0)}  (${spendLedger._count._all} entries)`);
-  console.log(`Top-up:                           ${fmt(topupLedger._sum.amount || 0)}  (${topupLedger._count._all} entries)`);
+  console.log("=== Ledger (event log — ALL types) ===");
+  let ledgerNetSum = 0;
+  for (const g of allLedgerGroups) {
+    const sum = Number(g._sum.amount || 0);
+    ledgerNetSum += sum;
+    console.log(`  ${g.type.padEnd(25)} ${fmt(sum).padStart(18)}  (${g._count._all} entries)`);
+  }
+  console.log(`  ${"NET (sum of all)".padEnd(25)} ${fmt(ledgerNetSum).padStart(18)}`);
   console.log("");
 
   const lifetimeNum = Number(lifetimeEarned._sum.affiliateCommission || 0);
-  const ledgerNum = Number(ledgerCommission._sum.amount || 0);
-  const balanceNum = Number(customer.wallet?.commissionBalance || 0);
-  const drift = lifetimeNum - ledgerNum;
+  const ledgerCommissionNum = Number(ledgerCommission._sum.amount || 0);
+  const commissionBalNum = Number(customer.wallet?.commissionBalance || 0);
+  const drift = lifetimeNum - ledgerCommissionNum;
 
   console.log("=== Diagnosis ===");
   if (drift > 0) {
-    console.log(`⚠️  Ledger DRIFT: ${fmt(drift)} earned but never written to ledger → backfill needed.`);
-  } else if (drift === 0) {
-    console.log(`✅ Lifetime earned matches ledger sum (${fmt(lifetimeNum)}).`);
-    if (balanceNum < ledgerNum) {
-      const spent = Math.abs(Number(spendLedger._sum.amount || 0));
-      console.log(`ℹ️  Current commission balance (${fmt(balanceNum)}) < ledger sum (${fmt(ledgerNum)}).`);
-      console.log(`   This is normal if customer spent commission (${fmt(spent)} on orders).`);
-      console.log(`   → No bug. The aff panel shows lifetime, wallet shows current.`);
-    } else if (balanceNum === ledgerNum) {
-      console.log(`✅ Wallet balance equals total credited — never spent.`);
-    } else {
-      console.log(`⚠️  Wallet balance (${fmt(balanceNum)}) > ledger credited (${fmt(ledgerNum)}). Something credited outside ledger?`);
-    }
+    console.log(`⚠️  Commission ledger DRIFT: ${fmt(drift)} earned but never written → backfill needed.`);
+  } else if (drift < 0) {
+    console.log(`⚠️  Ledger sum (${fmt(ledgerCommissionNum)}) > Order lifetime sum (${fmt(lifetimeNum)}). Over-credit?`);
   } else {
-    console.log(`⚠️  Ledger sum (${fmt(ledgerNum)}) > Order lifetime sum (${fmt(lifetimeNum)}). Over-credit?`);
+    console.log(`✅ Commission ledger matches lifetime earned (${fmt(lifetimeNum)}).`);
+  }
+
+  // Reconcile commission balance: credited - spent should = current
+  const expectedFromLedger = ledgerCommissionNum + Number(spendLedger._sum.amount || 0); // spend is negative
+  const unaccountedFromCommission = commissionBalNum - expectedFromLedger;
+  console.log("");
+  console.log("  Commission balance reconciliation:");
+  console.log(`    Credited (AFFILIATE_COMMISSION):  +${fmt(ledgerCommissionNum)}`);
+  console.log(`    Spent (SPEND_ORDER, all types):    ${fmt(spendLedger._sum.amount || 0)}`);
+  console.log(`    Expected = credited + spent:       ${fmt(expectedFromLedger)}`);
+  console.log(`    Actual wallet commission_balance:  ${fmt(commissionBalNum)}`);
+  if (Math.abs(unaccountedFromCommission) > 1) {
+    console.log(`    🚨 UNACCOUNTED: ${fmt(unaccountedFromCommission)} difference`);
+    console.log("       Possible causes: another ledger type debits commission,");
+    console.log("       OR a code path updates wallet.commissionBalance without ledger entry.");
+    console.log("       → See 'ALL types' table above to spot extra debit categories.");
+  } else {
+    console.log(`    ✅ Reconciles cleanly.`);
   }
 }
 
