@@ -3,19 +3,23 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
   Check,
+  CheckCircle2,
   ChevronDown,
   CircleDollarSign,
+  Clock,
   Copy,
+  CreditCard,
   Download,
   KeyRound,
   PackageCheck,
   RefreshCw,
   Search,
   ShoppingCart,
+  Truck,
+  XCircle,
 } from "lucide-react";
 
 import {
-  StudioBadge,
   StudioButton,
   StudioCard,
 } from "@/components/studio/studio-ui";
@@ -51,6 +55,7 @@ const T = {
     colPayment: "Thanh toán",
     colDate: "Thời gian",
     colTotal: "Tổng tiền",
+    colSourceLN: "Giá nguồn / LN",
     hideAccount: "Ẩn tài khoản",
     viewAccount: "Xem tài khoản",
     deliveredAccount: "Tài khoản đã giao",
@@ -96,6 +101,7 @@ const T = {
     colPayment: "Payment",
     colDate: "Time",
     colTotal: "Total",
+    colSourceLN: "Cost / Profit",
     hideAccount: "Hide account",
     viewAccount: "View account",
     deliveredAccount: "Delivered account",
@@ -141,6 +147,7 @@ const T = {
     colPayment: "การชำระ",
     colDate: "เวลา",
     colTotal: "รวม",
+    colSourceLN: "ราคาทุน / กำไร",
     hideAccount: "ซ่อนบัญชี",
     viewAccount: "ดูบัญชี",
     deliveredAccount: "บัญชีที่จัดส่ง",
@@ -405,24 +412,27 @@ export function OrdersPageStudio() {
 
         {/* Table */}
         <div className="overflow-x-auto">
-          <table className="w-full text-sm" style={{ minWidth: 860 }}>
+          <table className="w-full text-sm" style={{ minWidth: 980 }}>
             <thead>
               <tr style={{ background: "var(--inp)", borderBottom: "1px solid var(--bd)" }}>
-                {[t.colOrder, t.colProduct, t.colCustomer, t.colDelivery, t.colPayment, t.colDate, t.colTotal].map((col, i) => (
-                  <th
-                    key={col}
-                    className={`px-4 py-3 text-[10px] font-black uppercase tracking-widest whitespace-nowrap ${i === 6 ? "text-right" : "text-left"}`}
-                    style={{ color: "var(--tx-f)" }}
-                  >
-                    {col}
-                  </th>
-                ))}
+                <th className="px-4 py-3 text-left text-[10px] font-black uppercase tracking-widest whitespace-nowrap" style={{ color: "var(--tx-f)" }}>{t.colOrder}</th>
+                <th className="px-4 py-3 text-left text-[10px] font-black uppercase tracking-widest whitespace-nowrap" style={{ color: "var(--tx-f)" }}>{t.colProduct}</th>
+                <th className="px-4 py-3 text-left text-[10px] font-black uppercase tracking-widest whitespace-nowrap" style={{ color: "var(--tx-f)" }}>{t.colCustomer}</th>
+                <th className="px-4 py-3 text-center text-[10px] font-black uppercase tracking-widest whitespace-nowrap" title={t.colDelivery} style={{ color: "var(--tx-f)" }}>
+                  <span className="inline-flex justify-center"><Truck className="h-4 w-4" aria-label={t.colDelivery} /></span>
+                </th>
+                <th className="px-4 py-3 text-center text-[10px] font-black uppercase tracking-widest whitespace-nowrap" title={t.colPayment} style={{ color: "var(--tx-f)" }}>
+                  <span className="inline-flex justify-center"><CreditCard className="h-4 w-4" aria-label={t.colPayment} /></span>
+                </th>
+                <th className="px-4 py-3 text-left text-[10px] font-black uppercase tracking-widest whitespace-nowrap" style={{ color: "var(--tx-f)" }}>{t.colDate}</th>
+                <th className="px-4 py-3 text-right text-[10px] font-black uppercase tracking-widest whitespace-nowrap" style={{ color: "var(--tx-f)" }}>{t.colTotal}</th>
+                <th className="px-4 py-3 text-right text-[10px] font-black uppercase tracking-widest whitespace-nowrap" style={{ color: "var(--tx-f)" }}>{t.colSourceLN}</th>
               </tr>
             </thead>
             <tbody>
               {pageItems.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="px-4 py-12 text-center text-[13px]" style={{ color: "var(--tx-f)" }}>
+                  <td colSpan={8} className="px-4 py-12 text-center text-[13px]" style={{ color: "var(--tx-f)" }}>
                     Không có đơn hàng nào
                   </td>
                 </tr>
@@ -432,11 +442,6 @@ export function OrdersPageStudio() {
                 const { prefix, suffix } = shortOrderCode(order.orderCode || "");
                 const status = String(order.status || "").toLowerCase();
                 const payStatus = String(order.paymentStatus || "").toLowerCase();
-
-                const deliveryTone = status === "delivered" ? "success" as const
-                  : ["failed", "refunded"].includes(status) ? "danger" as const
-                  : status === "paid_waiting_stock" ? "warning" as const
-                  : "neutral" as const;
 
                 return (
                   <>
@@ -481,15 +486,31 @@ export function OrdersPageStudio() {
                       </td>
 
                       {/* Giao hàng */}
-                      <td className="px-4 py-3 align-top">
-                        <StudioBadge tone={deliveryTone}>{formatStatusLabel(order.status)}</StudioBadge>
+                      <td className="px-4 py-3 align-top text-center">
+                        <span title={formatStatusLabel(order.status)} className="inline-flex">
+                          {status === "delivered" ? (
+                            <CheckCircle2 className="h-5 w-5" style={{ color: "rgb(52,211,153)" }} />
+                          ) : status === "failed" || status === "refunded" ? (
+                            <XCircle className="h-5 w-5" style={{ color: "rgb(248,113,113)" }} />
+                          ) : status === "paid_waiting_stock" ? (
+                            <AlertTriangle className="h-5 w-5" style={{ color: "rgb(251,191,36)" }} />
+                          ) : (
+                            <Clock className="h-5 w-5" style={{ color: "var(--tx-f)" }} />
+                          )}
+                        </span>
                       </td>
 
                       {/* Thanh toán */}
-                      <td className="px-4 py-3 align-top">
-                        <StudioBadge tone={payStatus === "paid" ? "success" : "neutral"}>
-                          {formatStatusLabel(order.paymentStatus)}
-                        </StudioBadge>
+                      <td className="px-4 py-3 align-top text-center">
+                        <span title={formatStatusLabel(order.paymentStatus)} className="inline-flex">
+                          {payStatus === "paid" ? (
+                            <CheckCircle2 className="h-5 w-5" style={{ color: "rgb(52,211,153)" }} />
+                          ) : payStatus === "failed" || payStatus === "refunded" ? (
+                            <XCircle className="h-5 w-5" style={{ color: "rgb(248,113,113)" }} />
+                          ) : (
+                            <Clock className="h-5 w-5" style={{ color: "rgb(251,191,36)" }} />
+                          )}
+                        </span>
                         {["binance", "okx", "usdt_trc20"].includes(String(order.paymentTransaction?.provider || "").toLowerCase()) &&
                           payStatus !== "paid" && (
                           <div className="mt-2 space-y-1.5">
@@ -525,11 +546,35 @@ export function OrdersPageStudio() {
                           {formatCurrency(order.totalSaleAmount)}
                         </span>
                       </td>
+
+                      {/* Giá nguồn / LN */}
+                      <td className="px-4 py-3 text-right align-top">
+                        {(() => {
+                          const sourceAmount = Number(order.totalSourceAmount) || 0;
+                          if (sourceAmount <= 0) {
+                            return <span className="text-[13px]" style={{ color: "var(--tx-f)" }}>—</span>;
+                          }
+                          const profit = Number(order.totalSaleAmount || 0) - sourceAmount;
+                          return (
+                            <div className="flex flex-col items-end gap-0.5">
+                              <span className="text-[13px] font-semibold tabular-nums" style={{ color: "var(--tx)" }}>
+                                {formatCurrency(sourceAmount)}
+                              </span>
+                              <span
+                                className="text-[11px] font-bold tabular-nums"
+                                style={{ color: profit >= 0 ? "rgb(52,211,153)" : "rgb(248,113,113)" }}
+                              >
+                                {profit >= 0 ? "+" : ""}{formatCurrency(profit)}
+                              </span>
+                            </div>
+                          );
+                        })()}
+                      </td>
                     </tr>
 
                     {hasAccount && isExpanded && (
                       <tr key={`${order.id}-expand`}>
-                        <td colSpan={7} className="px-4 pb-3 pt-0">
+                        <td colSpan={8} className="px-4 pb-3 pt-0">
                           <div className="rounded-2xl p-4" style={{ background: "var(--inp)", border: "1px solid var(--bd)" }}>
                             <div className="mb-3 flex items-center justify-between gap-3">
                               <div className="flex items-center gap-2">
