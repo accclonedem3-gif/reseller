@@ -2051,9 +2051,15 @@ export class TelegramBotService {
       return;
     }
 
-    await this.sendText(token, customer.telegramChatId, paymentLines.join("\n"), actions, {
+    const sentResult = await this.sendText(token, customer.telegramChatId, paymentLines.join("\n"), actions, {
       inline_keyboard: inlineKeyboard,
-    }, "HTML");
+    }, "HTML") as { message_id?: number } | undefined;
+    if (sentResult?.message_id && created.order.paymentTransaction?.externalOrderCode) {
+      await this.prisma.paymentTransaction.update({
+        where: { externalOrderCode: created.order.paymentTransaction.externalOrderCode },
+        data: { qrTelegramMessageId: sentResult.message_id },
+      }).catch(() => undefined);
+    }
   }
 
   private async handleBuyWithWallet(
