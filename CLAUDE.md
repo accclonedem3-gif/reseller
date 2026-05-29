@@ -7,15 +7,15 @@
 ## Project Overview
 
 Reseller platform — Telegram bot + web dashboard + worker.
-Monorepo with 3 apps: `apps/api` (NestJS), `apps/web` (Next.js), `apps/worker`.
+Monorepo with 3 apps: `apps/api` (NestJS), `apps/web` (Vite + React), `apps/worker`.
 Shared code in `packages/shared`.
 
 ## Stack
 
 - **Backend:** NestJS, Prisma, PostgreSQL
-- **Frontend:** Next.js, React Hook Form, TanStack Query, Tailwind, Recharts
-- **Bot:** Telegraf (Telegram)
-- **Worker:** background jobs (separate app)
+- **Frontend:** Vite + React, React Hook Form, TanStack Query, Tailwind, Recharts
+- **Bot:** Custom Telegram dispatcher in `apps/api/src/lib/telegram-bot.service.v2.ts` (no Telegraf)
+- **Worker:** BullMQ background jobs (separate app)
 
 ---
 
@@ -56,47 +56,36 @@ Shared code in `packages/shared`.
 
 ---
 
-## Phase Tracking
+## Phase Tracking — ALL DONE
 
-- [X] **Phase 1** — Tier foundation (schema done, need: backend guards, frontend gating)
-- [X] **Phase 2** — PRO source core data model (schema done, need: service layer + DTOs)
-- [ ] **Phase 3** — PRO product management UI/API
-- [ ] **Phase 4** — Internal source API for downstream PRO
-- [ ] **Phase 5** — Connect PRO to internal ULTRA source
-- [X] **Phase 6** — Warranty core (schema done, need: service logic + API endpoints)
-- [ ] **Phase 7** — Warranty bot flow
-- [ ] **Phase 8** — Storefront readiness
+- [X] **Phase 1** — Tier foundation (guards + `auth/me` + frontend gating)
+- [X] **Phase 2** — PRO source core data model (service layer + DTOs)
+- [X] **Phase 3** — PRO product management (API + UI page `source-products-page-pro.tsx`)
+- [X] **Phase 4** — Internal source public API (`/internal-source/v1/*` + auth middleware + rate limit 60/min)
+- [X] **Phase 5** — Connect PRO ↔ ULTRA (`SellerSourceConnectionService` + bot topup flow)
+- [X] **Phase 6** — Warranty core (full route logic in `WarrantyService`)
+- [X] **Phase 7** — Warranty bot UI (account selection, pending sessions in Redis)
 
 ---
 
-## What Needs Building Next
+## Known Tech Debt — Fix when touching these areas
 
-### Phase 1 backend (schema exists, code missing)
+### 🔥 High priority
 
-- `SellerTierGuard` or capability check service — gate write actions for `FREE` tier
-- `auth/me` response must include `seller.tier`
-- Frontend: read-only state when tier is `FREE`
+- **`apps/worker/src/main.ts` has `// @ts-nocheck` at line 1** + file is pre-transpiled JS committed as TS source. 3200 lines of business-critical code (queue, scheduler, payment auto-detect, wallet debit) have NO type check. Refactor into typed modules incrementally — do NOT mass-rewrite (see lessons in `[[gemini-refactor-failure]]`).
+- **Hardcoded USDT/VND = 27000** at 3 locations: `apps/worker/src/main.ts:1091`, `apps/api/src/orders/orders.service.ts:237` and `:1027`. Diverges from dynamic `paymentConfig.usdtVndRateOverride` used in bot display. Centralize into one helper.
 
-### Phase 2 service layer (schema exists, code missing)
+### ⚠️ Medium
 
-- `InternalSourceApiKey` CRUD service (PRO only)
-- `DownstreamSourceConnection` management service
-- `InternalSourceLedger` credit/debit service (use DB transaction, never direct update)
-- DTOs with validation for controlled enums (productFamily, accountType, etc.)
+- **Fire-and-forget audit ledger** at `apps/api/src/customer-wallet/customer-wallet.service.ts:311` — `prisma.internalSourceLedger.create(...).catch(...)` lacks `await`. Audit row may not flush before request returns.
+- **`pollWeb2mShops` dead code with decrypt bug** at `apps/worker/src/main.ts:2395` — uses `ENCRYPTION_KEY` env var (should be `APP_ENCRYPTION_KEY`). Currently unused (bootstrap doesn't call it) — remove or fix.
+- **API key hashing inconsistency**: `InternalSourceApiKeyService.issueKey` uses bcrypt; `internal-source.service.ts:148` `createApiKey` uses sha256. `resolveApiKey` handles both, but `validateKey` (used in middleware) only handles bcrypt. Unify.
 
-### Phase 3 (not started)
+### ℹ️ Low
 
-- Source product CRUD endpoints (PRO only)
-- PRO dashboard UI for source product management
-- Combobox/dropdown for all controlled fields
-- Show free-text input only when `OTHER` is selected
-
-### Phase 4 (not started)
-
-- Internal source API endpoints (catalog, balance, create order, order status)
-- API key authentication middleware
-- Rate limiting per key
-- Access log writes to `InternalSourceAccessLog`
+- Dead service: `apps/api/src/storefront/storefront.service.ts` — 3 methods throw "TODO Phase 8+", not wired into `app.module.ts`. Storefront scope is dropped; safe to delete.
+- Fallback `"change-me-32-byte-key"` for `APP_ENCRYPTION_KEY` exists across worker files. Production validator catches it, but dev mode silently uses mock key.
+- Routing-by-string in `wallet.service.ts:201-251` — `note.startsWith("UPGRADE_TIER:" / "TIER_SUB:")`. Fragile when adding new prefixes.
 
 ---
 
@@ -158,10 +147,11 @@ Order (1) ──── (1?) InternalSourceOrder
 
 ## Before Writing Any Code
 
-1. Check this file for current phase status
-2. Check if the schema already has what you need — it probably does for phases 1, 2, 6
-3. Prefer additive changes — do not rename existing fields or break current seller/bot/payment flows
-4. All balance updates (seller wallet, customer wallet, internal source ledger) must use DB transactions with before/after balance recorded in the ledger table
+1. All 7 phases are DONE — the system is production-running. Treat changes as maintenance/feature additions on top of a live codebase, not greenfield.
+2. Check schema first — it's mature, almost certainly has the fields you need; do NOT add new fields/migrations without reading `prisma/schema.prisma` first.
+3. Prefer additive changes — do not rename existing fields or break current seller/bot/payment flows.
+4. All balance updates (seller wallet, customer wallet, internal source ledger) must use DB transactions with before/after balance recorded in the ledger table.
+5. Never mass-rewrite `apps/worker/src/main.ts` — it has `@ts-nocheck` AND 3200 lines of live business logic. Refactor incrementally with type-checked modules, build between each step. (A previous AI agent "refactored" by deleting 95% of the logic and pretending to keep it — see Known Tech Debt above.)
 
 
 **##** Communication Style

@@ -291,7 +291,11 @@ export class TelegramBotService {
     private readonly connectionTopupService: SellerSourceConnectionService,
     @Inject(GramJsService)
     private readonly gramJsService: GramJsService,
-  ) {}
+  ) {
+    this.redis = new IORedis(this.config.redisUrl, {
+      maxRetriesPerRequest: null,
+    });
+  }
 
   private _globalDefaultCust: { data: Record<string, unknown> | null; ts: number } | null = null;
 
@@ -2319,7 +2323,7 @@ export class TelegramBotService {
       return;
     }
 
-    const selection = this.getPendingPaymentSelection(shopId, telegramUserId);
+    const selection = await this.getPendingPaymentSelection(shopId, telegramUserId);
     const provider = this.normalizePaymentOption(rawProvider);
 
     if (!selection || !provider) {
@@ -3231,7 +3235,7 @@ export class TelegramBotService {
   ) {
     const telegramUserId = String(message.from?.id || "");
     const language = await this.getCustomerLanguage(shopId, telegramUserId);
-    const pending = this.getPendingWarrantyClaimSubmission(shopId, telegramUserId);
+    const pending = await this.getPendingWarrantyClaimSubmission(shopId, telegramUserId);
 
     if (!pending) {
       return false;
@@ -3400,7 +3404,7 @@ export class TelegramBotService {
   ) {
     const telegramUserId = String(message.from?.id || "");
     const language = await this.getCustomerLanguage(shopId, telegramUserId);
-    const pending = this.getPendingWarrantyAccountSelection(shopId, telegramUserId);
+    const pending = await this.getPendingWarrantyAccountSelection(shopId, telegramUserId);
 
     if (!pending) {
       return false;
@@ -3515,7 +3519,7 @@ export class TelegramBotService {
   ) {
     const telegramUserId = String(message.from?.id || "");
     const language = await this.getCustomerLanguage(shopId, telegramUserId);
-    let pending = this.getPendingTxHashSubmission(shopId, telegramUserId);
+    let pending = await this.getPendingTxHashSubmission(shopId, telegramUserId);
 
     if (!pending) {
       // Fallback: detect tx hash format and try to match a recent pending USDT order
@@ -3754,7 +3758,7 @@ export class TelegramBotService {
   ) {
     const telegramUserId = String(message.from?.id || "");
     const language = await this.getCustomerLanguage(shopId, telegramUserId);
-    const selection = this.getPendingQuantitySelection(shopId, telegramUserId);
+    const selection = await this.getPendingQuantitySelection(shopId, telegramUserId);
 
     if (!selection) {
       return false;
@@ -3870,7 +3874,7 @@ export class TelegramBotService {
   ) {
     const telegramUserId = String(message.from?.id || "");
     const language = await this.getCustomerLanguage(shopId, telegramUserId);
-    const pending = this.getPendingWalletTopup(shopId, telegramUserId);
+    const pending = await this.getPendingWalletTopup(shopId, telegramUserId);
 
     if (!pending) {
       return false;
@@ -4632,7 +4636,7 @@ export class TelegramBotService {
     return `${shopId}:${telegramUserId}`;
   }
 
-  private getPendingWalletTopup(shopId: string, telegramUserId: string) {
+  private async getPendingWalletTopup(shopId: string, telegramUserId: string) {
     const key = this.getPendingQuantityKey(shopId, telegramUserId);
     const pending = await this.getPendingSession<PendingWalletTopupSelection>('pendingWalletTopups', key);
 
@@ -4648,7 +4652,7 @@ export class TelegramBotService {
     return pending;
   }
 
-  private getPendingQuantitySelection(shopId: string, telegramUserId: string) {
+  private async getPendingQuantitySelection(shopId: string, telegramUserId: string) {
     const key = this.getPendingQuantityKey(shopId, telegramUserId);
     const selection = await this.getPendingSession<PendingQuantitySelection>('pendingQuantitySelections', key);
 
@@ -4664,7 +4668,7 @@ export class TelegramBotService {
     return selection;
   }
 
-  private getPendingPaymentSelection(shopId: string, telegramUserId: string) {
+  private async getPendingPaymentSelection(shopId: string, telegramUserId: string) {
     const key = this.getPendingQuantityKey(shopId, telegramUserId);
     const selection = await this.getPendingSession<PendingPaymentSelection>('pendingPaymentSelections', key);
 
@@ -4680,7 +4684,7 @@ export class TelegramBotService {
     return selection;
   }
 
-  private getPendingTxHashSubmission(shopId: string, telegramUserId: string) {
+  private async getPendingTxHashSubmission(shopId: string, telegramUserId: string) {
     const key = this.getPendingQuantityKey(shopId, telegramUserId);
     const pending = await this.getPendingSession<PendingTxHashSubmission>('pendingTxHashSubmissions', key);
 
@@ -4696,7 +4700,7 @@ export class TelegramBotService {
     return pending;
   }
 
-  private getPendingWarrantyClaimSubmission(shopId: string, telegramUserId: string) {
+  private async getPendingWarrantyClaimSubmission(shopId: string, telegramUserId: string) {
     const key = this.getPendingQuantityKey(shopId, telegramUserId);
     const pending = await this.getPendingSession<PendingWarrantyClaimSubmission>('pendingWarrantyClaimSubmissions', key);
 
@@ -4759,7 +4763,7 @@ export class TelegramBotService {
     await this.delPendingSession("pendingWarrantyIssueDescriptions", this.getPendingQuantityKey(shopId, telegramUserId));
   }
 
-  private getPendingWarrantyAccountSelection(shopId: string, telegramUserId: string) {
+  private async getPendingWarrantyAccountSelection(shopId: string, telegramUserId: string) {
     const key = this.getPendingQuantityKey(shopId, telegramUserId);
     const pending = await this.getPendingSession<PendingWarrantyAccountSelection>('pendingWarrantyAccountSelections', key);
 
