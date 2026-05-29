@@ -1140,8 +1140,11 @@ async function creditAffiliateCommission(orderId) {
     if (commission <= 0) return;
     await prisma.$transaction(async (tx) => {
         await tx.order.update({ where: { id: orderId }, data: { affiliateCommission: commission, affiliateCustomerId: order.customer.referredById } });
-        const wallet = await tx.customerWallet.findUnique({ where: { customerId: order.customer.referredById } });
-        if (!wallet) return;
+        const wallet = await tx.customerWallet.upsert({
+            where: { customerId: order.customer.referredById },
+            update: {},
+            create: { customerId: order.customer.referredById },
+        });
         await tx.$queryRaw`SELECT id FROM customer_wallets WHERE id = ${wallet.id} FOR UPDATE`;
         const fresh = await tx.customerWallet.findUnique({ where: { id: wallet.id } });
         if (!fresh) return;
