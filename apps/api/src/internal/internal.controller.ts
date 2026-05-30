@@ -253,8 +253,9 @@ export class InternalController {
     if (token !== this.config.internalApiToken) {
       throw new ForbiddenException("Invalid internal token.");
     }
+    const adminUser = await this.getInternalAdminUser();
     return this.walletService.adminApproveWithdrawRequest(
-      { id: "internal-bot", email: "bot@internal", role: "SUPER_ADMIN" } as any,
+      adminUser,
       withdrawId,
       { note: body?.note || "Duyệt qua bot Trâm Anh" },
     );
@@ -273,11 +274,29 @@ export class InternalController {
     if (token !== this.config.internalApiToken) {
       throw new ForbiddenException("Invalid internal token.");
     }
+    const adminUser = await this.getInternalAdminUser();
     return this.walletService.adminRejectWithdrawRequest(
-      { id: "internal-bot", email: "bot@internal", role: "SUPER_ADMIN" } as any,
+      adminUser,
       withdrawId,
       body?.reason || "Từ chối qua bot Trâm Anh",
     );
+  }
+
+  /**
+   * Find a real SUPER_ADMIN User to attribute internal-bot actions to.
+   * Necessary because WithdrawRequest.reviewedById is an FK to users.id —
+   * we can't make up a fake id, it must point at a real row.
+   */
+  private async getInternalAdminUser() {
+    const admin = await this.prisma.user.findFirst({
+      where: { role: "SUPER_ADMIN", status: "ACTIVE" },
+      orderBy: { createdAt: "asc" },
+      select: { id: true, email: true, role: true },
+    });
+    if (!admin) {
+      throw new ForbiddenException("No SUPER_ADMIN user found in the system.");
+    }
+    return { id: admin.id, email: admin.email, role: admin.role } as any;
   }
 
   private assertValidInternalRequest(
