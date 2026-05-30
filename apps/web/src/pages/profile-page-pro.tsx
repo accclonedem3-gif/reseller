@@ -659,8 +659,8 @@ export function ProfilePage() {
     e.preventDefault();
     setWithdrawError(null);
     const amount = Number(withdrawForm.amount);
-    if (!amount || amount < 1000) {
-      setWithdrawError("Số tiền tối thiểu 1.000đ.");
+    if (!amount || amount < 200000) {
+      setWithdrawError("Số tiền tối thiểu 200.000đ.");
       return;
     }
     if (sellerWallet && amount > sellerWallet.withdrawableBalance) {
@@ -1402,9 +1402,10 @@ export function ProfilePage() {
             <form onSubmit={handleWithdrawSubmit} className="space-y-3 px-6 py-5">
               <div>
                 <p className="mb-1.5 text-[11px] font-black uppercase tracking-widest" style={{ color: "var(--tx-f)" }}>Số tiền (đ)</p>
-                <input type="number" inputMode="numeric" min={1000} value={withdrawForm.amount}
+                <input type="number" inputMode="numeric" min={200000} step={1000} value={withdrawForm.amount}
                   onChange={(e) => setWithdrawForm((f) => ({ ...f, amount: e.target.value }))}
-                  placeholder="100000" className={inputCls} style={inputStyle} />
+                  placeholder="200000" className={inputCls} style={inputStyle} />
+                <p className="mt-1 text-[10px]" style={{ color: "var(--tx-f)" }}>Tối thiểu: 200.000đ</p>
               </div>
               <div className="grid gap-3 sm:grid-cols-2">
                 <div>

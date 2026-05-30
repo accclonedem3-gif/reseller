@@ -16,7 +16,7 @@ export class CreateDepositRequestDto {
 
 export class CreateWithdrawRequestDto {
   @IsNumber()
-  @Min(1000)
+  @Min(200000)
   amount!: number;
 
   @IsString()

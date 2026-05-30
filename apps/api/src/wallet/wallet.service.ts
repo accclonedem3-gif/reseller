@@ -464,8 +464,8 @@ export class WalletService {
     const shop = await this.shopsService.getSellerShop(user.id);
     const amount = Number(dto.amount);
 
-    if (!Number.isInteger(amount) || amount < 1000) {
-      throw new BadRequestException("Withdraw amount must be at least 1,000 VND.");
+    if (!Number.isInteger(amount) || amount < 200000) {
+      throw new BadRequestException("Số tiền rút tối thiểu là 200.000đ.");
     }
 
     return this.prisma.$transaction(async (tx) => {
