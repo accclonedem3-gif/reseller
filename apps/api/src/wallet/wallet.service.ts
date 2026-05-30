@@ -564,12 +564,18 @@ export class WalletService {
         ``,
         `🏦 ${esc(dto.bankName)}`,
         `📋 <code>${esc(dto.bankAccountNumber)}</code>`,
-        `👤 ${esc(dto.bankAccountName)}`,
+        `👤 <code>${esc(dto.bankAccountName)}</code>`,
+        `💰 <code>${amount.toLocaleString("vi-VN")}</code>`,
         dto.note ? `📝 ${esc(dto.note)}` : "",
-        ``,
-        `Duyệt tại: ${this.config.webPublicUrl}/admin/withdraws`,
       ].filter(Boolean).join("\n");
-      this.adminNotify.send(text, { level: "info", service: "Withdraw" }).catch(() => undefined);
+      this.adminNotify.send(text, {
+        level: "info",
+        service: "Withdraw",
+        actions: [
+          { text: "✅ Duyệt", callback_data: `wd_approve:${created.id}` },
+          { text: "❌ Từ chối", callback_data: `wd_reject:${created.id}` },
+        ],
+      }).catch(() => undefined);
 
       return created;
     });

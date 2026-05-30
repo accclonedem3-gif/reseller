@@ -17,6 +17,7 @@ import { AppConfigService } from "../config/app-config.service";
 import { PrismaService } from "../db/prisma.service";
 import { TelegramBotService } from "../lib/telegram-bot.service.v2";
 import { toDecimal } from "../lib/utils";
+import { WalletService } from "../wallet/wallet.service";
 
 @Controller("internal")
 export class InternalController {
@@ -29,6 +30,8 @@ export class InternalController {
     private readonly prisma: PrismaService,
     @Inject(TelegramBotService)
     private readonly telegramBotService: TelegramBotService,
+    @Inject(WalletService)
+    private readonly walletService: WalletService,
   ) {}
 
   @Post("telegram/process/:shopId")
@@ -234,6 +237,47 @@ export class InternalController {
       productUpdates,
       messagesSent,
     };
+  }
+
+  /**
+   * Approve a withdraw request via the admin alert bot (Trâm Anh).
+   * Authentication is via the x-internal-token header — no JWT needed.
+   * The bot calls this when admin taps the [✓ Duyệt] inline button.
+   */
+  @Post("withdraw-requests/:id/approve")
+  async approveWithdrawFromBot(
+    @Param("id") withdrawId: string,
+    @Headers("x-internal-token") token: string,
+    @Body() body: { note?: string },
+  ) {
+    if (token !== this.config.internalApiToken) {
+      throw new ForbiddenException("Invalid internal token.");
+    }
+    return this.walletService.adminApproveWithdrawRequest(
+      { id: "internal-bot", email: "bot@internal", role: "SUPER_ADMIN" } as any,
+      withdrawId,
+      { note: body?.note || "Duyệt qua bot Trâm Anh" },
+    );
+  }
+
+  /**
+   * Reject a withdraw request via the admin alert bot.
+   * Same auth model as approve.
+   */
+  @Post("withdraw-requests/:id/reject")
+  async rejectWithdrawFromBot(
+    @Param("id") withdrawId: string,
+    @Headers("x-internal-token") token: string,
+    @Body() body: { reason: string },
+  ) {
+    if (token !== this.config.internalApiToken) {
+      throw new ForbiddenException("Invalid internal token.");
+    }
+    return this.walletService.adminRejectWithdrawRequest(
+      { id: "internal-bot", email: "bot@internal", role: "SUPER_ADMIN" } as any,
+      withdrawId,
+      body?.reason || "Từ chối qua bot Trâm Anh",
+    );
   }
 
   private assertValidInternalRequest(

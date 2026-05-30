@@ -31,6 +31,8 @@ export class AdminNotifyService {
       disableNotification?: boolean;
       level?: "info" | "warning" | "error";
       service?: string;
+      /** Inline keyboard buttons for the bot to render. */
+      actions?: Array<{ text: string; callback_data: string }>;
     },
   ) {
     const webhookUrl = this.config.adminAlertWebhookUrl;
@@ -40,18 +42,23 @@ export class AdminNotifyService {
     return this.sendViaTelegramDirect(text, options);
   }
 
-  /** Send to an external alert bot (POST /alert with {level, service, message}). */
+  /** Send to an external alert bot (POST /alert with {level, service, message, actions}). */
   private async sendViaWebhook(
     url: string,
     text: string,
-    options?: { level?: "info" | "warning" | "error"; service?: string },
+    options?: {
+      level?: "info" | "warning" | "error";
+      service?: string;
+      actions?: Array<{ text: string; callback_data: string }>;
+    },
   ) {
     try {
-      // The alert bot uses Markdown — strip HTML-only tags from the body.
+      // The alert bot uses Markdown — convert HTML tags to Markdown equivalents.
+      // <code>X</code> → `X` (tap-to-copy in Telegram); <b>X</b> → *X*; strip others.
       const plainText = text
-        .replace(/<\/?b>/g, "*")
-        .replace(/<\/?i>/g, "_")
-        .replace(/<\/?code>/g, "`")
+        .replace(/<b>(.*?)<\/b>/g, "*$1*")
+        .replace(/<i>(.*?)<\/i>/g, "_$1_")
+        .replace(/<code>(.*?)<\/code>/g, "`$1`")
         .replace(/<[^>]+>/g, "");
       const response = await fetch(url, {
         method: "POST",
@@ -60,6 +67,7 @@ export class AdminNotifyService {
           level: options?.level ?? "info",
           service: options?.service ?? "Reseller Platform",
           message: plainText,
+          actions: options?.actions,
         }),
       });
       if (!response.ok) {
