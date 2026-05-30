@@ -7,6 +7,17 @@
 
 set -euo pipefail
 
+# Single-instance lock — refuse to run if another backup is already in progress.
+# Without this, two overlapping cron triggers (or a manual run during cron)
+# duplicate uploads to Telegram.
+LOCKFILE="/tmp/altivox-backup.lock"
+exec 200>"$LOCKFILE"
+if ! flock -n 200; then
+  echo "[$(date -Iseconds)] Another backup is already running — skipping this run." \
+    | tee -a "${ERR_LOG:-/var/log/altivox-backup.log}"
+  exit 0
+fi
+
 # ── Config (đọc từ /etc/altivox-backup.conf) ──────────────────
 CONF_FILE="/etc/altivox-backup.conf"
 if [[ ! -f "$CONF_FILE" ]]; then
