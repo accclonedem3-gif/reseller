@@ -70,6 +70,14 @@ export class AppConfigService {
     return process.env.MAIL_FROM || "Reseller Platform <onboarding@resend.dev>";
   }
 
+  get adminTelegramBotToken() {
+    return process.env.ADMIN_TG_BOT_TOKEN || "";
+  }
+
+  get adminTelegramChatId() {
+    return process.env.ADMIN_TG_CHAT_ID || "";
+  }
+
   get encryptionKey() {
     return process.env.APP_ENCRYPTION_KEY || "change-me-32-byte-key";
   }

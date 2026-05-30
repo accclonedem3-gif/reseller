@@ -73,6 +73,7 @@ import { AdminTemplateController } from "./admin-template/admin-template.control
 import { AdminTemplateService } from "./admin-template/admin-template.service";
 import { DiscountCodesController } from "./discount-codes/discount-codes.controller";
 import { DiscountCodesService } from "./discount-codes/discount-codes.service";
+import { AdminNotifyService } from "./lib/admin-notify.service";
 import { MailService } from "./lib/mail.service";
 
 @Module({
@@ -155,6 +156,7 @@ import { MailService } from "./lib/mail.service";
     AdminTemplateService,
     DiscountCodesService,
     MailService,
+    AdminNotifyService,
   ],
 })
 export class AppModule implements NestModule {

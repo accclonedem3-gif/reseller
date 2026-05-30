@@ -16,6 +16,7 @@ import {
 
 import { AppConfigService } from "../config/app-config.service";
 import { PrismaService } from "../db/prisma.service";
+import { AdminNotifyService } from "../lib/admin-notify.service";
 import { MailService } from "../lib/mail.service";
 import { PaymentService } from "../lib/payment.service";
 import { decimalToNumber, generateExternalPaymentCode, toDecimal } from "../lib/utils";
@@ -43,6 +44,8 @@ export class WalletService {
     private readonly config: AppConfigService,
     @Inject(MailService)
     private readonly mail: MailService,
+    @Inject(AdminNotifyService)
+    private readonly adminNotify: AdminNotifyService,
   ) {}
 
   async getWallet(user: AuthenticatedUser) {
@@ -536,7 +539,7 @@ export class WalletService {
         throw new BadRequestException("Insufficient withdrawable wallet balance.");
       }
 
-      return tx.withdrawRequest.create({
+      const created = await tx.withdrawRequest.create({
         data: {
           sellerId: shop.sellerId,
           amount: toDecimal(amount),
@@ -546,6 +549,29 @@ export class WalletService {
           note: dto.note ?? null,
         },
       });
+
+      // Fire-and-forget admin notification (don't block the transaction)
+      const esc = (s: string | null | undefined) => this.adminNotify.escape(s);
+      const sellerInfo = await tx.seller.findUnique({
+        where: { id: shop.sellerId },
+        select: { displayName: true, user: { select: { email: true } } },
+      });
+      const text = [
+        `💸 <b>Lệnh rút tiền mới</b>`,
+        ``,
+        `Seller: <b>${esc(sellerInfo?.displayName)}</b> (${esc(sellerInfo?.user?.email)})`,
+        `Số tiền: <b>${amount.toLocaleString("vi-VN")}đ</b>`,
+        ``,
+        `🏦 ${esc(dto.bankName)}`,
+        `📋 <code>${esc(dto.bankAccountNumber)}</code>`,
+        `👤 ${esc(dto.bankAccountName)}`,
+        dto.note ? `📝 ${esc(dto.note)}` : "",
+        ``,
+        `Duyệt tại: ${this.config.webPublicUrl}/admin/withdraws`,
+      ].filter(Boolean).join("\n");
+      this.adminNotify.send(text).catch(() => undefined);
+
+      return created;
     });
   }
 
