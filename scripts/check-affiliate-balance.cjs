@@ -4,9 +4,9 @@ const { PrismaClient } = require("@prisma/client");
 
 const prisma = new PrismaClient();
 
-const customerId = process.argv[2];
-if (!customerId) {
-  console.error("Usage: node scripts/check-affiliate-balance.cjs <customerId>");
+const arg = process.argv[2];
+if (!arg) {
+  console.error("Usage: node scripts/check-affiliate-balance.cjs <customerId | @username | telegramId>");
   process.exit(1);
 }
 
@@ -14,24 +14,52 @@ function fmt(n) {
   return Number(n).toLocaleString("vi-VN") + "đ";
 }
 
-async function main() {
-  const customer = await prisma.customer.findUnique({
-    where: { id: customerId },
-    select: {
-      id: true,
-      telegramUsername: true,
-      telegramUserId: true,
-      telegramChatId: true,
-      shopId: true,
-      referralCode: true,
-      wallet: { select: { balance: true, commissionBalance: true, balanceUsdt: true } },
-    },
-  });
+async function resolveCustomer(input) {
+  const sel = {
+    id: true,
+    telegramUsername: true,
+    telegramUserId: true,
+    telegramChatId: true,
+    shopId: true,
+    referralCode: true,
+    wallet: { select: { balance: true, commissionBalance: true, balanceUsdt: true } },
+  };
 
-  if (!customer) {
-    console.log(`Customer ${customerId} NOT FOUND`);
+  if (input.startsWith("@")) {
+    const matches = await prisma.customer.findMany({
+      where: { telegramUsername: input.slice(1) },
+      select: sel,
+    });
+    return matches;
+  }
+
+  if (/^\d+$/.test(input)) {
+    const matches = await prisma.customer.findMany({
+      where: { OR: [{ telegramUserId: input }, { telegramChatId: input }] },
+      select: sel,
+    });
+    return matches;
+  }
+
+  const one = await prisma.customer.findUnique({ where: { id: input }, select: sel });
+  return one ? [one] : [];
+}
+
+async function main() {
+  const matches = await resolveCustomer(arg);
+  if (matches.length === 0) {
+    console.log(`No customer matched: ${arg}`);
     return;
   }
+  if (matches.length > 1) {
+    console.log(`${matches.length} customers matched "${arg}" — showing first. To pick another, pass its cuid:`);
+    for (const m of matches) {
+      console.log(`  · ${m.id}  shop=${m.shopId}  @${m.telegramUsername || "?"}  chatId=${m.telegramChatId || "?"}`);
+    }
+    console.log("");
+  }
+  const customer = matches[0];
+  const customerId = customer.id;
 
   const lifetimeEarned = await prisma.order.aggregate({
     where: { affiliateCustomerId: customerId, affiliateCommission: { gt: 0 } },
