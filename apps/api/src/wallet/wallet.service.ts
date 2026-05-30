@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ForbiddenException,
   Inject,
   Injectable,
   NotFoundException,
@@ -294,6 +295,133 @@ export class WalletService {
       data: {
         status: WithdrawStatus.REJECTED,
         rejectReason: "Hủy bởi người dùng",
+        reviewedAt: new Date(),
+      },
+    });
+  }
+
+  async adminListWithdrawRequests(adminUser: AuthenticatedUser, status?: WithdrawStatus) {
+    if (adminUser.role !== "SUPER_ADMIN") {
+      throw new ForbiddenException("Only super admin can list all withdraw requests.");
+    }
+    return this.prisma.withdrawRequest.findMany({
+      where: status ? { status } : undefined,
+      orderBy: [{ status: "asc" }, { createdAt: "desc" }],
+      include: {
+        seller: {
+          select: {
+            id: true,
+            displayName: true,
+            user: { select: { email: true } },
+            wallet: { select: { balance: true } },
+          },
+        },
+        reviewedBy: { select: { id: true, email: true } },
+      },
+      take: 200,
+    });
+  }
+
+  async adminApproveWithdrawRequest(
+    adminUser: AuthenticatedUser,
+    withdrawId: string,
+    options?: { note?: string },
+  ) {
+    if (adminUser.role !== "SUPER_ADMIN") {
+      throw new ForbiddenException("Only super admin can approve withdraw requests.");
+    }
+    return this.prisma.$transaction(async (tx) => {
+      const withdraw = await tx.withdrawRequest.findUnique({
+        where: { id: withdrawId },
+        select: {
+          id: true,
+          sellerId: true,
+          amount: true,
+          status: true,
+          note: true,
+        },
+      });
+      if (!withdraw) throw new NotFoundException("Withdraw request not found.");
+      if (withdraw.status !== WithdrawStatus.PENDING) {
+        throw new BadRequestException(`Lệnh rút đang ở trạng thái ${withdraw.status}, không thể duyệt.`);
+      }
+
+      const amount = decimalToNumber(withdraw.amount);
+
+      const wallet = await tx.sellerWallet.findUnique({ where: { sellerId: withdraw.sellerId } });
+      if (!wallet) throw new NotFoundException("Wallet not found.");
+
+      await tx.$queryRaw(
+        Prisma.sql`SELECT id FROM seller_wallets WHERE id = ${wallet.id} FOR UPDATE`,
+      );
+      const fresh = await tx.sellerWallet.findUniqueOrThrow({ where: { id: wallet.id } });
+      const balanceBefore = decimalToNumber(fresh.balance);
+      const balanceAfter = balanceBefore - amount;
+      if (balanceAfter < 0) {
+        throw new BadRequestException("Số dư ví không đủ để duyệt lệnh rút này.");
+      }
+
+      await tx.sellerWallet.update({
+        where: { id: wallet.id },
+        data: { balance: toDecimal(balanceAfter) },
+      });
+
+      await tx.walletLedger.create({
+        data: {
+          sellerId: withdraw.sellerId,
+          walletId: wallet.id,
+          type: WalletLedgerType.WITHDRAW,
+          amount: toDecimal(-amount),
+          balanceBefore: toDecimal(balanceBefore),
+          balanceAfter: toDecimal(balanceAfter),
+          referenceType: "withdraw_request",
+          referenceId: withdraw.id,
+          note: options?.note
+            ? `${withdraw.note ? withdraw.note + " | " : ""}admin approved: ${options.note}`
+            : `Admin duyệt lệnh rút ${withdraw.id.slice(0, 8)}`,
+        },
+      });
+
+      return tx.withdrawRequest.update({
+        where: { id: withdraw.id },
+        data: {
+          status: WithdrawStatus.APPROVED,
+          reviewedById: adminUser.id,
+          reviewedAt: new Date(),
+          note: options?.note
+            ? `${withdraw.note ? withdraw.note + "\n" : ""}[admin] ${options.note}`
+            : withdraw.note,
+        },
+      });
+    });
+  }
+
+  async adminRejectWithdrawRequest(
+    adminUser: AuthenticatedUser,
+    withdrawId: string,
+    reason: string,
+  ) {
+    if (adminUser.role !== "SUPER_ADMIN") {
+      throw new ForbiddenException("Only super admin can reject withdraw requests.");
+    }
+    const reasonTrim = String(reason || "").trim();
+    if (!reasonTrim) {
+      throw new BadRequestException("Phải nhập lý do từ chối.");
+    }
+    const withdraw = await this.prisma.withdrawRequest.findUnique({
+      where: { id: withdrawId },
+      select: { id: true, status: true },
+    });
+    if (!withdraw) throw new NotFoundException("Withdraw request not found.");
+    if (withdraw.status !== WithdrawStatus.PENDING) {
+      throw new BadRequestException(`Lệnh rút đang ở trạng thái ${withdraw.status}, không thể từ chối.`);
+    }
+    return this.prisma.withdrawRequest.update({
+      where: { id: withdraw.id },
+      data: {
+        status: WithdrawStatus.REJECTED,
+        rejectReason: reasonTrim,
+        reviewedById: adminUser.id,
         reviewedAt: new Date(),
       },
     });

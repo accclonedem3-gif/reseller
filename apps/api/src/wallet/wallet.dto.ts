@@ -61,3 +61,15 @@ export class CreateWalletPromotionDto {
   @IsDateString()
   endAt!: string;
 }
+
+export class ApproveWithdrawRequestDto {
+  @IsOptional()
+  @IsString()
+  note?: string;
+}
+
+export class RejectWithdrawRequestDto {
+  @IsString()
+  @MinLength(3)
+  reason!: string;
+}
