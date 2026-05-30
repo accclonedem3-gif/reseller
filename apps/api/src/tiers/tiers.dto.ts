@@ -40,3 +40,9 @@ export class GrantUltraDto {
   @IsString()
   note?: string;
 }
+
+export class RefundTierSubscriptionDto {
+  @IsOptional()
+  @IsString()
+  note?: string;
+}

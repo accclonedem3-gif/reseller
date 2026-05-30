@@ -478,6 +478,126 @@ export class TiersService {
   }
 
   /**
+   * Admin refunds a tier subscription:
+   *   - marks it REFUNDED + refundedAt
+   *   - claws back affiliate commissions paid out (within 7d window)
+   *   - if paid from wallet, credits the price back to the seller's wallet
+   *   - if paid via gateway, returns a marker so admin handles the external refund
+   *   - downgrades seller.tier to FREE if this was their active subscription
+   */
+  async refundTierSubscription(
+    adminUser: AuthenticatedUser,
+    args: { subscriptionId: string; note?: string },
+  ) {
+    if (adminUser.role !== "SUPER_ADMIN") {
+      throw new ForbiddenException("Only super admin can refund tier subscriptions.");
+    }
+
+    const sub = await this.prisma.tierSubscription.findUnique({
+      where: { id: args.subscriptionId },
+      select: {
+        id: true,
+        sellerId: true,
+        tier: true,
+        priceVnd: true,
+        startsAt: true,
+        endsAt: true,
+        status: true,
+        paidFromWalletBalance: true,
+        refundedAt: true,
+        isAdminGrant: true,
+        seller: { select: { tier: true, tierExpiresAt: true } },
+      },
+    });
+    if (!sub) throw new NotFoundException("Tier subscription not found.");
+    if (sub.refundedAt || sub.status === "REFUNDED") {
+      throw new BadRequestException("Subscription đã được refund trước đó.");
+    }
+    if (sub.isAdminGrant) {
+      throw new BadRequestException("Admin grant không thể refund (không có thanh toán).");
+    }
+
+    const priceVnd = decimalToNumber(sub.priceVnd);
+    const isStillActive =
+      sub.seller.tier === sub.tier &&
+      sub.seller.tierExpiresAt &&
+      sub.seller.tierExpiresAt.getTime() === sub.endsAt.getTime();
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.tierSubscription.update({
+        where: { id: sub.id },
+        data: {
+          status: "REFUNDED",
+          refundedAt: new Date(),
+          adminGrantNote: args.note
+            ? `[refund by admin] ${args.note}`
+            : "[refund by admin]",
+        },
+      });
+
+      // 1) Claw back commissions (referrer + grand-referrer) if within window
+      await this.tierAffiliate.clawBackCommissions(tx, sub.id);
+
+      // 2) Refund money to seller's wallet if they paid from wallet balance
+      if (sub.paidFromWalletBalance && priceVnd > 0) {
+        const wallet = await tx.sellerWallet.upsert({
+          where: { sellerId: sub.sellerId },
+          update: {},
+          create: { sellerId: sub.sellerId, balance: toDecimal(0) },
+        });
+        await tx.$queryRaw(
+          Prisma.sql`SELECT id FROM seller_wallets WHERE id = ${wallet.id} FOR UPDATE`,
+        );
+        const fresh = await tx.sellerWallet.findUniqueOrThrow({ where: { id: wallet.id } });
+        const balanceBefore = decimalToNumber(fresh.balance);
+        const balanceAfter = balanceBefore + priceVnd;
+        await tx.sellerWallet.update({
+          where: { id: wallet.id },
+          data: { balance: toDecimal(balanceAfter) },
+        });
+        await tx.walletLedger.create({
+          data: {
+            sellerId: sub.sellerId,
+            walletId: wallet.id,
+            type: WalletLedgerType.ADJUST,
+            amount: toDecimal(priceVnd),
+            balanceBefore: toDecimal(balanceBefore),
+            balanceAfter: toDecimal(balanceAfter),
+            referenceType: "tier_subscription_refund",
+            referenceId: sub.id,
+            note: `Hoàn ví khi admin refund subscription ${sub.id.slice(0, 8)}`,
+          },
+        });
+      }
+
+      // 3) Downgrade seller tier if this was the active subscription
+      if (isStillActive) {
+        await tx.seller.update({
+          where: { id: sub.sellerId },
+          data: {
+            tier: SellerTier.FREE,
+            tierStartedAt: null,
+            tierExpiresAt: null,
+          },
+        });
+      }
+    });
+
+    this.logger.log(
+      `Admin ${adminUser.id} refunded tier subscription ${sub.id} (seller=${sub.sellerId}, price=${priceVnd}, walletRefunded=${sub.paidFromWalletBalance})`,
+    );
+
+    return {
+      success: true,
+      subscriptionId: sub.id,
+      walletRefunded: sub.paidFromWalletBalance,
+      priceRefunded: priceVnd,
+      externalRefundRequired: !sub.paidFromWalletBalance,
+      tierDowngraded: isStillActive,
+    };
+  }
+
+  /**
    * Affiliate stats for the current seller (used by /dashboard/affiliate page).
    */
   async getAffiliateStats(user: AuthenticatedUser) {
