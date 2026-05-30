@@ -569,7 +569,7 @@ export class WalletService {
         ``,
         `Duyệt tại: ${this.config.webPublicUrl}/admin/withdraws`,
       ].filter(Boolean).join("\n");
-      this.adminNotify.send(text).catch(() => undefined);
+      this.adminNotify.send(text, { level: "info", service: "Withdraw" }).catch(() => undefined);
 
       return created;
     });

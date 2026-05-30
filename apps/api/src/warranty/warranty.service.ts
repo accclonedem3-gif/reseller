@@ -114,7 +114,8 @@ export class WarrantyService {
       ``,
       `💬 ${esc(claim.customerMessage || "(không có lời nhắn)")}`,
     ].join("\n");
-    this.adminNotify.send(text).catch(() => undefined);
+    const level = claim.status === "PENDING_REVIEW" ? "warning" : "info";
+    this.adminNotify.send(text, { level, service: "Warranty" }).catch(() => undefined);
   }
 
   async snapshotWarrantyForDeliveredOrder(

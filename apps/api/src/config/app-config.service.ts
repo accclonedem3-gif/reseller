@@ -78,6 +78,13 @@ export class AppConfigService {
     return process.env.ADMIN_TG_CHAT_ID || "";
   }
 
+  /** Optional webhook URL of an external alert bot (e.g. Trâm Anh) that exposes
+   *  POST /alert with body { level, service, message }. If set, AdminNotifyService
+   *  prefers this over direct Telegram API calls. */
+  get adminAlertWebhookUrl() {
+    return process.env.ADMIN_ALERT_WEBHOOK_URL || "";
+  }
+
   get encryptionKey() {
     return process.env.APP_ENCRYPTION_KEY || "change-me-32-byte-key";
   }

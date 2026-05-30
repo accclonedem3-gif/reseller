@@ -24,14 +24,63 @@ export class AdminNotifyService {
     private readonly config: AppConfigService,
   ) {}
 
-  async send(text: string, options?: { parseMode?: "HTML" | "Markdown"; disableNotification?: boolean }) {
+  async send(
+    text: string,
+    options?: {
+      parseMode?: "HTML" | "Markdown";
+      disableNotification?: boolean;
+      level?: "info" | "warning" | "error";
+      service?: string;
+    },
+  ) {
+    const webhookUrl = this.config.adminAlertWebhookUrl;
+    if (webhookUrl) {
+      return this.sendViaWebhook(webhookUrl, text, options);
+    }
+    return this.sendViaTelegramDirect(text, options);
+  }
+
+  /** Send to an external alert bot (POST /alert with {level, service, message}). */
+  private async sendViaWebhook(
+    url: string,
+    text: string,
+    options?: { level?: "info" | "warning" | "error"; service?: string },
+  ) {
+    try {
+      // The alert bot uses Markdown — strip HTML-only tags from the body.
+      const plainText = text
+        .replace(/<\/?b>/g, "*")
+        .replace(/<\/?i>/g, "_")
+        .replace(/<\/?code>/g, "`")
+        .replace(/<[^>]+>/g, "");
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          level: options?.level ?? "info",
+          service: options?.service ?? "Reseller Platform",
+          message: plainText,
+        }),
+      });
+      if (!response.ok) {
+        this.logger.warn(`[admin-notify] webhook returned ${response.status}: ${await response.text().catch(() => "")}`);
+      }
+    } catch (error) {
+      this.logger.warn(`[admin-notify] webhook threw: ${(error as Error).message}`);
+    }
+  }
+
+  /** Fallback: send directly via Telegram Bot API (uses ADMIN_TG_BOT_TOKEN / CHAT_ID). */
+  private async sendViaTelegramDirect(
+    text: string,
+    options?: { parseMode?: "HTML" | "Markdown"; disableNotification?: boolean },
+  ) {
     const token = this.config.adminTelegramBotToken;
     const chatId = this.config.adminTelegramChatId;
     if (!token || !chatId) {
       this.logger.log(`[admin-notify DRY] ${text.slice(0, 120)}...`);
       return;
     }
-
     try {
       const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
         method: "POST",
