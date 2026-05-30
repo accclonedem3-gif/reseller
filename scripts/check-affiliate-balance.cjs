@@ -64,6 +64,25 @@ async function main() {
     _count: { _all: true },
   });
 
+  const allEntries = await prisma.customerWalletLedger.findMany({
+    where: { customerId },
+    orderBy: { createdAt: "asc" },
+    select: {
+      id: true,
+      type: true,
+      amount: true,
+      currency: true,
+      balanceBefore: true,
+      balanceAfter: true,
+      commissionBalanceBefore: true,
+      commissionBalanceAfter: true,
+      referenceType: true,
+      referenceId: true,
+      note: true,
+      createdAt: true,
+    },
+  });
+
   const referredCount = await prisma.customer.count({
     where: { referredById: customerId },
   });
@@ -108,22 +127,51 @@ async function main() {
     console.log(`✅ Commission ledger matches lifetime earned (${fmt(lifetimeNum)}).`);
   }
 
-  // Reconcile commission balance: credited - spent should = current
-  const expectedFromLedger = ledgerCommissionNum + Number(spendLedger._sum.amount || 0); // spend is negative
-  const unaccountedFromCommission = commissionBalNum - expectedFromLedger;
+  // Reconcile commission balance via commissionBalanceBefore/After (more accurate than amount sign)
+  let commissionDeltaFromLedger = 0;
+  let commissionEntries = 0;
+  for (const e of allEntries) {
+    const before = Number(e.commissionBalanceBefore ?? 0);
+    const after = Number(e.commissionBalanceAfter ?? 0);
+    const delta = after - before;
+    if (delta !== 0) {
+      commissionDeltaFromLedger += delta;
+      commissionEntries++;
+    }
+  }
   console.log("");
-  console.log("  Commission balance reconciliation:");
-  console.log(`    Credited (AFFILIATE_COMMISSION):  +${fmt(ledgerCommissionNum)}`);
-  console.log(`    Spent (SPEND_ORDER, all types):    ${fmt(spendLedger._sum.amount || 0)}`);
-  console.log(`    Expected = credited + spent:       ${fmt(expectedFromLedger)}`);
-  console.log(`    Actual wallet commission_balance:  ${fmt(commissionBalNum)}`);
+  console.log("  Commission balance reconciliation (via commissionBalanceBefore/After fields):");
+  console.log(`    Net delta from ledger: ${fmt(commissionDeltaFromLedger)}  (${commissionEntries} entries actually touched commission)`);
+  console.log(`    Actual wallet field:   ${fmt(commissionBalNum)}`);
+  const unaccountedFromCommission = commissionBalNum - commissionDeltaFromLedger;
   if (Math.abs(unaccountedFromCommission) > 1) {
-    console.log(`    🚨 UNACCOUNTED: ${fmt(unaccountedFromCommission)} difference`);
-    console.log("       Possible causes: another ledger type debits commission,");
-    console.log("       OR a code path updates wallet.commissionBalance without ledger entry.");
-    console.log("       → See 'ALL types' table above to spot extra debit categories.");
+    console.log(`    🚨 UNACCOUNTED: ${fmt(unaccountedFromCommission)} — wallet has more/less commission than ledger explains`);
+    console.log("       → A code path is updating wallet.commissionBalance WITHOUT writing ledger entry.");
   } else {
-    console.log(`    ✅ Reconciles cleanly.`);
+    console.log(`    ✅ Reconciles cleanly — every change to commissionBalance is in ledger.`);
+  }
+
+  // Recent entries that actually moved commission
+  const movers = allEntries
+    .filter((e) => {
+      const before = Number(e.commissionBalanceBefore ?? 0);
+      const after = Number(e.commissionBalanceAfter ?? 0);
+      return before !== after;
+    })
+    .slice(-15);
+  if (movers.length > 0) {
+    console.log("");
+    console.log("=== Last 15 ledger entries that changed commission ===");
+    for (const e of movers) {
+      const before = Number(e.commissionBalanceBefore ?? 0);
+      const after = Number(e.commissionBalanceAfter ?? 0);
+      const delta = after - before;
+      const sign = delta >= 0 ? "+" : "";
+      console.log(
+        `  ${e.createdAt.toISOString().slice(0, 19)} ${e.type.padEnd(20)} ${sign}${fmt(delta).padStart(13)}  ` +
+        `(${fmt(before)} → ${fmt(after)}) ref=${e.referenceType || "—"}/${(e.referenceId || "—").slice(0, 18)}`,
+      );
+    }
   }
 }
 
