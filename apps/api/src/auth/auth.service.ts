@@ -737,7 +737,9 @@ export class AuthService {
         }
       }
 
-      // Resolve referrer from referralCode if provided
+      // Resolve referrer from referralCode if provided.
+      // Looks up Seller.referralCode first, then falls back to active DiscountCode.code
+      // (so admin-created custom codes like "LAMTHANHTHIEN" can also act as ref).
       let referredBySellerId: string | null = null;
       if (input.referralCode) {
         const normalizedRef = input.referralCode.trim().toUpperCase();
@@ -748,6 +750,14 @@ export class AuthService {
           });
           if (referrer) {
             referredBySellerId = referrer.id;
+          } else {
+            const discountCode = await tx.discountCode.findUnique({
+              where: { code: normalizedRef },
+              select: { active: true, referrerSellerId: true },
+            });
+            if (discountCode?.active) {
+              referredBySellerId = discountCode.referrerSellerId;
+            }
           }
         }
       }

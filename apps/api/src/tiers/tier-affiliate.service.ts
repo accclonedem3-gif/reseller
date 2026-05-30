@@ -47,9 +47,11 @@ export class TierAffiliateService {
     candidateSignupDevice?: string | null,
   ): Promise<string | null> {
     if (!referralCode || !referralCode.trim()) return null;
+    const normalizedCode = referralCode.trim().toUpperCase();
 
-    const referrer = await this.prisma.seller.findUnique({
-      where: { referralCode: referralCode.trim().toUpperCase() },
+    // Try Seller.referralCode first (system-default codes)
+    let referrer = await this.prisma.seller.findUnique({
+      where: { referralCode: normalizedCode },
       select: {
         id: true,
         phone: true,
@@ -58,6 +60,29 @@ export class TierAffiliateService {
         user: { select: { email: true } },
       },
     });
+
+    // Fallback: try DiscountCode.code (admin-created codes that also act as referral)
+    if (!referrer) {
+      const discountCode = await this.prisma.discountCode.findUnique({
+        where: { code: normalizedCode },
+        select: {
+          active: true,
+          referrerSeller: {
+            select: {
+              id: true,
+              phone: true,
+              signupIp: true,
+              signupDeviceFingerprint: true,
+              user: { select: { email: true } },
+            },
+          },
+        },
+      });
+      if (discountCode?.active) {
+        referrer = discountCode.referrerSeller;
+      }
+    }
+
     if (!referrer) return null;
     if (referrer.id === candidateSellerId) return null;
 

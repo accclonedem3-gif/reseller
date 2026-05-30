@@ -85,12 +85,17 @@ export function TierPricingPage() {
       const backendMethod = paymentMethod === "USDT"
         ? (usdtNetwork === "TRC20" ? "USDT_TRC20" : "USDT_SOL")
         : paymentMethod;
+      // Single code field — backend tries discount table first, then seller.referralCode.
+      // We send it as BOTH so each handler gets a shot:
+      //  - discountCode → applies % off if it matches an active DiscountCode
+      //  - referralCode → sets referrer if it matches Seller.referralCode OR DiscountCode.code
+      const trimmedCode = (discountCode || referralCode).trim() || undefined;
       const { data } = await api.post<PurchaseResponse>("/tiers/purchase", {
         tier: modalTier,
         plan: billingCycle,
         paymentMethod: backendMethod,
-        referralCode: referralCode.trim() || undefined,
-        discountCode: discountCode.trim() || undefined,
+        referralCode: trimmedCode,
+        discountCode: trimmedCode,
       });
       return data;
     },
@@ -455,38 +460,28 @@ function PaymentModal({
               />
             </div>
 
-            {/* Discount code */}
+            {/* Mã giới thiệu / Mã giảm giá (1 ô duy nhất) */}
             <div className="mt-5">
               <label className="text-[11px] font-semibold uppercase tracking-[0.18em]" style={{ color: "var(--tx-f)" }}>
-                Mã giảm giá (tuỳ chọn)
+                Mã giới thiệu / giảm giá (tuỳ chọn)
               </label>
               <input
                 type="text"
                 value={discountCode}
-                onChange={(e) => onChangeDiscountCode(e.target.value.toUpperCase())}
-                placeholder="VD: WELCOME20"
+                onChange={(e) => {
+                  const v = e.target.value.toUpperCase();
+                  onChangeDiscountCode(v);
+                  onChangeReferralCode(v);
+                }}
+                placeholder="VD: LAMTHANHTHIEN hoặc E4360EEA"
                 maxLength={32}
                 className="mt-1.5 w-full rounded-xl px-4 py-3 font-mono text-sm uppercase tracking-wider outline-none"
                 style={{ background: "var(--inp)", border: "1px solid var(--bd)", color: "var(--tx)" }}
               />
+              <p className="mt-1.5 text-[11px]" style={{ color: "var(--tx-f)" }}>
+                Mã hợp lệ sẽ tự áp dụng giảm giá (nếu có) và ghi nhận người giới thiệu.
+              </p>
             </div>
-
-            {showReferralInput && (
-              <div className="mt-3">
-                <label className="text-[11px] font-semibold uppercase tracking-[0.18em]" style={{ color: "var(--tx-f)" }}>
-                  Mã giới thiệu (tuỳ chọn)
-                </label>
-                <input
-                  type="text"
-                  value={referralCode}
-                  onChange={(e) => onChangeReferralCode(e.target.value.toUpperCase())}
-                  placeholder="VD: E4360EEA"
-                  maxLength={32}
-                  className="mt-1.5 w-full rounded-xl px-4 py-3 font-mono text-sm uppercase tracking-wider outline-none"
-                  style={{ background: "var(--inp)", border: "1px solid var(--bd)", color: "var(--tx)" }}
-                />
-              </div>
-            )}
 
             {/* Summary */}
             <div className="mt-6 rounded-2xl p-4" style={{ background: "var(--inp)" }}>
@@ -496,7 +491,7 @@ function PaymentModal({
               </div>
               {discountCode.trim() && (
                 <p className="mt-1 text-[11px]" style={{ color: "var(--tx-f)" }}>
-                  ℹ️ Mã giảm giá sẽ được verify khi thanh toán. Giá cuối có thể thấp hơn.
+                  ℹ️ Giá cuối có thể thấp hơn nếu mã có % giảm.
                 </p>
               )}
             </div>

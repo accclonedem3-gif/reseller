@@ -100,8 +100,8 @@ export function AdminDiscountCodesPage() {
     <div className="space-y-6">
       <SectionHeading
         eyebrow="Quản trị marketing"
-        title="Mã giảm giá"
-        description="Tạo mã giảm giá kèm referrer. Mỗi seller chỉ được dùng 1 mã 1 lần khi mua tier subscription."
+        title="Mã giảm giá / giới thiệu"
+        description="Mã vừa làm giảm giá khi mua gói, vừa thay thế cho mã giới thiệu — nhập trong form mua tier hoặc qua link ?ref=<mã> đều hoạt động. Mỗi seller chỉ dùng 1 mã 1 lần."
       />
 
       <Card className="p-5">
