@@ -343,6 +343,9 @@ export class WalletService {
           amount: true,
           status: true,
           note: true,
+          bankName: true,
+          bankAccountNumber: true,
+          bankAccountName: true,
         },
       });
       if (!withdraw) throw new NotFoundException("Withdraw request not found.");
@@ -386,7 +389,7 @@ export class WalletService {
         },
       });
 
-      return tx.withdrawRequest.update({
+      const updated = await tx.withdrawRequest.update({
         where: { id: withdraw.id },
         data: {
           status: WithdrawStatus.APPROVED,
@@ -397,6 +400,19 @@ export class WalletService {
             : withdraw.note,
         },
       });
+
+      // Fire-and-forget notification email — don't block the transaction
+      this.sendWithdrawNotificationEmail({
+        sellerId: withdraw.sellerId,
+        status: "APPROVED",
+        amount,
+        bankName: withdraw.bankName,
+        bankAccountNumber: withdraw.bankAccountNumber,
+        bankAccountName: withdraw.bankAccountName,
+        note: options?.note,
+      }).catch((err) => console.error("[withdraw-notify approve]", err));
+
+      return updated;
     });
   }
 
@@ -429,7 +445,21 @@ export class WalletService {
       if (!existing) throw new NotFoundException("Withdraw request not found.");
       throw new BadRequestException(`Lệnh rút đang ở trạng thái ${existing.status}, không thể từ chối.`);
     }
-    return this.prisma.withdrawRequest.findUnique({ where: { id: withdrawId } });
+    const result = await this.prisma.withdrawRequest.findUnique({ where: { id: withdrawId } });
+
+    if (result) {
+      this.sendWithdrawNotificationEmail({
+        sellerId: result.sellerId,
+        status: "REJECTED",
+        amount: decimalToNumber(result.amount),
+        bankName: result.bankName,
+        bankAccountNumber: result.bankAccountNumber,
+        bankAccountName: result.bankAccountName,
+        rejectReason: reasonTrim,
+      }).catch((err) => console.error("[withdraw-notify reject]", err));
+    }
+
+    return result;
   }
 
   async expirePendingDepositRequests(limit = 50) {
@@ -684,6 +714,86 @@ export class WalletService {
         };
       }),
     };
+  }
+
+  private async sendWithdrawNotificationEmail(input: {
+    sellerId: string;
+    status: "APPROVED" | "REJECTED";
+    amount: number;
+    bankName: string | null;
+    bankAccountNumber: string | null;
+    bankAccountName: string | null;
+    note?: string | null;
+    rejectReason?: string | null;
+  }) {
+    const seller = await this.prisma.seller.findUnique({
+      where: { id: input.sellerId },
+      select: { displayName: true, user: { select: { recoveryEmail: true, email: true } } },
+    });
+    const to = seller?.user?.recoveryEmail || null;
+    if (!to) {
+      console.log(`[withdraw-notify] no email for seller ${input.sellerId}, skipping`);
+      return;
+    }
+
+    const amountStr = input.amount.toLocaleString("vi-VN") + "đ";
+    const bankInfo = `${input.bankName ?? "?"} • ${input.bankAccountNumber ?? "?"} • ${input.bankAccountName ?? "?"}`;
+    const escape = (s: string | null | undefined) => String(s || "")
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
+
+    const subject = input.status === "APPROVED"
+      ? `✅ Yêu cầu rút ${amountStr} đã được duyệt`
+      : `❌ Yêu cầu rút ${amountStr} đã bị từ chối`;
+
+    const text = input.status === "APPROVED"
+      ? `Xin chào ${seller?.displayName ?? ""},\n\nYêu cầu rút ${amountStr} của bạn đã được admin duyệt.\nThông tin chuyển khoản: ${bankInfo}\nGhi chú admin: ${input.note || "(không)"}\n\nSố tiền sẽ được chuyển vào tài khoản trong vòng 24 giờ.`
+      : `Xin chào ${seller?.displayName ?? ""},\n\nYêu cầu rút ${amountStr} của bạn đã bị từ chối.\nLý do: ${input.rejectReason || "(không nêu)"}\n\nSố tiền vẫn còn nguyên trong ví của bạn. Bạn có thể tạo yêu cầu mới hoặc liên hệ admin để biết thêm chi tiết.`;
+
+    const html = input.status === "APPROVED"
+      ? `
+        <div style="font-family:sans-serif;max-width:560px">
+          <h2 style="color:#10b981">✅ Yêu cầu rút tiền đã được duyệt</h2>
+          <p>Xin chào <b>${escape(seller?.displayName)}</b>,</p>
+          <p>Yêu cầu rút <b>${escape(amountStr)}</b> của bạn đã được admin duyệt.</p>
+          <table style="border-collapse:collapse;margin:16px 0">
+            <tr><td style="padding:4px 12px 4px 0;color:#666">Ngân hàng:</td><td><b>${escape(input.bankName)}</b></td></tr>
+            <tr><td style="padding:4px 12px 4px 0;color:#666">Số tài khoản:</td><td><code>${escape(input.bankAccountNumber)}</code></td></tr>
+            <tr><td style="padding:4px 12px 4px 0;color:#666">Chủ tài khoản:</td><td>${escape(input.bankAccountName)}</td></tr>
+            ${input.note ? `<tr><td style="padding:4px 12px 4px 0;color:#666">Ghi chú admin:</td><td>${escape(input.note)}</td></tr>` : ""}
+          </table>
+          <p>Số tiền sẽ được chuyển vào tài khoản trong vòng <b>24 giờ</b>.</p>
+        </div>`
+      : `
+        <div style="font-family:sans-serif;max-width:560px">
+          <h2 style="color:#ef4444">❌ Yêu cầu rút tiền bị từ chối</h2>
+          <p>Xin chào <b>${escape(seller?.displayName)}</b>,</p>
+          <p>Yêu cầu rút <b>${escape(amountStr)}</b> của bạn đã bị từ chối.</p>
+          <p style="background:#fef2f2;border-left:4px solid #ef4444;padding:12px 16px;color:#991b1b">
+            <b>Lý do:</b> ${escape(input.rejectReason || "(không nêu)")}
+          </p>
+          <p>Số tiền vẫn còn nguyên trong ví của bạn. Bạn có thể tạo yêu cầu mới hoặc liên hệ admin để biết thêm chi tiết.</p>
+        </div>`;
+
+    if (!this.config.resendApiKey) {
+      console.log(`[withdraw-notify] DRY (no Resend key) → ${to}: ${subject}`);
+      return;
+    }
+
+    try {
+      const response = await fetch("https://api.resend.com/emails", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${this.config.resendApiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ from: this.config.mailFrom, to: [to], subject, text, html }),
+      });
+      if (!response.ok) {
+        console.error(`[withdraw-notify] Failed: ${response.status} ${await response.text()}`);
+      }
+    } catch (error) {
+      console.error("[withdraw-notify] Email send failed", error);
+    }
   }
 
   async adjustCustomerWallet(user: AuthenticatedUser, customerId: string, dto: AdjustCustomerWalletDto) {
