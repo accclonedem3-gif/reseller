@@ -6654,9 +6654,14 @@ export class TelegramBotService {
       : this.formatCompactBotMoney(product.salePrice, language, usdtVndRate);
     const stockLabel = product.available === null ? "∞" : String(Math.max(0, product.available));
     const suffix = ` | ${priceLabel} | 📦 ${stockLabel}`;
-    // Button labels (inline keyboard) chỉ hỗ trợ plain text — không render được custom emoji động.
-    // Luôn fallback về productIcon (text emoji) hoặc auto-detect, kể cả khi có customEmojiId.
-    const emoji = product.productIcon?.trim() || this.resolveProductEmoji(product.displayName, product.sourceName);
+    // If the product has a custom emoji icon (iconCustomEmojiId), Telegram renders it
+    // beside the button on its own (Premium users see the animated logo, others see the
+    // fallback character bundled with the custom emoji). In that case we DON'T also
+    // prepend a text emoji — otherwise Premium users see two icons stacked.
+    // No custom emoji → fall back to productIcon (admin-set) or auto-resolved emoji.
+    const emoji = product.iconCustomEmojiId
+      ? ""
+      : product.productIcon?.trim() || this.resolveProductEmoji(product.displayName, product.sourceName);
     const normalizedName = [emoji, this.compactProductName(this.localizeProductName(product.displayName, language))].filter(Boolean).join(" ");
     const safeNameLength = Math.max(16, 58 - suffix.length);
 
