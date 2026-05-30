@@ -14,6 +14,7 @@ import { PaymentService } from "../lib/payment.service";
 import { decimalToNumber, generateExternalPaymentCode, toDecimal } from "../lib/utils";
 import type { AuthenticatedUser } from "../types";
 
+import { DiscountCodesService } from "../discount-codes/discount-codes.service";
 import { TierAffiliateService } from "./tier-affiliate.service";
 import {
   PLAN_LABELS,
@@ -44,6 +45,8 @@ export class TiersService {
     private readonly config: AppConfigService,
     @Inject(TierAffiliateService)
     private readonly tierAffiliate: TierAffiliateService,
+    @Inject(DiscountCodesService)
+    private readonly discountCodes: DiscountCodesService,
   ) {}
 
   /**
@@ -102,6 +105,7 @@ export class TiersService {
       tier: TierKey;
       plan: PlanKey;
       referralCode?: string | null;
+      discountCode?: string | null;
       paymentMethod: PaymentMethodInput;
       clientIp?: string;
       deviceFingerprint?: string;
@@ -131,11 +135,29 @@ export class TiersService {
       }
     }
 
-    const priceVnd = getPrice(args.tier, args.plan);
+    const basePriceVnd = getPrice(args.tier, args.plan);
     const durationMs = getDurationMs(args.plan);
+
+    // ── Resolve discount code (if provided) ─────────────────────────
+    let discountCodeInfo: { id: string; discountPercent: number; referrerSellerId: string } | null = null;
+    if (args.discountCode) {
+      discountCodeInfo = await this.discountCodes.validateForSeller(args.discountCode, seller.id);
+    }
+
+    const priceVnd = discountCodeInfo
+      ? Math.round(basePriceVnd * (1 - discountCodeInfo.discountPercent / 100))
+      : basePriceVnd;
 
     // ── Resolve referrer (only if seller doesn't already have one) ────
     let referrerSellerId: string | null = seller.referredBySellerId;
+    if (!referrerSellerId && discountCodeInfo) {
+      // Discount code links seller to its referrer
+      referrerSellerId = discountCodeInfo.referrerSellerId;
+      await this.prisma.seller.update({
+        where: { id: seller.id },
+        data: { referredBySellerId: referrerSellerId },
+      });
+    }
     if (!referrerSellerId && args.referralCode) {
       referrerSellerId = await this.tierAffiliate.resolveReferrer(
         args.referralCode,
@@ -165,7 +187,16 @@ export class TiersService {
 
     // ── Wallet balance payment shortcut ─────────────────────────────
     if (args.paymentMethod === "WALLET_BALANCE") {
-      return this.purchaseFromWalletBalance(seller.id, args.tier, args.plan, priceVnd, durationMs, referrerSellerId, grandReferrerSellerId);
+      return this.purchaseFromWalletBalance(
+        seller.id,
+        args.tier,
+        args.plan,
+        priceVnd,
+        durationMs,
+        referrerSellerId,
+        grandReferrerSellerId,
+        discountCodeInfo ? { id: discountCodeInfo.id, amountDiscounted: basePriceVnd - priceVnd } : null,
+      );
     }
 
     // ── External payment path: PayOS / USDT_TRC20 / USDT_SOL ────────
@@ -202,7 +233,7 @@ export class TiersService {
         checkoutUrl: payment.checkoutUrl,
         qrCode: payment.qrCode,
         expiresAt,
-        note: `TIER_SUB:${args.tier}:${args.plan}:${seller.id}:${referrerSellerId ?? ""}:${grandReferrerSellerId ?? ""}`,
+        note: `TIER_SUB:${args.tier}:${args.plan}:${seller.id}:${referrerSellerId ?? ""}:${grandReferrerSellerId ?? ""}:${discountCodeInfo?.id ?? ""}:${discountCodeInfo ? basePriceVnd - priceVnd : 0}`,
         rawPayloadJson: payment.providerPayload as any,
       },
     });
@@ -235,6 +266,7 @@ export class TiersService {
     durationMs: number,
     referrerSellerId: string | null,
     grandReferrerSellerId: string | null,
+    discountCode: { id: string; amountDiscounted: number } | null = null,
   ) {
     const result = await this.prisma.$transaction(async (tx) => {
       const wallet = await tx.sellerWallet.findUnique({ where: { sellerId } });
@@ -310,6 +342,18 @@ export class TiersService {
         sourceLabel,
       });
 
+      // Mark discount code as used (unique [discountCodeId, sellerId] prevents reuse)
+      if (discountCode) {
+        await tx.discountCodeUsage.create({
+          data: {
+            discountCodeId: discountCode.id,
+            sellerId,
+            subscriptionId: subscription.id,
+            amountDiscounted: toDecimal(discountCode.amountDiscounted),
+          },
+        });
+      }
+
       return { subscription, commissions, balanceAfter };
     });
 
@@ -335,13 +379,15 @@ export class TiersService {
     const deposit = await this.prisma.depositRequest.findUnique({ where: { externalOrderCode } });
     if (!deposit) return null;
     const note = deposit.note || "";
-    const match = note.match(/^TIER_SUB:(pro|ultra):(monthly|quarterly|semi_annual|annual):([^:]+):([^:]*):([^:]*)$/);
+    const match = note.match(/^TIER_SUB:(pro|ultra):(monthly|quarterly|semi_annual|annual):([^:]+):([^:]*):([^:]*)(?::([^:]*):([^:]*))?$/);
     if (!match) return null;
     const tier = match[1] as TierKey;
     const plan = match[2] as PlanKey;
     const sellerId = match[3]!;
     const referrerSellerId = match[4] ? match[4] : null;
     const grandReferrerSellerId = match[5] ? match[5] : null;
+    const discountCodeId = match[6] ? match[6] : null;
+    const discountAmount = match[7] ? Number(match[7]) || 0 : 0;
 
     if (deposit.status === "CONFIRMED") {
       this.logger.log(`TIER_SUB already confirmed: ${externalOrderCode}`);
@@ -429,6 +475,19 @@ export class TiersService {
         grandReferrerSellerId,
         sourceLabel,
       });
+
+      if (discountCodeId) {
+        await tx.discountCodeUsage.create({
+          data: {
+            discountCodeId,
+            sellerId,
+            subscriptionId: subscription.id,
+            amountDiscounted: toDecimal(discountAmount),
+          },
+        }).catch((err) => {
+          this.logger.warn(`Failed to record discount usage for ${externalOrderCode}: ${err.message}`);
+        });
+      }
     });
 
     return { success: true, tier, plan };

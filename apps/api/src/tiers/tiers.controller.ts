@@ -61,6 +61,7 @@ export class TiersController {
       tier: body.tier,
       plan: body.plan,
       referralCode: body.referralCode,
+      discountCode: body.discountCode,
       paymentMethod: body.paymentMethod,
       clientIp,
     });

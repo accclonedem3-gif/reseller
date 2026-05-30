@@ -6,6 +6,7 @@ import { AdminCtvPage } from "@/pages/admin-ctv-page";
 import { AdminOverviewPage } from "@/pages/admin-overview-page";
 import { AdminOrdersPage } from "@/pages/admin-orders-page";
 import { AdminWithdrawsPage } from "@/pages/admin-withdraws-page";
+import { AdminDiscountCodesPage } from "@/pages/admin-discount-codes-page";
 import { AdminSystemConfigPage } from "@/pages/admin-system-config-page";
 import { AdminIconsPage } from "@/pages/admin-icons-page";
 import { AdminTemplateBotPage } from "@/pages/admin-template-bot-page";
@@ -123,6 +124,7 @@ export function App() {
           <Route path="/admin/ctv" element={<AdminCtvPage />} />
           <Route path="/admin/orders" element={<AdminOrdersPage />} />
           <Route path="/admin/withdraws" element={<AdminWithdrawsPage />} />
+          <Route path="/admin/discount-codes" element={<AdminDiscountCodesPage />} />
           <Route path="/admin/settings" element={<AdminSystemConfigPage />} />
           <Route path="/admin/icons" element={<AdminIconsPage />} />
           <Route path="/admin/template-bot" element={<AdminTemplateBotPage />} />

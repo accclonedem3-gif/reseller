@@ -11,6 +11,10 @@ export class PurchaseTierDto {
   @IsString()
   referralCode?: string;
 
+  @IsOptional()
+  @IsString()
+  discountCode?: string;
+
   @IsEnum(["PAYOS", "WALLET_BALANCE"])
   paymentMethod!: "PAYOS" | "WALLET_BALANCE";
 }

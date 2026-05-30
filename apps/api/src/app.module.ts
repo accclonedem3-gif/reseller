@@ -71,6 +71,8 @@ import { TiersService } from "./tiers/tiers.service";
 import { TierAffiliateService } from "./tiers/tier-affiliate.service";
 import { AdminTemplateController } from "./admin-template/admin-template.controller";
 import { AdminTemplateService } from "./admin-template/admin-template.service";
+import { DiscountCodesController } from "./discount-codes/discount-codes.controller";
+import { DiscountCodesService } from "./discount-codes/discount-codes.service";
 
 @Module({
   imports: [
@@ -104,6 +106,7 @@ import { AdminTemplateService } from "./admin-template/admin-template.service";
     IconCatalogController,
     MiniAppController,
     AdminTemplateController,
+    DiscountCodesController,
   ],
   providers: [
     AppConfigService,
@@ -149,6 +152,7 @@ import { AdminTemplateService } from "./admin-template/admin-template.service";
     MiniAppService,
     GramJsService,
     AdminTemplateService,
+    DiscountCodesService,
   ],
 })
 export class AppModule implements NestModule {
