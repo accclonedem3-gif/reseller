@@ -22,7 +22,9 @@ import {
   PAYMENT_EXPIRY_MINUTES,
   TIER_LABELS,
   TierKey,
+  getDiscountedPrice,
   getDurationMs,
+  getListPrice,
   getPrice,
   planEnumToKey,
   planKeyToEnum,
@@ -98,16 +100,25 @@ export class TiersService {
       }
     }
 
-    const discountMultiplier = availableDiscount ? 1 - availableDiscount.discountPercent / 100 : 1;
     const buildPlans = (tier: TierKey) => (
       ["monthly", "quarterly", "semi_annual", "annual"] as PlanKey[]
     ).map((plan) => {
-      const basePrice = getPrice(tier, plan);
+      if (availableDiscount) {
+        // Discount-code buyer: skip volume discount, use list price (monthly × N)
+        // as the strike-through reference, and the discounted price as the actual price.
+        const listPrice = getListPrice(tier, plan);
+        const discounted = getDiscountedPrice(tier, plan, availableDiscount.discountPercent);
+        return {
+          plan,
+          label: PLAN_LABELS[plan],
+          priceVnd: discounted,
+          originalPriceVnd: listPrice,
+        };
+      }
       return {
         plan,
         label: PLAN_LABELS[plan],
-        priceVnd: Math.round(basePrice * discountMultiplier),
-        originalPriceVnd: basePrice,
+        priceVnd: getPrice(tier, plan),
       };
     });
 
@@ -162,7 +173,6 @@ export class TiersService {
       }
     }
 
-    const basePriceVnd = getPrice(args.tier, args.plan);
     const durationMs = getDurationMs(args.plan);
 
     // ── Resolve discount code (if provided) ─────────────────────────
@@ -171,8 +181,15 @@ export class TiersService {
       discountCodeInfo = await this.discountCodes.validateForSeller(args.discountCode, seller.id);
     }
 
+    // Pricing rule:
+    //   No discount code → volume-discounted price (with -3/-7/-16% baked into TIER_PRICES)
+    //   With discount code → list price (monthly × N) × (1 - discountPercent)
+    //     i.e. discount-code buyers skip the volume discount.
+    const basePriceVnd = discountCodeInfo
+      ? getListPrice(args.tier, args.plan)
+      : getPrice(args.tier, args.plan);
     const priceVnd = discountCodeInfo
-      ? Math.round(basePriceVnd * (1 - discountCodeInfo.discountPercent / 100))
+      ? getDiscountedPrice(args.tier, args.plan, discountCodeInfo.discountPercent)
       : basePriceVnd;
 
     // ── Resolve referrer (only if seller doesn't already have one) ────
