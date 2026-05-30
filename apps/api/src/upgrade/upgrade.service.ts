@@ -14,7 +14,7 @@ import type { AuthenticatedUser } from "../types";
 
 // Only PRO is publicly purchasable. ULTRA is admin-assigned only.
 const TIER_PRICES: Record<"pro", number> = {
-  pro: 179000,
+  pro: 199000,
 };
 
 const TIER_LABELS: Record<"pro", string> = {

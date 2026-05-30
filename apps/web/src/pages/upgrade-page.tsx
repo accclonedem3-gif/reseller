@@ -253,7 +253,7 @@ function getPlans(t: typeof T["vi"]): Plan[] {
       id: "pro",
       name: "Pro",
       badge: t.planBadge,
-      priceVnd: 179000,
+      priceVnd: 199000,
       period: t.perMonth,
       tagline: t.plans.pro.tagline,
       accent: "emerald",

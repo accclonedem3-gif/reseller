@@ -5,16 +5,16 @@ export type TierKey = "pro" | "ultra";
 
 export const TIER_PRICES: Record<TierKey, Record<PlanKey, number>> = {
   pro: {
-    monthly: 179_000,
-    quarterly: 520_000,
-    semi_annual: 999_000,
-    annual: 1_799_000,
+    monthly: 199_000,
+    quarterly: 540_000,
+    semi_annual: 1_019_000,
+    annual: 1_819_000,
   },
   ultra: {
-    monthly: 279_000,
-    quarterly: 810_000,
-    semi_annual: 1_549_000,
-    annual: 2_799_000,
+    monthly: 299_000,
+    quarterly: 830_000,
+    semi_annual: 1_569_000,
+    annual: 2_819_000,
   },
 };
 
