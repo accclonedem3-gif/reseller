@@ -143,6 +143,20 @@ export class TierAffiliateService {
     let level1Rate = 0;
     let level2Rate = 0;
 
+    // Idempotent guard — if this subscription already has any AFFILIATE_LEVEL_* ledger entry,
+    // bail out to prevent double-credit when a webhook fires twice or admin retries.
+    const alreadyCredited = await tx.walletLedger.findFirst({
+      where: {
+        referenceType: "tier_subscription",
+        referenceId: args.subscriptionId,
+        type: { in: [WalletLedgerType.AFFILIATE_LEVEL_1, WalletLedgerType.AFFILIATE_LEVEL_2] },
+      },
+      select: { id: true },
+    });
+    if (alreadyCredited) {
+      return { level1Commission: 0, level2Commission: 0 };
+    }
+
     // ── Level 1 ─────────────────────────────────────────────────────
     if (args.referrerSellerId) {
       const referrer = await tx.seller.findUnique({
@@ -228,6 +242,9 @@ export class TierAffiliateService {
       update: {},
       create: { sellerId: args.sellerId, balance: toDecimal(0) },
     });
+    await tx.$queryRaw(
+      Prisma.sql`SELECT id FROM seller_wallets WHERE id = ${wallet.id} FOR UPDATE`,
+    );
     const fresh = await tx.sellerWallet.findUniqueOrThrow({ where: { id: wallet.id } });
     const balanceBefore = decimalToNumber(fresh.balance);
     const balanceAfter = balanceBefore + args.amount;
@@ -349,7 +366,11 @@ export class TierAffiliateService {
   ): Promise<void> {
     const wallet = await tx.sellerWallet.findUnique({ where: { sellerId: args.sellerId } });
     if (!wallet) return;
-    const balanceBefore = decimalToNumber(wallet.balance);
+    await tx.$queryRaw(
+      Prisma.sql`SELECT id FROM seller_wallets WHERE id = ${wallet.id} FOR UPDATE`,
+    );
+    const fresh = await tx.sellerWallet.findUniqueOrThrow({ where: { id: wallet.id } });
+    const balanceBefore = decimalToNumber(fresh.balance);
     const balanceAfter = balanceBefore - args.amount;
     await tx.sellerWallet.update({
       where: { id: wallet.id },

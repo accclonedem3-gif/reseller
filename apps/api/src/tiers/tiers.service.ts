@@ -239,7 +239,11 @@ export class TiersService {
     const result = await this.prisma.$transaction(async (tx) => {
       const wallet = await tx.sellerWallet.findUnique({ where: { sellerId } });
       if (!wallet) throw new BadRequestException("Ví seller chưa tồn tại, hãy nạp tiền trước.");
-      const balanceBefore = decimalToNumber(wallet.balance);
+      await tx.$queryRaw(
+        Prisma.sql`SELECT id FROM seller_wallets WHERE id = ${wallet.id} FOR UPDATE`,
+      );
+      const fresh = await tx.sellerWallet.findUniqueOrThrow({ where: { id: wallet.id } });
+      const balanceBefore = decimalToNumber(fresh.balance);
       if (balanceBefore < priceVnd) {
         throw new BadRequestException(`Số dư ví không đủ. Cần ${priceVnd.toLocaleString("vi-VN")}đ, hiện có ${balanceBefore.toLocaleString("vi-VN")}đ.`);
       }

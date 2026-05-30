@@ -689,6 +689,8 @@ export class AuthService {
     recoveryEmail?: string | null;
     sellerTier?: SellerTier;
     referralCode?: string | null;
+    signupIp?: string | null;
+    signupDeviceFingerprint?: string | null;
   }) {
     const username = input.username.toLowerCase().trim();
     const existing = await this.prisma.user.findUnique({
@@ -758,8 +760,8 @@ export class AuthService {
           tier: input.sellerTier || SellerTier.PRO,
           referralCode,
           referredBySellerId,
-          signupIp: (input as any).signupIp ?? null,
-          signupDeviceFingerprint: (input as any).signupDeviceFingerprint ?? null,
+          signupIp: input.signupIp ?? null,
+          signupDeviceFingerprint: input.signupDeviceFingerprint ?? null,
         },
       });
 
@@ -961,7 +963,14 @@ export class AuthService {
     return user;
   }
 
-  async register(username: string, email: string, password: string, displayName: string, referralCode?: string | null) {
+  async register(
+    username: string,
+    email: string,
+    password: string,
+    displayName: string,
+    referralCode?: string | null,
+    signupMeta?: { signupIp?: string | null; signupDeviceFingerprint?: string | null },
+  ) {
     // Nếu email được cung cấp, lưu thành recoveryEmail để dùng reset mật khẩu
     const created = await this.createSellerAccount({
       username,
@@ -970,6 +979,8 @@ export class AuthService {
       recoveryEmail: email || null,
       sellerTier: SellerTier.FREE,
       referralCode: referralCode ?? null,
+      signupIp: signupMeta?.signupIp ?? null,
+      signupDeviceFingerprint: signupMeta?.signupDeviceFingerprint ?? null,
     });
 
     return this.issueAuthResponse({
