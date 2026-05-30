@@ -3,18 +3,24 @@ import { SellerTier, TierPlan } from "@prisma/client";
 export type PlanKey = "monthly" | "quarterly" | "semi_annual" | "annual";
 export type TierKey = "pro" | "ultra";
 
+// Formula:
+//   monthly      = base
+//   quarterly    = base × 3 × 0.97  (3% off)
+//   semi_annual  = base × 6 × 0.93  (7% off)
+//   annual       = base × 12 × 0.84 (16% off)
+// Rounded to nearest 1.000đ.
 export const TIER_PRICES: Record<TierKey, Record<PlanKey, number>> = {
   pro: {
     monthly: 199_000,
-    quarterly: 540_000,
-    semi_annual: 1_019_000,
-    annual: 1_819_000,
+    quarterly: 579_000,
+    semi_annual: 1_110_000,
+    annual: 2_006_000,
   },
   ultra: {
-    monthly: 299_000,
-    quarterly: 830_000,
-    semi_annual: 1_569_000,
-    annual: 2_819_000,
+    monthly: 279_000,
+    quarterly: 812_000,
+    semi_annual: 1_557_000,
+    annual: 2_812_000,
   },
 };
 
