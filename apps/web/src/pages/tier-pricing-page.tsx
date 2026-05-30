@@ -70,6 +70,7 @@ export function TierPricingPage() {
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethodKey>("PAYOS");
   const [usdtNetwork, setUsdtNetwork] = useState<UsdtNetwork>("TRC20");
   const [referralCode, setReferralCode] = useState("");
+  const [discountCode, setDiscountCode] = useState("");
   const [paymentResponse, setPaymentResponse] = useState<PurchaseResponse | null>(null);
 
   const quoteQuery = useQuery<TierQuote>({
@@ -89,6 +90,7 @@ export function TierPricingPage() {
         plan: billingCycle,
         paymentMethod: backendMethod,
         referralCode: referralCode.trim() || undefined,
+        discountCode: discountCode.trim() || undefined,
       });
       return data;
     },
@@ -129,6 +131,7 @@ export function TierPricingPage() {
     setModalTier(null);
     setPaymentResponse(null);
     setReferralCode("");
+    setDiscountCode("");
     setPaymentMethod("PAYOS");
   };
 
@@ -212,11 +215,13 @@ export function TierPricingPage() {
           paymentMethod={paymentMethod}
           usdtNetwork={usdtNetwork}
           referralCode={referralCode}
+          discountCode={discountCode}
           isPending={purchaseMutation.isPending}
           paymentResponse={paymentResponse}
           onChangePaymentMethod={setPaymentMethod}
           onChangeUsdtNetwork={setUsdtNetwork}
           onChangeReferralCode={setReferralCode}
+          onChangeDiscountCode={setDiscountCode}
           onClose={closeModal}
           onConfirm={() => purchaseMutation.mutate()}
         />
@@ -365,15 +370,16 @@ function TierCard({ tierKey, label, tagline, priceVnd, pricePerMonth, features, 
 
 function PaymentModal({
   tier, plan, priceVnd, walletBalance, showReferralInput,
-  paymentMethod, usdtNetwork, referralCode, isPending, paymentResponse,
-  onChangePaymentMethod, onChangeUsdtNetwork, onChangeReferralCode, onClose, onConfirm,
+  paymentMethod, usdtNetwork, referralCode, discountCode, isPending, paymentResponse,
+  onChangePaymentMethod, onChangeUsdtNetwork, onChangeReferralCode, onChangeDiscountCode, onClose, onConfirm,
 }: {
   tier: TierKey; plan: PlanKey; priceVnd: number; walletBalance: number; showReferralInput: boolean;
-  paymentMethod: PaymentMethodKey; usdtNetwork: UsdtNetwork; referralCode: string; isPending: boolean;
+  paymentMethod: PaymentMethodKey; usdtNetwork: UsdtNetwork; referralCode: string; discountCode: string; isPending: boolean;
   paymentResponse: PurchaseResponse | null;
   onChangePaymentMethod: (m: PaymentMethodKey) => void;
   onChangeUsdtNetwork: (n: UsdtNetwork) => void;
   onChangeReferralCode: (c: string) => void;
+  onChangeDiscountCode: (c: string) => void;
   onClose: () => void; onConfirm: () => void;
 }) {
   const tierLabel = tier === "ultra" ? "Ultra" : "Pro";
@@ -449,12 +455,50 @@ function PaymentModal({
               />
             </div>
 
+            {/* Discount code */}
+            <div className="mt-5">
+              <label className="text-[11px] font-semibold uppercase tracking-[0.18em]" style={{ color: "var(--tx-f)" }}>
+                Mã giảm giá (tuỳ chọn)
+              </label>
+              <input
+                type="text"
+                value={discountCode}
+                onChange={(e) => onChangeDiscountCode(e.target.value.toUpperCase())}
+                placeholder="VD: WELCOME20"
+                maxLength={32}
+                className="mt-1.5 w-full rounded-xl px-4 py-3 font-mono text-sm uppercase tracking-wider outline-none"
+                style={{ background: "var(--inp)", border: "1px solid var(--bd)", color: "var(--tx)" }}
+              />
+            </div>
+
+            {showReferralInput && (
+              <div className="mt-3">
+                <label className="text-[11px] font-semibold uppercase tracking-[0.18em]" style={{ color: "var(--tx-f)" }}>
+                  Mã giới thiệu (tuỳ chọn)
+                </label>
+                <input
+                  type="text"
+                  value={referralCode}
+                  onChange={(e) => onChangeReferralCode(e.target.value.toUpperCase())}
+                  placeholder="VD: E4360EEA"
+                  maxLength={32}
+                  className="mt-1.5 w-full rounded-xl px-4 py-3 font-mono text-sm uppercase tracking-wider outline-none"
+                  style={{ background: "var(--inp)", border: "1px solid var(--bd)", color: "var(--tx)" }}
+                />
+              </div>
+            )}
+
             {/* Summary */}
             <div className="mt-6 rounded-2xl p-4" style={{ background: "var(--inp)" }}>
               <div className="flex items-center justify-between text-sm">
                 <span style={{ color: "var(--tx-m)" }}>Tổng cộng</span>
                 <span className="text-lg font-semibold" style={{ color: "var(--tx)" }}>{formatCurrency(priceVnd)}</span>
               </div>
+              {discountCode.trim() && (
+                <p className="mt-1 text-[11px]" style={{ color: "var(--tx-f)" }}>
+                  ℹ️ Mã giảm giá sẽ được verify khi thanh toán. Giá cuối có thể thấp hơn.
+                </p>
+              )}
             </div>
 
             <button

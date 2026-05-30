@@ -41,18 +41,18 @@ export function AdminDiscountCodesPage() {
     queryFn: () => api.get("/admin/discount-codes").then((r) => r.data),
   });
 
-  const sellersQuery = useQuery<{ data: Array<{ userId: string; sellerId: string; displayName: string; email: string; referralCode: string | null }> }>({
+  const sellersQuery = useQuery<Array<{ id: string; sellerId: string | null; username: string; displayName: string | null; referralCode: string | null }>>({
     queryKey: ["admin", "sellers", "all"],
     queryFn: () => api.get("/admin/sellers").then((r) => r.data),
   });
 
   const filteredSellers = useMemo(() => {
-    const list = sellersQuery.data?.data || [];
+    const list = (sellersQuery.data || []).filter((s) => s.sellerId);
     if (!sellerSearch.trim()) return list.slice(0, 50);
     const q = sellerSearch.trim().toLowerCase();
     return list.filter((s) =>
-      s.displayName.toLowerCase().includes(q) ||
-      s.email.toLowerCase().includes(q) ||
+      (s.displayName || "").toLowerCase().includes(q) ||
+      s.username.toLowerCase().includes(q) ||
       (s.referralCode ?? "").toLowerCase().includes(q),
     ).slice(0, 50);
   }, [sellersQuery.data, sellerSearch]);
@@ -126,10 +126,15 @@ export function AdminDiscountCodesPage() {
             {filteredSellers.length > 0 && (
               <div className="mt-2 max-h-44 overflow-y-auto rounded-lg border border-white/10 bg-[#0e1626]">
                 {filteredSellers.map((s) => (
-                  <button key={s.sellerId} type="button" onClick={() => { setReferrerId(s.sellerId); setSellerSearch(`${s.displayName} (${s.email})`); }}
+                  <button key={s.sellerId} type="button"
+                    onClick={() => {
+                      if (!s.sellerId) return;
+                      setReferrerId(s.sellerId);
+                      setSellerSearch(`${s.displayName || "(no name)"} (${s.username})`);
+                    }}
                     className={`block w-full px-3 py-2 text-left text-xs transition hover:bg-white/5 ${referrerId === s.sellerId ? "bg-emerald-500/10" : ""}`}>
-                    <span className="text-white">{s.displayName}</span>
-                    <span className="ml-2 text-slate-400">{s.email}</span>
+                    <span className="text-white">{s.displayName || "(no name)"}</span>
+                    <span className="ml-2 text-slate-400">{s.username}</span>
                     {s.referralCode && <span className="ml-2 font-mono text-emerald-400">ref:{s.referralCode}</span>}
                   </button>
                 ))}

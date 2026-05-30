@@ -108,6 +108,9 @@ export class DiscountCodesService {
     });
     if (!row) throw new BadRequestException("Mã giảm giá không tồn tại.");
     if (!row.active) throw new BadRequestException("Mã giảm giá đã bị vô hiệu hóa.");
+    if (row.referrerSellerId === sellerId) {
+      throw new BadRequestException("Không thể tự dùng mã của chính mình.");
+    }
     if (row.usages.length > 0) {
       throw new BadRequestException("Bạn đã dùng mã này rồi.");
     }

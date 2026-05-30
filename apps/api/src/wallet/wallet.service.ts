@@ -331,6 +331,10 @@ export class WalletService {
       throw new ForbiddenException("Only super admin can approve withdraw requests.");
     }
     return this.prisma.$transaction(async (tx) => {
+      // Lock the withdraw row first to prevent concurrent admin double-approval
+      await tx.$queryRaw(
+        Prisma.sql`SELECT id FROM withdraw_requests WHERE id = ${withdrawId} FOR UPDATE`,
+      );
       const withdraw = await tx.withdrawRequest.findUnique({
         where: { id: withdrawId },
         select: {
@@ -408,16 +412,8 @@ export class WalletService {
     if (!reasonTrim) {
       throw new BadRequestException("Phải nhập lý do từ chối.");
     }
-    const withdraw = await this.prisma.withdrawRequest.findUnique({
-      where: { id: withdrawId },
-      select: { id: true, status: true },
-    });
-    if (!withdraw) throw new NotFoundException("Withdraw request not found.");
-    if (withdraw.status !== WithdrawStatus.PENDING) {
-      throw new BadRequestException(`Lệnh rút đang ở trạng thái ${withdraw.status}, không thể từ chối.`);
-    }
-    return this.prisma.withdrawRequest.update({
-      where: { id: withdraw.id },
+    const updated = await this.prisma.withdrawRequest.updateMany({
+      where: { id: withdrawId, status: WithdrawStatus.PENDING },
       data: {
         status: WithdrawStatus.REJECTED,
         rejectReason: reasonTrim,
@@ -425,6 +421,15 @@ export class WalletService {
         reviewedAt: new Date(),
       },
     });
+    if (updated.count === 0) {
+      const existing = await this.prisma.withdrawRequest.findUnique({
+        where: { id: withdrawId },
+        select: { status: true },
+      });
+      if (!existing) throw new NotFoundException("Withdraw request not found.");
+      throw new BadRequestException(`Lệnh rút đang ở trạng thái ${existing.status}, không thể từ chối.`);
+    }
+    return this.prisma.withdrawRequest.findUnique({ where: { id: withdrawId } });
   }
 
   async expirePendingDepositRequests(limit = 50) {
