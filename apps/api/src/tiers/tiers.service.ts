@@ -63,6 +63,7 @@ export class TiersService {
         tierExpiresAt: true,
         affiliateUnlockedTier: true,
         referralCode: true,
+        referredBySellerId: true,
         autoRenewConfig: true,
       },
     });
@@ -77,13 +78,38 @@ export class TiersService {
     const wallet = await this.prisma.sellerWallet.findUnique({ where: { sellerId: seller.id } });
     const walletBalance = wallet ? decimalToNumber(wallet.balance) : 0;
 
+    // Find an active discount code owned by this seller's referrer that the seller hasn't used yet.
+    let availableDiscount: { code: string; discountPercent: number } | null = null;
+    if (seller.referredBySellerId) {
+      const dc = await this.prisma.discountCode.findFirst({
+        where: {
+          active: true,
+          referrerSellerId: seller.referredBySellerId,
+          usages: { none: { sellerId: seller.id } },
+        },
+        orderBy: [{ discountPercent: "desc" }, { createdAt: "desc" }],
+        select: { code: true, discountPercent: true },
+      });
+      if (dc) {
+        availableDiscount = {
+          code: dc.code,
+          discountPercent: decimalToNumber(dc.discountPercent),
+        };
+      }
+    }
+
+    const discountMultiplier = availableDiscount ? 1 - availableDiscount.discountPercent / 100 : 1;
     const buildPlans = (tier: TierKey) => (
       ["monthly", "quarterly", "semi_annual", "annual"] as PlanKey[]
-    ).map((plan) => ({
-      plan,
-      label: PLAN_LABELS[plan],
-      priceVnd: getPrice(tier, plan),
-    }));
+    ).map((plan) => {
+      const basePrice = getPrice(tier, plan);
+      return {
+        plan,
+        label: PLAN_LABELS[plan],
+        priceVnd: Math.round(basePrice * discountMultiplier),
+        originalPriceVnd: basePrice,
+      };
+    });
 
     return {
       currentTier: seller.tier,
@@ -92,6 +118,7 @@ export class TiersService {
       walletBalance,
       autoRenewConfig: seller.autoRenewConfig,
       affiliateUnlockedTier: seller.affiliateUnlockedTier,
+      availableDiscount,
       pro: { tier: "pro" as const, label: TIER_LABELS.pro, plans: buildPlans("pro") },
       ultra: showUltra
         ? { tier: "ultra" as const, label: TIER_LABELS.ultra, plans: buildPlans("ultra") }

@@ -12,6 +12,8 @@ type TierKey = "pro" | "ultra";
 type PaymentMethodKey = "PAYOS" | "USDT" | "WALLET_BALANCE";
 type UsdtNetwork = "TRC20" | "SOL";
 
+type PlanQuote = { plan: PlanKey; label: string; priceVnd: number; originalPriceVnd?: number };
+
 type TierQuote = {
   currentTier: string;
   currentTierExpiresAt: string | null;
@@ -19,8 +21,9 @@ type TierQuote = {
   walletBalance: number;
   affiliateUnlockedTier: number;
   autoRenewConfig?: { enabled?: boolean; plan?: PlanKey; useWallet?: boolean } | null;
-  pro: { tier: "pro"; label: string; plans: Array<{ plan: PlanKey; label: string; priceVnd: number }> };
-  ultra: { tier: "ultra"; label: string; plans: Array<{ plan: PlanKey; label: string; priceVnd: number }> } | null;
+  availableDiscount: { code: string; discountPercent: number } | null;
+  pro: { tier: "pro"; label: string; plans: PlanQuote[] };
+  ultra: { tier: "ultra"; label: string; plans: PlanQuote[] } | null;
 };
 
 type PurchaseResponse = {
@@ -78,6 +81,15 @@ export function TierPricingPage() {
     queryFn: async () => (await api.get("/tiers/quote")).data,
   });
   const quote = quoteQuery.data;
+
+  // Auto-fill the input with the discount code the seller signed up with (if any)
+  useEffect(() => {
+    const auto = quote?.availableDiscount?.code;
+    if (auto && !discountCode && !referralCode) {
+      setDiscountCode(auto);
+      setReferralCode(auto);
+    }
+  }, [quote?.availableDiscount?.code]);
 
   const purchaseMutation = useMutation({
     mutationFn: async () => {
@@ -166,6 +178,16 @@ export function TierPricingPage() {
         <p className="mx-auto mt-4 max-w-lg text-base sm:text-lg" style={{ color: "var(--tx-m)" }}>Chọn gói phù hợp với quy mô shop của bạn.</p>
       </div>
 
+      {quote.availableDiscount && (
+        <div className="mx-auto mt-8 max-w-2xl rounded-2xl px-5 py-4 text-center"
+          style={{ background: "rgba(16,185,129,0.08)", border: "1px solid rgba(16,185,129,0.3)" }}>
+          <p className="text-sm" style={{ color: "rgb(16,185,129)" }}>
+            🎁 Bạn được giảm <b>{quote.availableDiscount.discountPercent}%</b> cho lần đầu mua gói bằng mã{" "}
+            <code className="rounded bg-white/5 px-2 py-0.5 font-mono">{quote.availableDiscount.code}</code>
+          </p>
+        </div>
+      )}
+
       <div className="mt-10 flex justify-center">
         <div className="inline-flex items-center gap-1 rounded-full p-1" style={{ background: "var(--inp)" }}>
           {(["monthly", "quarterly", "semi_annual", "annual"] as PlanKey[]).map((p) => {
@@ -187,14 +209,18 @@ export function TierPricingPage() {
       <div className={`mt-14 grid gap-6 ${quote.ultra ? "lg:grid-cols-2" : "mx-auto max-w-md"}`}>
         {proPlan && (
           <TierCard tierKey="pro" label="Pro" tagline="Cho shop kinh doanh chuyên nghiệp"
-            priceVnd={proPlan.priceVnd} pricePerMonth={pricePerMonth(proPlan.priceVnd)} features={TIER_FEATURES.pro}
+            priceVnd={proPlan.priceVnd} originalPriceVnd={proPlan.originalPriceVnd}
+            discountPercent={quote.availableDiscount?.discountPercent}
+            pricePerMonth={pricePerMonth(proPlan.priceVnd)} features={TIER_FEATURES.pro}
             isCurrent={currentTierLower === "pro"} featured={false}
             onPurchase={() => { setModalTier("pro"); setPaymentMethod("PAYOS"); }}
             currentExpiresAt={currentTierLower === "pro" ? quote.currentTierExpiresAt : null} />
         )}
         {ultraPlan && (
           <TierCard tierKey="ultra" label="Ultra" tagline="Cho seller có mạng lưới CTV"
-            priceVnd={ultraPlan.priceVnd} pricePerMonth={pricePerMonth(ultraPlan.priceVnd)} features={TIER_FEATURES.ultra}
+            priceVnd={ultraPlan.priceVnd} originalPriceVnd={ultraPlan.originalPriceVnd}
+            discountPercent={quote.availableDiscount?.discountPercent}
+            pricePerMonth={pricePerMonth(ultraPlan.priceVnd)} features={TIER_FEATURES.ultra}
             isCurrent={currentTierLower === "ultra"} featured={true}
             onPurchase={() => { setModalTier("ultra"); setPaymentMethod("PAYOS"); }}
             currentExpiresAt={currentTierLower === "ultra" ? quote.currentTierExpiresAt : null} />
@@ -328,10 +354,11 @@ function AutoRenewCard({ quote }: { quote: TierQuote }) {
   );
 }
 
-function TierCard({ tierKey, label, tagline, priceVnd, pricePerMonth, features, isCurrent, featured, onPurchase, currentExpiresAt }: {
-  tierKey: TierKey; label: string; tagline: string; priceVnd: number; pricePerMonth: number; features: string[];
+function TierCard({ tierKey, label, tagline, priceVnd, originalPriceVnd, pricePerMonth, discountPercent, features, isCurrent, featured, onPurchase, currentExpiresAt }: {
+  tierKey: TierKey; label: string; tagline: string; priceVnd: number; originalPriceVnd?: number; pricePerMonth: number; discountPercent?: number; features: string[];
   isCurrent: boolean; featured: boolean; onPurchase: () => void; currentExpiresAt: string | null;
 }) {
+  const hasDiscount = !!originalPriceVnd && originalPriceVnd > priceVnd;
   return (
     <div className="relative flex flex-col rounded-3xl p-8 sm:p-10" style={{
       background: featured ? "linear-gradient(180deg, rgba(99,102,241,0.06), transparent 60%), var(--surface)" : "var(--surface)",
@@ -346,6 +373,18 @@ function TierCard({ tierKey, label, tagline, priceVnd, pricePerMonth, features, 
       </div>
 
       <div className="mt-8">
+        {hasDiscount && (
+          <div className="mb-2 flex items-center gap-2">
+            <span className="text-base font-medium line-through" style={{ color: "var(--tx-f)" }}>
+              {formatCurrency(originalPriceVnd!)}
+            </span>
+            {discountPercent && (
+              <span className="rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider" style={{ background: "rgba(16,185,129,0.15)", color: "rgb(16,185,129)" }}>
+                -{discountPercent}%
+              </span>
+            )}
+          </div>
+        )}
         <div className="flex items-baseline gap-1">
           <span className="text-6xl font-semibold tracking-tight" style={{ color: "var(--tx)", letterSpacing: "-0.04em" }}>{Math.round(priceVnd / 1000)}</span>
           <span className="text-2xl font-medium" style={{ color: "var(--tx-m)" }}>k</span>
