@@ -53,6 +53,19 @@ export class AppConfigService {
     return process.env.RESEND_API_KEY || "";
   }
 
+  get brevoApiKey() {
+    return process.env.BREVO_API_KEY || "";
+  }
+
+  /** "brevo" | "resend" — auto-detected if not set explicitly. */
+  get mailProvider(): "brevo" | "resend" | "" {
+    const explicit = String(process.env.MAIL_PROVIDER || "").toLowerCase();
+    if (explicit === "brevo" || explicit === "resend") return explicit;
+    if (process.env.BREVO_API_KEY) return "brevo";
+    if (process.env.RESEND_API_KEY) return "resend";
+    return "";
+  }
+
   get mailFrom() {
     return process.env.MAIL_FROM || "Reseller Platform <onboarding@resend.dev>";
   }

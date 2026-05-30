@@ -16,6 +16,7 @@ import {
 
 import { AppConfigService } from "../config/app-config.service";
 import { PrismaService } from "../db/prisma.service";
+import { MailService } from "../lib/mail.service";
 import { PaymentService } from "../lib/payment.service";
 import { decimalToNumber, generateExternalPaymentCode, toDecimal } from "../lib/utils";
 import { ShopsService } from "../shops/shops.service";
@@ -40,6 +41,8 @@ export class WalletService {
     private readonly paymentService: PaymentService,
     @Inject(AppConfigService)
     private readonly config: AppConfigService,
+    @Inject(MailService)
+    private readonly mail: MailService,
   ) {}
 
   async getWallet(user: AuthenticatedUser) {
@@ -774,26 +777,7 @@ export class WalletService {
           <p>Số tiền vẫn còn nguyên trong ví của bạn. Bạn có thể tạo yêu cầu mới hoặc liên hệ admin để biết thêm chi tiết.</p>
         </div>`;
 
-    if (!this.config.resendApiKey) {
-      console.log(`[withdraw-notify] DRY (no Resend key) → ${to}: ${subject}`);
-      return;
-    }
-
-    try {
-      const response = await fetch("https://api.resend.com/emails", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${this.config.resendApiKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ from: this.config.mailFrom, to: [to], subject, text, html }),
-      });
-      if (!response.ok) {
-        console.error(`[withdraw-notify] Failed: ${response.status} ${await response.text()}`);
-      }
-    } catch (error) {
-      console.error("[withdraw-notify] Email send failed", error);
-    }
+    await this.mail.send({ to, subject, text, html });
   }
 
   async adjustCustomerWallet(user: AuthenticatedUser, customerId: string, dto: AdjustCustomerWalletDto) {

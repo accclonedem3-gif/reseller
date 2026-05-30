@@ -16,6 +16,7 @@ import {
   isSellerReadOnly,
 } from "../business/seller-tier";
 import { PrismaService } from "../db/prisma.service";
+import { MailService } from "../lib/mail.service";
 import { decimalToNumber, durationToMs, hashValue, slugify, toDecimal } from "../lib/utils";
 
 import type { AuthenticatedUser } from "../types";
@@ -30,6 +31,8 @@ export class AuthService {
     private readonly jwtService: JwtService,
     @Inject(AppConfigService)
     private readonly config: AppConfigService,
+    @Inject(MailService)
+    private readonly mail: MailService,
   ) {}
 
   async login(username: string, password: string) {
@@ -892,35 +895,7 @@ export class AuthService {
       </div>
     `;
 
-    if (!this.config.resendApiKey) {
-      console.log(`[password-reset] ${input.to}: ${input.resetLink}`);
-      return;
-    }
-
-    try {
-      const response = await fetch("https://api.resend.com/emails", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${this.config.resendApiKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          from: this.config.mailFrom,
-          to: [input.to],
-          subject,
-          text,
-          html,
-        }),
-      });
-
-      if (!response.ok) {
-        console.error(
-          `[password-reset] Failed to send reset email: ${response.status} ${await response.text()}`,
-        );
-      }
-    } catch (error) {
-      console.error("[password-reset] Failed to send reset email.", error);
-    }
+    await this.mail.send({ to: input.to, subject, text, html });
   }
 
   private escapeHtml(value: string) {
