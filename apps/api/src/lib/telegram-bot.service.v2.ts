@@ -5114,15 +5114,24 @@ export class TelegramBotService {
         firstName: from.firstName,
         lastName: from.lastName,
       },
-      select: { id: true, referredById: true },
+      select: { id: true, referredById: true, telegramUserId: true, telegramChatId: true },
     });
     if (customer.referredById) return;
 
     const referrer = await this.prisma.customer.findFirst({
       where: { shopId, OR: [{ referralCode: refParam }, { id: refParam }] },
-      select: { id: true },
+      select: { id: true, telegramUserId: true, telegramChatId: true },
     });
-    if (!referrer || referrer.id === customer.id) return;
+    if (!referrer) return;
+    if (referrer.id === customer.id) return;
+    if (referrer.telegramUserId && referrer.telegramUserId === customer.telegramUserId) {
+      this.logger.warn(`Self-referral blocked (same telegramUserId=${customer.telegramUserId}, shop=${shopId})`);
+      return;
+    }
+    if (referrer.telegramChatId && referrer.telegramChatId === customer.telegramChatId) {
+      this.logger.warn(`Self-referral blocked (same telegramChatId=${customer.telegramChatId}, shop=${shopId})`);
+      return;
+    }
 
     await this.prisma.customer.update({
       where: { id: customer.id },
@@ -5184,7 +5193,7 @@ export class TelegramBotService {
       ``,
       programInfo,
       ``,
-      `💰 Commission earned: <b>${stats.commissionBalance.toLocaleString("vi-VN")} ₫</b>`,
+      `💰 Commission earned: <b>${stats.lifetimeCommission.toLocaleString("vi-VN")} ₫</b>`,
       `👥 Referred customers: <b>${stats.downlineCount}</b>`,
       refLink ? `\n🔗 <b>Your referral link:</b>\n<code>${refLink}</code>` : ``,
     ] : language === "th" ? [
@@ -5192,7 +5201,7 @@ export class TelegramBotService {
       ``,
       programInfo,
       ``,
-      `💰 ค่าคอมมิชชันสะสม: <b>${stats.commissionBalance.toLocaleString("vi-VN")} ₫</b>`,
+      `💰 ค่าคอมมิชชันสะสม: <b>${stats.lifetimeCommission.toLocaleString("vi-VN")} ₫</b>`,
       `👥 ลูกค้าที่แนะนำ: <b>${stats.downlineCount}</b>`,
       refLink ? `\n🔗 <b>ลิงก์แนะนำของคุณ:</b>\n<code>${refLink}</code>` : ``,
     ] : [
@@ -5200,7 +5209,7 @@ export class TelegramBotService {
       ``,
       programInfo,
       ``,
-      `💰 Hoa hồng tích lũy: <b>${stats.commissionBalance.toLocaleString("vi-VN")} ₫</b>`,
+      `💰 Hoa hồng tích lũy: <b>${stats.lifetimeCommission.toLocaleString("vi-VN")} ₫</b>`,
       `👥 Người đã giới thiệu: <b>${stats.downlineCount}</b>`,
       refLink ? `\n🔗 <b>Link giới thiệu của bạn:</b>\n<code>${refLink}</code>` : ``,
     ];
