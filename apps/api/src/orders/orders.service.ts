@@ -831,10 +831,6 @@ export class OrdersService {
       });
     });
 
-    if (!options?.outOfStock) {
-      await this.affiliateService.revokeCommission(order.id).catch(() => undefined);
-    }
-
     return this.getOrderById(order.id);
   }
 
