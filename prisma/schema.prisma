@@ -258,6 +258,17 @@ enum SourceWarrantyPolicy {
   BHF
 }
 
+enum StockOperationType {
+  UPLOAD
+  EXTRACT
+}
+
+enum StockExtractMethod {
+  FIFO
+  LIFO
+  RANDOM
+}
+
 enum ConnectionTopupStatus {
   PENDING
   PAID
@@ -639,9 +650,26 @@ model SourceProduct {
   overrides               SellerProductOverride[]
   orders                  Order[]
   internalSourceOrders    InternalSourceOrder[]
+  operations              ProductStockOperation[]
 
   @@unique([shopId, externalProductId])
   @@map("source_products")
+}
+
+model ProductStockOperation {
+  id               String              @id @default(cuid())
+  sourceProductId  String              @map("source_product_id")
+  operationType    StockOperationType  @map("operation_type")
+  extractMethod    StockExtractMethod? @map("extract_method")
+  quantity         Int
+  availableBefore  Int                 @map("available_before")
+  availableAfter   Int                 @map("available_after")
+  payloadJson      Json?               @map("payload_json")
+  createdAt        DateTime            @default(now()) @map("created_at")
+  sourceProduct    SourceProduct       @relation(fields: [sourceProductId], references: [id], onDelete: Cascade)
+
+  @@index([sourceProductId, createdAt])
+  @@map("product_stock_operations")
 }
 
 model SellerProductOverride {

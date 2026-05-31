@@ -12,11 +12,14 @@ import {
   Crown,
   Eye,
   EyeOff,
+  FileUp,
   FolderOpen,
   GripVertical,
+  History,
   MoreHorizontal,
   Package,
   PackageCheck,
+  PackageMinus,
   PackagePlus,
   Pencil,
   Plus,
@@ -32,6 +35,15 @@ import {
 } from "lucide-react";
 
 import { useAuth } from "@/auth/auth-provider";
+import {
+  ExtractStockModal,
+  ExtractStockResultModal,
+  StockHistoryModal,
+  UploadStockModal,
+  UploadStockResultModal,
+  type StockExtractMethod,
+  type StockOperation,
+} from "@/components/dashboard/stock-modals";
 import {
   StudioBadge,
   StudioButton,
@@ -953,6 +965,21 @@ export function ProductsPageStudio({
   const [editorImageUploading, setEditorImageUploading] = useState(false);
   const [promoBannerUploading, setPromoBannerUploading] = useState(false);
   const [addAccountsText, setAddAccountsText] = useState("");
+  const [stockModal, setStockModal] = useState<
+    "upload" | "uploadResult" | "extract" | "extractResult" | "history" | null
+  >(null);
+  const [uploadResult, setUploadResult] = useState<{
+    added: number;
+    totalBefore: number;
+    totalAfter: number;
+    preview: string[];
+  } | null>(null);
+  const [extractResult, setExtractResult] = useState<{
+    extracted: string[];
+    totalBefore: number;
+    totalAfter: number;
+    method: StockExtractMethod;
+  } | null>(null);
   const [checkedIds, setCheckedIds] = useState<Set<string>>(new Set());
   const [showCategoryPanel, setShowCategoryPanel] = useState(false);
   const [showAssignDropdown, setShowAssignDropdown] = useState(false);
@@ -1392,6 +1419,70 @@ export function ProductsPageStudio({
     },
   });
 
+  // === Manual stock: upload / extract / history (per source product) ===
+  const uploadStockMutation = useMutation({
+    mutationFn: async (file: File) => {
+      if (!selectedProduct) throw new Error(t.errNoProduct);
+      const fd = new FormData();
+      fd.append("file", file);
+      const res = await api.post<{
+        added: number;
+        totalBefore: number;
+        totalAfter: number;
+        preview: string[];
+      }>(`/products/source-products/${selectedProduct.id}/stock/upload`, fd, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
+      return res.data;
+    },
+    onSuccess: async (data) => {
+      setUploadResult(data);
+      setStockModal("uploadResult");
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["products"] }),
+        queryClient.invalidateQueries({ queryKey: ["products", selectedProduct?.id, "inventory"] }),
+        queryClient.invalidateQueries({ queryKey: ["stock-history", selectedProduct?.id] }),
+      ]);
+    },
+    onError: (error) => {
+      showToast({ tone: "error", message: getErrorMessage(error, "Không thể upload kho.") });
+    },
+  });
+
+  const extractStockMutation = useMutation({
+    mutationFn: async (params: { quantity: number; method: StockExtractMethod }) => {
+      if (!selectedProduct) throw new Error(t.errNoProduct);
+      const res = await api.post<{
+        extracted: string[];
+        totalBefore: number;
+        totalAfter: number;
+        method: StockExtractMethod;
+      }>(`/products/source-products/${selectedProduct.id}/stock/extract`, params);
+      return res.data;
+    },
+    onSuccess: async (data) => {
+      setExtractResult(data);
+      setStockModal("extractResult");
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["products"] }),
+        queryClient.invalidateQueries({ queryKey: ["products", selectedProduct?.id, "inventory"] }),
+        queryClient.invalidateQueries({ queryKey: ["stock-history", selectedProduct?.id] }),
+      ]);
+    },
+    onError: (error) => {
+      showToast({ tone: "error", message: getErrorMessage(error, "Không thể bóc kho.") });
+    },
+  });
+
+  const stockHistoryQuery = useQuery<{ items: StockOperation[]; total: number }>({
+    queryKey: ["stock-history", selectedProduct?.id],
+    enabled: Boolean(selectedProduct?.id) && stockModal === "history",
+    queryFn: async () =>
+      (await api.get(`/products/source-products/${selectedProduct?.id}/stock/history`, {
+        params: { limit: 100 },
+      })).data,
+  });
+
   const toggleCheck = (id: string) => {
     setCheckedIds((prev) => {
       const next = new Set(prev);
@@ -1659,6 +1750,50 @@ export function ProductsPageStudio({
             ) : (
               <>
                 <Field label={t.fDelivery} hint={t.hManualDelivery} description={t.dDelivery}>
+                  {/* Manual stock actions — upload .txt / extract / history */}
+                  <div className="mb-2 flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setStockModal("upload")}
+                      disabled={uploadStockMutation.isPending}
+                      className="inline-flex items-center gap-1.5 rounded-xl px-3 py-2 text-[11px] font-black uppercase tracking-widest transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                      style={{
+                        background: "rgba(16,185,129,0.12)",
+                        border: "1px solid rgba(16,185,129,0.3)",
+                        color: "rgb(16,185,129)",
+                      }}
+                    >
+                      <FileUp className="h-3.5 w-3.5" />
+                      Upload .txt
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setStockModal("extract")}
+                      disabled={extractStockMutation.isPending}
+                      className="inline-flex items-center gap-1.5 rounded-xl px-3 py-2 text-[11px] font-black uppercase tracking-widest transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                      style={{
+                        background: "rgba(249,115,22,0.12)",
+                        border: "1px solid rgba(249,115,22,0.3)",
+                        color: "rgb(249,115,22)",
+                      }}
+                    >
+                      <PackageMinus className="h-3.5 w-3.5" />
+                      Bóc kho
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setStockModal("history")}
+                      className="inline-flex items-center gap-1.5 rounded-xl px-3 py-2 text-[11px] font-black uppercase tracking-widest transition hover:opacity-90"
+                      style={{
+                        background: "rgba(139,92,246,0.12)",
+                        border: "1px solid rgba(139,92,246,0.3)",
+                        color: "rgb(139,92,246)",
+                      }}
+                    >
+                      <History className="h-3.5 w-3.5" />
+                      Lịch sử
+                    </button>
+                  </div>
                   <DeliveryTextArea
                     value={editorForm.deliveryText}
                     onChange={(val) => setEditorForm((c) => ({ ...c, deliveryText: val }))}
@@ -3740,6 +3875,41 @@ export function ProductsPageStudio({
         </div>,
         document.body,
       )}
+
+      {/* Manual stock: upload / extract / history modals */}
+      <UploadStockModal
+        open={stockModal === "upload"}
+        onClose={() => setStockModal(null)}
+        productName={selectedProduct?.displayName ?? ""}
+        currentStock={manualInventory?.summary?.availableCount ?? selectedProduct?.available ?? 0}
+        isUploading={uploadStockMutation.isPending}
+        onUpload={(file) => uploadStockMutation.mutate(file)}
+      />
+      <UploadStockResultModal
+        open={stockModal === "uploadResult"}
+        onClose={() => { setStockModal(null); setUploadResult(null); }}
+        result={uploadResult}
+      />
+      <ExtractStockModal
+        open={stockModal === "extract"}
+        onClose={() => setStockModal(null)}
+        productName={selectedProduct?.displayName ?? ""}
+        currentStock={manualInventory?.summary?.availableCount ?? selectedProduct?.available ?? 0}
+        isExtracting={extractStockMutation.isPending}
+        onExtract={(quantity, method) => extractStockMutation.mutate({ quantity, method })}
+      />
+      <ExtractStockResultModal
+        open={stockModal === "extractResult"}
+        onClose={() => { setStockModal(null); setExtractResult(null); }}
+        result={extractResult}
+      />
+      <StockHistoryModal
+        open={stockModal === "history"}
+        onClose={() => setStockModal(null)}
+        productName={selectedProduct?.displayName ?? ""}
+        items={stockHistoryQuery.data?.items ?? []}
+        isLoading={stockHistoryQuery.isLoading}
+      />
     </div>
   );
 }

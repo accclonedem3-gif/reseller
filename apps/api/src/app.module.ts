@@ -38,6 +38,10 @@ import { OrdersController } from "./orders/orders.controller";
 import { OrdersService } from "./orders/orders.service";
 import { ProductsController } from "./products/products.controller";
 import { ProductsService } from "./products/products.service";
+import { ProductsStockController } from "./products-stock/products-stock.controller";
+import { ProductsStockService } from "./products-stock/products-stock.service";
+import { SourceStockController } from "./source-stock/source-stock.controller";
+import { SourceStockService } from "./source-stock/source-stock.service";
 import { ReportsController } from "./reports/reports.controller";
 import { ReportsService } from "./reports/reports.service";
 import { ShopsController } from "./shops/shops.controller";
@@ -85,6 +89,8 @@ import { MailService } from "./lib/mail.service";
     AuthController,
     ShopsController,
     ProductsController,
+    ProductsStockController,
+    SourceStockController,
     OrdersController,
     WalletController,
     ReportsController,
@@ -123,6 +129,8 @@ import { MailService } from "./lib/mail.service";
     ShopsService,
     CustomerWalletService,
     ProductsService,
+    ProductsStockService,
+    SourceStockService,
     WalletService,
     WalletPromotionService,
     WarrantyService,

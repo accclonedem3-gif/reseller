@@ -1329,46 +1329,89 @@ async function processPurchase(job) {
         }
         const deliveryEntries = readManualDeliveryEntries(sourceMetadata);
         if (deliveryEntries.length >= order.quantity) {
-            const deliveredEntries = deliveryEntries.slice(0, order.quantity);
-            const remainingEntries = deliveryEntries.slice(order.quantity);
-            const deliveredText = deliveredEntries.join("\n\n");
-            const remainingDeliveryText = normalizeManualDeliveryText(remainingEntries.join("\n\n")) || null;
             const deliveredAt = new Date();
-            await prisma.$transaction(async (tx) => {
-                await tx.order.update({
-                    where: { id: order.id },
-                    data: {
-                        status: "DELIVERED",
-                        deliveredAccountText: deliveredText,
-                        deliveredAt,
-                    },
-                });
-                await tx.orderEvent.create({
-                    data: {
-                        orderId: order.id,
-                        eventType: "manual_product_delivered",
-                        payloadJson: {
-                            deliveredText,
-                            deliveredCount: deliveredEntries.length,
+            const __SHORTAGE_SENTINEL = Symbol.for("manual_delivery_shortage");
+            let txDeliveredText = "";
+            let txDeliveredEntries = [];
+            try {
+                await prisma.$transaction(async (tx) => {
+                    await tx.$queryRawUnsafe("SELECT id FROM source_products WHERE id = $1 FOR UPDATE", order.sourceProductId);
+                    const freshProduct = await tx.sourceProduct.findUnique({
+                        where: { id: order.sourceProductId },
+                        select: { metadataJson: true, available: true },
+                    });
+                    const freshMeta = (freshProduct && typeof freshProduct.metadataJson === "object" && !Array.isArray(freshProduct.metadataJson))
+                        ? freshProduct.metadataJson
+                        : {};
+                    const freshEntries = readManualDeliveryEntries(freshMeta);
+                    if (freshEntries.length < order.quantity) {
+                        const shortageReason = "Kho tai khoan giao tu dong khong du so luong. Don da chuyen sang cho seller xu ly thu cong.";
+                        await tx.order.update({
+                            where: { id: order.id },
+                            data: { status: "PAID_WAITING_STOCK", failureReason: shortageReason },
+                        });
+                        await tx.orderEvent.create({
+                            data: {
+                                orderId: order.id,
+                                eventType: "manual_product_pending",
+                                payloadJson: {
+                                    reason: shortageReason,
+                                    availableEntries: freshEntries.length,
+                                    requestedQuantity: order.quantity,
+                                    raceDetected: true,
+                                },
+                            },
+                        });
+                        throw __SHORTAGE_SENTINEL;
+                    }
+                    const deliveredEntries = freshEntries.slice(0, order.quantity);
+                    const remainingEntries = freshEntries.slice(order.quantity);
+                    const deliveredText = deliveredEntries.join("\n\n");
+                    const remainingDeliveryText = normalizeManualDeliveryText(remainingEntries.join("\n\n")) || null;
+                    txDeliveredText = deliveredText;
+                    txDeliveredEntries = deliveredEntries;
+                    await tx.order.update({
+                        where: { id: order.id },
+                        data: {
+                            status: "DELIVERED",
+                            deliveredAccountText: deliveredText,
+                            deliveredAt,
                         },
-                    },
-                });
-                await tx.sourceProduct.update({
-                    where: { id: order.sourceProductId },
-                    data: {
-                        soldCount: {
-                            increment: order.quantity,
+                    });
+                    await tx.orderEvent.create({
+                        data: {
+                            orderId: order.id,
+                            eventType: "manual_product_delivered",
+                            payloadJson: {
+                                deliveredText,
+                                deliveredCount: deliveredEntries.length,
+                            },
                         },
-                        available: remainingEntries.length,
-                        metadataJson: {
-                            ...sourceMetadata,
-                            manual: true,
-                            deliveryEntries: remainingEntries,
-                            deliveryText: remainingDeliveryText,
+                    });
+                    await tx.sourceProduct.update({
+                        where: { id: order.sourceProductId },
+                        data: {
+                            soldCount: {
+                                increment: order.quantity,
+                            },
+                            available: remainingEntries.length,
+                            metadataJson: {
+                                ...freshMeta,
+                                manual: true,
+                                deliveryEntries: remainingEntries,
+                                deliveryText: remainingDeliveryText,
+                            },
                         },
-                    },
+                    });
                 });
-            });
+            }
+            catch (e) {
+                if (e === __SHORTAGE_SENTINEL) {
+                    console.warn("[manual-delivery] shortage detected after FOR UPDATE re-read", { orderId: order.id });
+                    return;
+                }
+                throw e;
+            }
             await snapshotWarrantyForDeliveredOrder(order.id);
             await creditAffiliateCommission(order.id).catch(() => undefined);
             if (botToken &&
@@ -1385,7 +1428,7 @@ async function processPurchase(job) {
                     productName: order.productNameSnapshot,
                     quantity: order.quantity,
                     amount: order.totalSaleAmount,
-                    deliveredText,
+                    deliveredText: txDeliveredText,
                     deliveredAt,
                     language: customerLanguage,
                     sourceDescription: order.sourceProduct?.sourceDescription,
@@ -1495,46 +1538,94 @@ async function processPurchase(job) {
             : {};
         const deliveryEntries = readManualDeliveryEntries(upstreamMetadata);
         if (deliveryEntries.length >= order.quantity) {
-            const deliveredEntries = deliveryEntries.slice(0, order.quantity);
-            const remainingEntries = deliveryEntries.slice(order.quantity);
-            const deliveredText = deliveredEntries.join("\n\n");
-            const remainingDeliveryText = normalizeManualDeliveryText(remainingEntries.join("\n\n")) || null;
             const deliveredAt = new Date();
-            await prisma.$transaction(async (tx) => {
-                await tx.order.update({
-                    where: { id: order.id },
-                    data: { status: "DELIVERED", deliveredAccountText: deliveredText, deliveredAt, failureReason: null },
-                });
-                await tx.orderEvent.create({
-                    data: {
-                        orderId: order.id,
-                        eventType: "internal_source_delivered",
-                        payloadJson: { deliveredCount: deliveredEntries.length },
-                    },
-                });
-                await tx.sourceProduct.update({
-                    where: { id: order.sourceProductId },
-                    data: {
-                        soldCount: { increment: order.quantity },
-                        available: order.sourceProduct.available === null ? undefined : { decrement: order.quantity },
-                    },
-                });
-                if (upstreamProduct) {
-                    await tx.sourceProduct.update({
-                        where: { id: upstreamProduct.id },
-                        data: {
-                            soldCount: { increment: order.quantity },
-                            available: remainingEntries.length,
-                            metadataJson: {
-                                ...upstreamMetadata,
-                                manual: true,
-                                deliveryEntries: remainingEntries,
-                                deliveryText: remainingDeliveryText,
+            const __UPSTREAM_SHORTAGE_SENTINEL = Symbol.for("manual_delivery_upstream_shortage");
+            let txDeliveredText = "";
+            let txDeliveredEntries = [];
+            try {
+                await prisma.$transaction(async (tx) => {
+                    if (upstreamProduct) {
+                        await tx.$queryRawUnsafe("SELECT id FROM source_products WHERE id = $1 FOR UPDATE", upstreamProduct.id);
+                    }
+                    const freshUpstream = upstreamProduct
+                        ? await tx.sourceProduct.findUnique({
+                            where: { id: upstreamProduct.id },
+                            select: { metadataJson: true, available: true },
+                        })
+                        : null;
+                    const freshMeta = (freshUpstream && typeof freshUpstream.metadataJson === "object" && !Array.isArray(freshUpstream.metadataJson))
+                        ? freshUpstream.metadataJson
+                        : {};
+                    const freshEntries = readManualDeliveryEntries(freshMeta);
+                    if (freshEntries.length < order.quantity) {
+                        const shortageReason = "Kho tai khoan giao tu dong khong du so luong. Don da chuyen sang cho seller xu ly thu cong.";
+                        await tx.order.update({
+                            where: { id: order.id },
+                            data: { status: "PAID_WAITING_STOCK", failureReason: shortageReason },
+                        });
+                        await tx.orderEvent.create({
+                            data: {
+                                orderId: order.id,
+                                eventType: "manual_product_pending",
+                                payloadJson: {
+                                    reason: shortageReason,
+                                    availableEntries: freshEntries.length,
+                                    requestedQuantity: order.quantity,
+                                    raceDetected: true,
+                                    upstreamProductId: upstreamProduct?.id || null,
+                                },
                             },
+                        });
+                        throw __UPSTREAM_SHORTAGE_SENTINEL;
+                    }
+                    const deliveredEntries = freshEntries.slice(0, order.quantity);
+                    const remainingEntries = freshEntries.slice(order.quantity);
+                    const deliveredText = deliveredEntries.join("\n\n");
+                    const remainingDeliveryText = normalizeManualDeliveryText(remainingEntries.join("\n\n")) || null;
+                    txDeliveredText = deliveredText;
+                    txDeliveredEntries = deliveredEntries;
+                    await tx.order.update({
+                        where: { id: order.id },
+                        data: { status: "DELIVERED", deliveredAccountText: deliveredText, deliveredAt, failureReason: null },
+                    });
+                    await tx.orderEvent.create({
+                        data: {
+                            orderId: order.id,
+                            eventType: "internal_source_delivered",
+                            payloadJson: { deliveredCount: deliveredEntries.length, deliveredText },
                         },
                     });
+                    await tx.sourceProduct.update({
+                        where: { id: order.sourceProductId },
+                        data: {
+                            soldCount: { increment: order.quantity },
+                            available: order.sourceProduct.available === null ? undefined : { decrement: order.quantity },
+                        },
+                    });
+                    if (upstreamProduct) {
+                        await tx.sourceProduct.update({
+                            where: { id: upstreamProduct.id },
+                            data: {
+                                soldCount: { increment: order.quantity },
+                                available: remainingEntries.length,
+                                metadataJson: {
+                                    ...freshMeta,
+                                    manual: true,
+                                    deliveryEntries: remainingEntries,
+                                    deliveryText: remainingDeliveryText,
+                                },
+                            },
+                        });
+                    }
+                });
+            }
+            catch (e) {
+                if (e === __UPSTREAM_SHORTAGE_SENTINEL) {
+                    console.warn("[internal-source-delivery] upstream shortage detected after FOR UPDATE re-read", { orderId: order.id, upstreamProductId: upstreamProduct?.id });
+                    return;
                 }
-            });
+                throw e;
+            }
             await snapshotWarrantyForDeliveredOrder(order.id);
             await creditAffiliateCommission(order.id).catch(() => undefined);
             const totalSourceAmount = Number(order.totalSourceAmount || 0);
@@ -1553,7 +1644,7 @@ async function processPurchase(job) {
                     productName: order.productNameSnapshot,
                     quantity: order.quantity,
                     amount: order.totalSaleAmount,
-                    deliveredText,
+                    deliveredText: txDeliveredText,
                     deliveredAt,
                     language: customerLanguage,
                     sourceDescription: order.sourceProduct?.sourceDescription,
