@@ -718,11 +718,6 @@ export class TelegramBotService {
         await this.clearPendingPaymentSelection(shopId, telegramUserId);
         await this.clearPendingTxHashSubmission(shopId, telegramUserId);
         await this.renderCatalog(shopId, outboundToken, chatId, messageId, 0, actions, callbackLanguage);
-      } else if (data === "qty:cancel") {
-        // Customer hits the "Hủy" button on a quantity prompt — wipe the pending
-        // selection and return to the home menu.
-        await this.clearPendingQuantitySelection(shopId, telegramUserId);
-        await this.renderHome(shopId, outboundToken, chatId, messageId, actions, callbackLanguage);
       } else if (data === "home:history") {
         await this.clearPendingQuantitySelection(shopId, telegramUserId);
         await this.clearPendingWalletTopup(shopId, telegramUserId);
@@ -4336,11 +4331,9 @@ export class TelegramBotService {
     const buyOtherText = buyOtherCustomEmoji
       ? this.buttonLabel("buyOther", language).replace(/^[^\p{L}\p{N}]+/u, "").trim()
       : this.buttonLabel("buyOther", language);
-    const cancelLabel = language === "en" ? "❌ Cancel" : language === "th" ? "❌ ยกเลิก" : "❌ Hủy thao tác";
     const replyMarkup = {
       inline_keyboard: [
         [{ text: buyOtherText, callback_data: "home:products", ...(buyOtherCustomEmoji ? { icon_custom_emoji_id: buyOtherCustomEmoji } : {}) }],
-        [{ text: cancelLabel, callback_data: "qty:cancel" }],
       ],
     };
     const quantityLine = this.buildQuantityPromptText(selection.maxQuantity, language, msgEmojiIds["quantityInput"] || "");
