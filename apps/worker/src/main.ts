@@ -500,19 +500,82 @@ async function enqueuePaidOrder(queue, orderId, totalSourceAmount) {
         throw error;
     }
 }
+let __adminTemplateCustCache = null;
+let __adminTemplateCustCacheAt = 0;
+async function getAdminTemplateCustomizationCached() {
+    const now = Date.now();
+    if (__adminTemplateCustCache !== null && now - __adminTemplateCustCacheAt < 60000) {
+        return __adminTemplateCustCache;
+    }
+    try {
+        const adminCfg = await prisma.botConfig.findFirst({
+            where: { isGlobalDefault: true },
+            select: { customizationJson: true },
+        });
+        __adminTemplateCustCache = adminCfg?.customizationJson || null;
+        __adminTemplateCustCacheAt = now;
+        return __adminTemplateCustCache;
+    } catch {
+        return null;
+    }
+}
+function splitDeliveredAccountList(deliveredText) {
+    const raw = String(deliveredText || "").trim();
+    if (!raw) return [];
+    if (raw.indexOf("\n\n") !== -1) {
+        return raw.split(/\n\n+/).map((s) => s.trim()).filter(Boolean);
+    }
+    return raw.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+}
 async function sendDeliveredOrderMessages(input) {
-    await (0, server_1.telegramSendMessage)(input.botToken, input.chatId, buildDeliveredAccountMessage(input), {
-        parse_mode: "HTML",
-    }).catch(() => undefined);
-    await (0, server_1.telegramSendMessage)(input.botToken, input.chatId, buildDeliveredBillMessage(input), {
-        reply_markup: {
-            inline_keyboard: [
-                [{
-                        text: input.language === "en" ? "🛡️ Warranty" : "🛡️ Bảo hành",
-                        callback_data: "warranty:start",
-                    }],
-            ],
+    let shopCust = null;
+    let shopName = input.shopName || null;
+    if (input.shopId) {
+        try {
+            const shopCfg = await prisma.shop.findUnique({
+                where: { id: input.shopId },
+                select: {
+                    name: true,
+                    botConfig: { select: { customizationJson: true } },
+                },
+            });
+            if (shopCfg) {
+                shopCust = shopCfg.botConfig?.customizationJson || null;
+                if (!shopName) shopName = shopCfg.name || null;
+            }
+        } catch { /* ignore */ }
+    }
+    const adminCust = await getAdminTemplateCustomizationCached();
+    const template = (0, server_1.resolveInvoiceTemplate)(shopCust, adminCust);
+    const accountList = splitDeliveredAccountList(input.deliveredText);
+    const warrantyText = resolveWarrantyText({
+        productName: input.productName,
+        sourceDescription: input.sourceDescription,
+        metadata: input.metadata,
+        language: input.language,
+    });
+    const dateTimeText = `${formatLocalizedDateTime(input.deliveredAt, input.language)} (GMT+7)`;
+    const totalPriceText = formatVndMoney(input.amount, input.language);
+    const buyMoreLabel = input.language === "en" ? "🛍️ Buy more" : input.language === "th" ? "🛍️ ซื้อต่อ" : "🛍️ Mua tiếp";
+    const warrantyLabel = input.language === "en" ? "🛡️ Warranty" : input.language === "th" ? "🛡️ การรับประกัน" : "🛡️ Bảo hành";
+    await (0, server_1.sendInvoiceMessages)({
+        botToken: input.botToken,
+        chatId: input.chatId,
+        template,
+        data: {
+            orderCode: input.orderCode,
+            productName: input.productName,
+            quantity: input.quantity,
+            totalPriceText,
+            customerName: input.customerName || null,
+            shopName: shopName || null,
+            dateTimeText,
+            warrantyText,
+            accountList,
+            language: input.language,
         },
+        buyMoreButton: { text: buyMoreLabel, callback_data: "home:products" },
+        warrantyButton: { text: warrantyLabel, callback_data: "warranty:start" },
     }).catch(() => undefined);
 }
 function createRedisConnection() {
@@ -1244,6 +1307,7 @@ async function processPurchase(job) {
                 await deleteQrMessage(botToken, order);
                 await sendDeliveredOrderMessages({
                     botToken,
+                    shopId: order.shopId,
                     chatId: order.customer.telegramChatId,
                     orderCode: order.orderCode,
                     productName: order.productNameSnapshot,
@@ -1309,6 +1373,7 @@ async function processPurchase(job) {
                 await deleteQrMessage(botToken, order);
                 await sendDeliveredOrderMessages({
                     botToken,
+                    shopId: order.shopId,
                     chatId: order.customer.telegramChatId,
                     orderCode: order.orderCode,
                     productName: order.productNameSnapshot,
@@ -1474,6 +1539,7 @@ async function processPurchase(job) {
                 await deleteQrMessage(botToken, order);
                 await sendDeliveredOrderMessages({
                     botToken,
+                    shopId: order.shopId,
                     chatId: order.customer.telegramChatId,
                     orderCode: order.orderCode,
                     productName: order.productNameSnapshot,
@@ -1549,6 +1615,7 @@ async function processPurchase(job) {
                     await deleteQrMessage(botToken, order);
                     await sendDeliveredOrderMessages({
                         botToken,
+                        shopId: order.shopId,
                         chatId: order.customer.telegramChatId,
                         orderCode: order.orderCode,
                         productName: order.productNameSnapshot,
@@ -1710,6 +1777,7 @@ async function processPurchase(job) {
             await deleteQrMessage(botToken, order);
             await sendDeliveredOrderMessages({
                 botToken,
+                shopId: order.shopId,
                 chatId: order.customer.telegramChatId,
                 orderCode: order.orderCode,
                 productName: order.productNameSnapshot,
@@ -1860,6 +1928,7 @@ async function reconcilePendingInternalSourceOrders() {
                     await deleteQrMessage(botToken, order);
                     await sendDeliveredOrderMessages({
                         botToken,
+                        shopId: order.shopId,
                         chatId: order.customer.telegramChatId,
                         orderCode: order.orderCode,
                         productName: order.productNameSnapshot,

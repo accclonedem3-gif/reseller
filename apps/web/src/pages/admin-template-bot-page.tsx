@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, Plus, Save, Trash2, Upload, X } from "lucide-react";
 
 import { useToast } from "@/components/ui/toast";
+import { InvoiceTemplateEditor, type InvoiceTemplate } from "@/components/dashboard/invoice-template-editor";
 import { api } from "@/lib/api";
 
 type TemplateResp = {
@@ -220,6 +221,49 @@ export function AdminTemplateBotPage() {
       showToast({ tone: "success", message: `Quét ${data.scanned}, cập nhật ${data.updated}${detectMsg}.` });
     },
     onError: (err) => showToast({ tone: "error", message: getErrMsg(err, "Backfill thất bại.") }),
+  });
+
+  const invoiceQuery = useQuery<{ defaults: InvoiceTemplate; template: InvoiceTemplate; raw: InvoiceTemplate | null }>({
+    queryKey: ["admin-template", "invoice"],
+    queryFn: async () => (await api.get("/admin-template/invoice-template")).data,
+    retry: false,
+    enabled: !!tplQuery.data?.botConfig,
+  });
+
+  const [invoiceDraft, setInvoiceDraft] = useState<InvoiceTemplate | null>(null);
+  useEffect(() => {
+    if (invoiceQuery.data?.template) {
+      setInvoiceDraft(invoiceQuery.data.template);
+    }
+  }, [invoiceQuery.data?.template]);
+
+  const saveInvoiceMutation = useMutation({
+    mutationFn: async (tpl: InvoiceTemplate) =>
+      (await api.put("/admin-template/invoice-template", { template: tpl })).data,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["admin-template", "invoice"] });
+      showToast({ tone: "success", message: "Đã lưu mẫu hóa đơn." });
+    },
+    onError: (err) => showToast({ tone: "error", message: getErrMsg(err, "Không lưu được mẫu hóa đơn.") }),
+  });
+
+  const resetInvoiceMutation = useMutation({
+    mutationFn: async () =>
+      (await api.put("/admin-template/invoice-template", { template: null })).data,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["admin-template", "invoice"] });
+      showToast({ tone: "success", message: "Đã đặt lại mẫu hóa đơn về mặc định." });
+    },
+    onError: (err) => showToast({ tone: "error", message: getErrMsg(err, "Không đặt lại được.") }),
+  });
+
+  const testInvoiceMutation = useMutation({
+    mutationFn: async (mode: "small" | "large") =>
+      (await api.post("/admin-template/invoice-template/test", { mode })).data,
+    onSuccess: (data: any) => {
+      showToast({ tone: "success", message: `Đã gửi sample đến chat ${data?.sentTo || "admin"}.` });
+    },
+    onError: (err) => showToast({ tone: "error", message: getErrMsg(err, "Gửi test thất bại.") }),
   });
 
   if (tplQuery.isPending) {
@@ -457,6 +501,37 @@ export function AdminTemplateBotPage() {
             })
           )}
         </div>
+      </div>
+
+      {/* Invoice template */}
+      <div className="rounded-2xl p-5" style={{ background: "var(--surface)", border: "1px solid var(--bd)" }}>
+        <div className="mb-3 flex items-start justify-between gap-3">
+          <div>
+            <h2 className="text-[16px] font-black" style={{ color: "var(--tx)" }}>📄 Mẫu hóa đơn giao hàng</h2>
+            <p className="text-[12px]" style={{ color: "var(--tx-f)" }}>
+              Header/footer + icon + ngưỡng gửi file (.txt khi nhiều tài khoản). User mới sẽ inherit từ đây.
+            </p>
+          </div>
+        </div>
+        {invoiceQuery.isPending ? (
+          <p className="text-[12px]" style={{ color: "var(--tx-f)" }}>Đang tải mẫu hóa đơn...</p>
+        ) : invoiceDraft ? (
+          <InvoiceTemplateEditor
+            value={invoiceDraft}
+            defaults={invoiceQuery.data?.defaults as InvoiceTemplate}
+            onChange={setInvoiceDraft}
+            onSave={() => saveInvoiceMutation.mutate(invoiceDraft)}
+            onReset={() => {
+              if (window.confirm("Đặt lại mẫu hóa đơn về mặc định hệ thống?")) {
+                resetInvoiceMutation.mutate();
+              }
+            }}
+            onSendTest={(mode) => testInvoiceMutation.mutate(mode)}
+            isSaving={saveInvoiceMutation.isPending}
+            isTesting={testInvoiceMutation.isPending}
+            hint="Test sẽ gửi đến chat của bot admin template (cần set Telegram User ID chủ bot trước)."
+          />
+        ) : null}
       </div>
     </div>
   );

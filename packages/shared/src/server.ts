@@ -6,6 +6,7 @@ export * from "./server/payos";
 export * from "./server/pay2s";
 export * from "./server/web2m";
 export * from "./server/telegram";
+export * from "./server/invoice-template";
 export * from "./server/mock";
 export * from "./server/internal-auth";
 export * from "./server/warranty";
