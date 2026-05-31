@@ -4338,7 +4338,9 @@ export class TelegramBotService {
     };
     const quantityLine = this.buildQuantityPromptText(selection.maxQuantity, language, msgEmojiIds["quantityInput"] || "");
     const hasLabelEmojis = Object.values(labelEmojiIds).some((v) => v?.trim());
-    const useHtml = !!(dbEmojiId || productNoteEmojiId || hasLabelEmojis);
+    // Force HTML mode when a description exists so the <blockquote> wrap renders
+    // as a styled card instead of leaking raw tags into the caption.
+    const useHtml = !!(dbEmojiId || productNoteEmojiId || hasLabelEmojis || selection.description?.trim());
 
     const mkLabel = (key: string, fallback: string) => {
       const eid = labelEmojiIds[key]?.trim();
@@ -4375,13 +4377,14 @@ export class TelegramBotService {
       }
 
       if (selection.description?.trim()) {
-        lines.push(``, `${mkLabel("description", "💬")} ${descLabel}:`);
+        const descLines: string[] = [`${mkLabel("description", "💬")} ${descLabel}:`];
         for (const rawLine of selection.description.trim().split(/\r?\n/)) {
           const trimmed = rawLine.trim();
           if (!trimmed) continue;
           const bulleted = /^[•·*\-]\s*/.test(trimmed) ? trimmed : `• ${trimmed}`;
-          lines.push(escFn(bulleted));
+          descLines.push(escFn(bulleted));
         }
+        lines.push(``, `<blockquote>${descLines.join("\n")}</blockquote>`);
       }
 
       if (selection.promoBanner) {
@@ -4444,13 +4447,14 @@ export class TelegramBotService {
       }
 
       if (selection.description?.trim()) {
-        textLines.push(``, `${mkLabel("description", "💬")} ${descLabel}:`);
+        const descLines: string[] = [`${mkLabel("description", "💬")} ${descLabel}:`];
         for (const rawLine of selection.description.trim().split(/\r?\n/)) {
           const trimmed = rawLine.trim();
           if (!trimmed) continue;
           const bulleted = /^[•·*\-]\s*/.test(trimmed) ? trimmed : `• ${trimmed}`;
-          textLines.push(escFn(bulleted));
+          descLines.push(escFn(bulleted));
         }
+        textLines.push(``, `<blockquote>${descLines.join("\n")}</blockquote>`);
       }
 
       if (selection.promoBanner) {
