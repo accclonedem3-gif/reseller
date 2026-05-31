@@ -718,6 +718,11 @@ export class TelegramBotService {
         await this.clearPendingPaymentSelection(shopId, telegramUserId);
         await this.clearPendingTxHashSubmission(shopId, telegramUserId);
         await this.renderCatalog(shopId, outboundToken, chatId, messageId, 0, actions, callbackLanguage);
+      } else if (data === "qty:cancel") {
+        // Customer hits the "Hủy" button on a quantity prompt — wipe the pending
+        // selection and return to the home menu.
+        await this.clearPendingQuantitySelection(shopId, telegramUserId);
+        await this.renderHome(shopId, outboundToken, chatId, messageId, actions, callbackLanguage);
       } else if (data === "home:history") {
         await this.clearPendingQuantitySelection(shopId, telegramUserId);
         await this.clearPendingWalletTopup(shopId, telegramUserId);
@@ -4325,9 +4330,17 @@ export class TelegramBotService {
     const localizedName = this.localizeProductName(selection.displayName, language);
     const priceStr = this.formatBotMoneyWithUsdOverride(selection.salePrice, (selection as any).salePriceUsd, language, usdtVndRate);
     const stockLabel = selection.available === null ? "∞" : String(Math.max(0, selection.available));
+    // If a custom emoji is set, Telegram renders it as the button icon already.
+    // Strip the leading text emoji from the label to avoid two icons stacked side-by-side.
+    const buyOtherCustomEmoji = custEmojiIdsQty["buyOther"];
+    const buyOtherText = buyOtherCustomEmoji
+      ? this.buttonLabel("buyOther", language).replace(/^[^\p{L}\p{N}]+/u, "").trim()
+      : this.buttonLabel("buyOther", language);
+    const cancelLabel = language === "en" ? "❌ Cancel" : language === "th" ? "❌ ยกเลิก" : "❌ Hủy thao tác";
     const replyMarkup = {
       inline_keyboard: [
-        [{ text: this.buttonLabel("buyOther", language), callback_data: "home:products", ...(custEmojiIdsQty["buyOther"] ? { icon_custom_emoji_id: custEmojiIdsQty["buyOther"] } : {}) }],
+        [{ text: buyOtherText, callback_data: "home:products", ...(buyOtherCustomEmoji ? { icon_custom_emoji_id: buyOtherCustomEmoji } : {}) }],
+        [{ text: cancelLabel, callback_data: "qty:cancel" }],
       ],
     };
     const quantityLine = this.buildQuantityPromptText(selection.maxQuantity, language, msgEmojiIds["quantityInput"] || "");
@@ -4362,16 +4375,20 @@ export class TelegramBotService {
         `${mkLabel("stock", "📦")} ${stockLabelText}: ${stockLabel} ${unitLabel}`,
       ];
 
-      if (selection.soldCount != null && selection.soldCount > 0) {
-        lines.push(`${mkLabel("sold", "📊")} ${soldLabel}: ${selection.soldCount} ${unitLabel}`);
-      }
+      lines.push(`${mkLabel("sold", "📊")} ${soldLabel}: ${selection.soldCount ?? 0} ${unitLabel}`);
 
       if ((selection as any).deliveryFormatHint?.trim()) {
         lines.push(``, `${mkLabel("format", "🔑")} ${formatLabel}: ${escFn((selection as any).deliveryFormatHint.trim())}`);
       }
 
       if (selection.description?.trim()) {
-        lines.push(``, `${mkLabel("description", "💬")} ${descLabel}:`, escFn(selection.description.trim()));
+        lines.push(``, `${mkLabel("description", "💬")} ${descLabel}:`);
+        for (const rawLine of selection.description.trim().split(/\r?\n/)) {
+          const trimmed = rawLine.trim();
+          if (!trimmed) continue;
+          const bulleted = /^[•·*\-]\s*/.test(trimmed) ? trimmed : `• ${trimmed}`;
+          lines.push(escFn(bulleted));
+        }
       }
 
       if (selection.promoBanner) {
@@ -4427,16 +4444,20 @@ export class TelegramBotService {
         `${mkLabel("stock", "📦")} ${stockLabelText}: ${stockLabel} ${unitLabel}`,
       );
 
-      if (selection.soldCount != null && selection.soldCount > 0) {
-        textLines.push(`${mkLabel("sold", "📊")} ${soldLabel}: ${selection.soldCount} ${unitLabel}`);
-      }
+      textLines.push(`${mkLabel("sold", "📊")} ${soldLabel}: ${selection.soldCount ?? 0} ${unitLabel}`);
 
       if ((selection as any).deliveryFormatHint?.trim()) {
         textLines.push(``, `${mkLabel("format", "🔑")} ${formatLabel}: ${escFn((selection as any).deliveryFormatHint.trim())}`);
       }
 
       if (selection.description?.trim()) {
-        textLines.push(``, `${mkLabel("description", "💬")} ${descLabel}:`, escFn(selection.description.trim()));
+        textLines.push(``, `${mkLabel("description", "💬")} ${descLabel}:`);
+        for (const rawLine of selection.description.trim().split(/\r?\n/)) {
+          const trimmed = rawLine.trim();
+          if (!trimmed) continue;
+          const bulleted = /^[•·*\-]\s*/.test(trimmed) ? trimmed : `• ${trimmed}`;
+          textLines.push(escFn(bulleted));
+        }
       }
 
       if (selection.promoBanner) {
