@@ -59,6 +59,8 @@ export interface InvoiceRenderData {
   warrantyText?: string | null;
   accountList: string[];
   language?: InvoiceLanguage;
+  productIcon?: string | null;
+  productIconCustomEmojiId?: string | null;
 }
 
 interface InvoiceLabels {
@@ -231,7 +233,9 @@ function buildInfoLines(
   const ids = template.customEmojiIds;
   const lines: string[] = [];
   lines.push(`${renderEmoji(template.fieldIcons.order, ids.order)} ${L.order}: <code>${escHtml(data.orderCode)}</code>`);
-  lines.push(`${renderEmoji(template.fieldIcons.product, ids.product)} ${L.product}: <b>${escHtml(data.productName)}</b>`);
+  const productIconText = (data.productIcon && data.productIcon.trim()) || template.fieldIcons.product;
+  const productIconId = (data.productIconCustomEmojiId && data.productIconCustomEmojiId.trim()) || ids.product;
+  lines.push(`${renderEmoji(productIconText, productIconId)} ${L.product}: <b>${escHtml(data.productName)}</b>`);
   lines.push(`${renderEmoji(template.fieldIcons.quantity, ids.quantity)} ${L.quantity}: <b>${data.quantity}</b>`);
   if (data.totalPriceText) {
     lines.push(`${renderEmoji(template.fieldIcons.price, ids.price)} ${L.price}: <b>${escHtml(data.totalPriceText)}</b>`);

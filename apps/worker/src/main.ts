@@ -573,6 +573,8 @@ async function sendDeliveredOrderMessages(input) {
             warrantyText,
             accountList,
             language: input.language,
+            productIcon: input.productIcon || null,
+            productIconCustomEmojiId: input.productIconCustomEmojiId || null,
         },
         buyMoreButton: { text: buyMoreLabel, callback_data: "home:products" },
         warrantyButton: { text: warrantyLabel, callback_data: "warranty:start" },
@@ -1308,6 +1310,8 @@ async function processPurchase(job) {
                 await sendDeliveredOrderMessages({
                     botToken,
                     shopId: order.shopId,
+                    productIcon: order.sourceProduct?.productIcon,
+                    productIconCustomEmojiId: order.sourceProduct?.iconCustomEmojiId,
                     chatId: order.customer.telegramChatId,
                     orderCode: order.orderCode,
                     productName: order.productNameSnapshot,
@@ -1374,6 +1378,8 @@ async function processPurchase(job) {
                 await sendDeliveredOrderMessages({
                     botToken,
                     shopId: order.shopId,
+                    productIcon: order.sourceProduct?.productIcon,
+                    productIconCustomEmojiId: order.sourceProduct?.iconCustomEmojiId,
                     chatId: order.customer.telegramChatId,
                     orderCode: order.orderCode,
                     productName: order.productNameSnapshot,
@@ -1540,6 +1546,8 @@ async function processPurchase(job) {
                 await sendDeliveredOrderMessages({
                     botToken,
                     shopId: order.shopId,
+                    productIcon: order.sourceProduct?.productIcon,
+                    productIconCustomEmojiId: order.sourceProduct?.iconCustomEmojiId,
                     chatId: order.customer.telegramChatId,
                     orderCode: order.orderCode,
                     productName: order.productNameSnapshot,
@@ -1616,6 +1624,8 @@ async function processPurchase(job) {
                     await sendDeliveredOrderMessages({
                         botToken,
                         shopId: order.shopId,
+                        productIcon: order.sourceProduct?.productIcon,
+                        productIconCustomEmojiId: order.sourceProduct?.iconCustomEmojiId,
                         chatId: order.customer.telegramChatId,
                         orderCode: order.orderCode,
                         productName: order.productNameSnapshot,
@@ -1778,6 +1788,8 @@ async function processPurchase(job) {
             await sendDeliveredOrderMessages({
                 botToken,
                 shopId: order.shopId,
+                productIcon: order.sourceProduct?.productIcon,
+                productIconCustomEmojiId: order.sourceProduct?.iconCustomEmojiId,
                 chatId: order.customer.telegramChatId,
                 orderCode: order.orderCode,
                 productName: order.productNameSnapshot,
@@ -1929,6 +1941,8 @@ async function reconcilePendingInternalSourceOrders() {
                     await sendDeliveredOrderMessages({
                         botToken,
                         shopId: order.shopId,
+                        productIcon: order.sourceProduct?.productIcon,
+                        productIconCustomEmojiId: order.sourceProduct?.iconCustomEmojiId,
                         chatId: order.customer.telegramChatId,
                         orderCode: order.orderCode,
                         productName: order.productNameSnapshot,
