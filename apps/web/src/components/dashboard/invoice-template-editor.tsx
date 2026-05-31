@@ -196,8 +196,8 @@ export function InvoiceTemplateEditor({
           <Group title="Icon từng dòng">
             <div className="space-y-1.5">
               {(Object.keys(local.fieldIcons) as Array<keyof InvoiceTemplate["fieldIcons"]>).map((k) => (
-                <div key={k} className="flex items-center gap-2">
-                  <span className="w-[72px] shrink-0 text-[11px] font-bold uppercase tracking-wider" style={{ color: "var(--tx-f)" }}>
+                <div key={k} className="grid items-center gap-2" style={{ gridTemplateColumns: "76px 56px 1fr 24px" }}>
+                  <span className="text-[11px] font-bold uppercase tracking-wider" style={{ color: "var(--tx-f)" }}>
                     {FIELD_LABELS[k]}
                   </span>
                   <input
@@ -205,26 +205,28 @@ export function InvoiceTemplateEditor({
                     onChange={(e) =>
                       patch({ fieldIcons: { ...local.fieldIcons, [k]: e.target.value } as InvoiceTemplate["fieldIcons"] })
                     }
-                    className={`${inputCls} w-[60px] text-center`}
+                    className="rounded-lg px-1 py-1.5 text-center text-[14px] outline-none"
                     style={inputStyle}
                     title="Icon mặc định (text)"
                   />
                   <input
                     value={local.customEmojiIds[k] ?? ""}
                     onChange={(e) => patchEmojiId(k, e.target.value)}
-                    placeholder="Custom emoji ID (optional)"
-                    className={`${inputCls} flex-1 font-mono text-[11px]`}
-                    style={inputStyle}
+                    placeholder="Custom emoji ID (vd: 5391...)"
+                    className="rounded-lg px-2 py-1.5 font-mono text-[11px] outline-none"
+                    style={{ ...inputStyle, width: "100%" }}
                     title="Telegram premium custom emoji ID"
                   />
                   {local.customEmojiIds[k] ? (
-                    <span className="shrink-0 rounded-md px-1.5 text-[10px] font-black" style={{ background: "rgba(168,85,247,0.15)", color: "rgb(168,85,247)" }}>ID</span>
-                  ) : null}
+                    <span className="text-center text-[10px] font-black" style={{ color: "rgb(168,85,247)" }} title="Đang dùng custom emoji">ID</span>
+                  ) : <span />}
                 </div>
               ))}
             </div>
             <p className="mt-1.5 text-[10px]" style={{ color: "var(--tx-f)" }}>
               Custom Emoji ID = icon động Telegram Premium. Để trống = dùng icon text bên trái.
+              <br />
+              Cách lấy ID: gửi emoji động vào bot <code className="font-mono">@idstickerbot</code> hoặc dùng <code className="font-mono">@StickerThief</code>.
             </p>
           </Group>
 
