@@ -2,6 +2,18 @@ import { telegramSendDocument, telegramSendMessage } from "./telegram";
 
 export type InvoiceLanguage = "vi" | "en" | "th";
 
+export interface InvoiceCustomEmojiIds {
+  header?: string;
+  order?: string;
+  product?: string;
+  quantity?: string;
+  price?: string;
+  warranty?: string;
+  datetime?: string;
+  shop?: string;
+  accountBlock?: string;
+}
+
 export interface InvoiceTemplateConfig {
   header: { icon: string; text: string };
   fieldIcons: {
@@ -16,6 +28,7 @@ export interface InvoiceTemplateConfig {
   accountBlock: { icon: string; labelTemplate: string };
   footer: string;
   inlineThreshold: number;
+  customEmojiIds: InvoiceCustomEmojiIds;
 }
 
 export const DEFAULT_INVOICE_TEMPLATE: InvoiceTemplateConfig = {
@@ -32,6 +45,7 @@ export const DEFAULT_INVOICE_TEMPLATE: InvoiceTemplateConfig = {
   accountBlock: { icon: "🎁", labelTemplate: "TÀI KHOẢN #{index}" },
   footer: "Cảm ơn bạn đã mua hàng! 🎉",
   inlineThreshold: 5,
+  customEmojiIds: {},
 };
 
 export interface InvoiceRenderData {
@@ -158,6 +172,17 @@ export function resolveInvoiceTemplate(
     if (typeof src.inlineThreshold === "number" && Number.isFinite(src.inlineThreshold)) {
       merged.inlineThreshold = Math.max(1, Math.min(50, Math.floor(src.inlineThreshold)));
     }
+    if (src.customEmojiIds && typeof src.customEmojiIds === "object") {
+      for (const key of Object.keys(src.customEmojiIds) as Array<keyof InvoiceCustomEmojiIds>) {
+        const v = (src.customEmojiIds as any)[key];
+        if (typeof v === "string" && v.trim()) {
+          merged.customEmojiIds[key] = v.trim();
+        } else if (v === "" || v === null) {
+          // explicit empty wipes inherited value
+          delete merged.customEmojiIds[key];
+        }
+      }
+    }
   };
 
   apply(adminTpl);
@@ -181,10 +206,20 @@ function fillPlaceholders(
     .replace(/\{warranty_info\}/g, data.warrantyText || "");
 }
 
+function renderEmoji(fallback: string, customEmojiId?: string | null): string {
+  const id = (customEmojiId || "").trim();
+  const fb = fallback || "🔵";
+  if (id) {
+    return `<tg-emoji emoji-id="${escHtml(id)}">${escHtml(fb)}</tg-emoji>`;
+  }
+  return fb;
+}
+
 function buildHeaderLine(template: InvoiceTemplateConfig, data: InvoiceRenderData): string {
   const lang = data.language ?? "vi";
   const headerText = fillPlaceholders(template.header.text || "", data) || LABELS[lang].fileTitle;
-  return `${template.header.icon} <b>${escHtml(headerText)}</b>`;
+  const icon = renderEmoji(template.header.icon, template.customEmojiIds.header);
+  return `${icon} <b>${escHtml(headerText)}</b>`;
 }
 
 function buildInfoLines(
@@ -193,21 +228,22 @@ function buildInfoLines(
 ): string[] {
   const lang = data.language ?? "vi";
   const L = LABELS[lang];
+  const ids = template.customEmojiIds;
   const lines: string[] = [];
-  lines.push(`${template.fieldIcons.order} ${L.order}: <code>${escHtml(data.orderCode)}</code>`);
-  lines.push(`${template.fieldIcons.product} ${L.product}: <b>${escHtml(data.productName)}</b>`);
-  lines.push(`${template.fieldIcons.quantity} ${L.quantity}: <b>${data.quantity}</b>`);
+  lines.push(`${renderEmoji(template.fieldIcons.order, ids.order)} ${L.order}: <code>${escHtml(data.orderCode)}</code>`);
+  lines.push(`${renderEmoji(template.fieldIcons.product, ids.product)} ${L.product}: <b>${escHtml(data.productName)}</b>`);
+  lines.push(`${renderEmoji(template.fieldIcons.quantity, ids.quantity)} ${L.quantity}: <b>${data.quantity}</b>`);
   if (data.totalPriceText) {
-    lines.push(`${template.fieldIcons.price} ${L.price}: <b>${escHtml(data.totalPriceText)}</b>`);
+    lines.push(`${renderEmoji(template.fieldIcons.price, ids.price)} ${L.price}: <b>${escHtml(data.totalPriceText)}</b>`);
   }
   if (data.warrantyText) {
-    lines.push(`${template.fieldIcons.warranty} ${L.warranty}: ${escHtml(data.warrantyText)}`);
+    lines.push(`${renderEmoji(template.fieldIcons.warranty, ids.warranty)} ${L.warranty}: ${escHtml(data.warrantyText)}`);
   }
   if (data.dateTimeText) {
-    lines.push(`${template.fieldIcons.datetime} ${L.datetime}: ${escHtml(data.dateTimeText)}`);
+    lines.push(`${renderEmoji(template.fieldIcons.datetime, ids.datetime)} ${L.datetime}: ${escHtml(data.dateTimeText)}`);
   }
   if (data.shopName) {
-    lines.push(`${template.fieldIcons.shop} ${L.shop}: ${escHtml(data.shopName)}`);
+    lines.push(`${renderEmoji(template.fieldIcons.shop, ids.shop)} ${L.shop}: ${escHtml(data.shopName)}`);
   }
   return lines;
 }
@@ -218,12 +254,14 @@ function buildAccountBlocks(
 ): string[] {
   const lang = data.language ?? "vi";
   const L = LABELS[lang];
+  const ids = template.customEmojiIds;
   const lines: string[] = [];
-  lines.push(`${template.fieldIcons.warranty === template.accountBlock.icon ? "" : ""}${L.headerHint} <b>${L.accountListHeading}:</b>`);
+  lines.push(`${L.headerHint} <b>${L.accountListHeading}:</b>`);
   data.accountList.forEach((acc, idx) => {
     const labelRaw = (template.accountBlock.labelTemplate || "TÀI KHOẢN #{index}").replace(/\{index\}/g, String(idx + 1));
+    const blockIcon = renderEmoji(template.accountBlock.icon, ids.accountBlock);
     lines.push("");
-    lines.push(`${template.accountBlock.icon} <b>${escHtml(labelRaw)}:</b>`);
+    lines.push(`${blockIcon} <b>${escHtml(labelRaw)}:</b>`);
     lines.push(`<code>${escHtml(acc)}</code>`);
   });
   lines.push("");

@@ -1,5 +1,17 @@
 import { useEffect, useMemo, useState } from "react";
 
+export type InvoiceCustomEmojiIds = {
+  header?: string;
+  order?: string;
+  product?: string;
+  quantity?: string;
+  price?: string;
+  warranty?: string;
+  datetime?: string;
+  shop?: string;
+  accountBlock?: string;
+};
+
 export type InvoiceTemplate = {
   header: { icon: string; text: string };
   fieldIcons: {
@@ -14,6 +26,7 @@ export type InvoiceTemplate = {
   accountBlock: { icon: string; labelTemplate: string };
   footer: string;
   inlineThreshold: number;
+  customEmojiIds: InvoiceCustomEmojiIds;
 };
 
 export const PLACEHOLDER_HINTS: Array<{ key: string; label: string }> = [
@@ -117,10 +130,17 @@ export function InvoiceTemplateEditor({
   isTesting,
   hint,
 }: Props) {
-  const [local, setLocal] = useState<InvoiceTemplate>(value);
+  const normalized: InvoiceTemplate = {
+    ...value,
+    customEmojiIds: value.customEmojiIds ?? {},
+  };
+  const [local, setLocal] = useState<InvoiceTemplate>(normalized);
 
   useEffect(() => {
-    setLocal(value);
+    setLocal({
+      ...value,
+      customEmojiIds: value.customEmojiIds ?? {},
+    });
   }, [JSON.stringify(value)]);
 
   const preview = useMemo(() => renderPreview(local), [JSON.stringify(local)]);
@@ -132,9 +152,18 @@ export function InvoiceTemplateEditor({
       header: { ...local.header, ...(p.header ?? {}) },
       fieldIcons: { ...local.fieldIcons, ...(p.fieldIcons ?? {}) },
       accountBlock: { ...local.accountBlock, ...(p.accountBlock ?? {}) },
+      customEmojiIds: { ...local.customEmojiIds, ...(p.customEmojiIds ?? {}) },
     };
     setLocal(next);
     onChange(next);
+  }
+
+  function patchEmojiId(key: keyof InvoiceCustomEmojiIds, value: string) {
+    const trimmed = value.trim();
+    const next = { ...local.customEmojiIds };
+    if (trimmed) next[key] = trimmed;
+    else delete next[key];
+    patch({ customEmojiIds: next });
   }
 
   return (
@@ -158,13 +187,17 @@ export function InvoiceTemplateEditor({
                 placeholder="THANH TOÁN THÀNH CÔNG"
               />
             </div>
+            <EmojiIdRow
+              value={local.customEmojiIds.header}
+              onChange={(v) => patchEmojiId("header", v)}
+            />
           </Group>
 
           <Group title="Icon từng dòng">
-            <div className="grid grid-cols-2 gap-2">
+            <div className="space-y-1.5">
               {(Object.keys(local.fieldIcons) as Array<keyof InvoiceTemplate["fieldIcons"]>).map((k) => (
                 <div key={k} className="flex items-center gap-2">
-                  <span className="w-[68px] text-[11px] font-bold uppercase tracking-wider" style={{ color: "var(--tx-f)" }}>
+                  <span className="w-[72px] shrink-0 text-[11px] font-bold uppercase tracking-wider" style={{ color: "var(--tx-f)" }}>
                     {FIELD_LABELS[k]}
                   </span>
                   <input
@@ -172,12 +205,27 @@ export function InvoiceTemplateEditor({
                     onChange={(e) =>
                       patch({ fieldIcons: { ...local.fieldIcons, [k]: e.target.value } as InvoiceTemplate["fieldIcons"] })
                     }
-                    className={`${inputCls} text-center`}
+                    className={`${inputCls} w-[60px] text-center`}
                     style={inputStyle}
+                    title="Icon mặc định (text)"
                   />
+                  <input
+                    value={local.customEmojiIds[k] ?? ""}
+                    onChange={(e) => patchEmojiId(k, e.target.value)}
+                    placeholder="Custom emoji ID (optional)"
+                    className={`${inputCls} flex-1 font-mono text-[11px]`}
+                    style={inputStyle}
+                    title="Telegram premium custom emoji ID"
+                  />
+                  {local.customEmojiIds[k] ? (
+                    <span className="shrink-0 rounded-md px-1.5 text-[10px] font-black" style={{ background: "rgba(168,85,247,0.15)", color: "rgb(168,85,247)" }}>ID</span>
+                  ) : null}
                 </div>
               ))}
             </div>
+            <p className="mt-1.5 text-[10px]" style={{ color: "var(--tx-f)" }}>
+              Custom Emoji ID = icon động Telegram Premium. Để trống = dùng icon text bên trái.
+            </p>
           </Group>
 
           <Group title="Khối tài khoản (Account block)">
@@ -197,6 +245,10 @@ export function InvoiceTemplateEditor({
                 placeholder="TÀI KHOẢN #{index}"
               />
             </div>
+            <EmojiIdRow
+              value={local.customEmojiIds.accountBlock}
+              onChange={(v) => patchEmojiId("accountBlock", v)}
+            />
             <p className="mt-1 text-[10px]" style={{ color: "var(--tx-f)" }}>
               <code className="font-mono">{"{index}"}</code> = số thứ tự (1, 2, 3...)
             </p>
@@ -231,6 +283,9 @@ export function InvoiceTemplateEditor({
         <div className="space-y-2">
           <p className="text-[11px] font-black uppercase tracking-widest" style={{ color: "var(--tx-f)" }}>
             Preview hóa đơn (≤ {local.inlineThreshold} acc)
+          </p>
+          <p className="text-[10px]" style={{ color: "var(--tx-f)" }}>
+            ⚠️ Preview chỉ hiển thị icon text. Custom emoji ID (icon động) chỉ render trong Telegram thực — bấm <b>Test</b> để xem.
           </p>
           <pre
             className="whitespace-pre-wrap rounded-xl p-4 text-[12.5px] leading-relaxed"
@@ -328,6 +383,26 @@ function Group({ title, children }: { title: string; children: React.ReactNode }
         {title}
       </p>
       {children}
+    </div>
+  );
+}
+
+function EmojiIdRow({ value, onChange }: { value: string | undefined; onChange: (v: string) => void }) {
+  return (
+    <div className="mt-2 flex items-center gap-2">
+      <span className="w-[72px] shrink-0 text-[10px] font-bold uppercase tracking-wider" style={{ color: "var(--tx-f)" }}>
+        Emoji ID
+      </span>
+      <input
+        value={value ?? ""}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder="Custom emoji ID Telegram Premium (optional)"
+        className={`${inputCls} flex-1 font-mono text-[11px]`}
+        style={inputStyle}
+      />
+      {value ? (
+        <span className="shrink-0 rounded-md px-1.5 text-[10px] font-black" style={{ background: "rgba(168,85,247,0.15)", color: "rgb(168,85,247)" }}>ID</span>
+      ) : null}
     </div>
   );
 }
