@@ -258,13 +258,32 @@ export function AdminTemplateBotPage() {
   });
 
   const testInvoiceMutation = useMutation({
-    mutationFn: async (mode: "small" | "large") =>
-      (await api.post("/admin-template/invoice-template/test", { mode })).data,
+    mutationFn: async (mode: "small" | "large") => {
+      const LS_KEY = "admin_invoice_test_chat_id";
+      let chatId = localStorage.getItem(LS_KEY) || "";
+      if (!chatId) {
+        const input = window.prompt(
+          "Nhập Telegram User ID / Chat ID để nhận tin test\n(lấy từ @userinfobot — vd: 5513106881)\nLưu lại cho lần sau:",
+          "",
+        );
+        if (!input || !input.trim()) {
+          throw new Error("Đã huỷ — chưa nhập chat ID.");
+        }
+        chatId = input.trim();
+        localStorage.setItem(LS_KEY, chatId);
+      }
+      return (await api.post("/admin-template/invoice-template/test", { mode, telegramChatId: chatId })).data;
+    },
     onSuccess: (data: any) => {
-      showToast({ tone: "success", message: `Đã gửi sample đến chat ${data?.sentTo || "admin"}.` });
+      showToast({ tone: "success", message: `Đã gửi sample đến chat ${data?.sentTo || "admin"}. Mở Telegram xem nha.` });
     },
     onError: (err) => showToast({ tone: "error", message: getErrMsg(err, "Gửi test thất bại.") }),
   });
+
+  const resetTestChatId = () => {
+    localStorage.removeItem("admin_invoice_test_chat_id");
+    showToast({ tone: "info", message: "Đã xoá chat ID test. Lần test tiếp theo sẽ hỏi lại." });
+  };
 
   if (tplQuery.isPending) {
     return <div className="p-10 text-center text-sm" style={{ color: "var(--tx-f)" }}>Đang tải...</div>;
