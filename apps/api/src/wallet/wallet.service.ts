@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ForbiddenException,
   Inject,
   Injectable,
   NotFoundException,
@@ -15,6 +16,8 @@ import {
 
 import { AppConfigService } from "../config/app-config.service";
 import { PrismaService } from "../db/prisma.service";
+import { AdminNotifyService } from "../lib/admin-notify.service";
+import { MailService } from "../lib/mail.service";
 import { PaymentService } from "../lib/payment.service";
 import { decimalToNumber, generateExternalPaymentCode, toDecimal } from "../lib/utils";
 import { ShopsService } from "../shops/shops.service";
@@ -39,6 +42,10 @@ export class WalletService {
     private readonly paymentService: PaymentService,
     @Inject(AppConfigService)
     private readonly config: AppConfigService,
+    @Inject(MailService)
+    private readonly mail: MailService,
+    @Inject(AdminNotifyService)
+    private readonly adminNotify: AdminNotifyService,
   ) {}
 
   async getWallet(user: AuthenticatedUser) {
@@ -135,28 +142,41 @@ export class WalletService {
   }
 
   async createDepositRequest(user: AuthenticatedUser, dto: CreateDepositRequestDto) {
-    throw new BadRequestException(
-      "Tính năng nạp ví seller qua web đã được tắt. Vui lòng nạp trực tiếp ở bot nguồn Canboso.",
-    );
-
     const shop = await this.shopsService.getSellerShop(user.id);
     const amount = Number(dto.amount);
 
-    if (!Number.isInteger(amount) || amount < 1000) {
-      throw new BadRequestException("Deposit amount must be at least 1,000 VND.");
+    if (!Number.isInteger(amount) || amount < 100000) {
+      throw new BadRequestException("Số tiền nạp tối thiểu là 100.000đ.");
     }
 
+    const platformShopId = this.config.platformDepositShopId;
+    if (!platformShopId) {
+      throw new BadRequestException(
+        "Tính năng nạp ví chưa được cấu hình. Vui lòng liên hệ admin.",
+      );
+    }
+
+    const providerOverride =
+      dto.paymentMethod === "USDT_SOL"
+        ? "USDT_SOL"
+        : dto.paymentMethod === "BINANCE"
+          ? "BINANCE"
+          : "PAYOS";
+
+    // PayOS: 5 phút (chuyển ngân hàng nhanh) — USDT/Binance: 30 phút (chuyển crypto chậm hơn)
+    const expiryMinutes = providerOverride === "PAYOS" ? 5 : 30;
     const externalOrderCode = generateExternalPaymentCode();
-    const expiresAt = new Date(Date.now() + this.depositExpiryMs);
+    const expiresAt = new Date(Date.now() + expiryMinutes * 60 * 1000);
     const payment = await this.paymentService.createPaymentLink({
-      shopId: shop.id,
+      shopId: platformShopId,
       externalOrderCode,
       amount,
-      description: `NAPCTV-${externalOrderCode.slice(-6)}`,
+      description: `NAPVI-${externalOrderCode.slice(-6)}`,
       expiredAt: expiresAt,
+      providerOverride: providerOverride as any,
     });
 
-    return this.prisma.depositRequest.create({
+    const deposit = await this.prisma.depositRequest.create({
       data: {
         sellerId: shop.sellerId,
         amount: toDecimal(amount),
@@ -165,10 +185,24 @@ export class WalletService {
         checkoutUrl: payment.checkoutUrl,
         qrCode: payment.qrCode,
         expiresAt,
-        note: dto.note ?? "Top up seller wallet from dashboard",
+        note: `WALLET_TOPUP:${shop.sellerId}${dto.note ? `:${dto.note}` : ""}`,
         rawPayloadJson: payment.providerPayload as Prisma.InputJsonValue,
       },
     });
+
+    return {
+      id: deposit.id,
+      externalOrderCode,
+      amount,
+      provider: payment.provider,
+      checkoutUrl: payment.checkoutUrl,
+      qrCode: payment.qrCode,
+      expiresAt,
+      providerPayload: payment.providerPayload,
+      bankInfo: (payment as any).bankInfo ?? null,
+      manualCrypto: (payment as any).manualCrypto ?? null,
+      reconcileToken: this.paymentService.buildPublicReconcileToken(externalOrderCode),
+    };
   }
 
   async confirmDepositRequestByExternalOrderCode(externalOrderCode: string, rawPayload?: unknown) {
@@ -184,6 +218,11 @@ export class WalletService {
 
     // Upgrade deposits are handled by UpgradeService, not wallet
     if (deposit.note && deposit.note.startsWith("UPGRADE_TIER:")) {
+      throw new NotFoundException("Deposit request not found.");
+    }
+
+    // Tier subscription deposits are handled by TiersService, not wallet
+    if (deposit.note && deposit.note.startsWith("TIER_SUB:")) {
       throw new NotFoundException("Deposit request not found.");
     }
 
@@ -216,6 +255,217 @@ export class WalletService {
         note: deposit.note ?? "Top up seller wallet from dashboard",
       },
     });
+  }
+
+  async cancelDepositRequest(user: AuthenticatedUser, depositId: string) {
+    const shop = await this.shopsService.getSellerShop(user.id);
+    const deposit = await this.prisma.depositRequest.findUnique({
+      where: { id: depositId },
+      select: { id: true, sellerId: true, status: true, note: true },
+    });
+    if (!deposit) {
+      throw new NotFoundException("Deposit request not found.");
+    }
+    if (deposit.sellerId !== shop.sellerId) {
+      throw new NotFoundException("Deposit request not found.");
+    }
+    if (deposit.status !== DepositStatus.PENDING) {
+      throw new BadRequestException("Chỉ có thể hủy yêu cầu đang chờ.");
+    }
+    return this.prisma.depositRequest.update({
+      where: { id: deposit.id },
+      data: {
+        status: DepositStatus.REJECTED,
+        note: deposit.note ? `${deposit.note} | Hủy bởi người dùng` : "Hủy bởi người dùng",
+      },
+    });
+  }
+
+  async cancelWithdrawRequest(user: AuthenticatedUser, withdrawId: string) {
+    const shop = await this.shopsService.getSellerShop(user.id);
+    const withdraw = await this.prisma.withdrawRequest.findUnique({
+      where: { id: withdrawId },
+      select: { id: true, sellerId: true, status: true },
+    });
+    if (!withdraw) {
+      throw new NotFoundException("Withdraw request not found.");
+    }
+    if (withdraw.sellerId !== shop.sellerId) {
+      throw new NotFoundException("Withdraw request not found.");
+    }
+    if (withdraw.status !== WithdrawStatus.PENDING) {
+      throw new BadRequestException("Chỉ có thể hủy yêu cầu đang chờ duyệt.");
+    }
+    return this.prisma.withdrawRequest.update({
+      where: { id: withdraw.id },
+      data: {
+        status: WithdrawStatus.REJECTED,
+        rejectReason: "Hủy bởi người dùng",
+        reviewedAt: new Date(),
+      },
+    });
+  }
+
+  async adminListWithdrawRequests(adminUser: AuthenticatedUser, status?: WithdrawStatus) {
+    if (adminUser.role !== "SUPER_ADMIN") {
+      throw new ForbiddenException("Only super admin can list all withdraw requests.");
+    }
+    return this.prisma.withdrawRequest.findMany({
+      where: status ? { status } : undefined,
+      orderBy: [{ status: "asc" }, { createdAt: "desc" }],
+      include: {
+        seller: {
+          select: {
+            id: true,
+            displayName: true,
+            user: { select: { email: true } },
+            wallet: { select: { balance: true } },
+          },
+        },
+        reviewedBy: { select: { id: true, email: true } },
+      },
+      take: 200,
+    });
+  }
+
+  async adminApproveWithdrawRequest(
+    adminUser: AuthenticatedUser,
+    withdrawId: string,
+    options?: { note?: string },
+  ) {
+    if (adminUser.role !== "SUPER_ADMIN") {
+      throw new ForbiddenException("Only super admin can approve withdraw requests.");
+    }
+    return this.prisma.$transaction(async (tx) => {
+      // Lock the withdraw row first to prevent concurrent admin double-approval
+      await tx.$queryRaw(
+        Prisma.sql`SELECT id FROM withdraw_requests WHERE id = ${withdrawId} FOR UPDATE`,
+      );
+      const withdraw = await tx.withdrawRequest.findUnique({
+        where: { id: withdrawId },
+        select: {
+          id: true,
+          sellerId: true,
+          amount: true,
+          status: true,
+          note: true,
+          bankName: true,
+          bankAccountNumber: true,
+          bankAccountName: true,
+        },
+      });
+      if (!withdraw) throw new NotFoundException("Withdraw request not found.");
+      if (withdraw.status !== WithdrawStatus.PENDING) {
+        throw new BadRequestException(`Lệnh rút đang ở trạng thái ${withdraw.status}, không thể duyệt.`);
+      }
+
+      const amount = decimalToNumber(withdraw.amount);
+
+      const wallet = await tx.sellerWallet.findUnique({ where: { sellerId: withdraw.sellerId } });
+      if (!wallet) throw new NotFoundException("Wallet not found.");
+
+      await tx.$queryRaw(
+        Prisma.sql`SELECT id FROM seller_wallets WHERE id = ${wallet.id} FOR UPDATE`,
+      );
+      const fresh = await tx.sellerWallet.findUniqueOrThrow({ where: { id: wallet.id } });
+      const balanceBefore = decimalToNumber(fresh.balance);
+      const balanceAfter = balanceBefore - amount;
+      if (balanceAfter < 0) {
+        throw new BadRequestException("Số dư ví không đủ để duyệt lệnh rút này.");
+      }
+
+      await tx.sellerWallet.update({
+        where: { id: wallet.id },
+        data: { balance: toDecimal(balanceAfter) },
+      });
+
+      await tx.walletLedger.create({
+        data: {
+          sellerId: withdraw.sellerId,
+          walletId: wallet.id,
+          type: WalletLedgerType.WITHDRAW,
+          amount: toDecimal(-amount),
+          balanceBefore: toDecimal(balanceBefore),
+          balanceAfter: toDecimal(balanceAfter),
+          referenceType: "withdraw_request",
+          referenceId: withdraw.id,
+          note: options?.note
+            ? `${withdraw.note ? withdraw.note + " | " : ""}admin approved: ${options.note}`
+            : `Admin duyệt lệnh rút ${withdraw.id.slice(0, 8)}`,
+        },
+      });
+
+      const updated = await tx.withdrawRequest.update({
+        where: { id: withdraw.id },
+        data: {
+          status: WithdrawStatus.APPROVED,
+          reviewedById: adminUser.id,
+          reviewedAt: new Date(),
+          note: options?.note
+            ? `${withdraw.note ? withdraw.note + "\n" : ""}[admin] ${options.note}`
+            : withdraw.note,
+        },
+      });
+
+      // Fire-and-forget notification email — don't block the transaction
+      this.sendWithdrawNotificationEmail({
+        sellerId: withdraw.sellerId,
+        status: "APPROVED",
+        amount,
+        bankName: withdraw.bankName,
+        bankAccountNumber: withdraw.bankAccountNumber,
+        bankAccountName: withdraw.bankAccountName,
+        note: options?.note,
+      }).catch((err) => console.error("[withdraw-notify approve]", err));
+
+      return updated;
+    });
+  }
+
+  async adminRejectWithdrawRequest(
+    adminUser: AuthenticatedUser,
+    withdrawId: string,
+    reason: string,
+  ) {
+    if (adminUser.role !== "SUPER_ADMIN") {
+      throw new ForbiddenException("Only super admin can reject withdraw requests.");
+    }
+    const reasonTrim = String(reason || "").trim();
+    if (!reasonTrim) {
+      throw new BadRequestException("Phải nhập lý do từ chối.");
+    }
+    const updated = await this.prisma.withdrawRequest.updateMany({
+      where: { id: withdrawId, status: WithdrawStatus.PENDING },
+      data: {
+        status: WithdrawStatus.REJECTED,
+        rejectReason: reasonTrim,
+        reviewedById: adminUser.id,
+        reviewedAt: new Date(),
+      },
+    });
+    if (updated.count === 0) {
+      const existing = await this.prisma.withdrawRequest.findUnique({
+        where: { id: withdrawId },
+        select: { status: true },
+      });
+      if (!existing) throw new NotFoundException("Withdraw request not found.");
+      throw new BadRequestException(`Lệnh rút đang ở trạng thái ${existing.status}, không thể từ chối.`);
+    }
+    const result = await this.prisma.withdrawRequest.findUnique({ where: { id: withdrawId } });
+
+    if (result) {
+      this.sendWithdrawNotificationEmail({
+        sellerId: result.sellerId,
+        status: "REJECTED",
+        amount: decimalToNumber(result.amount),
+        bankName: result.bankName,
+        bankAccountNumber: result.bankAccountNumber,
+        bankAccountName: result.bankAccountName,
+        rejectReason: reasonTrim,
+      }).catch((err) => console.error("[withdraw-notify reject]", err));
+    }
+
+    return result;
   }
 
   async expirePendingDepositRequests(limit = 50) {
@@ -255,8 +505,8 @@ export class WalletService {
     const shop = await this.shopsService.getSellerShop(user.id);
     const amount = Number(dto.amount);
 
-    if (!Number.isInteger(amount) || amount < 1000) {
-      throw new BadRequestException("Withdraw amount must be at least 1,000 VND.");
+    if (!Number.isInteger(amount) || amount < 100000) {
+      throw new BadRequestException("Số tiền rút tối thiểu là 100.000đ.");
     }
 
     return this.prisma.$transaction(async (tx) => {
@@ -289,7 +539,7 @@ export class WalletService {
         throw new BadRequestException("Insufficient withdrawable wallet balance.");
       }
 
-      return tx.withdrawRequest.create({
+      const created = await tx.withdrawRequest.create({
         data: {
           sellerId: shop.sellerId,
           amount: toDecimal(amount),
@@ -299,6 +549,35 @@ export class WalletService {
           note: dto.note ?? null,
         },
       });
+
+      // Fire-and-forget admin notification (don't block the transaction)
+      const esc = (s: string | null | undefined) => this.adminNotify.escape(s);
+      const sellerInfo = await tx.seller.findUnique({
+        where: { id: shop.sellerId },
+        select: { displayName: true, user: { select: { email: true } } },
+      });
+      const text = [
+        `💸 <b>Lệnh rút tiền mới</b>`,
+        ``,
+        `Seller: <b>${esc(sellerInfo?.displayName)}</b> (${esc(sellerInfo?.user?.email)})`,
+        `Số tiền: <b>${amount.toLocaleString("vi-VN")}đ</b>`,
+        ``,
+        `🏦 ${esc(dto.bankName)}`,
+        `📋 <code>${esc(dto.bankAccountNumber)}</code>`,
+        `👤 <code>${esc(dto.bankAccountName)}</code>`,
+        `💰 <code>${amount.toLocaleString("vi-VN")}</code>`,
+        dto.note ? `📝 ${esc(dto.note)}` : "",
+      ].filter(Boolean).join("\n");
+      this.adminNotify.send(text, {
+        level: "info",
+        service: "Withdraw",
+        actions: [
+          { text: "✅ Duyệt", callback_data: `wd_approve:${created.id}` },
+          { text: "❌ Từ chối", callback_data: `wd_reject:${created.id}` },
+        ],
+      }).catch(() => undefined);
+
+      return created;
     });
   }
 
@@ -470,6 +749,67 @@ export class WalletService {
         };
       }),
     };
+  }
+
+  private async sendWithdrawNotificationEmail(input: {
+    sellerId: string;
+    status: "APPROVED" | "REJECTED";
+    amount: number;
+    bankName: string | null;
+    bankAccountNumber: string | null;
+    bankAccountName: string | null;
+    note?: string | null;
+    rejectReason?: string | null;
+  }) {
+    const seller = await this.prisma.seller.findUnique({
+      where: { id: input.sellerId },
+      select: { displayName: true, user: { select: { recoveryEmail: true, email: true } } },
+    });
+    const to = seller?.user?.recoveryEmail || null;
+    if (!to) {
+      console.log(`[withdraw-notify] no email for seller ${input.sellerId}, skipping`);
+      return;
+    }
+
+    const amountStr = input.amount.toLocaleString("vi-VN") + "đ";
+    const bankInfo = `${input.bankName ?? "?"} • ${input.bankAccountNumber ?? "?"} • ${input.bankAccountName ?? "?"}`;
+    const escape = (s: string | null | undefined) => String(s || "")
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
+
+    const subject = input.status === "APPROVED"
+      ? `✅ Yêu cầu rút ${amountStr} đã được duyệt`
+      : `❌ Yêu cầu rút ${amountStr} đã bị từ chối`;
+
+    const text = input.status === "APPROVED"
+      ? `Xin chào ${seller?.displayName ?? ""},\n\nYêu cầu rút ${amountStr} của bạn đã được admin duyệt.\nThông tin chuyển khoản: ${bankInfo}\nGhi chú admin: ${input.note || "(không)"}\n\nSố tiền sẽ được chuyển vào tài khoản trong vòng 24 giờ.`
+      : `Xin chào ${seller?.displayName ?? ""},\n\nYêu cầu rút ${amountStr} của bạn đã bị từ chối.\nLý do: ${input.rejectReason || "(không nêu)"}\n\nSố tiền vẫn còn nguyên trong ví của bạn. Bạn có thể tạo yêu cầu mới hoặc liên hệ admin để biết thêm chi tiết.`;
+
+    const html = input.status === "APPROVED"
+      ? `
+        <div style="font-family:sans-serif;max-width:560px">
+          <h2 style="color:#10b981">✅ Yêu cầu rút tiền đã được duyệt</h2>
+          <p>Xin chào <b>${escape(seller?.displayName)}</b>,</p>
+          <p>Yêu cầu rút <b>${escape(amountStr)}</b> của bạn đã được admin duyệt.</p>
+          <table style="border-collapse:collapse;margin:16px 0">
+            <tr><td style="padding:4px 12px 4px 0;color:#666">Ngân hàng:</td><td><b>${escape(input.bankName)}</b></td></tr>
+            <tr><td style="padding:4px 12px 4px 0;color:#666">Số tài khoản:</td><td><code>${escape(input.bankAccountNumber)}</code></td></tr>
+            <tr><td style="padding:4px 12px 4px 0;color:#666">Chủ tài khoản:</td><td>${escape(input.bankAccountName)}</td></tr>
+            ${input.note ? `<tr><td style="padding:4px 12px 4px 0;color:#666">Ghi chú admin:</td><td>${escape(input.note)}</td></tr>` : ""}
+          </table>
+          <p>Số tiền sẽ được chuyển vào tài khoản trong vòng <b>24 giờ</b>.</p>
+        </div>`
+      : `
+        <div style="font-family:sans-serif;max-width:560px">
+          <h2 style="color:#ef4444">❌ Yêu cầu rút tiền bị từ chối</h2>
+          <p>Xin chào <b>${escape(seller?.displayName)}</b>,</p>
+          <p>Yêu cầu rút <b>${escape(amountStr)}</b> của bạn đã bị từ chối.</p>
+          <p style="background:#fef2f2;border-left:4px solid #ef4444;padding:12px 16px;color:#991b1b">
+            <b>Lý do:</b> ${escape(input.rejectReason || "(không nêu)")}
+          </p>
+          <p>Số tiền vẫn còn nguyên trong ví của bạn. Bạn có thể tạo yêu cầu mới hoặc liên hệ admin để biết thêm chi tiết.</p>
+        </div>`;
+
+    await this.mail.send({ to, subject, text, html });
   }
 
   async adjustCustomerWallet(user: AuthenticatedUser, customerId: string, dto: AdjustCustomerWalletDto) {

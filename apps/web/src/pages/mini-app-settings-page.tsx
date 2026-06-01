@@ -6,6 +6,7 @@ interface BotCustomization {
   productNote?: { vi?: string; en?: string };
   catalogText?: { vi?: string; en?: string };
   homeFooter?: { vi?: string; en?: string };
+  walletNote?: { vi?: string; en?: string };
   homeIcon?: string;
   messageEmojiIds?: {
     welcomeMessage?: string;
@@ -107,6 +108,7 @@ export function MiniAppSettingsPage() {
     productNote: { vi: "", en: "" },
     catalogText: { vi: "", en: "" },
     homeFooter: { vi: "", en: "" },
+    walletNote: { vi: "", en: "" },
     homeIcon: undefined,
     messageEmojiIds: {},
     labelEmojiIds: {},
@@ -159,6 +161,7 @@ export function MiniAppSettingsPage() {
           productNote: { vi: "", en: "", ...prev.productNote, ...data.customization.productNote },
           catalogText: { vi: "", en: "", ...prev.catalogText, ...data.customization.catalogText },
           homeFooter: { vi: "", en: "", ...prev.homeFooter, ...data.customization.homeFooter },
+          walletNote: { vi: "", en: "", ...prev.walletNote, ...data.customization.walletNote },
           homeIcon: data.customization.homeIcon !== undefined ? data.customization.homeIcon : prev.homeIcon,
           messageEmojiIds: { ...prev.messageEmojiIds, ...data.customization.messageEmojiIds },
           labelEmojiIds: { ...prev.labelEmojiIds, ...data.customization.labelEmojiIds },
@@ -557,6 +560,19 @@ export function MiniAppSettingsPage() {
               <div>
                 <label style={lbl}>🇺🇸 English</label>
                 <textarea rows={3} style={{ ...inp, resize: "vertical" }} placeholder="Choose a product below to purchase..." value={customization.catalogText?.en || ""} onChange={(e) => setCustomization((p) => ({ ...p, catalogText: { ...p.catalogText, en: e.target.value } }))} />
+              </div>
+            </div>
+
+            {/* Wallet note */}
+            <div style={card}>
+              {sectionTitle("💳", "Ghi chú ví", "Hiện ngay đầu màn hình Ví khi khách bấm xem ví (để trống = không hiện)")}
+              <div style={{ marginBottom: "10px" }}>
+                <label style={lbl}>🇻🇳 Tiếng Việt</label>
+                <textarea rows={3} style={{ ...inp, resize: "vertical" }} placeholder="VD: Nạp ví để mua nhanh hơn — số dư dùng cho mọi đơn." value={customization.walletNote?.vi || ""} onChange={(e) => setCustomization((p) => ({ ...p, walletNote: { ...p.walletNote, vi: e.target.value } }))} />
+              </div>
+              <div>
+                <label style={lbl}>🇺🇸 English</label>
+                <textarea rows={3} style={{ ...inp, resize: "vertical" }} placeholder="Top up your wallet for faster checkout..." value={customization.walletNote?.en || ""} onChange={(e) => setCustomization((p) => ({ ...p, walletNote: { ...p.walletNote, en: e.target.value } }))} />
               </div>
             </div>
 

@@ -86,10 +86,10 @@ export class PaymentService {
     providerPayload: unknown;
     bankInfo?: PayOSBankInfo;
     manualCrypto?: {
-      provider: "BINANCE" | "OKX" | "USDT_TRC20";
+      provider: "BINANCE" | "OKX" | "USDT_TRC20" | "USDT_SOL";
       uid?: string | null;
       address?: string | null;
-      network?: "TRC20" | null;
+      network?: "TRC20" | "SOLANA" | null;
       usdtAmount: number;
       usdtVndRate: number;
       note: string;
@@ -120,7 +120,8 @@ export class PaymentService {
     if (
       provider === PaymentProvider.BINANCE ||
       provider === PaymentProvider.OKX ||
-      provider === PaymentProvider.USDT_TRC20
+      provider === PaymentProvider.USDT_TRC20 ||
+      provider === PaymentProvider.USDT_SOL
     ) {
       return await this.createManualCryptoPaymentLink(provider, paymentConfig as any, input);
     }
@@ -228,6 +229,7 @@ export class PaymentService {
       binanceUid: string | null;
       okxUid: string | null;
       usdtTrc20Address: string | null;
+      usdtSolanaAddress?: string | null;
       usdtVndRateOverride?: unknown;
       binancePersonalApiKeyEncrypted?: string | null;
       binancePersonalSecretKeyEncrypted?: string | null;
@@ -238,12 +240,14 @@ export class PaymentService {
       amount: number;
     },
   ) {
-    const cryptoProvider: "BINANCE" | "OKX" | "USDT_TRC20" =
+    const cryptoProvider: "BINANCE" | "OKX" | "USDT_TRC20" | "USDT_SOL" =
       provider === PaymentProvider.BINANCE
         ? "BINANCE"
         : provider === PaymentProvider.OKX
           ? "OKX"
-          : "USDT_TRC20";
+          : provider === PaymentProvider.USDT_SOL
+            ? "USDT_SOL"
+            : "USDT_TRC20";
     const uid = String(
       cryptoProvider === "BINANCE"
         ? paymentConfig?.binanceUid || ""
@@ -254,14 +258,20 @@ export class PaymentService {
     const address = String(
       cryptoProvider === "USDT_TRC20"
         ? paymentConfig?.usdtTrc20Address || ""
-        : "",
+        : cryptoProvider === "USDT_SOL"
+          ? paymentConfig?.usdtSolanaAddress || ""
+          : "",
     ).trim();
 
     if (cryptoProvider === "USDT_TRC20" && !address) {
       throw new BadRequestException("USDT TRC20 address is not configured.");
     }
 
-    if (cryptoProvider !== "USDT_TRC20" && !uid) {
+    if (cryptoProvider === "USDT_SOL" && !address) {
+      throw new BadRequestException("USDT Solana address is not configured.");
+    }
+
+    if (cryptoProvider !== "USDT_TRC20" && cryptoProvider !== "USDT_SOL" && !uid) {
       throw new BadRequestException(
         cryptoProvider === "BINANCE"
           ? "Binance UID is not configured."
@@ -280,7 +290,7 @@ export class PaymentService {
       paymentConfig?.binancePersonalSecretKeyEncrypted
     ) {
       hasPersonalApi = true;
-      
+
       const recentPending = await this.prisma.paymentTransaction.findMany({
         where: {
           provider: PaymentProvider.BINANCE,
@@ -307,19 +317,97 @@ export class PaymentService {
       usdtAmount = targetUsdt;
     }
 
+    // Anti-collision for USDT_TRC20 (auto-detect needs unique amounts to match)
+    if (cryptoProvider === "USDT_TRC20") {
+      const [recentPendingOrders, recentPendingTopups] = await Promise.all([
+        this.prisma.paymentTransaction.findMany({
+          where: {
+            provider: PaymentProvider.USDT_TRC20,
+            status: "PENDING",
+            createdAt: { gte: new Date(Date.now() - 60 * 60 * 1000) },
+            order: { shopId: input.shopId },
+          },
+          select: { rawPayloadJson: true },
+        }),
+        this.prisma.customerWalletTopup.findMany({
+          where: {
+            provider: PaymentProvider.USDT_TRC20,
+            status: "PENDING",
+            shopId: input.shopId,
+            createdAt: { gte: new Date(Date.now() - 60 * 60 * 1000) },
+          },
+          select: { rawPayloadJson: true },
+        }),
+      ]);
+      const usedAmounts = new Set<number>();
+      for (const t of [...recentPendingOrders, ...recentPendingTopups]) {
+        const payload = t.rawPayloadJson as any;
+        const amount = Number(payload?.manualCrypto?.usdtAmount || 0);
+        if (amount > 0) usedAmounts.add(amount);
+      }
+      let offset = 0;
+      let targetUsdt = usdtAmount;
+      while (usedAmounts.has(targetUsdt) && offset < 99) {
+        offset += 0.01;
+        targetUsdt = this.ceilToDecimals(usdtAmount + offset, 2);
+      }
+      usdtAmount = targetUsdt;
+    }
+
+    // Anti-collision for USDT_SOL (auto-detect needs unique amounts to match)
+    if (cryptoProvider === "USDT_SOL") {
+      const [recentPendingOrders, recentPendingTopups] = await Promise.all([
+        this.prisma.paymentTransaction.findMany({
+          where: {
+            provider: PaymentProvider.USDT_SOL,
+            status: "PENDING",
+            createdAt: { gte: new Date(Date.now() - 60 * 60 * 1000) },
+            order: { shopId: input.shopId },
+          },
+          select: { rawPayloadJson: true },
+        }),
+        this.prisma.customerWalletTopup.findMany({
+          where: {
+            provider: PaymentProvider.USDT_SOL,
+            status: "PENDING",
+            shopId: input.shopId,
+            createdAt: { gte: new Date(Date.now() - 60 * 60 * 1000) },
+          },
+          select: { rawPayloadJson: true },
+        }),
+      ]);
+      const usedAmounts = new Set<number>();
+      for (const t of [...recentPendingOrders, ...recentPendingTopups]) {
+        const payload = t.rawPayloadJson as any;
+        const amount = Number(payload?.manualCrypto?.usdtAmount || 0);
+        if (amount > 0) usedAmounts.add(amount);
+      }
+      let offset = 0;
+      let targetUsdt = usdtAmount;
+      while (usedAmounts.has(targetUsdt) && offset < 99) {
+        offset += 0.01;
+        targetUsdt = this.ceilToDecimals(usdtAmount + offset, 2);
+      }
+      usdtAmount = targetUsdt;
+    }
+
     const note = input.externalOrderCode;
     const manualCrypto = {
       provider: cryptoProvider,
       uid: uid || null,
       address: address || null,
-      network: cryptoProvider === "USDT_TRC20" ? ("TRC20" as const) : null,
+      network: cryptoProvider === "USDT_TRC20"
+        ? ("TRC20" as const)
+        : cryptoProvider === "USDT_SOL"
+          ? ("SOLANA" as const)
+          : null,
       usdtAmount,
       usdtVndRate: rate,
       note,
       hasPersonalApi,
     };
     const checkoutUrl = `manual-crypto://${cryptoProvider.toLowerCase()}/${input.externalOrderCode}`;
-    const qrCode = cryptoProvider === "USDT_TRC20"
+    const qrCode = cryptoProvider === "USDT_TRC20" || cryptoProvider === "USDT_SOL"
       ? `qrdata:${address}`
       : null;
 

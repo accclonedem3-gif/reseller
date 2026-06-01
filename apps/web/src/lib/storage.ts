@@ -16,6 +16,9 @@ export interface StoredSession {
     sellerStatus: string | null;
     sellerCapabilities: string[];
     sellerReadOnly: boolean;
+    referralCode?: string | null;
+    hasReferrer?: boolean;
+    referrer?: { referralCode: string | null; displayName: string | null } | null;
   };
 }
 

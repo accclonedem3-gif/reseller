@@ -1,5 +1,5 @@
-import { Body, Controller, Get, Inject, Param, Put, UseGuards } from "@nestjs/common";
-import { IsBoolean, IsInt, Max, Min } from "class-validator";
+import { Body, Controller, Get, Inject, Param, Put, Query, UseGuards } from "@nestjs/common";
+import { IsBoolean, IsInt, IsOptional, Max, Min } from "class-validator";
 
 import { CurrentUser } from "../common/decorators/current-user.decorator";
 import { JwtAuthGuard } from "../common/guards/jwt-auth.guard";
@@ -22,6 +22,19 @@ class SetDiscountPercentDto {
   @Min(0)
   @Max(100)
   discountPercent!: number;
+}
+
+class OrdersQueryDto {
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(200)
+  limit?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  offset?: number;
 }
 
 @Controller("customers")
@@ -62,5 +75,14 @@ export class CustomersController {
     @Body() body: SetDiscountPercentDto,
   ) {
     return this.customersService.setDiscountPercent(user, id, body.discountPercent);
+  }
+
+  @Get(":id/orders")
+  getCustomerOrders(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param("id") id: string,
+    @Query() query: OrdersQueryDto,
+  ) {
+    return this.customersService.getCustomerOrders(user, id, query);
   }
 }

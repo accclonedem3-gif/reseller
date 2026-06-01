@@ -23,6 +23,7 @@ import { OrdersService } from "../orders/orders.service";
 import { SellerSourceConnectionService } from "../seller/seller-source-connection.service";
 import { ShopsService } from "../shops/shops.service";
 import { UpgradeService } from "../upgrade/upgrade.service";
+import { TiersService } from "../tiers/tiers.service";
 import { WalletService } from "../wallet/wallet.service";
 
 @Controller("webhooks")
@@ -46,6 +47,8 @@ export class WebhooksController {
     private readonly shopsService: ShopsService,
     @Inject(UpgradeService)
     private readonly upgradeService: UpgradeService,
+    @Inject(TiersService)
+    private readonly tiersService: TiersService,
     @Inject(SellerSourceConnectionService)
     private readonly connectionService: SellerSourceConnectionService,
   ) { }
@@ -269,7 +272,24 @@ export class WebhooksController {
     };
   }
 
-  private async processPaymentCompletion(externalOrderCode: string, rawPayload?: unknown) {
+  @Post("internal-crypto-confirm/:externalOrderCode")
+  async internalCryptoConfirm(
+    @Param("externalOrderCode") externalOrderCode: string,
+    @Headers("x-internal-token") tokenHeader: string,
+    @Body() body: { signature?: string; amountUsdt?: number; source?: string },
+  ) {
+    if (!tokenHeader || tokenHeader !== this.config.internalApiToken) {
+      throw new NotFoundException("Not found.");
+    }
+    return this.processPaymentCompletion(externalOrderCode, {
+      source: body?.source || "internal_crypto_auto_scan",
+      signature: body?.signature,
+      amountUsdt: body?.amountUsdt,
+      detectedAt: new Date().toISOString(),
+    });
+  }
+
+  async processPaymentCompletion(externalOrderCode: string, rawPayload?: unknown) {
     try {
       await this.ordersService.markPaymentCompleted(externalOrderCode, rawPayload);
       const paymentStatus = await this.paymentService.getExternalPaymentStatus(externalOrderCode);
@@ -309,7 +329,27 @@ export class WebhooksController {
       }
     }
 
-    // Thử upgrade tier trước (deposit request có note UPGRADE_TIER:...)
+    // Thử tier subscription mới (deposit có note TIER_SUB:...)
+    try {
+      const tierSubResult = await this.tiersService.confirmFromExternalOrderCode(
+        externalOrderCode,
+        rawPayload,
+      );
+      if (tierSubResult) {
+        return {
+          success: true,
+          reconciled: true,
+          kind: "tier_subscription",
+          ...tierSubResult,
+        };
+      }
+    } catch (error) {
+      if (!(error instanceof NotFoundException)) {
+        throw error;
+      }
+    }
+
+    // Thử upgrade tier cũ (deposit request có note UPGRADE_TIER:...) — legacy fallback
     try {
       const upgradeResult = await this.upgradeService.confirmUpgradeByExternalOrderCode(
         externalOrderCode,

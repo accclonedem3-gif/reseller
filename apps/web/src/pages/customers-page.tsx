@@ -76,8 +76,41 @@ interface Customer {
   walletBalance: number;
   commissionBalance: number;
   orderCount: number;
+  totalSpent: number;
   createdAt: string;
   connectedBotUsername: string | null;
+}
+
+interface CustomerOrdersResponse {
+  customer: {
+    id: string;
+    telegramUserId: string;
+    telegramUsername: string | null;
+    displayName: string;
+    createdAt: string;
+  };
+  orders: Array<{
+    id: string;
+    orderCode: string;
+    productName: string;
+    quantity: number;
+    salePrice: number;
+    totalSaleAmount: number;
+    totalSourceAmount: number;
+    profit: number;
+    status: string;
+    paymentStatus: string;
+    createdAt: string;
+    paidAt: string | null;
+    deliveredAt: string | null;
+    hasDeliveredText: boolean;
+  }>;
+  total: number;
+  summary: {
+    totalSpent: number;
+    totalCost: number;
+    totalProfit: number;
+  };
 }
 
 export function CustomersPage() {
@@ -112,6 +145,13 @@ export function CustomersPage() {
       (c.username?.toLowerCase().includes(kw) ?? false) ||
       c.telegramChatId.includes(kw)
     );
+  });
+
+  const [historyCustomerId, setHistoryCustomerId] = useState<string | null>(null);
+  const historyQuery = useQuery<CustomerOrdersResponse>({
+    queryKey: ["customer-orders", historyCustomerId],
+    enabled: Boolean(historyCustomerId),
+    queryFn: async () => (await api.get(`/customers/${historyCustomerId}/orders`, { params: { limit: 100 } })).data,
   });
 
   return (
@@ -168,7 +208,7 @@ export function CustomersPage() {
             <table className="w-full text-sm">
               <thead>
                 <tr style={{ borderBottom: "1px solid var(--bd)" }}>
-                  {[t.colCustomer, t.colChatId, t.colBalance, t.colOrders, t.colLang, t.colCtv].map((h) => (
+                  {[t.colCustomer, t.colChatId, t.colBalance, t.colOrders, "Tổng chi", t.colLang, t.colCtv, "Lịch sử"].map((h) => (
                     <th
                       key={h}
                       className="px-4 py-3 text-left text-[11px] font-semibold uppercase tracking-[0.18em]"
@@ -206,6 +246,9 @@ export function CustomersPage() {
                     <td className="px-4 py-3" style={{ color: "var(--tx-m)" }}>
                       {customer.orderCount}
                     </td>
+                    <td className="px-4 py-3 font-semibold" style={{ color: "var(--tx)" }}>
+                      {formatCurrency(customer.totalSpent ?? 0)}
+                    </td>
                     <td className="px-4 py-3">
                       <StudioBadge tone="neutral">{customer.preferredLanguage.toUpperCase()}</StudioBadge>
                     </td>
@@ -224,6 +267,20 @@ export function CustomersPage() {
                         {customer.isCtv ? t.ctvOn : t.ctvOff}
                       </button>
                     </td>
+                    <td className="px-4 py-3">
+                      <button
+                        type="button"
+                        onClick={() => setHistoryCustomerId(customer.id)}
+                        className="rounded-[10px] px-3 py-1.5 text-xs font-semibold transition-all hover:opacity-80"
+                        style={{
+                          background: "rgba(56,189,248,0.12)",
+                          color: "rgb(56,189,248)",
+                          border: "1px solid rgba(56,189,248,0.3)",
+                        }}
+                      >
+                        🕐 Lịch sử
+                      </button>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -231,6 +288,121 @@ export function CustomersPage() {
           </div>
         )}
       </div>
+
+      {historyCustomerId && (
+        <div
+          className="fixed inset-0 z-[80] flex items-center justify-center p-4"
+          style={{ backgroundColor: "rgba(0,0,0,0.5)" }}
+          onClick={() => setHistoryCustomerId(null)}
+        >
+          <div
+            className="relative flex w-full flex-col rounded-2xl overflow-hidden"
+            style={{
+              backgroundColor: "var(--surface)",
+              border: "1px solid var(--bd)",
+              maxWidth: 900,
+              maxHeight: "85vh",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div
+              className="flex shrink-0 items-center justify-between gap-4 px-5 py-4"
+              style={{ borderBottom: "1px solid var(--bd)" }}
+            >
+              <div>
+                <p className="text-[10px] font-black uppercase tracking-widest" style={{ color: "var(--tx-f)" }}>
+                  Lịch sử mua hàng
+                </p>
+                <p className="text-sm font-black" style={{ color: "var(--tx)" }}>
+                  {historyQuery.data?.customer.displayName ?? "Đang tải..."}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setHistoryCustomerId(null)}
+                className="rounded-xl px-3 py-1.5 text-[11px] font-bold"
+                style={{ background: "var(--inp)", border: "1px solid var(--bd)", color: "var(--tx-m)" }}
+              >
+                Đóng
+              </button>
+            </div>
+
+            {historyQuery.isLoading ? (
+              <div className="py-10 text-center text-sm" style={{ color: "var(--tx-f)" }}>Đang tải...</div>
+            ) : historyQuery.data ? (
+              <>
+                <div className="grid grid-cols-4 gap-2 border-b p-4" style={{ borderColor: "var(--bd)" }}>
+                  <StatBox label="Tổng đơn" value={String(historyQuery.data.total)} color="var(--tx)" />
+                  <StatBox label="Đã chi" value={formatCurrency(historyQuery.data.summary.totalSpent)} color="rgb(52,211,153)" />
+                  <StatBox label="Tổng vốn" value={formatCurrency(historyQuery.data.summary.totalCost)} color="rgb(249,115,22)" />
+                  <StatBox label="Lãi" value={formatCurrency(historyQuery.data.summary.totalProfit)} color="rgb(168,85,247)" />
+                </div>
+                <div className="flex-1 overflow-y-auto">
+                  <table className="w-full text-sm">
+                    <thead className="sticky top-0" style={{ background: "var(--surface)" }}>
+                      <tr style={{ borderBottom: "1px solid var(--bd)" }}>
+                        {["Ngày", "Mã đơn", "Sản phẩm", "SL", "Tiền", "Lãi", "Trạng thái"].map((h) => (
+                          <th key={h} className="px-4 py-2 text-left text-[10px] font-black uppercase tracking-widest"
+                              style={{ color: "var(--tx-f)" }}>{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {historyQuery.data.orders.map((o) => (
+                        <tr key={o.id} style={{ borderBottom: "1px solid var(--bd)" }}>
+                          <td className="px-4 py-2 text-[11px]" style={{ color: "var(--tx-m)" }}>
+                            {new Date(o.createdAt).toLocaleString("vi-VN")}
+                          </td>
+                          <td className="px-4 py-2 font-mono text-[11px]" style={{ color: "var(--tx)" }}>
+                            {o.orderCode}
+                          </td>
+                          <td className="px-4 py-2 text-[11px]" style={{ color: "var(--tx)" }}>
+                            {o.productName}
+                          </td>
+                          <td className="px-4 py-2 text-[11px]" style={{ color: "var(--tx-m)" }}>
+                            {o.quantity}
+                          </td>
+                          <td className="px-4 py-2 font-semibold text-[11px]" style={{ color: "var(--tx)" }}>
+                            {formatCurrency(o.totalSaleAmount)}
+                          </td>
+                          <td className="px-4 py-2 font-semibold text-[11px]" style={{ color: o.profit > 0 ? "rgb(52,211,153)" : "var(--tx-f)" }}>
+                            {formatCurrency(o.profit)}
+                          </td>
+                          <td className="px-4 py-2 text-[11px]">
+                            <span
+                              className="rounded px-1.5 py-0.5 text-[10px] font-bold"
+                              style={{
+                                background: o.status === "DELIVERED" ? "rgba(52,211,153,0.15)" : "rgba(249,115,22,0.15)",
+                                color: o.status === "DELIVERED" ? "rgb(52,211,153)" : "rgb(249,115,22)",
+                              }}
+                            >
+                              {o.status}
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  {historyQuery.data.orders.length === 0 && (
+                    <p className="py-8 text-center text-sm" style={{ color: "var(--tx-f)" }}>
+                      Khách chưa có đơn nào.
+                    </p>
+                  )}
+                </div>
+              </>
+            ) : null}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function StatBox({ label, value, color }: { label: string; value: string; color: string }) {
+  return (
+    <div className="rounded-xl p-2" style={{ background: "var(--inp)", border: "1px solid var(--bd)" }}>
+      <p className="text-[9px] font-black uppercase tracking-widest" style={{ color: "var(--tx-f)" }}>{label}</p>
+      <p className="mt-0.5 text-[14px] font-black" style={{ color }}>{value}</p>
     </div>
   );
 }

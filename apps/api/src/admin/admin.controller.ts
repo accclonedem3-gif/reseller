@@ -10,11 +10,18 @@ import {
   Query,
   UseGuards,
 } from "@nestjs/common";
-import { UserRole } from "@prisma/client";
+import { UserRole, WithdrawStatus } from "@prisma/client";
 
+import { CurrentUser } from "../common/decorators/current-user.decorator";
 import { Roles } from "../common/decorators/roles.decorator";
 import { JwtAuthGuard } from "../common/guards/jwt-auth.guard";
 import { RolesGuard } from "../common/guards/roles.guard";
+import type { AuthenticatedUser } from "../types";
+import {
+  ApproveWithdrawRequestDto,
+  RejectWithdrawRequestDto,
+} from "../wallet/wallet.dto";
+import { WalletService } from "../wallet/wallet.service";
 
 import {
   BulkUpdateSystemConfigDto,
@@ -34,6 +41,8 @@ export class AdminController {
   constructor(
     @Inject(AdminService)
     private readonly adminService: AdminService,
+    @Inject(WalletService)
+    private readonly walletService: WalletService,
   ) {}
 
   @Get("overview")
@@ -120,5 +129,31 @@ export class AdminController {
   @Post("test-proxies")
   testProxies(@Body() body: TestProxiesDto) {
     return this.adminService.testProxies(body.proxies, body.mode || "full");
+  }
+
+  @Get("withdraw-requests")
+  listWithdrawRequests(
+    @CurrentUser() user: AuthenticatedUser,
+    @Query("status") status?: WithdrawStatus,
+  ) {
+    return this.walletService.adminListWithdrawRequests(user, status);
+  }
+
+  @Post("withdraw-requests/:id/approve")
+  approveWithdrawRequest(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param("id") id: string,
+    @Body() body: ApproveWithdrawRequestDto,
+  ) {
+    return this.walletService.adminApproveWithdrawRequest(user, id, { note: body.note });
+  }
+
+  @Post("withdraw-requests/:id/reject")
+  rejectWithdrawRequest(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param("id") id: string,
+    @Body() body: RejectWithdrawRequestDto,
+  ) {
+    return this.walletService.adminRejectWithdrawRequest(user, id, body.reason);
   }
 }

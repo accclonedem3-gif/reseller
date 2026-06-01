@@ -71,18 +71,53 @@ export class SourceProductService {
     return products.map((p) => this.mapProduct(p, p.overrides[0]));
   }
 
+  /**
+   * Lookup admin template defaults — match family first, fallback to sourceName.
+   * Returns null if no template or no match.
+   */
+  private async getAdminTemplateDefaults(args: { family?: string | null; sourceName?: string | null }) {
+    try {
+      const tpl = await this.prisma.shop.findFirst({
+        where: { isTemplate: true },
+        select: { botConfig: { select: { customizationJson: true } } },
+      });
+      const cust = (tpl?.botConfig?.customizationJson as Record<string, any>) ?? null;
+      if (!cust) return null;
+      if (args.family) {
+        const byFamily = (cust.productDefaultsByFamily ?? {}) as Record<string, any>;
+        if (byFamily[args.family]) return byFamily[args.family];
+      }
+      if (args.sourceName) {
+        const byName = (cust.productDefaultsByName ?? {}) as Record<string, any>;
+        if (byName[args.sourceName]) return byName[args.sourceName];
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
   async create(user: AuthenticatedUser, dto: CreateSourceProductDto) {
     this.validateOtherFields(dto);
     const shop = await this.shopsService.getSellerShop(user.id);
+    const cleanedName = dto.sourceName.trim();
+    const templateDefault = await this.getAdminTemplateDefaults({ family: dto.productFamily as any, sourceName: cleanedName });
+    // If admin set media as photo → use it as imageUrl. For video/animation, imageUrl stays null.
+    const inheritedImageUrl =
+      templateDefault?.media?.type === "photo" && typeof templateDefault.media.url === "string"
+        ? (templateDefault.media.url as string)
+        : null;
     const product = await this.prisma.sourceProduct.create({
       data: {
         shopId: shop.id,
         externalProductId: `pro_${randomBytes(8).toString("hex")}`,
         providerName: "pro_source",
-        productIcon: dto.productIcon?.trim() || null,
-        sourceName: dto.sourceName.trim(),
-        sourceRawName: dto.sourceRawName?.trim() || dto.sourceName.trim(),
-        sourceDescription: dto.sourceDescription?.trim() || null,
+        productIcon: dto.productIcon?.trim() || templateDefault?.icon || null,
+        iconCustomEmojiId: templateDefault?.customEmojiId || null,
+        imageUrl: inheritedImageUrl,
+        sourceName: cleanedName,
+        sourceRawName: dto.sourceRawName?.trim() || cleanedName,
+        sourceDescription: dto.sourceDescription?.trim() || templateDefault?.description || null,
         sourcePrice: toDecimal(dto.sourcePrice),
         available: dto.available ?? null,
         internalSourceEnabled: dto.internalSourceEnabled ?? true,

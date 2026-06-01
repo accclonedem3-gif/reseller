@@ -8,13 +8,14 @@ import { PaymentProvider, SellerTier, WalletLedgerType } from "@prisma/client";
 
 import { AppConfigService } from "../config/app-config.service";
 import { PrismaService } from "../db/prisma.service";
+import { MailService } from "../lib/mail.service";
 import { PaymentService } from "../lib/payment.service";
 import { decimalToNumber, generateExternalPaymentCode, toDecimal } from "../lib/utils";
 import type { AuthenticatedUser } from "../types";
 
 // Only PRO is publicly purchasable. ULTRA is admin-assigned only.
 const TIER_PRICES: Record<"pro", number> = {
-  pro: 179000,
+  pro: 199000,
 };
 
 const TIER_LABELS: Record<"pro", string> = {
@@ -36,6 +37,8 @@ export class UpgradeService {
     private readonly paymentService: PaymentService,
     @Inject(AppConfigService)
     private readonly config: AppConfigService,
+    @Inject(MailService)
+    private readonly mail: MailService,
   ) {}
 
   async createUpgradePayment(user: AuthenticatedUser, targetTier: "pro") {
@@ -212,9 +215,6 @@ export class UpgradeService {
   }
 
   private async sendUpgradeEmail(sellerId: string, tier: "pro") {
-    const resendApiKey = this.config.resendApiKey;
-    if (!resendApiKey) return;
-
     const seller = await this.prisma.seller.findUnique({
       where: { id: sellerId },
       include: { user: { select: { email: true } } },
@@ -252,18 +252,11 @@ export class UpgradeService {
 </td></tr></table>
 </body></html>`;
 
-    await fetch("https://api.resend.com/emails", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${resendApiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        from: this.config.mailFrom,
-        to: email,
-        subject: `[Altivox] Tài khoản đã được nâng lên gói ${tierLabel} 🎉`,
-        html,
-      }),
+    await this.mail.send({
+      to: email,
+      subject: `[Altivox] Tài khoản đã được nâng lên gói ${tierLabel} 🎉`,
+      text: `Chào mừng lên gói ${tierLabel}! Tài khoản của bạn đã được nâng cấp thành công. Vào dashboard: ${webUrl}`,
+      html,
     });
   }
 

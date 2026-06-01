@@ -53,8 +53,36 @@ export class AppConfigService {
     return process.env.RESEND_API_KEY || "";
   }
 
+  get brevoApiKey() {
+    return process.env.BREVO_API_KEY || "";
+  }
+
+  /** "brevo" | "resend" — auto-detected if not set explicitly. */
+  get mailProvider(): "brevo" | "resend" | "" {
+    const explicit = String(process.env.MAIL_PROVIDER || "").toLowerCase();
+    if (explicit === "brevo" || explicit === "resend") return explicit;
+    if (process.env.BREVO_API_KEY) return "brevo";
+    if (process.env.RESEND_API_KEY) return "resend";
+    return "";
+  }
+
   get mailFrom() {
     return process.env.MAIL_FROM || "Reseller Platform <onboarding@resend.dev>";
+  }
+
+  get adminTelegramBotToken() {
+    return process.env.ADMIN_TG_BOT_TOKEN || "";
+  }
+
+  get adminTelegramChatId() {
+    return process.env.ADMIN_TG_CHAT_ID || "";
+  }
+
+  /** Optional webhook URL of an external alert bot (e.g. Trâm Anh) that exposes
+   *  POST /alert with body { level, service, message }. If set, AdminNotifyService
+   *  prefers this over direct Telegram API calls. */
+  get adminAlertWebhookUrl() {
+    return process.env.ADMIN_ALERT_WEBHOOK_URL || "";
   }
 
   get encryptionKey() {
@@ -71,6 +99,10 @@ export class AppConfigService {
 
   get paymentMode() {
     return process.env.PAYMENT_MODE || "payos";
+  }
+
+  get platformDepositShopId() {
+    return process.env.PLATFORM_DEPOSIT_SHOP_ID || null;
   }
 
   get providerBaseUrl() {
@@ -103,6 +135,20 @@ export class AppConfigService {
 
   get tronUsdtContractAddress() {
     return process.env.TRON_USDT_CONTRACT_ADDRESS || "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
+  }
+
+  get heliusApiKey() {
+    return process.env.HELIUS_API_KEY || "";
+  }
+
+  get solanaRpcUrl() {
+    const key = this.heliusApiKey;
+    if (key) return `https://mainnet.helius-rpc.com/?api-key=${key}`;
+    return process.env.SOLANA_RPC_URL || "https://api.mainnet-beta.solana.com";
+  }
+
+  get solanaUsdtMintAddress() {
+    return process.env.SOLANA_USDT_MINT || "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB";
   }
 
   get mockProviderEnabled() {

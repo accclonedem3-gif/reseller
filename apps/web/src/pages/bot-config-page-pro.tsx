@@ -301,6 +301,7 @@ type BotConfigForm = {
   binanceUid: string;
   okxUid: string;
   usdtTrc20Address: string;
+  usdtSolanaAddress: string;
   usdtVndRateOverride: string;
   binancePersonalApiKey: string;
   binancePersonalSecretKey: string;
@@ -347,6 +348,7 @@ function buildBotConfigPayload(form: BotConfigForm) {
     ["binanceUid", "binanceUid"],
     ["okxUid", "okxUid"],
     ["usdtTrc20Address", "usdtTrc20Address"],
+    ["usdtSolanaAddress", "usdtSolanaAddress"],
     ["binancePersonalApiKey", "binancePersonalApiKey"],
     ["binancePersonalSecretKey", "binancePersonalSecretKey"],
     ["binancePayApiKey", "binancePayApiKey"],
@@ -401,6 +403,7 @@ function getInitialForm(): BotConfigForm {
     binanceUid: "",
     okxUid: "",
     usdtTrc20Address: "",
+    usdtSolanaAddress: "",
     usdtVndRateOverride: "",
     binancePersonalApiKey: "",
     binancePersonalSecretKey: "",
@@ -488,6 +491,7 @@ export function BotConfigPage() {
       binanceUid: configQuery.data.binanceUid || "",
       okxUid: configQuery.data.okxUid || "",
       usdtTrc20Address: configQuery.data.usdtTrc20Address || "",
+      usdtSolanaAddress: (configQuery.data as any).usdtSolanaAddress || "",
       usdtVndRateOverride:
         configQuery.data.usdtVndRateOverride !== null && configQuery.data.usdtVndRateOverride !== undefined
           ? String(configQuery.data.usdtVndRateOverride)
@@ -634,6 +638,21 @@ export function BotConfigPage() {
               ★ ULTRA · Tổng sỉ
             </span>
           )}
+          <button type="button"
+            onClick={async () => {
+              if (!window.confirm("Reset bot về mặc định admin? Tất cả customize (welcome, label, emoji) sẽ bị xoá. Không reset product overrides.")) return;
+              try {
+                await api.post("/admin-template/reset", { alsoResetProductOverrides: false });
+                showToast({ tone: "success", message: "Đã reset về mặc định admin." });
+                queryClient.invalidateQueries({ queryKey: ["bot-config"] });
+              } catch (err: any) {
+                showToast({ tone: "error", message: err?.response?.data?.message || "Không reset được." });
+              }
+            }}
+            className="flex items-center gap-1.5 rounded-xl px-3 py-2 text-[12px] font-black transition hover:opacity-80"
+            style={{ background: "var(--inp)", border: "1px solid var(--bd)", color: "var(--tx-m)" }}>
+            ↻ Reset về mặc định
+          </button>
           <button type="button" disabled={saveMutation.isPending}
             onClick={() => {
               const hasApiKey = form.binancePersonalApiKey.trim().length > 0;
@@ -1034,6 +1053,11 @@ export function BotConfigPage() {
               <div className="sm:col-span-2">
                 <Field label={t.fieldUsdtAddress} hint="Optional">
                   <Input value={form.usdtTrc20Address} onChange={(e) => setForm((c) => ({ ...c, usdtTrc20Address: e.target.value }))} placeholder={t.phUsdtAddress} />
+                </Field>
+              </div>
+              <div className="sm:col-span-2">
+                <Field label="USDT Solana Address" hint="Optional" description="Địa chỉ ví Solana nhận USDT (SPL). Bot sẽ tự dò giao dịch, không cần khách paste tx hash.">
+                  <Input value={form.usdtSolanaAddress} onChange={(e) => setForm((c) => ({ ...c, usdtSolanaAddress: e.target.value }))} placeholder="Ví dụ: 7xKXtg2C...88 ký tự" />
                 </Field>
               </div>
               <Field label="Personal API Key" hint={configQuery.data?.binancePersonalApiKeyMasked ? "Đã mã hoá" : "Optional"}>

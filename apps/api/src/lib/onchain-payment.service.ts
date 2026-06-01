@@ -143,20 +143,22 @@ export class OnchainPaymentService {
       };
     }
 
-    const reusedTx = await this.prisma.paymentTransaction.findFirst({
-      where: {
-        cryptoTxHash: normalizedTxHash,
-        id: {
-          not: paymentTransaction.id,
+    const [reusedTx, reusedTopup] = await Promise.all([
+      this.prisma.paymentTransaction.findFirst({
+        where: {
+          cryptoTxHash: normalizedTxHash,
+          id: { not: paymentTransaction.id },
         },
-      },
-      select: {
-        externalOrderCode: true,
-      },
-    });
+        select: { externalOrderCode: true },
+      }),
+      this.prisma.customerWalletTopup.findFirst({
+        where: { cryptoTxHash: normalizedTxHash },
+        select: { externalOrderCode: true },
+      }),
+    ]);
 
-    if (reusedTx) {
-      throw new BadRequestException("This tx hash has already been used for another order.");
+    if (reusedTx || reusedTopup) {
+      throw new BadRequestException("This tx hash has already been used.");
     }
 
     const manualCrypto = this.extractManualCryptoPayload(paymentTransaction.rawPayloadJson);
@@ -239,12 +241,18 @@ export class OnchainPaymentService {
       throw new BadRequestException("Lệnh nạp đã hết hạn. Vui lòng tạo lệnh nạp mới và thử lại.");
     }
 
-    const reusedTx = await this.prisma.customerWalletTopup.findFirst({
-      where: { cryptoTxHash: normalizedTxHash, id: { not: topup.id } },
-      select: { externalOrderCode: true },
-    });
-    if (reusedTx) {
-      throw new BadRequestException("This tx hash has already been used for another topup.");
+    const [reusedTopup, reusedTx] = await Promise.all([
+      this.prisma.customerWalletTopup.findFirst({
+        where: { cryptoTxHash: normalizedTxHash, id: { not: topup.id } },
+        select: { externalOrderCode: true },
+      }),
+      this.prisma.paymentTransaction.findFirst({
+        where: { cryptoTxHash: normalizedTxHash },
+        select: { externalOrderCode: true },
+      }),
+    ]);
+    if (reusedTopup || reusedTx) {
+      throw new BadRequestException("This tx hash has already been used.");
     }
 
     const manualCrypto = this.extractManualCryptoPayload(topup.rawPayloadJson);
@@ -300,7 +308,12 @@ export class OnchainPaymentService {
       return transferFromHistory;
     }
 
-    const transferFromEvents = await this.findTransferFromTxEvents(input);
+    const transferFromEvents = await this.findTransferFromTxEvents({
+      txHash: input.txHash,
+      receiverAddress: input.receiverAddress,
+      expectedAmount: input.expectedAmount,
+      createdAt: input.createdAt,
+    });
 
     if (transferFromEvents) {
       return transferFromEvents;
@@ -356,6 +369,7 @@ export class OnchainPaymentService {
     txHash: string;
     receiverAddress: string;
     expectedAmount: number;
+    createdAt: Date;
   }) {
     const url = new URL(
       `/v1/transactions/${encodeURIComponent(input.txHash)}/events`,
@@ -394,6 +408,7 @@ export class OnchainPaymentService {
 
     const toAddress = String(transferEvent.result.to || "").trim();
     const amountUsdt = this.parseUsdtAmount(transferEvent.result.value, 6, input.expectedAmount);
+    const blockTimestamp = this.parseTimestamp(transferEvent.block_timestamp);
 
     if (toAddress !== input.receiverAddress) {
       throw new BadRequestException("The tx hash does not transfer USDT to the configured TRC20 address.");
@@ -403,6 +418,16 @@ export class OnchainPaymentService {
       throw new BadRequestException("The transferred USDT amount is lower than required for this order.");
     }
 
+    // Time window check: reject tx hashes from before order creation (minus 5 min grace)
+    const minAllowedTime = input.createdAt.getTime() - 5 * 60 * 1000;
+    if (blockTimestamp && blockTimestamp.getTime() < minAllowedTime) {
+      throw new BadRequestException("This tx hash is from before the order was created.");
+    }
+    // If we couldn't parse block_timestamp, reject for safety
+    if (!blockTimestamp) {
+      throw new BadRequestException("Could not verify timing of this TRC20 transfer.");
+    }
+
     return {
       network: "TRC20" as const,
       token: "USDT" as const,
@@ -410,7 +435,7 @@ export class OnchainPaymentService {
       fromAddress: String(transferEvent.result.from || "").trim() || null,
       toAddress,
       amountUsdt,
-      confirmedAt: this.parseTimestamp(transferEvent.block_timestamp),
+      confirmedAt: blockTimestamp,
       blockNumber: this.parseNullableNumber(transferEvent.block_number),
       rawPayload: {
         source: "trongrid_tx_events",

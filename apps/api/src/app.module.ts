@@ -31,6 +31,7 @@ import { InternalSourceService } from "./internal-source/internal-source.service
 import { PaymentService } from "./lib/payment.service";
 import { BinancePayService } from "./lib/binance-pay.service";
 import { OnchainPaymentService } from "./lib/onchain-payment.service";
+import { SolanaPaymentService } from "./lib/solana-payment.service";
 import { QueueService } from "./lib/queue.service";
 import { CacheService } from "./lib/cache.service";
 import { IdempotencyService } from "./lib/idempotency.service";
@@ -39,6 +40,10 @@ import { OrdersController } from "./orders/orders.controller";
 import { OrdersService } from "./orders/orders.service";
 import { ProductsController } from "./products/products.controller";
 import { ProductsService } from "./products/products.service";
+import { ProductsStockController } from "./products-stock/products-stock.controller";
+import { ProductsStockService } from "./products-stock/products-stock.service";
+import { SourceStockController } from "./source-stock/source-stock.controller";
+import { SourceStockService } from "./source-stock/source-stock.service";
 import { ReportsController } from "./reports/reports.controller";
 import { ReportsService } from "./reports/reports.service";
 import { ShopsController } from "./shops/shops.controller";
@@ -68,6 +73,15 @@ import { IconCatalogService } from "./icon-catalog/icon-catalog.service";
 import { MiniAppController } from "./mini-app/mini-app.controller";
 import { MiniAppService } from "./mini-app/mini-app.service";
 import { GramJsService } from "./lib/gramjs.service";
+import { TiersController } from "./tiers/tiers.controller";
+import { TiersService } from "./tiers/tiers.service";
+import { TierAffiliateService } from "./tiers/tier-affiliate.service";
+import { AdminTemplateController } from "./admin-template/admin-template.controller";
+import { AdminTemplateService } from "./admin-template/admin-template.service";
+import { DiscountCodesController } from "./discount-codes/discount-codes.controller";
+import { DiscountCodesService } from "./discount-codes/discount-codes.service";
+import { AdminNotifyService } from "./lib/admin-notify.service";
+import { MailService } from "./lib/mail.service";
 
 @Module({
   imports: [
@@ -78,6 +92,8 @@ import { GramJsService } from "./lib/gramjs.service";
     AuthController,
     ShopsController,
     ProductsController,
+    ProductsStockController,
+    SourceStockController,
     OrdersController,
     WalletController,
     ReportsController,
@@ -91,6 +107,7 @@ import { GramJsService } from "./lib/gramjs.service";
     SellerSourceConnectionController,
     SourceProductController,
     UpgradeController,
+    TiersController,
     ProAnalyticsController,
     AffiliateController,
     AdminController,
@@ -101,6 +118,8 @@ import { GramJsService } from "./lib/gramjs.service";
     // #8: DevController exposes mock-payment (can mark orders PAID) + telegram-simulate. Its only
     // prod guard was a spoofable Host-header check → do NOT mount it at all in production.
     ...(process.env.NODE_ENV === "production" ? [] : [DevController]),
+    AdminTemplateController,
+    DiscountCodesController,
   ],
   providers: [
     AppConfigService,
@@ -110,12 +129,15 @@ import { GramJsService } from "./lib/gramjs.service";
     IdempotencyService,
     BinancePayService,
     OnchainPaymentService,
+    SolanaPaymentService,
     PaymentService,
     TelegramBotService,
     AuthService,
     ShopsService,
     CustomerWalletService,
     ProductsService,
+    ProductsStockService,
+    SourceStockService,
     WalletService,
     WalletPromotionService,
     WarrantyService,
@@ -125,6 +147,8 @@ import { GramJsService } from "./lib/gramjs.service";
     BroadcastsService,
     InternalSourceService,
     UpgradeService,
+    TiersService,
+    TierAffiliateService,
     Reflector,
     JwtAuthGuard,
     RolesGuard,
@@ -145,6 +169,10 @@ import { GramJsService } from "./lib/gramjs.service";
     IconCatalogService,
     MiniAppService,
     GramJsService,
+    AdminTemplateService,
+    DiscountCodesService,
+    MailService,
+    AdminNotifyService,
   ],
 })
 export class AppModule implements NestModule {

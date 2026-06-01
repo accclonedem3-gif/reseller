@@ -126,6 +126,25 @@ export class ProductsService {
     return this.buildManualInventoryView(refreshed);
   }
 
+  /**
+   * Lookup admin template defaults by family — used to fill missing icon/emoji/imageUrl.
+   */
+  private async getAdminTemplateDefaultsByFamily(family: string | null | undefined) {
+    if (!family) return null;
+    try {
+      const tpl = await this.prisma.shop.findFirst({
+        where: { isTemplate: true },
+        select: { botConfig: { select: { customizationJson: true } } },
+      });
+      const cust = (tpl?.botConfig?.customizationJson as Record<string, any>) ?? null;
+      if (!cust) return null;
+      const map = (cust.productDefaultsByFamily ?? {}) as Record<string, any>;
+      return map[family] ?? null;
+    } catch {
+      return null;
+    }
+  }
+
   async createManualProduct(user: AuthenticatedUser, dto: CreateManualProductDto) {
     const shop = await this.shopsService.getSellerShop(user.id);
     const displayName = dto.displayName.trim();
@@ -157,6 +176,15 @@ export class ProductsService {
         : {};
     const businessFields = { ...classificationFields, ...wholesaleFields };
 
+    // Inherit admin template defaults by family if seller didn't provide
+    const adminDefaults = await this.getAdminTemplateDefaultsByFamily(dto.productFamily);
+    const inheritedIcon = dto.productIcon?.trim() || adminDefaults?.icon || null;
+    const inheritedEmojiId = dto.iconCustomEmojiId?.trim() || adminDefaults?.customEmojiId || null;
+    const inheritedImageUrl =
+      dto.imageUrl?.trim()
+      || (adminDefaults?.media?.type === "photo" ? (adminDefaults.media.url ?? null) : null);
+    const inheritedDescription = dto.sourceDescription?.trim() || adminDefaults?.description || null;
+
     const created = await this.prisma.sourceProduct.create({
       data: {
         shopId: shop.id,
@@ -164,13 +192,13 @@ export class ProductsService {
         providerName: "manual",
         sourceName: dto.sourceName?.trim() || displayName,
         sourceRawName: dto.sourceName?.trim() || displayName,
-        sourceDescription: dto.sourceDescription?.trim() || null,
+        sourceDescription: inheritedDescription,
         sourcePrice: toDecimal(dto.sourcePrice ?? 0),
         available,
         totalCount: available ?? 0,
-        imageUrl: dto.imageUrl?.trim() || null,
-        productIcon: dto.productIcon?.trim() || null,
-        iconCustomEmojiId: dto.iconCustomEmojiId?.trim() || null,
+        imageUrl: inheritedImageUrl,
+        productIcon: inheritedIcon,
+        iconCustomEmojiId: inheritedEmojiId,
         ...businessFields,
         // Anchor the batch-lifetime clock at creation (= "ngày nhập lô") when the product ships
         // with stock, so the warranty term-bypass measures from here. Re-stamped on every refill.
@@ -263,6 +291,11 @@ export class ProductsService {
     const wholesaleFields =
       user.sellerTier === SellerTier.ULTRA ? this.buildWholesaleFields(dto) : {};
     const businessFields = { ...classificationFields, ...wholesaleFields };
+
+    if (dto.internalSourcePrice !== undefined || dto.internalSourceEnabled !== undefined) {
+      // eslint-disable-next-line no-console
+      console.log(`[products.update] sellerTier=${user.sellerTier} dto.internalSourceEnabled=${dto.internalSourceEnabled} dto.internalSourcePrice=${dto.internalSourcePrice} resolvedWholesale=`, wholesaleFields);
+    }
 
     let newAvailable: number | null | undefined = undefined;
 
@@ -982,12 +1015,18 @@ export class ProductsService {
   private buildWholesaleFields(
     dto: Partial<CreateManualProductDto & UpdateProductDto>,
   ): SourceProductBusinessFields {
+    // null/undefined → skip; number → set; otherwise treat as undefined
+    let priceValue: Prisma.Decimal | undefined = undefined;
+    if (
+      dto.internalSourcePrice !== undefined &&
+      dto.internalSourcePrice !== null &&
+      Number.isFinite(Number(dto.internalSourcePrice))
+    ) {
+      priceValue = toDecimal(Number(dto.internalSourcePrice));
+    }
     return {
       internalSourceEnabled: dto.internalSourceEnabled ?? undefined,
-      internalSourcePrice:
-        dto.internalSourcePrice !== undefined
-          ? toDecimal(dto.internalSourcePrice)
-          : undefined,
+      internalSourcePrice: priceValue,
     };
   }
 

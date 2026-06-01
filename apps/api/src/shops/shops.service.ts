@@ -250,6 +250,7 @@ export class ShopsService {
       binanceUid: paymentConfig?.binanceUid || "",
       okxUid: paymentConfig?.okxUid || "",
       usdtTrc20Address: paymentConfig?.usdtTrc20Address || "",
+      usdtSolanaAddress: paymentConfig?.usdtSolanaAddress || "",
       usdtVndRateOverride: paymentConfig?.usdtVndRateOverride
         ? decimalToNumber(paymentConfig.usdtVndRateOverride)
         : null,
@@ -416,6 +417,7 @@ export class ShopsService {
           binanceUid: dto.binanceUid ?? undefined,
           okxUid: dto.okxUid ?? undefined,
           usdtTrc20Address: dto.usdtTrc20Address ?? undefined,
+          usdtSolanaAddress: dto.usdtSolanaAddress ?? undefined,
           usdtVndRateOverride,
           binancePersonalApiKeyEncrypted: dto.binancePersonalApiKey
             ? encryptSecret(dto.binancePersonalApiKey, encryptionKey)
@@ -474,6 +476,7 @@ export class ShopsService {
           binanceUid: dto.binanceUid ?? null,
           okxUid: dto.okxUid ?? null,
           usdtTrc20Address: dto.usdtTrc20Address ?? null,
+          usdtSolanaAddress: dto.usdtSolanaAddress ?? null,
           usdtVndRateOverride: usdtVndRateOverride ?? null,
           binancePersonalApiKeyEncrypted: dto.binancePersonalApiKey
             ? encryptSecret(dto.binancePersonalApiKey, encryptionKey)
@@ -757,6 +760,7 @@ export class ShopsService {
         metadata: {
           productFamily: p.productFamily ?? null,
           productFamilyOther: p.productFamilyOther ?? null,
+          productPackage: (p as any).productPackage ?? null,
           accountType: p.accountType ?? null,
           accountTypeOther: p.accountTypeOther ?? null,
           durationType: p.durationType ?? null,
@@ -833,6 +837,10 @@ export class ShopsService {
         available: true,
         sourcePrice: true,
         sourceDescriptionLocked: true,
+        productIcon: true,
+        iconCustomEmojiId: true,
+        imageUrl: true,
+        productFamily: true,
         metadataJson: true,
         overrides: {
           where: { sellerId: shop.sellerId },
@@ -847,10 +855,39 @@ export class ShopsService {
     const stockNotifications: CatalogStockNotification[] = [];
     const syncedAt = new Date();
 
+    // Pre-load admin template defaults once for the whole batch (perf)
+    const adminTplDefaults = await this.loadAdminTemplateProductDefaultsByFamily();
+
     for (const product of normalizedProducts) {
       const previous = existingByExternalId.get(product.externalId);
       const nextAvailable = product.hidden ? 0 : this.normalizeNullableNumber(product.available);
-      const businessFields = this.extractSyncedSourceBusinessFields(product.metadata);
+      const rawBusinessFields = this.extractSyncedSourceBusinessFields(product.metadata);
+      // Auto-detect family: ưu tiên dữ liệu DB cũ → metadata → name detect
+      const detectedFamily = previous?.productFamily
+        ?? rawBusinessFields.productFamily
+        ?? this.detectFamilyFromName(product.sourceName)
+        ?? undefined;
+      // Inject admin template defaults nhưng KHÔNG ghi đè giá trị seller đã set
+      const adminMatch = detectedFamily ? adminTplDefaults[detectedFamily] : null;
+      const businessFields = {
+        ...rawBusinessFields,
+        productFamily: detectedFamily,
+        // Ưu tiên: previous (seller đã set) → canboso → admin template
+        productIcon:
+          previous?.productIcon
+            ?? rawBusinessFields.productIcon
+            ?? adminMatch?.icon
+            ?? undefined,
+        iconCustomEmojiId:
+          previous?.iconCustomEmojiId
+            ?? rawBusinessFields.iconCustomEmojiId
+            ?? adminMatch?.customEmojiId
+            ?? undefined,
+        imageUrl:
+          previous?.imageUrl
+            ?? rawBusinessFields.imageUrl
+            ?? (adminMatch?.media?.type === "photo" ? (adminMatch.media.url ?? undefined) : undefined),
+      };
       const sourceProduct = await this.prisma.sourceProduct.upsert({
         where: {
           shopId_externalProductId: {
@@ -1397,6 +1434,55 @@ export class ShopsService {
     return Number.isFinite(numeric) ? numeric : null;
   }
 
+  /**
+   * Auto-detect SourceProductFamily từ tên sản phẩm (keyword matching).
+   * Dùng khi canboso sync không gửi productFamily metadata.
+   */
+  private detectFamilyFromName(name: string | null | undefined): SourceProductFamily | null {
+    if (!name) return null;
+    const n = String(name).toLowerCase();
+    // Thứ tự match: keyword cụ thể trước, generic sau
+    if (/\b(chatgpt|gpt[\s-]*plus|gpt[\s-]*pro|gpt[\s-]*team|openai)\b/.test(n)) return SourceProductFamily.CHATGPT;
+    if (/\b(claude|anthropic)\b/.test(n)) return SourceProductFamily.CLAUDE;
+    if (/\b(gemini|google[\s-]*ai|bard)\b/.test(n)) return SourceProductFamily.GEMINI;
+    if (/\b(grok|xai|x[\s-]*ai)\b/.test(n)) return SourceProductFamily.GROK;
+    if (/\b(perplexity|pplx)\b/.test(n)) return SourceProductFamily.PERPLEXITY;
+    if (/\b(veo[\s-]*3|veo3)\b/.test(n)) return SourceProductFamily.VEO3;
+    if (/\b(kling)\b/.test(n)) return SourceProductFamily.KLING;
+    if (/\b(higgsfield|higgs[\s-]*field|higg)\b/.test(n)) return SourceProductFamily.HIGGSFIELD;
+    if (/\b(canva)\b/.test(n)) return SourceProductFamily.CANVA;
+    if (/\b(capcut|cap[\s-]*cut)\b/.test(n)) return SourceProductFamily.CAPCUT;
+    if (/\b(adobe|photoshop|illustrator|premiere|lightroom|creative[\s-]*cloud|after[\s-]*effects)\b/.test(n)) return SourceProductFamily.ADOBE;
+    if (/\b(suno)\b/.test(n)) return SourceProductFamily.SUNO;
+    if (/\b(eleven[\s-]*labs|elevenlabs|11labs|eleven)\b/.test(n)) return SourceProductFamily.ELEVENLABS;
+    if (/\b(heygen|hey[\s-]*gen)\b/.test(n)) return SourceProductFamily.HEYGEN;
+    if (/\b(gmail|google[\s-]*workspace|gworkspace)\b/.test(n)) return SourceProductFamily.GMAIL;
+    if (/\b(youtube|yt[\s-]*premium|yt[\s-]*family)\b/.test(n)) return SourceProductFamily.YOUTUBE;
+    if (/\b(tiktok|tik[\s-]*tok)\b/.test(n)) return SourceProductFamily.TIKTOK;
+    if (/\b(zoom)\b/.test(n)) return SourceProductFamily.ZOOM;
+    if (/\b(duolingo|duo[\s-]*lingo)\b/.test(n)) return SourceProductFamily.DUOLINGO;
+    if (/\b(hidemyass|hma)\b/.test(n)) return SourceProductFamily.HMA;
+    if (/\b(vpn|nordvpn|expressvpn|surfshark|protonvpn|cyberghost)\b/.test(n)) return SourceProductFamily.VPN;
+    return null;
+  }
+
+  /**
+   * Load admin template's productDefaultsByFamily map (cached briefly via Prisma query).
+   * Returns empty object if no template exists.
+   */
+  private async loadAdminTemplateProductDefaultsByFamily(): Promise<Record<string, any>> {
+    try {
+      const tpl = await this.prisma.shop.findFirst({
+        where: { isTemplate: true },
+        select: { botConfig: { select: { customizationJson: true } } },
+      });
+      const cust = (tpl?.botConfig?.customizationJson as Record<string, any>) ?? null;
+      return (cust?.productDefaultsByFamily as Record<string, any>) ?? {};
+    } catch {
+      return {};
+    }
+  }
+
   private extractSyncedSourceBusinessFields(metadata: Record<string, unknown>) {
     const productFamily = this.normalizeEnumValue(
       metadata.productFamily,
@@ -1437,6 +1523,9 @@ export class ShopsService {
           : null,
       sourceDeliveryMode,
       warrantyPolicy,
+      productIcon: metadata.productIcon ? String(metadata.productIcon) : undefined,
+      iconCustomEmojiId: metadata.iconCustomEmojiId ? String(metadata.iconCustomEmojiId) : undefined,
+      imageUrl: metadata.imageUrl ? String(metadata.imageUrl) : undefined,
     };
   }
 
@@ -1556,6 +1645,7 @@ export class ShopsService {
           : null,
         productFamily: product.productFamily?.toLowerCase() || null,
         productFamilyOther: product.productFamilyOther || null,
+        productPackage: (product as any).productPackage || null,
         accountType: product.accountType?.toLowerCase() || null,
         accountTypeOther: product.accountTypeOther || null,
         durationType: product.durationType?.toLowerCase() || null,

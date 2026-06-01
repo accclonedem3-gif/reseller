@@ -1,4 +1,5 @@
 import axios from "axios";
+import IORedis from "ioredis";
 import { Inject, Injectable, Logger, NotFoundException } from "@nestjs/common";
 import {
   decryptSecret,
@@ -11,7 +12,7 @@ import {
   telegramSendPhotoBuffer,
   type PayOSBankInfo,
 } from "@reseller/shared/server";
-import { DownstreamSourceConnectionStatus, PaymentProvider, PaymentStatus, Prisma, SellerTier } from "@prisma/client";
+import { DownstreamSourceConnectionStatus, PaymentProvider, PaymentStatus, PaymentTransactionStatus, Prisma, SellerTier } from "@prisma/client";
 
 import { AppConfigService } from "../config/app-config.service";
 import { PrismaService } from "../db/prisma.service";
@@ -24,6 +25,7 @@ import { InternalSourceApiKeyService } from "../source/internal-source-api-key.s
 import { SellerSourceConnectionService } from "../seller/seller-source-connection.service";
 import { BinancePayService } from "./binance-pay.service";
 import { OnchainPaymentService } from "./onchain-payment.service";
+import { SolanaPaymentService } from "./solana-payment.service";
 import { PaymentService } from "./payment.service";
 import { GramJsService } from "./gramjs.service";
 import { decimalToNumber, formatCurrency } from "./utils";
@@ -100,6 +102,7 @@ type PendingTxHashSubmission = {
   allowMockHash: boolean;
   expiresAt: number;
   isTopup?: boolean;
+  provider?: "USDT_TRC20" | "USDT_SOL";
 };
 
 type PendingBinanceOrderIdSubmission = {
@@ -123,19 +126,6 @@ type PendingWarrantyAccountSelection = {
   expiresAt: number;
 };
 
-/**
- * In-flight state for the Y/N "đã đổi mật khẩu chưa?" prompt that we show after the user
- * picked an order + (optionally) target account usernames. While in this state the bot is
- * either (a) waiting for the user to tap Yes/No on the inline keyboard, or (b) waiting for the
- * user to TYPE the new password (when `awaitingPasswordInput=true`).
- */
-type PendingWarrantyPasswordPrompt = {
-  orderCode: string;
-  targetUsernames?: string[];
-  awaitingPasswordInput: boolean;
-  expiresAt: number;
-};
-
 type PendingConnectionTopupInput = {
   connectionId: string;
   downstreamShopId: string;
@@ -153,17 +143,29 @@ type HandleIncomingUpdateOptions = {
 @Injectable()
 export class TelegramBotService {
   private readonly logger = new Logger(TelegramBotService.name);
-  private readonly pendingQuantitySelections = new Map<string, PendingQuantitySelection>();
-  private readonly pendingWalletTopups = new Map<string, PendingWalletTopupSelection>();
-  private readonly pendingPaymentSelections = new Map<string, PendingPaymentSelection>();
-  private readonly pendingTxHashSubmissions = new Map<string, PendingTxHashSubmission>();
-  private readonly pendingBinanceOrderIdSubmissions = new Map<string, PendingBinanceOrderIdSubmission>();
-  private readonly pendingWarrantyClaimSubmissions = new Map<string, PendingWarrantyClaimSubmission>();
-  private readonly pendingWarrantyIssueDescriptions = new Map<string, PendingWarrantyIssueDescription>();
-  private readonly pendingWarrantyAccountSelections = new Map<string, PendingWarrantyAccountSelection>();
-  private readonly pendingWarrantyPasswordPrompts = new Map<string, PendingWarrantyPasswordPrompt>();
-  private readonly pendingConnectionTopupInputs = new Map<string, PendingConnectionTopupInput>();
-  private readonly pendingQrMessages = new Map<string, { token: string; chatId: string | number; messageId: number }>();
+  private readonly redis: IORedis;
+
+  private async setPendingSession<T>(type: string, key: string, data: T, ttlMs: number) {
+    const fullKey = `bot:session:${type}:${key}`;
+    await this.redis.set(fullKey, JSON.stringify(data), "PX", ttlMs);
+  }
+
+  private async getPendingSession<T>(type: string, key: string): Promise<T | undefined> {
+    const fullKey = `bot:session:${type}:${key}`;
+    const val = await this.redis.get(fullKey);
+    if (!val) return undefined;
+    try {
+      return JSON.parse(val) as T;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async delPendingSession(type: string, key: string) {
+    const fullKey = `bot:session:${type}:${key}`;
+    await this.redis.del(fullKey);
+  }
+
   private readonly pendingQuantityTtlMs = 10 * 60 * 1000;
   private readonly pendingPaymentTtlMs = 5 * 60 * 1000;
   private readonly pendingTxHashTtlMs = 12 * 60 * 60 * 1000;
@@ -277,6 +279,8 @@ export class TelegramBotService {
     private readonly binancePayService: BinancePayService,
     @Inject(OnchainPaymentService)
     private readonly onchainPaymentService: OnchainPaymentService,
+    @Inject(SolanaPaymentService)
+    private readonly solanaPaymentService: SolanaPaymentService,
     @Inject(WarrantyService)
     private readonly warrantyService: WarrantyService,
     @Inject(AffiliateService)
@@ -287,7 +291,11 @@ export class TelegramBotService {
     private readonly connectionTopupService: SellerSourceConnectionService,
     @Inject(GramJsService)
     private readonly gramJsService: GramJsService,
-  ) {}
+  ) {
+    this.redis = new IORedis(this.config.redisUrl, {
+      maxRetriesPerRequest: null,
+    });
+  }
 
   private _globalDefaultCust: { data: Record<string, unknown> | null; ts: number } | null = null;
 
@@ -314,7 +322,7 @@ export class TelegramBotService {
     const globalDefault = await this.getGlobalDefaultCustomization();
     if (!globalDefault) return shopCust ?? {};
     if (!shopCust) return globalDefault;
-    const DEEP_KEYS = ["labelEmojiIds", "buttonEmojiIds", "messageEmojiIds", "buttonLabels", "buttonEmojis", "welcomeMessage", "footerBill", "productNote", "catalogText", "homeFooter"];
+    const DEEP_KEYS = ["labelEmojiIds", "buttonEmojiIds", "messageEmojiIds", "buttonLabels", "buttonEmojis", "welcomeMessage", "footerBill", "productNote", "catalogText", "homeFooter", "walletNote"];
     const merged: Record<string, unknown> = { ...globalDefault };
     for (const [k, v] of Object.entries(shopCust)) {
       if (DEEP_KEYS.includes(k) && v && typeof v === "object" && !Array.isArray(v) && merged[k] && typeof merged[k] === "object") {
@@ -398,27 +406,27 @@ export class TelegramBotService {
       const allAffiliateLabels = Object.values(this.replyKeyboardLabels.affiliate);
 
       if (allProductLabels.includes(msgText as any)) {
-        this.clearPendingQuantitySelection(shopId, String(message.from?.id || ""));
-        this.clearPendingWalletTopup(shopId, String(message.from?.id || ""));
-        this.clearPendingPaymentSelection(shopId, String(message.from?.id || ""));
-        this.clearPendingTxHashSubmission(shopId, String(message.from?.id || ""));
+        await this.clearPendingQuantitySelection(shopId, String(message.from?.id || ""));
+        await this.clearPendingWalletTopup(shopId, String(message.from?.id || ""));
+        await this.clearPendingPaymentSelection(shopId, String(message.from?.id || ""));
+        await this.clearPendingTxHashSubmission(shopId, String(message.from?.id || ""));
         await this.renderCatalog(shopId, outboundToken, message.chat.id, undefined, 0, actions, messageLanguage);
         return { ok: true, actions };
       }
 
       if (allOrderLabels.includes(msgText as any)) {
-        this.clearPendingQuantitySelection(shopId, String(message.from?.id || ""));
-        this.clearPendingWalletTopup(shopId, String(message.from?.id || ""));
-        this.clearPendingPaymentSelection(shopId, String(message.from?.id || ""));
-        this.clearPendingTxHashSubmission(shopId, String(message.from?.id || ""));
+        await this.clearPendingQuantitySelection(shopId, String(message.from?.id || ""));
+        await this.clearPendingWalletTopup(shopId, String(message.from?.id || ""));
+        await this.clearPendingPaymentSelection(shopId, String(message.from?.id || ""));
+        await this.clearPendingTxHashSubmission(shopId, String(message.from?.id || ""));
         await this.renderOrderHistory(shopId, outboundToken, message.chat.id, undefined, String(message.from.id), actions, messageLanguage);
         return { ok: true, actions };
       }
 
       if (allWalletLabels.includes(msgText as any)) {
-        this.clearPendingQuantitySelection(shopId, String(message.from?.id || ""));
-        this.clearPendingPaymentSelection(shopId, String(message.from?.id || ""));
-        this.clearPendingTxHashSubmission(shopId, String(message.from?.id || ""));
+        await this.clearPendingQuantitySelection(shopId, String(message.from?.id || ""));
+        await this.clearPendingPaymentSelection(shopId, String(message.from?.id || ""));
+        await this.clearPendingTxHashSubmission(shopId, String(message.from?.id || ""));
         await this.renderWalletPanel(shopId, outboundToken, message.chat.id, undefined, String(message.from.id), actions, messageLanguage);
         return { ok: true, actions };
       }
@@ -442,12 +450,12 @@ export class TelegramBotService {
         if (shop.seller.tier !== SellerTier.ULTRA) {
           return { ok: true, actions };
         }
-        this.clearPendingQuantitySelection(shopId, String(message.from?.id || ""));
-        this.clearPendingWalletTopup(shopId, String(message.from?.id || ""));
-        this.clearPendingPaymentSelection(shopId, String(message.from?.id || ""));
-        this.clearPendingTxHashSubmission(shopId, String(message.from?.id || ""));
-        this.clearPendingWarrantyIssueDescription(shopId, String(message.from?.id || ""));
-        this.clearPendingWarrantyAccountSelection(shopId, String(message.from?.id || ""));
+        await this.clearPendingQuantitySelection(shopId, String(message.from?.id || ""));
+        await this.clearPendingWalletTopup(shopId, String(message.from?.id || ""));
+        await this.clearPendingPaymentSelection(shopId, String(message.from?.id || ""));
+        await this.clearPendingTxHashSubmission(shopId, String(message.from?.id || ""));
+        await this.clearPendingWarrantyIssueDescription(shopId, String(message.from?.id || ""));
+        await this.clearPendingWarrantyAccountSelection(shopId, String(message.from?.id || ""));
         await this.promptWarrantyClaimOrderCode(
           outboundToken,
           message.chat.id,
@@ -461,10 +469,10 @@ export class TelegramBotService {
       }
 
       if (allHomeLabels.includes(msgText as any)) {
-        this.clearPendingQuantitySelection(shopId, String(message.from?.id || ""));
-        this.clearPendingWalletTopup(shopId, String(message.from?.id || ""));
-        this.clearPendingPaymentSelection(shopId, String(message.from?.id || ""));
-        this.clearPendingTxHashSubmission(shopId, String(message.from?.id || ""));
+        await this.clearPendingQuantitySelection(shopId, String(message.from?.id || ""));
+        await this.clearPendingWalletTopup(shopId, String(message.from?.id || ""));
+        await this.clearPendingPaymentSelection(shopId, String(message.from?.id || ""));
+        await this.clearPendingTxHashSubmission(shopId, String(message.from?.id || ""));
         await this.renderHome(shopId, outboundToken, message.chat.id, undefined, actions, messageLanguage);
         return { ok: true, actions };
       }
@@ -542,20 +550,6 @@ export class TelegramBotService {
         return { ok: true, actions };
       }
 
-      // Password-input step has to run BEFORE the generic warranty-claim handler — both react
-      // to free-form text from the same user, but the password handler is gated on the
-      // pendingWarrantyPasswordPrompts.awaitingPasswordInput flag so it doesn't false-fire.
-      const handledWarrantyPasswordPrompt = await this.handlePendingWarrantyPasswordPromptMessage(
-        shopId,
-        outboundToken,
-        message,
-        actions,
-      );
-
-      if (handledWarrantyPasswordPrompt) {
-        return { ok: true, actions };
-      }
-
       const handledPendingWarrantyClaim = await this.handlePendingWarrantyClaimMessage(
         shopId,
         outboundToken,
@@ -581,10 +575,10 @@ export class TelegramBotService {
     }
 
     if (message?.text?.startsWith("/start")) {
-      this.clearPendingQuantitySelection(shopId, String(message.from?.id || ""));
-      this.clearPendingWalletTopup(shopId, String(message.from?.id || ""));
-      this.clearPendingPaymentSelection(shopId, String(message.from?.id || ""));
-      this.clearPendingTxHashSubmission(shopId, String(message.from?.id || ""));
+      await this.clearPendingQuantitySelection(shopId, String(message.from?.id || ""));
+      await this.clearPendingWalletTopup(shopId, String(message.from?.id || ""));
+      await this.clearPendingPaymentSelection(shopId, String(message.from?.id || ""));
+      await this.clearPendingTxHashSubmission(shopId, String(message.from?.id || ""));
 
       const startParam = message.text.slice("/start".length).trim();
       if (startParam.startsWith("ref_") && message.from?.id) {
@@ -610,10 +604,10 @@ export class TelegramBotService {
     }
 
     if (message?.text?.startsWith("/products")) {
-      this.clearPendingQuantitySelection(shopId, String(message.from?.id || ""));
-      this.clearPendingWalletTopup(shopId, String(message.from?.id || ""));
-      this.clearPendingPaymentSelection(shopId, String(message.from?.id || ""));
-      this.clearPendingTxHashSubmission(shopId, String(message.from?.id || ""));
+      await this.clearPendingQuantitySelection(shopId, String(message.from?.id || ""));
+      await this.clearPendingWalletTopup(shopId, String(message.from?.id || ""));
+      await this.clearPendingPaymentSelection(shopId, String(message.from?.id || ""));
+      await this.clearPendingTxHashSubmission(shopId, String(message.from?.id || ""));
       await this.renderCatalog(shopId, outboundToken, message.chat.id, undefined, 0, actions, messageLanguage);
       return { ok: true, actions };
     }
@@ -708,56 +702,41 @@ export class TelegramBotService {
       const telegramUserId = String(callbackQuery.from?.id || "");
       const callbackLanguage = await this.getCustomerLanguage(shopId, telegramUserId);
 
-      if (chatId && callbackQuery.id) {
+      if (chatId && callbackQuery.id && !data.startsWith("catalog:custom:")) {
         await this.answerCallback(outboundToken, callbackQuery.id, actions);
       }
 
       if (data === "home:menu") {
-        this.clearPendingQuantitySelection(shopId, telegramUserId);
-        this.clearPendingWalletTopup(shopId, telegramUserId);
-        this.clearPendingPaymentSelection(shopId, telegramUserId);
-        this.clearPendingTxHashSubmission(shopId, telegramUserId);
+        await this.clearPendingQuantitySelection(shopId, telegramUserId);
+        await this.clearPendingWalletTopup(shopId, telegramUserId);
+        await this.clearPendingPaymentSelection(shopId, telegramUserId);
+        await this.clearPendingTxHashSubmission(shopId, telegramUserId);
         await this.renderHome(shopId, outboundToken, chatId, messageId, actions, callbackLanguage);
       } else if (data === "home:products") {
-        this.clearPendingQuantitySelection(shopId, telegramUserId);
-        this.clearPendingWalletTopup(shopId, telegramUserId);
-        this.clearPendingPaymentSelection(shopId, telegramUserId);
-        this.clearPendingTxHashSubmission(shopId, telegramUserId);
+        await this.clearPendingQuantitySelection(shopId, telegramUserId);
+        await this.clearPendingWalletTopup(shopId, telegramUserId);
+        await this.clearPendingPaymentSelection(shopId, telegramUserId);
+        await this.clearPendingTxHashSubmission(shopId, telegramUserId);
         await this.renderCatalog(shopId, outboundToken, chatId, messageId, 0, actions, callbackLanguage);
       } else if (data === "home:history") {
-        this.clearPendingQuantitySelection(shopId, telegramUserId);
-        this.clearPendingWalletTopup(shopId, telegramUserId);
-        this.clearPendingPaymentSelection(shopId, telegramUserId);
-        this.clearPendingTxHashSubmission(shopId, telegramUserId);
+        await this.clearPendingQuantitySelection(shopId, telegramUserId);
+        await this.clearPendingWalletTopup(shopId, telegramUserId);
+        await this.clearPendingPaymentSelection(shopId, telegramUserId);
+        await this.clearPendingTxHashSubmission(shopId, telegramUserId);
         await this.renderOrderHistory(shopId, outboundToken, chatId, messageId, telegramUserId, actions, callbackLanguage);
       } else if (data === "home:wallet") {
-        this.clearPendingQuantitySelection(shopId, telegramUserId);
-        this.clearPendingWalletTopup(shopId, telegramUserId);
-        this.clearPendingPaymentSelection(shopId, telegramUserId);
-        this.clearPendingTxHashSubmission(shopId, telegramUserId);
+        await this.clearPendingQuantitySelection(shopId, telegramUserId);
+        await this.clearPendingWalletTopup(shopId, telegramUserId);
+        await this.clearPendingPaymentSelection(shopId, telegramUserId);
+        await this.clearPendingTxHashSubmission(shopId, telegramUserId);
         await this.renderWalletPanel(shopId, outboundToken, chatId, messageId, telegramUserId, actions, callbackLanguage);
-      } else if (data === "wpwd:yes" || data === "wpwd:no") {
-        // Password Y/N callback fired from promptWarrantyPasswordChange. The orderCode +
-        // targetUsernames are stashed in pendingWarrantyPasswordPrompts, not in callback_data,
-        // so the payload stays compact and never leaks account usernames.
-        await this.handleWarrantyPasswordCallback(
-          data === "wpwd:yes" ? "yes" : "no",
-          outboundToken,
-          chatId,
-          messageId,
-          shopId,
-          telegramUserId,
-          actions,
-          callbackLanguage,
-        );
       } else if (data === "home:warranty" || data === "warranty:start") {
-        this.clearPendingQuantitySelection(shopId, telegramUserId);
-        this.clearPendingWalletTopup(shopId, telegramUserId);
-        this.clearPendingPaymentSelection(shopId, telegramUserId);
-        this.clearPendingTxHashSubmission(shopId, telegramUserId);
-        this.clearPendingWarrantyIssueDescription(shopId, telegramUserId);
-        this.clearPendingWarrantyAccountSelection(shopId, telegramUserId);
-        this.clearPendingWarrantyPasswordPrompt(shopId, telegramUserId);
+        await this.clearPendingQuantitySelection(shopId, telegramUserId);
+        await this.clearPendingWalletTopup(shopId, telegramUserId);
+        await this.clearPendingPaymentSelection(shopId, telegramUserId);
+        await this.clearPendingTxHashSubmission(shopId, telegramUserId);
+        await this.clearPendingWarrantyIssueDescription(shopId, telegramUserId);
+        await this.clearPendingWarrantyAccountSelection(shopId, telegramUserId);
         await this.promptWarrantyClaimOrderCode(
           outboundToken,
           chatId,
@@ -769,11 +748,11 @@ export class TelegramBotService {
         );
       } else if (data.startsWith("warranty_claim:")) {
         const orderCode = data.slice("warranty_claim:".length);
-        this.clearPendingQuantitySelection(shopId, telegramUserId);
-        this.clearPendingWalletTopup(shopId, telegramUserId);
-        this.clearPendingPaymentSelection(shopId, telegramUserId);
-        this.clearPendingTxHashSubmission(shopId, telegramUserId);
-        this.clearPendingWarrantyClaimSubmission(shopId, telegramUserId);
+        await this.clearPendingQuantitySelection(shopId, telegramUserId);
+        await this.clearPendingWalletTopup(shopId, telegramUserId);
+        await this.clearPendingPaymentSelection(shopId, telegramUserId);
+        await this.clearPendingTxHashSubmission(shopId, telegramUserId);
+        await this.clearPendingWarrantyClaimSubmission(shopId, telegramUserId);
         const check = await this.warrantyService.checkTelegramWarrantyEligibility({
           shopId,
           telegramUserId,
@@ -795,30 +774,17 @@ export class TelegramBotService {
             actions,
           );
         } else {
-          if (check.wrongPasswordRetry) {
-            await this.promptDirectPasswordInput(
-              outboundToken,
-              chatId,
-              messageId,
-              shopId,
-              telegramUserId,
-              check.orderCode,
-              actions,
-              callbackLanguage,
-            );
-          } else {
-            await this.routeWarrantyByAccountCount(
-              outboundToken,
-              chatId,
-              messageId,
-              shopId,
-              telegramUserId,
-              check.orderCode,
-              check.accounts,
-              actions,
-              callbackLanguage,
-            );
-          }
+          await this.routeWarrantyByAccountCount(
+            outboundToken,
+            chatId,
+            messageId,
+            shopId,
+            telegramUserId,
+            check.orderCode,
+            check.accounts,
+            actions,
+            callbackLanguage,
+          );
         }
       } else if (data.startsWith("prokey:reissue:")) {
         const downstreamSellerId = data.slice("prokey:reissue:".length);
@@ -835,24 +801,24 @@ export class TelegramBotService {
       } else if (data === "prokey:topup") {
         await this.handleProKeyTopupPrompt(shop, outboundToken, chatId, messageId, telegramUserId, actions);
       } else if (data === "wallet:topup") {
-        this.clearPendingQuantitySelection(shopId, telegramUserId);
-        this.clearPendingPaymentSelection(shopId, telegramUserId);
-        this.clearPendingTxHashSubmission(shopId, telegramUserId);
-        this.clearPendingWalletTopup(shopId, telegramUserId);
+        await this.clearPendingQuantitySelection(shopId, telegramUserId);
+        await this.clearPendingPaymentSelection(shopId, telegramUserId);
+        await this.clearPendingTxHashSubmission(shopId, telegramUserId);
+        await this.clearPendingWalletTopup(shopId, telegramUserId);
         await this.promptWalletTopupCurrency(shopId, outboundToken, chatId, messageId, telegramUserId, actions, callbackLanguage);
       } else if (data === "wallet:topup:vnd") {
-        this.clearPendingWalletTopup(shopId, telegramUserId);
-        this.pendingWalletTopups.set(this.getPendingQuantityKey(shopId, telegramUserId), {
+        await this.clearPendingWalletTopup(shopId, telegramUserId);
+        await this.setPendingSession('pendingWalletTopups', this.getPendingQuantityKey(shopId, telegramUserId), {
           currency: "VND",
           expiresAt: Date.now() + this.pendingQuantityTtlMs,
-        });
+        }, this.pendingQuantityTtlMs);
         await this.promptWalletTopupAmount(shopId, outboundToken, chatId, telegramUserId, actions, "VND", undefined, callbackLanguage);
       } else if (data === "wallet:topup:usd") {
-        this.clearPendingWalletTopup(shopId, telegramUserId);
-        this.pendingWalletTopups.set(this.getPendingQuantityKey(shopId, telegramUserId), {
+        await this.clearPendingWalletTopup(shopId, telegramUserId);
+        await this.setPendingSession('pendingWalletTopups', this.getPendingQuantityKey(shopId, telegramUserId), {
           currency: "USDT",
           expiresAt: Date.now() + this.pendingQuantityTtlMs,
-        });
+        }, this.pendingQuantityTtlMs);
         await this.promptWalletTopupAmount(shopId, outboundToken, chatId, telegramUserId, actions, "USDT", undefined, callbackLanguage);
       } else if (data === "home:language") {
         await this.renderLanguageMenu(outboundToken, chatId, messageId, callbackLanguage, actions);
@@ -908,7 +874,7 @@ export class TelegramBotService {
         const parts = data.split(":");
         const customGroupId = parts[2] ?? "";
         const page = Number(parts[3] || "0");
-        await this.renderCustomCatalogGroup(shopId, outboundToken, chatId, messageId, customGroupId, page, actions, callbackLanguage);
+        await this.renderCustomCatalogGroup(shopId, outboundToken, chatId, messageId, customGroupId, page, actions, callbackLanguage, callbackQuery.id);
       } else if (data.startsWith("catalog:group:")) {
         const [, , rawGroupKey, rawPage] = data.split(":");
         const page = Number(rawPage || "0");
@@ -993,7 +959,7 @@ export class TelegramBotService {
         );
       } else if (data.startsWith("buy:")) {
         const sourceProductId = data.slice(4);
-        this.clearPendingTxHashSubmission(shopId, telegramUserId);
+        await this.clearPendingTxHashSubmission(shopId, telegramUserId);
 
         try {
           await this.promptQuantitySelection(
@@ -1047,6 +1013,75 @@ export class TelegramBotService {
     }
 
     return { ok: true, actions };
+  }
+
+  async sendDeliveredMessage(
+    shopId: string,
+    chatId: string,
+    productName: string,
+    deliveredAccountText: string,
+    orderCode?: string,
+    formatHint?: string | null,
+  ) {
+    const shop = await this.shopsService.getSellerShopByShopId(shopId);
+    const language = await this.getCustomerLanguageByChatId(shopId, chatId);
+    const token = decryptSecret(
+      shop.botConfig?.telegramBotTokenEncrypted,
+      this.config.encryptionKey,
+    );
+
+    if (!token) {
+      return;
+    }
+
+    const custData = await this.resolveCustomization(shop.botConfig?.customizationJson as Record<string, unknown> | null ?? null);
+    const footerMap = (custData?.footerBill && typeof custData.footerBill === "object")
+      ? custData.footerBill as Record<string, string> : {};
+    const msgEmojiIdsDelivery = (custData?.messageEmojiIds && typeof custData.messageEmojiIds === "object")
+      ? custData.messageEmojiIds as Record<string, string> : {};
+    const footerBillEmojiId = msgEmojiIdsDelivery["footerBill"]?.trim() || "";
+    const footerRaw = footerMap[language]?.trim() || footerMap["vi"]?.trim() || (
+      language === "en"
+        ? "Please change the password right after logging in for safety."
+        : language === "th"
+          ? "กรุณาเปลี่ยนรหัสผ่านทันทีหลังจากเข้าสู่ระบบเพื่อความปลอดภัย"
+          : "Vui lòng đổi mật khẩu ngay sau khi đăng nhập để bảo đảm an toàn."
+    );
+    const footerText = footerBillEmojiId
+      ? `<tg-emoji emoji-id="${footerBillEmojiId}">🧾</tg-emoji> ${footerRaw}`
+      : footerRaw;
+
+    const hasWarrantyFeature = shop.seller.tier === SellerTier.ULTRA
+      || shop.providerConfig?.providerKind === "INTERNAL";
+    const warrantyButton = hasWarrantyFeature && orderCode
+      ? {
+          inline_keyboard: [
+            [{ text: language === "en" ? "🛡️ Warranty" : language === "th" ? "🛡️ การรับประกัน" : "🛡️ Bảo hành", callback_data: `warranty_claim:${orderCode}` }],
+          ],
+        }
+      : undefined;
+
+    await this.sendText(
+      token,
+      chatId,
+      [
+        language === "en" ? "✅ Payment successful" : language === "th" ? "✅ ชำระเงินสำเร็จ" : "✅ Thanh toán thành công",
+        language === "en"
+          ? `Product: ${this.localizeProductName(productName, language)}`
+          : language === "th"
+            ? `สินค้า: ${this.localizeProductName(productName, language)}`
+            : `Sản phẩm: ${this.localizeProductName(productName, language)}`,
+        "",
+        language === "en" ? "🔐 Your account:" : language === "th" ? "🔐 บัญชีของคุณ:" : "🔐 Tài khoản của bạn:",
+        ...(formatHint ? [`Format: ${formatHint}`, ""] : []),
+        deliveredAccountText,
+        "",
+        footerText,
+      ].join("\n"),
+      [],
+      warrantyButton,
+      footerBillEmojiId ? "HTML" : undefined,
+    );
   }
 
   private async renderHome(
@@ -1327,12 +1362,19 @@ export class TelegramBotService {
       }
 
       const categoryCols = Math.min(3, Math.max(1, Number((shopCust as Record<string, unknown> | null)?.categoryGridCols) || 3));
+      const groupCounts = new Map<string, number>();
+      for (const p of products) {
+        if (p.groupId) groupCounts.set(p.groupId, (groupCounts.get(p.groupId) || 0) + 1);
+      }
       const groupRows = this.chunkButtons(
         customGroups.map((g) => {
           const groupAny = g as typeof g & { icon?: string | null; iconCustomEmojiId?: string | null };
-          const iconPrefix = groupAny.icon ? `${groupAny.icon} ` : "📁 ";
+          const iconPrefix = groupAny.iconCustomEmojiId
+            ? ""
+            : (groupAny.icon ? `${groupAny.icon} ` : "📁 ");
+          const count = groupCounts.get(g.id) || 0;
           const btn: Record<string, string> = {
-            text: `${iconPrefix}${g.name}`,
+            text: `${iconPrefix}${g.name} (${count})`,
             callback_data: `catalog:custom:${g.id}:0`,
           };
           if (groupAny.iconCustomEmojiId) btn.icon_custom_emoji_id = groupAny.iconCustomEmojiId;
@@ -1427,6 +1469,7 @@ export class TelegramBotService {
     page: number,
     actions: unknown[],
     language: BotLanguage = "vi",
+    callbackQueryId?: string,
   ) {
     const [allProducts, groups, custDataCustom, customerRecordGrp, downstreamConnGrp, ctvApiKeyGrp] = await Promise.all([
       this.shopsService.getCatalogViewForShop(shopId, false),
@@ -1448,6 +1491,9 @@ export class TelegramBotService {
 
     const group = groups.find((g) => g.id === groupId);
     if (!group) {
+      if (callbackQueryId) {
+        await telegramAnswerCallbackQuery(token, callbackQueryId).catch(() => undefined);
+      }
       await this.renderCatalog(shopId, token, chatId, messageId, 0, actions, language);
       return;
     }
@@ -1482,8 +1528,20 @@ export class TelegramBotService {
     };
 
     if (products.length === 0) {
-      await this.renderCatalog(shopId, token, chatId, messageId, 0, actions, language);
+      const outOfStockMsg =
+        language === "en"
+          ? "The product you selected is out of stock, please come back later."
+          : language === "th"
+            ? "สินค้าที่คุณเลือกหมดสต็อก กรุณากลับมาดูใหม่ภายหลังนะ"
+            : "Sản phẩm bạn đang chọn hết hàng, bạn quay lại mua sau nhé.";
+      if (callbackQueryId) {
+        await telegramAnswerCallbackQuery(token, callbackQueryId, outOfStockMsg, { showAlert: true }).catch(() => undefined);
+      }
       return;
+    }
+
+    if (callbackQueryId) {
+      await telegramAnswerCallbackQuery(token, callbackQueryId).catch(() => undefined);
     }
 
     const lines = [
@@ -1743,26 +1801,34 @@ export class TelegramBotService {
 
     // If only one option, skip selection and go straight to amount
     if (hasUsdt && !hasVnd) {
-      this.pendingWalletTopups.set(this.getPendingQuantityKey(shopId, telegramUserId), {
+      await this.setPendingSession('pendingWalletTopups', this.getPendingQuantityKey(shopId, telegramUserId), {
         currency: "USDT",
         expiresAt: Date.now() + this.pendingQuantityTtlMs,
-      });
+      }, this.pendingQuantityTtlMs);
       return this.promptWalletTopupAmount(shopId, token, chatId, telegramUserId, actions, "USDT", undefined, language);
     }
     if (!hasUsdt) {
-      this.pendingWalletTopups.set(this.getPendingQuantityKey(shopId, telegramUserId), {
+      await this.setPendingSession('pendingWalletTopups', this.getPendingQuantityKey(shopId, telegramUserId), {
         currency: "VND",
         expiresAt: Date.now() + this.pendingQuantityTtlMs,
-      });
+      }, this.pendingQuantityTtlMs);
       return this.promptWalletTopupAmount(shopId, token, chatId, telegramUserId, actions, "VND", undefined, language);
     }
 
-    const text =
+    const shopDataTopup = await this.shopsService.getSellerShopByShopId(shopId);
+    const shopCustTopup = await this.resolveCustomization(
+      shopDataTopup.botConfig?.customizationJson as Record<string, unknown> | null ?? null,
+    );
+    const walletNoteMapTopup = (shopCustTopup as Record<string, unknown> | null)?.walletNote as Record<string, string> | undefined;
+    const walletNoteTopup = (walletNoteMapTopup?.[language] || walletNoteMapTopup?.["vi"] || "").trim();
+
+    const promptLine =
       language === "en"
         ? "💳 Choose top-up currency:"
         : language === "th"
           ? "💳 เลือกสกุลเงินที่ต้องการเติม:"
           : "💳 Chọn loại tiền muốn nạp:";
+    const text = walletNoteTopup ? `${walletNoteTopup}\n\n${promptLine}` : promptLine;
 
     await this.editOrSend(
       token,
@@ -1832,7 +1898,7 @@ export class TelegramBotService {
     actions: unknown[],
     language: BotLanguage = "vi",
   ) {
-    this.clearPendingTxHashSubmission(shopId, customer.telegramUserId);
+    await this.clearPendingTxHashSubmission(shopId, customer.telegramUserId);
     const product = await this.getCatalogItemForTelegram(shopId, sourceProductId, language);
     const usdtVndRate = await this.getShopUsdtVndRate(shopId);
     const maxQuantity = this.getMaxQuantity(product.available);
@@ -1925,9 +1991,9 @@ export class TelegramBotService {
     paymentProvider?: PaymentProvider,
     language: BotLanguage = "vi",
   ) {
-    this.clearPendingQuantitySelection(shopId, customer.telegramUserId);
-    this.clearPendingPaymentSelection(shopId, customer.telegramUserId);
-    this.clearPendingTxHashSubmission(shopId, customer.telegramUserId);
+    await this.clearPendingQuantitySelection(shopId, customer.telegramUserId);
+    await this.clearPendingPaymentSelection(shopId, customer.telegramUserId);
+    await this.clearPendingTxHashSubmission(shopId, customer.telegramUserId);
 
     const created = await this.ordersService.createTelegramOrder({
       shopId,
@@ -1985,9 +2051,15 @@ export class TelegramBotService {
       return;
     }
 
-    await this.sendText(token, customer.telegramChatId, paymentLines.join("\n"), actions, {
+    const sentResult = await this.sendText(token, customer.telegramChatId, paymentLines.join("\n"), actions, {
       inline_keyboard: inlineKeyboard,
-    }, "HTML");
+    }, "HTML") as { message_id?: number } | undefined;
+    if (sentResult?.message_id && created.order.paymentTransaction?.externalOrderCode) {
+      await this.prisma.paymentTransaction.update({
+        where: { externalOrderCode: created.order.paymentTransaction.externalOrderCode },
+        data: { qrTelegramMessageId: sentResult.message_id },
+      }).catch(() => undefined);
+    }
   }
 
   private async handleBuyWithWallet(
@@ -2005,9 +2077,9 @@ export class TelegramBotService {
     actions: unknown[],
     language: BotLanguage = "vi",
   ) {
-    this.clearPendingQuantitySelection(shopId, customer.telegramUserId);
-    this.clearPendingPaymentSelection(shopId, customer.telegramUserId);
-    this.clearPendingTxHashSubmission(shopId, customer.telegramUserId);
+    await this.clearPendingQuantitySelection(shopId, customer.telegramUserId);
+    await this.clearPendingPaymentSelection(shopId, customer.telegramUserId);
+    await this.clearPendingTxHashSubmission(shopId, customer.telegramUserId);
 
     const created = await this.ordersService.createTelegramOrderWithWallet({
       shopId,
@@ -2103,7 +2175,7 @@ export class TelegramBotService {
       };
       checkoutUrl: string;
       manualCrypto?: {
-        provider: "BINANCE" | "OKX" | "USDT_TRC20";
+        provider: "BINANCE" | "OKX" | "USDT_TRC20" | "USDT_SOL";
         note: string;
         hasPersonalApi?: boolean;
       };
@@ -2190,6 +2262,7 @@ export class TelegramBotService {
       if (p === "WALLET") return "payWallet";
       if (p === PaymentProvider.BINANCE_PAY || p === PaymentProvider.BINANCE) return "payBinance";
       if (p === PaymentProvider.USDT_TRC20) return "payUsdt";
+      if (p === PaymentProvider.USDT_SOL) return "paySol";
       return "payQR";
     };
 
@@ -2256,7 +2329,7 @@ export class TelegramBotService {
       return;
     }
 
-    const selection = this.getPendingPaymentSelection(shopId, telegramUserId);
+    const selection = await this.getPendingPaymentSelection(shopId, telegramUserId);
     const provider = this.normalizePaymentOption(rawProvider);
 
     if (!selection || !provider) {
@@ -2341,6 +2414,7 @@ export class TelegramBotService {
         binanceUid: true,
         okxUid: true,
         usdtTrc20Address: true,
+        usdtSolanaAddress: true,
         binancePayEnabled: true,
       },
     });
@@ -2362,6 +2436,10 @@ export class TelegramBotService {
 
     if (String(paymentConfig?.usdtTrc20Address || "").trim()) {
       providers.push(PaymentProvider.USDT_TRC20);
+    }
+
+    if (String(paymentConfig?.usdtSolanaAddress || "").trim()) {
+      providers.push(PaymentProvider.USDT_SOL);
     }
 
     return Array.from(new Set(providers));
@@ -2399,6 +2477,7 @@ export class TelegramBotService {
     if (normalized === "BINANCE_PAY") return PaymentProvider.BINANCE_PAY;
     if (normalized === "OKX") return PaymentProvider.OKX;
     if (normalized === "USDT_TRC20") return PaymentProvider.USDT_TRC20;
+    if (normalized === "USDT_SOL") return PaymentProvider.USDT_SOL;
 
     return null;
   }
@@ -2419,6 +2498,9 @@ export class TelegramBotService {
     if (provider === PaymentProvider.USDT_TRC20) {
       return language === "en" ? "Pay with USDT (TRC20)" : language === "th" ? "ชำระด้วย USDT (TRC20)" : "Thanh toán USDT (TRC20)";
     }
+    if (provider === PaymentProvider.USDT_SOL) {
+      return language === "en" ? "Pay with USDT (Solana)" : language === "th" ? "ชำระด้วย USDT (Solana)" : "Thanh toán USDT (Solana)";
+    }
     if (provider === PaymentProvider.MOCK) {
       return language === "en" ? "💳 Pay with QR / Bank" : language === "th" ? "💳 ชำระด้วย QR / โอนเงิน" : "💳 Thanh toán QR / Chuyển khoản";
     }
@@ -2436,10 +2518,10 @@ export class TelegramBotService {
       };
       checkoutUrl: string;
       manualCrypto?: {
-        provider: "BINANCE" | "OKX" | "USDT_TRC20";
+        provider: "BINANCE" | "OKX" | "USDT_TRC20" | "USDT_SOL";
         uid?: string | null;
         address?: string | null;
-        network?: "TRC20" | null;
+        network?: "TRC20" | "SOLANA" | null;
         usdtAmount: number;
         usdtVndRate: number;
         note: string;
@@ -2522,12 +2604,17 @@ export class TelegramBotService {
 
     // ── Binance/OKX manual ────────────────────────────────────────────────────
     if (created.manualCrypto) {
+      const isTrc20 = created.manualCrypto.provider === "USDT_TRC20";
+      const isSol = created.manualCrypto.provider === "USDT_SOL";
+      const isOnchain = isTrc20 || isSol;
       const providerName =
         created.manualCrypto.provider === "BINANCE"
           ? "Binance"
           : created.manualCrypto.provider === "OKX"
             ? "OKX"
-            : "USDT (TRC20)";
+            : isSol
+              ? "USDT (Solana)"
+              : "USDT (TRC20)";
       const receiverLine =
         created.manualCrypto.provider === "BINANCE"
           ? language === "en"
@@ -2540,48 +2627,67 @@ export class TelegramBotService {
             : language === "th"
               ? `OKX UID (แตะเพื่อคัดลอก):\n<code>${created.manualCrypto.uid}</code>`
               : `OKX UID (chạm để copy):\n<code>${created.manualCrypto.uid}</code>`;
-      const displayReceiverLine =
-        created.manualCrypto.provider === "USDT_TRC20"
+      const displayReceiverLine = isTrc20
+        ? language === "en"
+          ? `USDT TRC20 address (tap to copy):\n<code>${created.manualCrypto.address}</code>`
+          : language === "th"
+            ? `ที่อยู่ USDT TRC20 (แตะเพื่อคัดลอก):\n<code>${created.manualCrypto.address}</code>`
+            : `Địa chỉ USDT TRC20 (chạm để copy):\n<code>${created.manualCrypto.address}</code>`
+        : isSol
           ? language === "en"
-            ? `USDT TRC20 address (tap to copy):\n<code>${created.manualCrypto.address}</code>`
+            ? `USDT Solana address (tap to copy):\n<code>${created.manualCrypto.address}</code>`
             : language === "th"
-              ? `ที่อยู่ USDT TRC20 (แตะเพื่อคัดลอก):\n<code>${created.manualCrypto.address}</code>`
-              : `Địa chỉ USDT TRC20 (chạm để copy):\n<code>${created.manualCrypto.address}</code>`
+              ? `ที่อยู่ USDT Solana (แตะเพื่อคัดลอก):\n<code>${created.manualCrypto.address}</code>`
+              : `Địa chỉ USDT Solana (chạm để copy):\n<code>${created.manualCrypto.address}</code>`
           : receiverLine;
-      const networkLine =
-        created.manualCrypto.provider === "USDT_TRC20"
+      const networkLine = isTrc20
+        ? language === "en"
+          ? "Network: TRC20 (Tron)"
+          : language === "th"
+            ? "เครือข่าย: TRC20 (Tron)"
+            : "Mạng: TRC20 (Tron)"
+        : isSol
           ? language === "en"
-            ? "Network: TRC20 (Tron)"
+            ? "Network: Solana (SPL Token)"
             : language === "th"
-              ? "เครือข่าย: TRC20 (Tron)"
-              : "Mạng: TRC20 (Tron)"
+              ? "เครือข่าย: Solana (SPL Token)"
+              : "Mạng: Solana (SPL Token)"
           : null;
-      const safetyLine =
-        created.manualCrypto.provider === "USDT_TRC20"
+      const safetyLine = isTrc20
+        ? language === "en"
+          ? "Only send USDT on the TRC20 network to this address."
+          : language === "th"
+            ? "ส่ง USDT ผ่านเครือข่าย TRC20 ไปยังที่อยู่นี้เท่านั้น"
+            : "Chỉ gửi USDT đúng mạng TRC20 về địa chỉ này."
+        : isSol
           ? language === "en"
-            ? "Only send USDT on the TRC20 network to this address."
+            ? "Only send USDT on the Solana network (SPL token) to this address."
             : language === "th"
-              ? "ส่ง USDT ผ่านเครือข่าย TRC20 ไปยังที่อยู่นี้เท่านั้น"
-              : "Chỉ gửi USDT đúng mạng TRC20 về địa chỉ này."
+              ? "ส่ง USDT ผ่านเครือข่าย Solana (SPL token) ไปยังที่อยู่นี้เท่านั้น"
+              : "Chỉ gửi USDT đúng mạng Solana (SPL token) về địa chỉ này."
           : language === "en"
             ? "Please send the order ID or off-chain transaction reference after payment for verification."
             : language === "th"
               ? "หลังชำระเงินกรุณาส่ง ID คำสั่งหรือรหัสอ้างอิงธุรกรรมเพื่อยืนยัน"
               : "Sau khi thanh toán, vui lòng gửi mã đơn hoặc mã giao dịch để xác minh.";
-      const expiryLine =
-        language === "en"
+      const expiryLine = isOnchain
+        ? language === "en"
+          ? "⚠️ This payment order will expire in 30 minutes."
+          : language === "th"
+            ? "⚠️ คำสั่งชำระเงินนี้จะหมดอายุใน 30 นาที"
+            : "⚠️ Lệnh thanh toán này chỉ duy trì được 30 phút."
+        : language === "en"
           ? "⚠️ This payment order will expire in 5 minutes."
           : language === "th"
             ? "⚠️ คำสั่งชำระเงินนี้จะหมดอายุใน 5 นาที"
             : "⚠️ Lệnh thanh toán này chỉ duy trì được 5 phút.";
-      const followupLine =
-        created.manualCrypto.provider === "USDT_TRC20"
-          ? language === "en"
-            ? "After transfer, tap 'Send TX hash' below and paste the txid for automatic verification."
-            : language === "th"
-              ? "หลังโอนเงินแล้ว กด 'ส่ง TX hash' ด้านล่างแล้ววาง txid เพื่อให้ระบบยืนยันอัตโนมัติ"
-              : "Sau khi chuyển xong, bấm 'Gửi TX hash' bên dưới rồi dán txid để hệ thống tự xác minh."
-          : null;
+      const followupLine = (isTrc20 || isSol)
+        ? language === "en"
+          ? "After transfer, the bot auto-detects within 30-60s. (Optional: paste the tx hash here for faster verification.)"
+          : language === "th"
+            ? "หลังโอนเงิน ระบบจะตรวจจับอัตโนมัติภายใน 30-60 วินาที (ทางเลือก: วาง tx hash ที่นี่เพื่อยืนยันเร็วขึ้น)"
+            : "Sau khi chuyển, bot tự dò trong 30-60s. (Tuỳ chọn: dán tx hash vào đây để xác nhận nhanh hơn.)"
+        : null;
       const binanceAutoLine =
         created.manualCrypto.provider === "BINANCE" && created.manualCrypto.hasPersonalApi
           ? language === "en"
@@ -2591,37 +2697,46 @@ export class TelegramBotService {
               : "Đơn này được gán số USDT riêng. Sau khi chuyển xong, bấm 'Tôi đã thanh toán' để bot tự kiểm tra lịch sử Binance Pay."
           : null;
       const binanceExactAmountLine =
-        created.manualCrypto.provider === "BINANCE" && created.manualCrypto.hasPersonalApi
+        ((created.manualCrypto.provider === "BINANCE" && created.manualCrypto.hasPersonalApi) || isSol)
           ? language === "en"
             ? "Send the exact amount shown below so the system can match your payment safely."
             : language === "th"
               ? "กรุณาโอนจำนวนที่แสดงด้านล่างเพื่อให้ระบบจับคู่การชำระเงินได้อย่างถูกต้อง"
               : "Hãy chuyển đúng số tiền bên dưới để hệ thống đối chiếu giao dịch an toàn hơn."
           : null;
-      const helperLine =
-        created.manualCrypto.provider === "USDT_TRC20"
+      const helperLine = isTrc20
+        ? language === "en"
+          ? "Scan the QR to copy the address, then enter the amount and choose USDT on TRC20 manually in your wallet."
+          : language === "th"
+            ? "สแกน QR เพื่อคัดลอกที่อยู่ จากนั้นระบุจำนวนเงินและเลือก USDT บน TRC20 ในกระเป๋าเงินของคุณ"
+            : "Quét mã QR để lấy địa chỉ ví, sau đó tự nhập số tiền và chọn gửi USDT mạng TRC20."
+        : isSol
           ? language === "en"
-            ? "Scan the QR to copy the address, then enter the amount and choose USDT on TRC20 manually in your wallet."
+            ? "Scan the QR to copy the address, then enter the amount and choose USDT on Solana network in your wallet."
             : language === "th"
-              ? "สแกน QR เพื่อคัดลอกที่อยู่ จากนั้นระบุจำนวนเงินและเลือก USDT บน TRC20 ในกระเป๋าเงินของคุณ"
-              : "Quét mã QR để lấy địa chỉ ví, sau đó tự nhập số tiền và chọn gửi USDT mạng TRC20."
+              ? "สแกน QR เพื่อคัดลอกที่อยู่ จากนั้นระบุจำนวนเงินและเลือก USDT บนเครือข่าย Solana ในกระเป๋าเงินของคุณ"
+              : "Quét mã QR để lấy địa chỉ ví, sau đó tự nhập số tiền và chọn gửi USDT mạng Solana."
           : null;
-      const feeLine =
-        created.manualCrypto.provider === "USDT_TRC20"
+      const feeLine = isTrc20
+        ? language === "en"
+          ? "TRC20 transfers also need enough TRX on the sending wallet for network fees."
+          : language === "th"
+            ? "การโอน TRC20 ต้องมี TRX เพียงพอในกระเป๋าผู้ส่งสำหรับค่าธรรมเนียมเครือข่าย"
+            : "Lệnh chuyển TRC20 cũng cần đủ TRX trong ví gửi để trả phí mạng."
+        : isSol
           ? language === "en"
-            ? "TRC20 transfers also need enough TRX on the sending wallet for network fees."
+            ? "Solana transfers need a small amount of SOL on the sending wallet for network fees (~0.001 SOL)."
             : language === "th"
-              ? "การโอน TRC20 ต้องมี TRX เพียงพอในกระเป๋าผู้ส่งสำหรับค่าธรรมเนียมเครือข่าย"
-              : "Lệnh chuyển TRC20 cũng cần đủ TRX trong ví gửi để trả phí mạng."
+              ? "การโอน Solana ต้องมี SOL เล็กน้อยในกระเป๋าผู้ส่งสำหรับค่าธรรมเนียม (~0.001 SOL)"
+              : "Lệnh chuyển Solana cũng cần một ít SOL trong ví gửi để trả phí mạng (~0.001 SOL)."
           : null;
-      const toleranceLine =
-        created.manualCrypto.provider === "USDT_TRC20"
-          ? language === "en"
-            ? `Allowed transfer difference: ${this.formatUsdt(this.config.usdtPaymentTolerance)} USDT`
-            : language === "th"
-              ? `ความคลาดเคลื่อนที่อนุญาต: ${this.formatUsdt(this.config.usdtPaymentTolerance)} USDT`
-              : `Sai số chuyển cho phép: ${this.formatUsdt(this.config.usdtPaymentTolerance)} USDT`
-          : null;
+      const toleranceLine = isOnchain
+        ? language === "en"
+          ? `Allowed transfer difference: ${this.formatUsdt(this.config.usdtPaymentTolerance)} USDT`
+          : language === "th"
+            ? `ความคลาดเคลื่อนที่อนุญาต: ${this.formatUsdt(this.config.usdtPaymentTolerance)} USDT`
+            : `Sai số chuyển cho phép: ${this.formatUsdt(this.config.usdtPaymentTolerance)} USDT`
+        : null;
 
       return [
         ...baseLines,
@@ -2933,15 +3048,15 @@ export class TelegramBotService {
       return;
     }
 
-    this.clearPendingQuantitySelection(shopId, telegramUserId);
-    this.clearPendingWalletTopup(shopId, telegramUserId);
-    this.clearPendingPaymentSelection(shopId, telegramUserId);
-    this.pendingTxHashSubmissions.set(this.getPendingQuantityKey(shopId, telegramUserId), {
+    await this.clearPendingQuantitySelection(shopId, telegramUserId);
+    await this.clearPendingWalletTopup(shopId, telegramUserId);
+    await this.clearPendingPaymentSelection(shopId, telegramUserId);
+    await this.setPendingSession('pendingTxHashSubmissions', this.getPendingQuantityKey(shopId, telegramUserId), {
       externalOrderCode,
       orderCode: payment.order.orderCode,
       allowMockHash: this.isSimulationToken(token),
       expiresAt: Date.now() + this.pendingTxHashTtlMs,
-    });
+    }, this.pendingTxHashTtlMs);
 
     await this.editOrSend(
       token,
@@ -3038,16 +3153,16 @@ export class TelegramBotService {
       return;
     }
 
-    this.clearPendingQuantitySelection(shopId, telegramUserId);
-    this.clearPendingWalletTopup(shopId, telegramUserId);
-    this.clearPendingPaymentSelection(shopId, telegramUserId);
-    this.pendingTxHashSubmissions.set(this.getPendingQuantityKey(shopId, telegramUserId), {
+    await this.clearPendingQuantitySelection(shopId, telegramUserId);
+    await this.clearPendingWalletTopup(shopId, telegramUserId);
+    await this.clearPendingPaymentSelection(shopId, telegramUserId);
+    await this.setPendingSession('pendingTxHashSubmissions', this.getPendingQuantityKey(shopId, telegramUserId), {
       externalOrderCode,
       orderCode: externalOrderCode,
       allowMockHash: this.isSimulationToken(token),
       expiresAt: Date.now() + this.pendingTxHashTtlMs,
       isTopup: true,
-    });
+    }, this.pendingTxHashTtlMs);
 
     await this.editOrSend(
       token,
@@ -3079,11 +3194,11 @@ export class TelegramBotService {
     actions: unknown[],
     language: BotLanguage = "vi",
   ) {
-    this.pendingWarrantyClaimSubmissions.set(
+    await this.setPendingSession(
+      "pendingWarrantyClaimSubmissions",
       this.getPendingQuantityKey(shopId, telegramUserId),
-      {
-        expiresAt: Date.now() + this.pendingQuantityTtlMs,
-      },
+      { expiresAt: Date.now() + this.pendingQuantityTtlMs },
+      this.pendingQuantityTtlMs,
     );
 
     await this.editOrSend(
@@ -3098,10 +3213,10 @@ export class TelegramBotService {
             : "🛡️ Yêu cầu bảo hành",
         "",
         language === "en"
-          ? "Reply with your order code — or enter your account email to look up warranty details."
+          ? "Please reply with your order code in the next message."
           : language === "th"
-            ? "ตอบกลับด้วยรหัสคำสั่งซื้อ หรือป้อนอีเมลบัญชีเพื่อค้นหารายละเอียดการรับประกัน"
-            : "Nhập mã đơn hàng — hoặc email tài khoản để tra cứu hóa đơn bảo hành.",
+            ? "กรุณาตอบกลับด้วยรหัสคำสั่งซื้อในข้อความถัดไป"
+            : "Vui lòng trả lời bằng mã đơn hàng ở tin nhắn tiếp theo.",
         language === "en"
           ? "We will validate the warranty window and process the claim automatically when possible."
           : language === "th"
@@ -3126,7 +3241,7 @@ export class TelegramBotService {
   ) {
     const telegramUserId = String(message.from?.id || "");
     const language = await this.getCustomerLanguage(shopId, telegramUserId);
-    const pending = this.getPendingWarrantyClaimSubmission(shopId, telegramUserId);
+    const pending = await this.getPendingWarrantyClaimSubmission(shopId, telegramUserId);
 
     if (!pending) {
       return false;
@@ -3147,22 +3262,7 @@ export class TelegramBotService {
       return true;
     }
 
-    // Email/account lookup: nếu input chứa '@' → tra cứu hóa đơn bảo hành thay vì nộp claim
-    if (orderCode.includes("@")) {
-      this.clearPendingWarrantyClaimSubmission(shopId, telegramUserId);
-      await this.sendWarrantyLookupResult(
-        token,
-        Number(message.chat?.id || 0),
-        shopId,
-        telegramUserId,
-        orderCode,
-        actions,
-        language,
-      );
-      return true;
-    }
-
-    this.clearPendingWarrantyClaimSubmission(shopId, telegramUserId);
+    await this.clearPendingWarrantyClaimSubmission(shopId, telegramUserId);
 
     const check = await this.warrantyService.checkTelegramWarrantyEligibility({
       shopId,
@@ -3215,22 +3315,14 @@ export class TelegramBotService {
     language: BotLanguage = "vi",
   ) {
     if (accounts.length <= 1) {
-      // Single-account orders DON'T need a targetUsernames hint — there's only one account
-      // to warranty, so the submit path uses it implicitly. The previous code tried to
-      // extract a username from the raw `accounts[0]` string using a naive split("|"), which
-      // broke on space-separated formats like "email@x.com password" (returned the entire
-      // string as the "username", failing the in-order validation). Just omit.
-      await this.promptWarrantyPasswordChange(
-        token,
-        chatId,
-        messageId,
+      const claim = await this.warrantyService.submitTelegramWarrantyClaim({
         shopId,
         telegramUserId,
+        telegramChatId: String(chatId),
         orderCode,
-        undefined,
-        actions,
         language,
-      );
+      });
+      await this.sendWarrantyClaimResult(token, chatId, claim, actions, language);
     } else {
       await this.promptWarrantyAccountSelection(
         token,
@@ -3246,286 +3338,6 @@ export class TelegramBotService {
     }
   }
 
-  /**
-   * Skip the Y/N step entirely when we already know the password is wrong (errorType=wrong_password
-   * on a soft-failed claim). Sets awaitingPasswordInput=true immediately and asks the customer
-   * to type their new password.
-   */
-  private async promptDirectPasswordInput(
-    token: string,
-    chatId: number,
-    messageId: number | undefined,
-    shopId: string,
-    telegramUserId: string,
-    orderCode: string,
-    actions: unknown[],
-    language: BotLanguage = "vi",
-  ) {
-    this.setPendingWarrantyPasswordPrompt(shopId, telegramUserId, {
-      orderCode,
-      targetUsernames: undefined,
-      awaitingPasswordInput: true,
-    });
-
-    const text = language === "en"
-      ? `🔑 Wrong password detected\n\nOrder: ${orderCode}\n\nPlease reply with the NEW account password.\nWe'll use it only for this check and won't store it.`
-      : language === "th"
-        ? `🔑 ตรวจพบรหัสผ่านไม่ถูกต้อง\n\nคำสั่งซื้อ: ${orderCode}\n\nกรุณาตอบกลับด้วยรหัสผ่านใหม่\nระบบใช้เฉพาะการตรวจสอบครั้งนี้และไม่ได้จัดเก็บ`
-        : `🔑 Mật khẩu không đúng\n\nĐơn: ${orderCode}\n\nVui lòng trả lời với mật khẩu MỚI của tài khoản.\nHệ thống chỉ dùng cho lần kiểm tra này và không lưu lại.`;
-
-    await this.editOrSend(
-      token,
-      chatId,
-      messageId,
-      text,
-      {
-        inline_keyboard: [
-          [{ text: language === "en" ? "Cancel" : language === "th" ? "ยกเลิก" : "Hủy", callback_data: "home:menu" }],
-        ],
-      },
-      actions,
-    );
-  }
-
-  /**
-   * Y/N prompt: "Tài khoản đã đổi mật khẩu chưa?" — mirrors the toggle on the web warranty
-   * form (`apps/web/src/pages/warranty-claim-page.tsx`). The two inline buttons fire
-   * callbacks `wpwd:yes` / `wpwd:no`; the (orderCode, targetUsernames) parameters are stashed
-   * in `pendingWarrantyPasswordPrompts` rather than encoded in callback_data to avoid the
-   * 64-byte Telegram limit and to keep account usernames out of the public callback payload.
-   */
-  private async promptWarrantyPasswordChange(
-    token: string,
-    chatId: number,
-    messageId: number | undefined,
-    shopId: string,
-    telegramUserId: string,
-    orderCode: string,
-    targetUsernames: string[] | undefined,
-    actions: unknown[],
-    language: BotLanguage = "vi",
-  ) {
-    this.setPendingWarrantyPasswordPrompt(shopId, telegramUserId, {
-      orderCode,
-      targetUsernames,
-      awaitingPasswordInput: false,
-    });
-
-    const lines = language === "en"
-      ? [
-          "🛡️ Warranty request",
-          `Order: ${orderCode}`,
-          "",
-          "Has the account password been changed since delivery?",
-          "If yes, please share the new password so the auto-check can log in.",
-        ]
-      : language === "th"
-        ? [
-            "🛡️ คำขอรับประกัน",
-            `รหัสคำสั่งซื้อ: ${orderCode}`,
-            "",
-            "บัญชีนี้มีการเปลี่ยนรหัสผ่านหลังจากได้รับหรือไม่?",
-            "หากเปลี่ยนแล้ว กรุณาส่งรหัสผ่านใหม่เพื่อให้ระบบเข้าตรวจสอบ",
-          ]
-        : [
-            "🛡️ Yêu cầu bảo hành",
-            `Đơn hàng: ${orderCode}`,
-            "",
-            "Bạn có đổi mật khẩu tài khoản sau khi nhận hàng không?",
-            "Nếu có, vui lòng gửi mật khẩu mới để hệ thống đăng nhập kiểm tra.",
-          ];
-
-    const yesLabel = language === "en" ? "✓ Yes, I changed it" : language === "th" ? "✓ ใช่ เปลี่ยนแล้ว" : "✓ Có, tôi đã đổi";
-    const noLabel = language === "en" ? "No, keep original" : language === "th" ? "ไม่ ใช้รหัสเดิม" : "Không, giữ nguyên";
-    const cancelLabel = language === "en" ? "Cancel" : language === "th" ? "ยกเลิก" : "Hủy";
-
-    await this.editOrSend(
-      token,
-      chatId,
-      messageId,
-      lines.join("\n"),
-      {
-        inline_keyboard: [
-          [{ text: yesLabel, callback_data: "wpwd:yes" }],
-          [{ text: noLabel, callback_data: "wpwd:no" }],
-          [{ text: cancelLabel, callback_data: "home:menu" }],
-        ],
-      },
-      actions,
-    );
-  }
-
-  /**
-   * Resolves the password Y/N decision and submits the claim. The bot's reply to the customer
-   * after submit is then handed back so we can capture its message_id and persist it on the
-   * claim — that's the anchor we later edit to show the final result + invoice.
-   */
-  private async submitWarrantyClaimWithPassword(
-    token: string,
-    chatId: number,
-    shopId: string,
-    telegramUserId: string,
-    orderCode: string,
-    targetUsernames: string[] | undefined,
-    currentPassword: string | undefined,
-    actions: unknown[],
-    language: BotLanguage,
-  ) {
-    const claim = await this.warrantyService.submitTelegramWarrantyClaim({
-      shopId,
-      telegramUserId,
-      telegramChatId: String(chatId),
-      orderCode,
-      language,
-      ...(targetUsernames && targetUsernames.length > 0 ? { targetUsernames } : {}),
-      ...(currentPassword ? { currentPassword } : {}),
-    });
-
-    const replyResult = await this.sendWarrantyClaimResult(token, chatId, claim, actions, language);
-
-    // For `auto_check_pending` flows the bot's reply is the message the customer will watch.
-    // Anchor it on the claim row so applyAutoCheckResult can EDIT this exact message later
-    // (web parity: one persistent receipt instead of a fresh reply for each state transition).
-    if (
-      claim.status === "auto_check_pending" &&
-      claim.claimId &&
-      replyResult?.message_id &&
-      this.config.appPublicUrl
-    ) {
-      await this.warrantyService
-        .updateBotProgressContext(claim.claimId, {
-          shopId,
-          chatId: Number(chatId),
-          messageId: Number(replyResult.message_id),
-        })
-        .catch((e) => this.logger.warn(`updateBotProgressContext failed: ${e?.message ?? e}`));
-    }
-  }
-
-  /**
-   * Inline-keyboard callback handler for the password Y/N step. Yes → flips the pending state
-   * to `awaitingPasswordInput=true` and prompts for the new password text. No → submits
-   * immediately with no override.
-   */
-  private async handleWarrantyPasswordCallback(
-    decision: "yes" | "no",
-    token: string,
-    chatId: number,
-    messageId: number | undefined,
-    shopId: string,
-    telegramUserId: string,
-    actions: unknown[],
-    language: BotLanguage,
-  ) {
-    const pending = this.getPendingWarrantyPasswordPrompt(shopId, telegramUserId);
-    if (!pending) {
-      await this.editOrSend(
-        token,
-        chatId,
-        messageId,
-        language === "en"
-          ? "This request has expired. Please tap 🛡️ Warranty to start again."
-          : language === "th"
-            ? "คำขอนี้หมดอายุแล้ว กรุณาเริ่มต้นใหม่"
-            : "Yêu cầu này đã hết hạn. Vui lòng bấm 🛡️ Yêu cầu bảo hành để bắt đầu lại.",
-        {
-          inline_keyboard: [
-            [{ text: this.buttonLabel("warranty", language), callback_data: "warranty:start" }],
-            [{ text: this.buttonLabel("home", language), callback_data: "home:menu" }],
-          ],
-        },
-        actions,
-      );
-      return;
-    }
-
-    if (decision === "no") {
-      this.clearPendingWarrantyPasswordPrompt(shopId, telegramUserId);
-      await this.submitWarrantyClaimWithPassword(
-        token, chatId, shopId, telegramUserId,
-        pending.orderCode, pending.targetUsernames, undefined,
-        actions, language,
-      );
-      return;
-    }
-
-    // decision === "yes": switch to awaitingPasswordInput=true and ask for the new password.
-    this.setPendingWarrantyPasswordPrompt(shopId, telegramUserId, {
-      orderCode: pending.orderCode,
-      targetUsernames: pending.targetUsernames,
-      awaitingPasswordInput: true,
-    });
-
-    const promptText = language === "en"
-      ? `Please reply with the NEW password for the account on order ${pending.orderCode}.\nWe'll use it only for this auto-check and won't store it.`
-      : language === "th"
-        ? `กรุณาตอบกลับด้วยรหัสผ่านใหม่ของบัญชีในคำสั่งซื้อ ${pending.orderCode}\nระบบใช้เฉพาะการตรวจสอบครั้งนี้และไม่ได้จัดเก็บ`
-        : `Vui lòng trả lời với mật khẩu MỚI của tài khoản trong đơn ${pending.orderCode}.\nHệ thống chỉ dùng cho lần kiểm tra này và không lưu lại.`;
-
-    await this.editOrSend(
-      token,
-      chatId,
-      messageId,
-      promptText,
-      {
-        inline_keyboard: [
-          [{ text: language === "en" ? "Skip — use original" : language === "th" ? "ข้าม ใช้รหัสเดิม" : "Bỏ qua — dùng mật khẩu cũ", callback_data: "wpwd:no" }],
-          [{ text: language === "en" ? "Cancel" : language === "th" ? "ยกเลิก" : "Hủy", callback_data: "home:menu" }],
-        ],
-      },
-      actions,
-    );
-  }
-
-  /**
-   * Text-message handler for the password input step. Active only while
-   * `pendingWarrantyPasswordPrompts.awaitingPasswordInput === true`. Trims input, requires
-   * non-empty (we don't enforce a minimum length — Google/x.ai/OpenAI all have their own
-   * password rules and we want to forward whatever the customer typed).
-   */
-  private async handlePendingWarrantyPasswordPromptMessage(
-    shopId: string,
-    token: string,
-    message: TelegramUpdate,
-    actions: unknown[],
-  ) {
-    const telegramUserId = String(message.from?.id || "");
-    const pending = this.getPendingWarrantyPasswordPrompt(shopId, telegramUserId);
-    if (!pending || !pending.awaitingPasswordInput) return false;
-
-    const language = await this.getCustomerLanguage(shopId, telegramUserId);
-    const newPassword = String(message.text || "").trim();
-    const chatId = Number(message.chat?.id || 0);
-
-    if (!newPassword) {
-      await this.sendText(
-        token,
-        chatId,
-        language === "en"
-          ? "Please type the new password, or tap Skip to use the original."
-          : language === "th"
-            ? "กรุณาพิมพ์รหัสผ่านใหม่ หรือกด ข้าม เพื่อใช้รหัสเดิม"
-            : "Vui lòng nhập mật khẩu mới, hoặc bấm Bỏ qua để dùng mật khẩu cũ.",
-        actions,
-        {
-          inline_keyboard: [
-            [{ text: language === "en" ? "Skip — use original" : language === "th" ? "ข้าม ใช้รหัสเดิม" : "Bỏ qua — dùng mật khẩu cũ", callback_data: "wpwd:no" }],
-          ],
-        },
-      );
-      return true;
-    }
-
-    this.clearPendingWarrantyPasswordPrompt(shopId, telegramUserId);
-
-    await this.submitWarrantyClaimWithPassword(
-      token, chatId, shopId, telegramUserId,
-      pending.orderCode, pending.targetUsernames, newPassword,
-      actions, language,
-    );
-    return true;
-  }
-
   private async promptWarrantyAccountSelection(
     token: string,
     chatId: number,
@@ -3537,9 +3349,11 @@ export class TelegramBotService {
     actions: unknown[],
     language: BotLanguage = "vi",
   ) {
-    this.pendingWarrantyAccountSelections.set(
+    await this.setPendingSession(
+      "pendingWarrantyAccountSelections",
       this.getPendingQuantityKey(shopId, telegramUserId),
       { orderCode, accounts, expiresAt: Date.now() + this.pendingQuantityTtlMs },
+      this.pendingQuantityTtlMs,
     );
 
     const usernames = accounts.map((a) => (a.split("|")[0] || a).trim());
@@ -3596,7 +3410,7 @@ export class TelegramBotService {
   ) {
     const telegramUserId = String(message.from?.id || "");
     const language = await this.getCustomerLanguage(shopId, telegramUserId);
-    const pending = this.getPendingWarrantyAccountSelection(shopId, telegramUserId);
+    const pending = await this.getPendingWarrantyAccountSelection(shopId, telegramUserId);
 
     if (!pending) {
       return false;
@@ -3624,23 +3438,20 @@ export class TelegramBotService {
       return true;
     }
 
-    this.clearPendingWarrantyAccountSelection(shopId, telegramUserId);
+    await this.clearPendingWarrantyAccountSelection(shopId, telegramUserId);
 
     const targetUsernames = input.split(";").map((s) => s.trim()).filter(Boolean);
 
-    // Same Y/N password question as the single-account path. We don't call submit here yet —
-    // it fires from inside handleWarrantyPasswordCallback / handlePendingWarrantyPasswordPromptMessage.
-    await this.promptWarrantyPasswordChange(
-      token,
-      Number(message.chat?.id || 0),
-      undefined,
+    const claim = await this.warrantyService.submitTelegramWarrantyClaim({
       shopId,
       telegramUserId,
-      pending.orderCode,
+      telegramChatId: String(message.chat?.id || telegramUserId),
+      orderCode: pending.orderCode,
       targetUsernames,
-      actions,
       language,
-    );
+    });
+
+    await this.sendWarrantyClaimResult(token, message.chat.id, claim, actions, language);
     return true;
   }
 
@@ -3691,7 +3502,7 @@ export class TelegramBotService {
         (language === "en" ? "An error occurred." : language === "th" ? "เกิดข้อผิดพลาด" : "Đã xảy ra lỗi.");
     }
 
-    const sendResult = await this.sendText(
+    await this.sendText(
       token,
       chatId,
       replyText,
@@ -3704,256 +3515,7 @@ export class TelegramBotService {
         ],
       },
     );
-    // Returned so the caller can anchor the message_id on the claim for later edit-in-place
-    // when applyAutoCheckResult finalizes the auto-check.
-    return sendResult && typeof sendResult === "object" && "message_id" in sendResult
-      ? { message_id: Number((sendResult as { message_id: unknown }).message_id) }
-      : null;
   }
-
-  // ─── Warranty lookup by account email ────────────────────────────────────
-
-  /**
-   * Customer-facing warranty duration label — short form, no "BH mặc định 30 ngày" prose.
-   * Customers care about the total period; callers prepend "BH " / 🛡 themselves if needed.
-   */
-  private formatWarrantyPolicy(policy: string | null | undefined): string {
-    if (!policy) return "Không có";
-    switch (policy.toUpperCase()) {
-      case "KBH":   return "Không bảo hành";
-      case "BH24H": return "24 giờ";
-      case "BH1M":  return "1 tháng";
-      case "BH3M":  return "3 tháng";
-      case "BH6M":  return "6 tháng";
-      case "BH12M": return "12 tháng";
-      case "BHF":   return "Vĩnh viễn";
-      default:      return policy;
-    }
-  }
-
-  private formatOrderStatusShort(status: string): string {
-    switch (status) {
-      case "DELIVERED":        return "completed";
-      case "PAID":             return "paid";
-      case "AWAITING_PAYMENT": return "pending";
-      case "CANCELED":         return "canceled";
-      default:                 return status.toLowerCase();
-    }
-  }
-
-  private parseDeliveredAccountLines(text: string | null): string[] {
-    if (!text) return ["(không có)"];
-    return text
-      .split(/\n/)
-      .map((l) => l.trim())
-      .filter(Boolean)
-      .map((l, i) => (/^\d+\./.test(l) ? l : `${i + 1}. ${l}`));
-  }
-
-  private async sendWarrantyLookupResult(
-    token: string,
-    chatId: number,
-    shopId: string,
-    telegramUserId: string,
-    keyword: string,
-    actions: unknown[],
-    language: BotLanguage = "vi",
-  ) {
-    const orders = await this.prisma.order.findMany({
-      where: {
-        shopId,
-        status: "DELIVERED",
-        customer: { telegramUserId },
-        deliveredAccountText: { contains: keyword, mode: "insensitive" },
-      },
-      include: {
-        customer: { select: { telegramUsername: true, firstName: true, telegramChatId: true } },
-        shop:     { select: { supportTelegram: true, name: true } },
-        warrantyClaims: {
-          select:  { status: true },
-          orderBy: { createdAt: "desc" },
-        },
-      },
-      orderBy: { deliveredAt: "desc" },
-      take: 3,
-    });
-
-    // Nav keyboard used only on the "no matches" path. The success path uses a richer
-    // keyboard with one direct "Bảo hành đơn này" button per matched order — saves the
-    // customer from re-typing the orderCode they just searched.
-    const navKeyboard = {
-      inline_keyboard: [
-        [{ text: this.buttonLabel("warranty", language), callback_data: "warranty:start" }],
-        [{ text: this.buttonLabel("home",     language), callback_data: "home:menu"      }],
-      ],
-    };
-
-    if (orders.length === 0) {
-      await this.sendText(
-        token, chatId,
-        language === "en"
-          ? `🔍 No orders found matching: ${keyword}`
-          : `🔍 Không tìm thấy đơn nào khớp với: ${keyword}`,
-        actions, navKeyboard,
-      );
-      return;
-    }
-
-    // Balanced lookup result: keep the useful fields, drop the descriptive labels ("Mã đơn:",
-    // "Sản phẩm:", "Trạng thái refund:" etc.) — emojis carry the meaning. Group related lines
-    // with blank lines so the message scans like a printed receipt: identity → warranty →
-    // accounts → refund → meta. ~10 dòng/đơn vs ~14 dòng cũ; mỗi dòng ngắn hơn ~40%.
-    const rule = "━━━━━━━━━━━━━━━━━";
-    const now = Date.now();
-    const lines: string[] = [
-      `🔍 <b>Tìm thấy ${orders.length} đơn</b>`,
-      ...(orders.length === 1 ? [] : [`Từ khóa: <code>${this.escapeHtml(keyword)}</code>`]),
-    ];
-
-    for (let i = 0; i < orders.length; i++) {
-      const o = orders[i];
-      if (!o) continue;
-      const saleAmount = decimalToNumber(o.totalSaleAmount);
-      const qty = o.quantity || 1;
-      const pricePerAcc = qty > 0 ? Math.round(saleAmount / qty) : saleAmount;
-
-      const resolvedCount = o.warrantyClaims.filter((c) =>
-        ["AUTO_RESOLVED", "RESOLVED_MANUAL"].includes(c.status),
-      ).length;
-      const refundIcon = resolvedCount > 0 ? "✅" : "⏳";
-      const refundLabel = resolvedCount > 0
-        ? `Đã refund ${resolvedCount}/${qty}`
-        : `Chưa refund 0/${qty}`;
-
-      // Days computation (consistent with web): floor for used, ceil for remaining so the two
-      // never sum to more than the policy duration. Both null when no warranty window snapshot.
-      const startedAt = o.warrantyStartedAt ?? o.deliveredAt;
-      const expiresAt = o.warrantyExpiresAt;
-      const daysUsed = startedAt ? Math.max(0, Math.floor((now - new Date(startedAt).getTime()) / 86_400_000)) : null;
-      const daysLeft = expiresAt ? Math.max(0, Math.ceil((new Date(expiresAt).getTime() - now) / 86_400_000)) : null;
-
-      const fmtDate = (d: Date | null | undefined) =>
-        d ? new Date(d).toLocaleDateString("vi-VN", { day: "2-digit", month: "2-digit", year: "numeric" }) : "—";
-      const expiresStr = expiresAt ? fmtDate(expiresAt) : "vĩnh viễn";
-      const createdStr = fmtDate(o.createdAt);
-      const policyShort = this.formatWarrantyPolicyShort(o.warrantyPolicySnapshot);
-      // Looked up by ACCOUNT (email) → show ONLY the matched account + hide order-level economics
-      // (order code, qty·total, buyer, refund). One order may be resold to several different
-      // end-customers, so a per-account lookup shows just that one account, not the whole invoice.
-      const isAccountLookup = keyword.includes("@");
-      const _kwLower = keyword.toLowerCase();
-      let accountText = (o.deliveredAccountText || "").trim();
-      if (isAccountLookup && accountText) {
-        const matched = accountText
-          .split(/\r?\n+/)
-          .map((l) => l.trim())
-          .filter(Boolean)
-          .filter((l) => l.toLowerCase().includes(_kwLower));
-        if (matched.length > 0) accountText = matched.join("\n");
-      }
-
-      // Buyer label — prefer @username, fall back to first name, then telegram id.
-      // Customers verify it's their own order; sellers cross-reference chat history.
-      const buyerLabel = o.customer?.telegramUsername
-        ? `@${o.customer.telegramUsername}${o.customer.firstName ? ` (${o.customer.firstName})` : ""}`
-        : o.customer?.firstName
-          ? o.customer.firstName
-          : o.customer?.telegramChatId
-            ? `#${o.customer.telegramChatId}`
-            : "—";
-
-      // ── Order identity ────────────────────────────────
-      lines.push("");
-      lines.push(rule);
-      if (orders.length > 1) {
-        lines.push(`📝 <b>Đơn ${i + 1}</b>`);
-        lines.push("");
-      }
-      // Order code + economics + buyer hidden on a per-account lookup (retail customer view).
-      if (!isAccountLookup) lines.push(`📦 <code>${this.escapeHtml(o.orderCode)}</code>`);
-      lines.push(
-        isAccountLookup
-          ? `🏷 ${this.escapeHtml(o.productNameSnapshot)}`
-          : `🏷 ${this.escapeHtml(o.productNameSnapshot)} · ${qty} acc · ${formatCurrency(saleAmount)}`,
-      );
-      if (!isAccountLookup) lines.push(`👤 ${this.escapeHtml(buyerLabel)}`);
-
-      // ── Warranty window ──────────────────────────────
-      lines.push("");
-      if (policyShort) lines.push(`🛡 BH ${policyShort}`);
-      lines.push(`⏰ Hạn ${this.escapeHtml(expiresStr)}`);
-      if (daysUsed !== null && daysLeft !== null) {
-        lines.push(`📊 Đã dùng ${daysUsed} / còn ${daysLeft} ngày`);
-      }
-
-      // ── Accounts (tap-to-copy code box) ───────────────
-      if (accountText) {
-        lines.push("");
-        lines.push("🔑 <b>Tài khoản</b>");
-        lines.push(`<pre>${this.escapeHtml(accountText)}</pre>`);
-      }
-
-      // ── Refund + meta ─────────────────────────────────
-      lines.push("");
-      // Refund economics hidden on a per-account lookup (retail customer needn't see order totals).
-      if (!isAccountLookup) lines.push(`${refundIcon} ${refundLabel} · ${formatCurrency(pricePerAcc)}/acc`);
-      lines.push(`📅 Tạo ${this.escapeHtml(createdStr)}`);
-      lines.push(rule);
-    }
-
-    // Build one warranty button per matched order. `warranty_claim:<orderCode>` is handled by
-    // the existing callback at the top of handleCallbackQuery — it runs eligibility +
-    // routeWarrantyByAccountCount → password Y/N prompt → submit + auto-check. Saves the
-    // customer from re-typing the orderCode they literally just searched for. Label is short
-    // ("...XXX" suffix) because Telegram caps inline button text at 64 bytes.
-    const claimButtons = orders.map((o) => {
-      const tail = o.orderCode.slice(-6);
-      const label = orders.length === 1
-        ? (language === "en" ? "🛡 Open warranty for this order" : language === "th" ? "🛡 เปิดเคลมประกันคำสั่งซื้อนี้" : "🛡 Bảo hành đơn này")
-        : (language === "en" ? `🛡 Warranty …${tail}` : language === "th" ? `🛡 เคลม …${tail}` : `🛡 Bảo hành …${tail}`);
-      return [{ text: label, callback_data: `warranty_claim:${o.orderCode}` }];
-    });
-
-    // Second button is "search another order" — visually distinct from the per-order claim
-    // buttons above (which already say "Bảo hành đơn này"). Hardcoded label here instead of
-    // reusing the generic `buttonLabel("warranty")` so the customer can tell the two apart at
-    // a glance: "warranty THIS order" vs "look up A DIFFERENT order".
-    const lookupAnotherLabel =
-      language === "en" ? "🔍 Look up another order"
-      : language === "th" ? "🔍 ค้นหาคำสั่งซื้ออื่น"
-      : "🔍 Tìm đơn bảo hành khác";
-
-    const successKeyboard = {
-      inline_keyboard: [
-        ...claimButtons,
-        [{ text: lookupAnotherLabel, callback_data: "warranty:start" }],
-        [{ text: this.buttonLabel("home", language), callback_data: "home:menu" }],
-      ],
-    };
-
-    await this.sendText(token, chatId, lines.join("\n"), actions, successKeyboard, "HTML");
-  }
-
-  /**
-   * Short policy label for compact lookup view ("12 tháng", "Vĩnh viễn", etc.). Mirrors
-   * `formatWarrantyPolicyHuman` on the API/warranty side — kept here as a private helper
-   * to avoid a cross-module dependency from the bot layer.
-   */
-  private formatWarrantyPolicyShort(policy: string | null | undefined): string {
-    if (!policy) return "";
-    switch (String(policy).toUpperCase()) {
-      case "KBH":   return "Không BH";
-      case "BH24H": return "24 giờ";
-      case "BH1M":  return "1 tháng";
-      case "BH3M":  return "3 tháng";
-      case "BH6M":  return "6 tháng";
-      case "BH12M": return "12 tháng";
-      case "BHF":   return "Vĩnh viễn";
-      default:      return "";
-    }
-  }
-
-  // ─────────────────────────────────────────────────────────────────────────
 
   private async handlePendingTxHashMessage(
     shopId: string,
@@ -3963,10 +3525,59 @@ export class TelegramBotService {
   ) {
     const telegramUserId = String(message.from?.id || "");
     const language = await this.getCustomerLanguage(shopId, telegramUserId);
-    const pending = this.getPendingTxHashSubmission(shopId, telegramUserId);
+    let pending = await this.getPendingTxHashSubmission(shopId, telegramUserId);
 
     if (!pending) {
-      return false;
+      // Fallback: detect tx hash format and try to match a recent pending USDT order
+      const rawText = String(message.text || "").trim();
+      const isTrc20Like = /^(0x)?[a-f0-9]{64}$/i.test(rawText);
+      const isSolanaLike = /^[1-9A-HJ-NP-Za-km-z]{80,90}$/.test(rawText) && !isTrc20Like;
+      if (!isTrc20Like && !isSolanaLike) {
+        return false;
+      }
+      const customer = await this.prisma.customer.findFirst({
+        where: { shopId, telegramUserId },
+        select: { id: true },
+      });
+      if (!customer) {
+        return false;
+      }
+      const targetProvider = isSolanaLike ? PaymentProvider.USDT_SOL : PaymentProvider.USDT_TRC20;
+      const recentPayment = await this.prisma.paymentTransaction.findFirst({
+        where: {
+          provider: targetProvider,
+          status: PaymentTransactionStatus.PENDING,
+          createdAt: { gte: new Date(Date.now() - 60 * 60 * 1000) },
+          order: { customerId: customer.id, shopId },
+        },
+        orderBy: { createdAt: "desc" },
+        select: { externalOrderCode: true, order: { select: { orderCode: true } } },
+      });
+      const recentTopup = recentPayment
+        ? null
+        : await this.prisma.customerWalletTopup.findFirst({
+            where: {
+              provider: targetProvider,
+              status: PaymentTransactionStatus.PENDING,
+              customerId: customer.id,
+              shopId,
+              createdAt: { gte: new Date(Date.now() - 60 * 60 * 1000) },
+            },
+            orderBy: { createdAt: "desc" },
+            select: { externalOrderCode: true },
+          });
+      if (!recentPayment && !recentTopup) {
+        return false;
+      }
+      pending = {
+        externalOrderCode: (recentPayment?.externalOrderCode || recentTopup?.externalOrderCode) as string,
+        orderCode: recentPayment?.order?.orderCode || recentTopup?.externalOrderCode || "",
+        isTopup: !recentPayment && !!recentTopup,
+        allowMockHash: false,
+        expiresAt: Date.now() + this.pendingTxHashTtlMs,
+        provider: isSolanaLike ? "USDT_SOL" : "USDT_TRC20",
+      };
+      await this.setPendingSession('pendingTxHashSubmissions', this.getPendingQuantityKey(shopId, telegramUserId), pending, this.pendingTxHashTtlMs);
     }
 
     try {
@@ -3986,14 +3597,21 @@ export class TelegramBotService {
                 });
                 return { alreadyPaid: false, txHash: rawTxHash, verification: { amountUsdt: 0 } };
               })()
-            : await this.onchainPaymentService.submitTelegramTopupTxHash({
+            : pending.provider === "USDT_SOL"
+              ? await this.solanaPaymentService.submitTelegramSolTopupTxHash({
+                  shopId,
+                  telegramUserId,
+                  externalOrderCode: pending.externalOrderCode,
+                  signature: rawTxHash,
+                })
+              : await this.onchainPaymentService.submitTelegramTopupTxHash({
                 shopId,
                 telegramUserId,
                 externalOrderCode: pending.externalOrderCode,
                 txHash: rawTxHash,
               });
 
-        this.clearPendingTxHashSubmission(shopId, telegramUserId);
+        await this.clearPendingTxHashSubmission(shopId, telegramUserId);
 
         await this.sendText(
           token,
@@ -4038,14 +3656,21 @@ export class TelegramBotService {
                 },
               ),
             }
-          : await this.onchainPaymentService.submitTelegramTxHash({
+          : pending.provider === "USDT_SOL"
+            ? await this.solanaPaymentService.submitTelegramSolTxHash({
+                shopId,
+                telegramUserId,
+                externalOrderCode: pending.externalOrderCode,
+                signature: rawTxHash,
+              })
+            : await this.onchainPaymentService.submitTelegramTxHash({
               shopId,
               telegramUserId,
               externalOrderCode: pending.externalOrderCode,
               txHash: rawTxHash,
             });
 
-      this.clearPendingTxHashSubmission(shopId, telegramUserId);
+      await this.clearPendingTxHashSubmission(shopId, telegramUserId);
 
       await this.sendText(
         token,
@@ -4139,7 +3764,7 @@ export class TelegramBotService {
   ) {
     const telegramUserId = String(message.from?.id || "");
     const language = await this.getCustomerLanguage(shopId, telegramUserId);
-    const selection = this.getPendingQuantitySelection(shopId, telegramUserId);
+    const selection = await this.getPendingQuantitySelection(shopId, telegramUserId);
 
     if (!selection) {
       return false;
@@ -4178,16 +3803,13 @@ export class TelegramBotService {
       };
 
       if (paymentProviders.length > 1) {
-        this.clearPendingQuantitySelection(shopId, telegramUserId);
-        this.pendingPaymentSelections.set(
-          this.getPendingQuantityKey(shopId, telegramUserId),
-          {
+        await this.clearPendingQuantitySelection(shopId, telegramUserId);
+        await this.setPendingSession('pendingPaymentSelections', this.getPendingQuantityKey(shopId, telegramUserId), {
             sourceProductId: selection.sourceProductId,
             quantity,
             ...customer,
             expiresAt: Date.now() + this.pendingPaymentTtlMs,
-          },
-        );
+          }, this.pendingPaymentTtlMs);
         await this.renderPaymentMethodPrompt(
           shopId,
           token,
@@ -4258,7 +3880,7 @@ export class TelegramBotService {
   ) {
     const telegramUserId = String(message.from?.id || "");
     const language = await this.getCustomerLanguage(shopId, telegramUserId);
-    const pending = this.getPendingWalletTopup(shopId, telegramUserId);
+    const pending = await this.getPendingWalletTopup(shopId, telegramUserId);
 
     if (!pending) {
       return false;
@@ -4315,7 +3937,7 @@ export class TelegramBotService {
         providerOverride,
       });
 
-      this.clearPendingWalletTopup(shopId, telegramUserId);
+      await this.clearPendingWalletTopup(shopId, telegramUserId);
 
       const qrBuffer = created.bankInfo
         ? await this.downloadVietQrAsBuffer(created.bankInfo, created.topup.amount)
@@ -4364,11 +3986,11 @@ export class TelegramBotService {
       }
 
       if (sentMessageId) {
-        this.pendingQrMessages.set(created.topup.externalOrderCode, {
+        await this.setPendingSession('pendingQrMessages', created.topup.externalOrderCode, {
           token,
           chatId: message.chat.id,
           messageId: sentMessageId,
-        });
+        }, 30 * 60 * 1000);
       }
     } catch (error) {
       this.logger.error(
@@ -4411,10 +4033,10 @@ export class TelegramBotService {
       return;
     }
 
-    const qrMsg = this.pendingQrMessages.get(externalOrderCode);
+    const qrMsg = await this.getPendingSession<{ token: string; chatId: string | number; messageId: number }>('pendingQrMessages', externalOrderCode);
     if (qrMsg) {
       await telegramDeleteMessage(qrMsg.token, qrMsg.chatId, qrMsg.messageId).catch(() => undefined);
-      this.pendingQrMessages.delete(externalOrderCode);
+      await this.delPendingSession('pendingQrMessages', externalOrderCode);
     }
 
     await this.sendText(
@@ -4703,14 +4325,22 @@ export class TelegramBotService {
     const localizedName = this.localizeProductName(selection.displayName, language);
     const priceStr = this.formatBotMoneyWithUsdOverride(selection.salePrice, (selection as any).salePriceUsd, language, usdtVndRate);
     const stockLabel = selection.available === null ? "∞" : String(Math.max(0, selection.available));
+    // If a custom emoji is set, Telegram renders it as the button icon already.
+    // Strip the leading text emoji from the label to avoid two icons stacked side-by-side.
+    const buyOtherCustomEmoji = custEmojiIdsQty["buyOther"];
+    const buyOtherText = buyOtherCustomEmoji
+      ? this.buttonLabel("buyOther", language).replace(/^[^\p{L}\p{N}]+/u, "").trim()
+      : this.buttonLabel("buyOther", language);
     const replyMarkup = {
       inline_keyboard: [
-        [{ text: this.buttonLabel("buyOther", language), callback_data: "home:products", ...(custEmojiIdsQty["buyOther"] ? { icon_custom_emoji_id: custEmojiIdsQty["buyOther"] } : {}) }],
+        [{ text: buyOtherText, callback_data: "home:products", ...(buyOtherCustomEmoji ? { icon_custom_emoji_id: buyOtherCustomEmoji } : {}) }],
       ],
     };
     const quantityLine = this.buildQuantityPromptText(selection.maxQuantity, language, msgEmojiIds["quantityInput"] || "");
     const hasLabelEmojis = Object.values(labelEmojiIds).some((v) => v?.trim());
-    const useHtml = !!(dbEmojiId || productNoteEmojiId || hasLabelEmojis);
+    // Force HTML mode when a description exists so the <blockquote> wrap renders
+    // as a styled card instead of leaking raw tags into the caption.
+    const useHtml = !!(dbEmojiId || productNoteEmojiId || hasLabelEmojis || selection.description?.trim());
 
     const mkLabel = (key: string, fallback: string) => {
       const eid = labelEmojiIds[key]?.trim();
@@ -4740,16 +4370,21 @@ export class TelegramBotService {
         `${mkLabel("stock", "📦")} ${stockLabelText}: ${stockLabel} ${unitLabel}`,
       ];
 
-      if (selection.soldCount != null && selection.soldCount > 0) {
-        lines.push(`${mkLabel("sold", "📊")} ${soldLabel}: ${selection.soldCount} ${unitLabel}`);
-      }
+      lines.push(`${mkLabel("sold", "📊")} ${soldLabel}: ${selection.soldCount ?? 0} ${unitLabel}`);
 
       if ((selection as any).deliveryFormatHint?.trim()) {
         lines.push(``, `${mkLabel("format", "🔑")} ${formatLabel}: ${escFn((selection as any).deliveryFormatHint.trim())}`);
       }
 
       if (selection.description?.trim()) {
-        lines.push(``, `${mkLabel("description", "💬")} ${descLabel}:`, escFn(selection.description.trim()));
+        const descLines: string[] = [`${mkLabel("description", "💬")} ${descLabel}:`];
+        for (const rawLine of selection.description.trim().split(/\r?\n/)) {
+          const trimmed = rawLine.trim();
+          if (!trimmed) continue;
+          const bulleted = /^[•·*\-]\s*/.test(trimmed) ? trimmed : `• ${trimmed}`;
+          descLines.push(escFn(bulleted));
+        }
+        lines.push(``, `<blockquote>${descLines.join("\n")}</blockquote>`);
       }
 
       if (selection.promoBanner) {
@@ -4805,16 +4440,21 @@ export class TelegramBotService {
         `${mkLabel("stock", "📦")} ${stockLabelText}: ${stockLabel} ${unitLabel}`,
       );
 
-      if (selection.soldCount != null && selection.soldCount > 0) {
-        textLines.push(`${mkLabel("sold", "📊")} ${soldLabel}: ${selection.soldCount} ${unitLabel}`);
-      }
+      textLines.push(`${mkLabel("sold", "📊")} ${soldLabel}: ${selection.soldCount ?? 0} ${unitLabel}`);
 
       if ((selection as any).deliveryFormatHint?.trim()) {
         textLines.push(``, `${mkLabel("format", "🔑")} ${formatLabel}: ${escFn((selection as any).deliveryFormatHint.trim())}`);
       }
 
       if (selection.description?.trim()) {
-        textLines.push(``, `${mkLabel("description", "💬")} ${descLabel}:`, escFn(selection.description.trim()));
+        const descLines: string[] = [`${mkLabel("description", "💬")} ${descLabel}:`];
+        for (const rawLine of selection.description.trim().split(/\r?\n/)) {
+          const trimmed = rawLine.trim();
+          if (!trimmed) continue;
+          const bulleted = /^[•·*\-]\s*/.test(trimmed) ? trimmed : `• ${trimmed}`;
+          descLines.push(escFn(bulleted));
+        }
+        textLines.push(``, `<blockquote>${descLines.join("\n")}</blockquote>`);
       }
 
       if (selection.promoBanner) {
@@ -4829,7 +4469,8 @@ export class TelegramBotService {
       await this.sendText(token, chatId, fullText, actions, replyMarkup, "HTML");
     }
 
-    this.pendingQuantitySelections.set(
+    await this.setPendingSession(
+      "pendingQuantitySelections",
       this.getPendingQuantityKey(shopId, telegramUserId),
       {
         sourceProductId: selection.sourceProductId,
@@ -4846,6 +4487,7 @@ export class TelegramBotService {
         iconCustomEmojiId: selection.iconCustomEmojiId ?? null,
         expiresAt: Date.now() + this.pendingQuantityTtlMs,
       },
+      this.pendingQuantityTtlMs,
     );
   }
 
@@ -5018,182 +4660,155 @@ export class TelegramBotService {
     return `${shopId}:${telegramUserId}`;
   }
 
-  private getPendingWalletTopup(shopId: string, telegramUserId: string) {
+  private async getPendingWalletTopup(shopId: string, telegramUserId: string) {
     const key = this.getPendingQuantityKey(shopId, telegramUserId);
-    const pending = this.pendingWalletTopups.get(key);
+    const pending = await this.getPendingSession<PendingWalletTopupSelection>('pendingWalletTopups', key);
 
     if (!pending) {
       return null;
     }
 
     if (pending.expiresAt <= Date.now()) {
-      this.pendingWalletTopups.delete(key);
+      await this.delPendingSession('pendingWalletTopups', key);
       return null;
     }
 
     return pending;
   }
 
-  private getPendingQuantitySelection(shopId: string, telegramUserId: string) {
+  private async getPendingQuantitySelection(shopId: string, telegramUserId: string) {
     const key = this.getPendingQuantityKey(shopId, telegramUserId);
-    const selection = this.pendingQuantitySelections.get(key);
+    const selection = await this.getPendingSession<PendingQuantitySelection>('pendingQuantitySelections', key);
 
     if (!selection) {
       return null;
     }
 
     if (selection.expiresAt <= Date.now()) {
-      this.pendingQuantitySelections.delete(key);
+      await this.delPendingSession('pendingQuantitySelections', key);
       return null;
     }
 
     return selection;
   }
 
-  private getPendingPaymentSelection(shopId: string, telegramUserId: string) {
+  private async getPendingPaymentSelection(shopId: string, telegramUserId: string) {
     const key = this.getPendingQuantityKey(shopId, telegramUserId);
-    const selection = this.pendingPaymentSelections.get(key);
+    const selection = await this.getPendingSession<PendingPaymentSelection>('pendingPaymentSelections', key);
 
     if (!selection) {
       return null;
     }
 
     if (selection.expiresAt <= Date.now()) {
-      this.pendingPaymentSelections.delete(key);
+      await this.delPendingSession('pendingPaymentSelections', key);
       return null;
     }
 
     return selection;
   }
 
-  private getPendingTxHashSubmission(shopId: string, telegramUserId: string) {
+  private async getPendingTxHashSubmission(shopId: string, telegramUserId: string) {
     const key = this.getPendingQuantityKey(shopId, telegramUserId);
-    const pending = this.pendingTxHashSubmissions.get(key);
+    const pending = await this.getPendingSession<PendingTxHashSubmission>('pendingTxHashSubmissions', key);
 
     if (!pending) {
       return null;
     }
 
     if (pending.expiresAt <= Date.now()) {
-      this.pendingTxHashSubmissions.delete(key);
+      await this.delPendingSession('pendingTxHashSubmissions', key);
       return null;
     }
 
     return pending;
   }
 
-  private getPendingWarrantyClaimSubmission(shopId: string, telegramUserId: string) {
+  private async getPendingWarrantyClaimSubmission(shopId: string, telegramUserId: string) {
     const key = this.getPendingQuantityKey(shopId, telegramUserId);
-    const pending = this.pendingWarrantyClaimSubmissions.get(key);
+    const pending = await this.getPendingSession<PendingWarrantyClaimSubmission>('pendingWarrantyClaimSubmissions', key);
 
     if (!pending) {
       return null;
     }
 
     if (pending.expiresAt <= Date.now()) {
-      this.pendingWarrantyClaimSubmissions.delete(key);
+      await this.delPendingSession('pendingWarrantyClaimSubmissions', key);
       return null;
     }
 
     return pending;
   }
 
-  private clearPendingQuantitySelection(shopId: string, telegramUserId: string) {
+  private async clearPendingQuantitySelection(shopId: string, telegramUserId: string) {
     if (!telegramUserId) {
       return;
     }
 
-    this.pendingQuantitySelections.delete(this.getPendingQuantityKey(shopId, telegramUserId));
+    await this.delPendingSession('pendingQuantitySelections', this.getPendingQuantityKey(shopId, telegramUserId));
   }
 
-  private clearPendingWalletTopup(shopId: string, telegramUserId: string) {
+  private async clearPendingWalletTopup(shopId: string, telegramUserId: string) {
     if (!telegramUserId) {
       return;
     }
-    this.pendingWalletTopups.delete(this.getPendingQuantityKey(shopId, telegramUserId));
+    await this.delPendingSession('pendingWalletTopups', this.getPendingQuantityKey(shopId, telegramUserId));
   }
 
-  private clearPendingPaymentSelection(shopId: string, telegramUserId: string) {
-    if (!telegramUserId) {
-      return;
-    }
-
-    this.pendingPaymentSelections.delete(this.getPendingQuantityKey(shopId, telegramUserId));
-  }
-
-  private clearPendingTxHashSubmission(shopId: string, telegramUserId: string) {
+  private async clearPendingPaymentSelection(shopId: string, telegramUserId: string) {
     if (!telegramUserId) {
       return;
     }
 
-    this.pendingTxHashSubmissions.delete(this.getPendingQuantityKey(shopId, telegramUserId));
+    await this.delPendingSession('pendingPaymentSelections', this.getPendingQuantityKey(shopId, telegramUserId));
   }
 
-  private clearPendingWarrantyClaimSubmission(shopId: string, telegramUserId: string) {
+  private async clearPendingTxHashSubmission(shopId: string, telegramUserId: string) {
     if (!telegramUserId) {
       return;
     }
 
-    this.pendingWarrantyClaimSubmissions.delete(this.getPendingQuantityKey(shopId, telegramUserId));
+    await this.delPendingSession('pendingTxHashSubmissions', this.getPendingQuantityKey(shopId, telegramUserId));
   }
 
-  private clearPendingWarrantyIssueDescription(shopId: string, telegramUserId: string) {
+  private async clearPendingWarrantyClaimSubmission(shopId: string, telegramUserId: string) {
     if (!telegramUserId) {
       return;
     }
 
-    this.pendingWarrantyIssueDescriptions.delete(this.getPendingQuantityKey(shopId, telegramUserId));
+    await this.delPendingSession('pendingWarrantyClaimSubmissions', this.getPendingQuantityKey(shopId, telegramUserId));
   }
 
-  private getPendingWarrantyAccountSelection(shopId: string, telegramUserId: string) {
+  private async clearPendingWarrantyIssueDescription(shopId: string, telegramUserId: string) {
+    if (!telegramUserId) {
+      return;
+    }
+
+    await this.delPendingSession("pendingWarrantyIssueDescriptions", this.getPendingQuantityKey(shopId, telegramUserId));
+  }
+
+  private async getPendingWarrantyAccountSelection(shopId: string, telegramUserId: string) {
     const key = this.getPendingQuantityKey(shopId, telegramUserId);
-    const pending = this.pendingWarrantyAccountSelections.get(key);
+    const pending = await this.getPendingSession<PendingWarrantyAccountSelection>('pendingWarrantyAccountSelections', key);
 
     if (!pending) {
       return null;
     }
 
     if (pending.expiresAt <= Date.now()) {
-      this.pendingWarrantyAccountSelections.delete(key);
+      await this.delPendingSession('pendingWarrantyAccountSelections', key);
       return null;
     }
 
     return pending;
   }
 
-  private clearPendingWarrantyAccountSelection(shopId: string, telegramUserId: string) {
+  private async clearPendingWarrantyAccountSelection(shopId: string, telegramUserId: string) {
     if (!telegramUserId) {
       return;
     }
 
-    this.pendingWarrantyAccountSelections.delete(this.getPendingQuantityKey(shopId, telegramUserId));
-  }
-
-  private setPendingWarrantyPasswordPrompt(
-    shopId: string,
-    telegramUserId: string,
-    value: Omit<PendingWarrantyPasswordPrompt, "expiresAt">,
-  ) {
-    this.pendingWarrantyPasswordPrompts.set(
-      this.getPendingQuantityKey(shopId, telegramUserId),
-      { ...value, expiresAt: Date.now() + this.pendingQuantityTtlMs },
-    );
-  }
-
-  private getPendingWarrantyPasswordPrompt(shopId: string, telegramUserId: string) {
-    const key = this.getPendingQuantityKey(shopId, telegramUserId);
-    const pending = this.pendingWarrantyPasswordPrompts.get(key);
-    if (!pending) return null;
-    if (pending.expiresAt <= Date.now()) {
-      this.pendingWarrantyPasswordPrompts.delete(key);
-      return null;
-    }
-    return pending;
-  }
-
-  private clearPendingWarrantyPasswordPrompt(shopId: string, telegramUserId: string) {
-    if (!telegramUserId) return;
-    this.pendingWarrantyPasswordPrompts.delete(this.getPendingQuantityKey(shopId, telegramUserId));
+    await this.delPendingSession('pendingWarrantyAccountSelections', this.getPendingQuantityKey(shopId, telegramUserId));
   }
 
   private getPendingConnectionTopupKey(shopId: string, telegramUserId: string) {
@@ -5289,9 +4904,11 @@ export class TelegramBotService {
       if (wallet) currentBalance = decimalToNumber(wallet.balance);
     }
 
-    this.pendingConnectionTopupInputs.set(
+    await this.setPendingSession(
+      "pendingConnectionTopupInputs",
       this.getPendingConnectionTopupKey(shop.id, telegramUserId),
       { connectionId: connection.id, downstreamShopId: plusCustomer.shopId, expiresAt: Date.now() + this.pendingQuantityTtlMs },
+      this.pendingQuantityTtlMs,
     );
 
     await this.editOrSend(
@@ -5317,10 +4934,10 @@ export class TelegramBotService {
   ) {
     const telegramUserId = String(message.from?.id || "");
     const key = this.getPendingConnectionTopupKey(shop.id, telegramUserId);
-    const pending = this.pendingConnectionTopupInputs.get(key);
+    const pending = await this.getPendingSession<PendingConnectionTopupInput>('pendingConnectionTopupInputs', key);
 
     if (!pending || pending.expiresAt <= Date.now()) {
-      if (pending) this.pendingConnectionTopupInputs.delete(key);
+      if (pending) await this.delPendingSession('pendingConnectionTopupInputs', key);
       return false;
     }
 
@@ -5338,7 +4955,7 @@ export class TelegramBotService {
       return true;
     }
 
-    this.pendingConnectionTopupInputs.delete(key);
+    await this.delPendingSession('pendingConnectionTopupInputs', key);
 
     try {
       const result = await this.connectionTopupService.createPayosTopupForConnection(
@@ -5515,15 +5132,24 @@ export class TelegramBotService {
         firstName: from.firstName,
         lastName: from.lastName,
       },
-      select: { id: true, referredById: true },
+      select: { id: true, referredById: true, telegramUserId: true, telegramChatId: true },
     });
     if (customer.referredById) return;
 
     const referrer = await this.prisma.customer.findFirst({
       where: { shopId, OR: [{ referralCode: refParam }, { id: refParam }] },
-      select: { id: true },
+      select: { id: true, telegramUserId: true, telegramChatId: true },
     });
-    if (!referrer || referrer.id === customer.id) return;
+    if (!referrer) return;
+    if (referrer.id === customer.id) return;
+    if (referrer.telegramUserId && referrer.telegramUserId === customer.telegramUserId) {
+      this.logger.warn(`Self-referral blocked (same telegramUserId=${customer.telegramUserId}, shop=${shopId})`);
+      return;
+    }
+    if (referrer.telegramChatId && referrer.telegramChatId === customer.telegramChatId) {
+      this.logger.warn(`Self-referral blocked (same telegramChatId=${customer.telegramChatId}, shop=${shopId})`);
+      return;
+    }
 
     await this.prisma.customer.update({
       where: { id: customer.id },
@@ -5585,7 +5211,7 @@ export class TelegramBotService {
       ``,
       programInfo,
       ``,
-      `💰 Commission earned: <b>${stats.commissionBalance.toLocaleString("vi-VN")} ₫</b>`,
+      `💰 Commission earned: <b>${stats.lifetimeCommission.toLocaleString("vi-VN")} ₫</b>`,
       `👥 Referred customers: <b>${stats.downlineCount}</b>`,
       refLink ? `\n🔗 <b>Your referral link:</b>\n<code>${refLink}</code>` : ``,
     ] : language === "th" ? [
@@ -5593,7 +5219,7 @@ export class TelegramBotService {
       ``,
       programInfo,
       ``,
-      `💰 ค่าคอมมิชชันสะสม: <b>${stats.commissionBalance.toLocaleString("vi-VN")} ₫</b>`,
+      `💰 ค่าคอมมิชชันสะสม: <b>${stats.lifetimeCommission.toLocaleString("vi-VN")} ₫</b>`,
       `👥 ลูกค้าที่แนะนำ: <b>${stats.downlineCount}</b>`,
       refLink ? `\n🔗 <b>ลิงก์แนะนำของคุณ:</b>\n<code>${refLink}</code>` : ``,
     ] : [
@@ -5601,7 +5227,7 @@ export class TelegramBotService {
       ``,
       programInfo,
       ``,
-      `💰 Hoa hồng tích lũy: <b>${stats.commissionBalance.toLocaleString("vi-VN")} ₫</b>`,
+      `💰 Hoa hồng tích lũy: <b>${stats.lifetimeCommission.toLocaleString("vi-VN")} ₫</b>`,
       `👥 Người đã giới thiệu: <b>${stats.downlineCount}</b>`,
       refLink ? `\n🔗 <b>Link giới thiệu của bạn:</b>\n<code>${refLink}</code>` : ``,
     ];
@@ -5678,55 +5304,7 @@ export class TelegramBotService {
   }
 
   private cleanupExpiredPendingSelections() {
-    const now = Date.now();
-
-    for (const [key, selection] of this.pendingQuantitySelections.entries()) {
-      if (selection.expiresAt <= now) {
-        this.pendingQuantitySelections.delete(key);
-      }
-    }
-
-    for (const [key, pending] of this.pendingWalletTopups.entries()) {
-      if (pending.expiresAt <= now) {
-        this.pendingWalletTopups.delete(key);
-      }
-    }
-
-    for (const [key, selection] of this.pendingPaymentSelections.entries()) {
-      if (selection.expiresAt <= now) {
-        this.pendingPaymentSelections.delete(key);
-      }
-    }
-
-    for (const [key, pending] of this.pendingTxHashSubmissions.entries()) {
-      if (pending.expiresAt <= now) {
-        this.pendingTxHashSubmissions.delete(key);
-      }
-    }
-
-    for (const [key, pending] of this.pendingBinanceOrderIdSubmissions.entries()) {
-      if (pending.expiresAt <= now) {
-        this.pendingBinanceOrderIdSubmissions.delete(key);
-      }
-    }
-
-    for (const [key, pending] of this.pendingWarrantyClaimSubmissions.entries()) {
-      if (pending.expiresAt <= now) {
-        this.pendingWarrantyClaimSubmissions.delete(key);
-      }
-    }
-
-    for (const [key, pending] of this.pendingWarrantyIssueDescriptions.entries()) {
-      if (pending.expiresAt <= now) {
-        this.pendingWarrantyIssueDescriptions.delete(key);
-      }
-    }
-
-    for (const [key, pending] of this.pendingConnectionTopupInputs.entries()) {
-      if (pending.expiresAt <= now) {
-        this.pendingConnectionTopupInputs.delete(key);
-      }
-    }
+    // No-op: Redis handles TTL automatically
   }
 
   private buildOrderHistoryText(
@@ -5835,12 +5413,15 @@ export class TelegramBotService {
       createdAt: Date;
       paidAt: Date | null;
     }>;
-  }, language: BotLanguage = "vi", usdtVndRate?: Prisma.Decimal | number | string | null) {
+  }, language: BotLanguage = "vi", usdtVndRate?: Prisma.Decimal | number | string | null, shopCust?: Record<string, unknown> | null) {
     const commissionBalance = summary.commissionBalance ?? 0;
+    const walletNoteMap = (shopCust as Record<string, unknown> | null)?.walletNote as Record<string, string> | undefined;
+    const walletNote = (walletNoteMap?.[language] || walletNoteMap?.["vi"] || "").trim();
     if (language === "en") {
       const lines: string[] = [
         "💳 Your wallet",
         "",
+        ...(walletNote ? [walletNote, ""] : []),
         ...(summary.telegramUsername ? [`Username: @${summary.telegramUsername}`] : []),
         ...(summary.telegramChatId ? [`ID: ${summary.telegramChatId}`] : []),
         `💰 Wallet balance: ${this.formatBotMoney(summary.balance, language, usdtVndRate)}`,
@@ -5884,6 +5465,7 @@ export class TelegramBotService {
       const lines: string[] = [
         "💳 กระเป๋าเงินของคุณ",
         "",
+        ...(walletNote ? [walletNote, ""] : []),
         `💰 ยอดเติม: ${this.formatBotMoney(summary.balance, language, usdtVndRate)}`,
         `🎁 ยอดค่าคอม: ${this.formatBotMoney(commissionBalance, language, usdtVndRate)}`,
         `สกุลเงิน: ${summary.currency}`,
@@ -5924,6 +5506,7 @@ export class TelegramBotService {
     const lines: string[] = [
       "💳 Ví của bạn",
       "",
+      ...(walletNote ? [walletNote, ""] : []),
       ...(summary.telegramUsername ? [`Username: @${summary.telegramUsername}`] : []),
       ...(summary.telegramChatId ? [`ID: ${summary.telegramChatId}`] : []),
       `💰 Số dư nạp ví: ${this.formatBotMoney(summary.balance, language, usdtVndRate)}`,
@@ -6311,20 +5894,20 @@ export class TelegramBotService {
     }
   }
 
-  private getPendingBinanceOrderIdSubmission(shopId: string, telegramUserId: string) {
+  private async getPendingBinanceOrderIdSubmission(shopId: string, telegramUserId: string) {
     const key = this.getPendingQuantityKey(shopId, telegramUserId);
-    const pending = this.pendingBinanceOrderIdSubmissions.get(key);
+    const pending = await this.getPendingSession<PendingBinanceOrderIdSubmission>("pendingBinanceOrderIdSubmissions", key);
     if (!pending) return null;
     if (pending.expiresAt <= Date.now()) {
-      this.pendingBinanceOrderIdSubmissions.delete(key);
+      await this.delPendingSession("pendingBinanceOrderIdSubmissions", key);
       return null;
     }
     return pending;
   }
 
-  private clearPendingBinanceOrderIdSubmission(shopId: string, telegramUserId: string) {
+  private async clearPendingBinanceOrderIdSubmission(shopId: string, telegramUserId: string) {
     if (!telegramUserId) return;
-    this.pendingBinanceOrderIdSubmissions.delete(this.getPendingQuantityKey(shopId, telegramUserId));
+    await this.delPendingSession('pendingBinanceOrderIdSubmissions', this.getPendingQuantityKey(shopId, telegramUserId));
   }
 
   private async handleBinanceOrderIdPrompt(
@@ -6359,11 +5942,16 @@ export class TelegramBotService {
       return;
     }
 
-    this.pendingBinanceOrderIdSubmissions.set(this.getPendingQuantityKey(shopId, telegramUserId), {
-      externalOrderCode,
-      orderCode: transaction.order.orderCode,
-      expiresAt: Date.now() + this.pendingBinanceOrderIdTtlMs,
-    });
+    await this.setPendingSession(
+      "pendingBinanceOrderIdSubmissions",
+      this.getPendingQuantityKey(shopId, telegramUserId),
+      {
+        externalOrderCode,
+        orderCode: transaction.order.orderCode,
+        expiresAt: Date.now() + this.pendingBinanceOrderIdTtlMs,
+      },
+      this.pendingBinanceOrderIdTtlMs
+    );
 
     await this.sendText(
       token,
@@ -6386,13 +5974,13 @@ export class TelegramBotService {
     language: BotLanguage,
   ): Promise<boolean> {
     const telegramUserId = String(message.from?.id || "");
-    const pending = this.getPendingBinanceOrderIdSubmission(shopId, telegramUserId);
+    const pending = await this.getPendingBinanceOrderIdSubmission(shopId, telegramUserId);
     if (!pending) return false;
 
     const msgText = String(message.text || "").trim();
     if (!/^\d{15,22}$/.test(msgText)) return false;
 
-    this.clearPendingBinanceOrderIdSubmission(shopId, telegramUserId);
+    await this.clearPendingBinanceOrderIdSubmission(shopId, telegramUserId);
     await this.handleBinanceVerifyByOrderId(shopId, token, message.chat.id, telegramUserId, pending.externalOrderCode, msgText, actions, language);
     return true;
   }
@@ -7084,9 +6672,14 @@ export class TelegramBotService {
       : this.formatCompactBotMoney(product.salePrice, language, usdtVndRate);
     const stockLabel = product.available === null ? "∞" : String(Math.max(0, product.available));
     const suffix = ` | ${priceLabel} | 📦 ${stockLabel}`;
-    const emoji = product.iconCustomEmojiId?.trim()
+    // If the product has a custom emoji icon (iconCustomEmojiId), Telegram renders it
+    // beside the button on its own (Premium users see the animated logo, others see the
+    // fallback character bundled with the custom emoji). In that case we DON'T also
+    // prepend a text emoji — otherwise Premium users see two icons stacked.
+    // No custom emoji → fall back to productIcon (admin-set) or auto-resolved emoji.
+    const emoji = product.iconCustomEmojiId
       ? ""
-      : (product.productIcon?.trim() || this.resolveProductEmoji(product.displayName, product.sourceName));
+      : product.productIcon?.trim() || this.resolveProductEmoji(product.displayName, product.sourceName);
     const normalizedName = [emoji, this.compactProductName(this.localizeProductName(product.displayName, language))].filter(Boolean).join(" ");
     const safeNameLength = Math.max(16, 58 - suffix.length);
 

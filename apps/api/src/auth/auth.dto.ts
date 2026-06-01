@@ -46,6 +46,16 @@ export class RegisterSellerDto {
   @IsString()
   @MinLength(2)
   displayName!: string;
+
+  @IsOptional()
+  @IsString()
+  referralCode?: string;
+}
+
+export class SetReferralCodeDto {
+  @IsString()
+  @MinLength(4)
+  referralCode!: string;
 }
 
 export class CreateSellerByAdminDto {

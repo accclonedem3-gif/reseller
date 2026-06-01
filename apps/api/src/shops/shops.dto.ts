@@ -209,6 +209,11 @@ export class UpdateBotConfigDto {
   usdtTrc20Address?: string;
 
   @IsOptional()
+  @Transform(emptyStringToUndefined)
+  @IsString()
+  usdtSolanaAddress?: string;
+
+  @IsOptional()
   @IsString()
   usdtVndRateOverride?: string;
 

@@ -308,7 +308,7 @@ export class OrdersService {
           customerId: prepared.customer.id,
           walletId: currentWallet.id,
           type: CustomerWalletLedgerType.SPEND_ORDER,
-          amount: toDecimal(prepared.totalSaleAmount),
+          amount: toDecimal(-prepared.totalSaleAmount),
           balanceBefore: toDecimal(balanceBefore),
           balanceAfter: toDecimal(balanceAfter),
           commissionBalanceBefore: toDecimal(commissionBefore),
@@ -473,6 +473,10 @@ export class OrdersService {
 
     if (!product) {
       throw new NotFoundException("Product not found.");
+    }
+
+    if (product.isSample) {
+      throw new BadRequestException("Sản phẩm mẫu (template), không thể mua được.");
     }
 
     const override = product.overrides[0];
