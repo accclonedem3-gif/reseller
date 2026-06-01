@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   AlertTriangle,
@@ -9,14 +9,19 @@ import {
   Clock,
   Copy,
   Download,
+  Eye,
   FileText,
+  Hash,
   History,
+  ListChecks,
   Loader2,
   Package,
   PackageOpen,
+  Search,
   Shuffle,
   Upload,
   X,
+  Zap,
 } from "lucide-react";
 
 import { useToast } from "@/components/ui/toast";
@@ -566,17 +571,55 @@ export function UploadStockResultModal({
 }
 
 // ============================================================================
-// 3) ExtractStockModal
+// 3) ExtractStockModal — v2 (FAST / RANGE / MANUAL + dry-run)
 // ============================================================================
+
+export type ExtractMode = "FAST" | "RANGE" | "MANUAL";
+
+export type ExtractPayload = {
+  mode: ExtractMode;
+  dryRun: boolean;
+  quantity?: number;
+  method?: StockExtractMethod;
+  fromIndex?: number;
+  toIndex?: number;
+  selectedIndices?: number[];
+};
+
+export type EntryListPage = {
+  items: { index: number; text: string }[];
+  total: number;
+  filteredTotal: number;
+};
 
 type ExtractStockModalProps = {
   open: boolean;
   onClose: () => void;
   productName: string;
   currentStock: number;
-  onExtract: (quantity: number, method: StockExtractMethod) => void;
+  onExtract: (payload: ExtractPayload) => void;
+  onListEntries?: (params: {
+    limit: number;
+    offset: number;
+    search: string;
+  }) => Promise<EntryListPage>;
   isExtracting?: boolean;
 };
+
+const ROW_HEIGHT = 40;
+const VISIBLE_ROWS = 12;
+const OVERSCAN = 4;
+const LIST_PAGE_SIZE = 200;
+
+const TAB_DEFS: ReadonlyArray<{
+  value: ExtractMode;
+  label: string;
+  icon: typeof Zap;
+}> = [
+  { value: "FAST", label: "⚡ Nhanh", icon: Zap },
+  { value: "RANGE", label: "📏 Chọn dải", icon: Hash },
+  { value: "MANUAL", label: "🎯 Chọn tay", icon: ListChecks },
+];
 
 export function ExtractStockModal({
   open,
@@ -584,62 +627,242 @@ export function ExtractStockModal({
   productName,
   currentStock,
   onExtract,
+  onListEntries,
   isExtracting,
 }: ExtractStockModalProps) {
   const { showToast } = useToast();
   const [step, setStep] = useState<"form" | "confirm">("form");
+  const [mode, setMode] = useState<ExtractMode>("FAST");
+  const [dryRun, setDryRun] = useState<boolean>(false);
+
+  // FAST
   const [quantity, setQuantity] = useState<string>("1");
   const [method, setMethod] = useState<StockExtractMethod>("FIFO");
 
+  // RANGE
+  const [fromIndex, setFromIndex] = useState<string>("1");
+  const [toIndex, setToIndex] = useState<string>("1");
+
+  // MANUAL
+  const [searchInput, setSearchInput] = useState<string>("");
+  const [searchDebounced, setSearchDebounced] = useState<string>("");
+  const [entries, setEntries] = useState<{ index: number; text: string }[]>([]);
+  const [filteredTotal, setFilteredTotal] = useState<number>(0);
+  const [isLoadingEntries, setIsLoadingEntries] = useState<boolean>(false);
+  const [selectedSet, setSelectedSet] = useState<Set<number>>(new Set());
+  const [scrollTop, setScrollTop] = useState<number>(0);
+  const listContainerRef = useRef<HTMLDivElement | null>(null);
+
+  // Reset on close
   useEffect(() => {
     if (!open) {
       setStep("form");
+      setMode("FAST");
+      setDryRun(false);
       setQuantity("1");
       setMethod("FIFO");
+      setFromIndex("1");
+      setToIndex("1");
+      setSearchInput("");
+      setSearchDebounced("");
+      setEntries([]);
+      setFilteredTotal(0);
+      setSelectedSet(new Set());
+      setScrollTop(0);
     }
   }, [open]);
 
+  // Debounce search input (300ms)
+  useEffect(() => {
+    if (!open) return;
+    const t = setTimeout(() => setSearchDebounced(searchInput.trim()), 300);
+    return () => clearTimeout(t);
+  }, [searchInput, open]);
+
+  // Load entries when MANUAL tab active or search changes
+  const loadEntries = useCallback(
+    async (search: string) => {
+      if (!onListEntries) return;
+      setIsLoadingEntries(true);
+      try {
+        const res = await onListEntries({
+          limit: LIST_PAGE_SIZE,
+          offset: 0,
+          search,
+        });
+        setEntries(res.items);
+        setFilteredTotal(res.filteredTotal);
+        if (listContainerRef.current) listContainerRef.current.scrollTop = 0;
+        setScrollTop(0);
+      } catch {
+        showToast({ tone: "error", message: "Không tải được danh sách acc." });
+        setEntries([]);
+        setFilteredTotal(0);
+      } finally {
+        setIsLoadingEntries(false);
+      }
+    },
+    [onListEntries, showToast],
+  );
+
+  useEffect(() => {
+    if (!open) return;
+    if (mode !== "MANUAL") return;
+    void loadEntries(searchDebounced);
+  }, [open, mode, searchDebounced, loadEntries]);
+
+  async function loadMore() {
+    if (!onListEntries) return;
+    setIsLoadingEntries(true);
+    try {
+      const res = await onListEntries({
+        limit: LIST_PAGE_SIZE,
+        offset: entries.length,
+        search: searchDebounced,
+      });
+      setEntries((prev) => [...prev, ...res.items]);
+      setFilteredTotal(res.filteredTotal);
+    } catch {
+      showToast({ tone: "error", message: "Không tải thêm được." });
+    } finally {
+      setIsLoadingEntries(false);
+    }
+  }
+
+  // FAST derived
   const numericQty = useMemo(() => {
     const n = Number(quantity);
     if (!Number.isFinite(n)) return 0;
     return Math.floor(n);
   }, [quantity]);
-
-  const validQty =
+  const validQtyFast =
     numericQty >= 1 && numericQty <= currentStock && currentStock > 0;
-
   const selectedMethod = EXTRACT_METHOD_OPTIONS.find((m) => m.value === method)!;
+
+  // RANGE derived
+  const fromNum = useMemo(() => {
+    const n = Number(fromIndex);
+    if (!Number.isFinite(n)) return 0;
+    return Math.floor(n);
+  }, [fromIndex]);
+  const toNum = useMemo(() => {
+    const n = Number(toIndex);
+    if (!Number.isFinite(n)) return 0;
+    return Math.floor(n);
+  }, [toIndex]);
+  const rangeCount = useMemo(() => {
+    if (fromNum < 1 || toNum < fromNum || toNum > currentStock) return 0;
+    return toNum - fromNum + 1;
+  }, [fromNum, toNum, currentStock]);
+  const validRange =
+    currentStock > 0 &&
+    fromNum >= 1 &&
+    toNum >= fromNum &&
+    toNum <= currentStock &&
+    rangeCount > 0;
+
+  // MANUAL derived
+  const manualCount = selectedSet.size;
+  const validManual = manualCount > 0 && manualCount <= currentStock;
+
+  // Action quantity (for confirm copy)
+  const actionCount =
+    mode === "FAST" ? numericQty : mode === "RANGE" ? rangeCount : manualCount;
+
+  const canProceed =
+    (mode === "FAST" && validQtyFast) ||
+    (mode === "RANGE" && validRange) ||
+    (mode === "MANUAL" && validManual);
 
   function proceedToConfirm() {
     if (currentStock <= 0) {
-      showToast({ tone: "error", message: "Kho trống — không thể rút." });
+      showToast({ tone: "error", message: "Kho trống — không thể bóc." });
       return;
     }
-    if (!validQty) {
+    if (mode === "FAST" && !validQtyFast) {
       showToast({
         tone: "warning",
         message: `Số lượng phải từ 1 đến ${currentStock}.`,
       });
       return;
     }
+    if (mode === "RANGE" && !validRange) {
+      showToast({
+        tone: "warning",
+        message: `Dải phải nằm trong 1..${currentStock} và from ≤ to.`,
+      });
+      return;
+    }
+    if (mode === "MANUAL" && !validManual) {
+      showToast({ tone: "warning", message: "Chọn ít nhất 1 acc." });
+      return;
+    }
     setStep("confirm");
   }
 
   function handleConfirm() {
-    if (!validQty) return;
-    onExtract(numericQty, method);
+    if (!canProceed) return;
+    if (mode === "FAST") {
+      onExtract({ mode: "FAST", dryRun, quantity: numericQty, method });
+    } else if (mode === "RANGE") {
+      onExtract({
+        mode: "RANGE",
+        dryRun,
+        fromIndex: fromNum,
+        toIndex: toNum,
+      });
+    } else {
+      onExtract({
+        mode: "MANUAL",
+        dryRun,
+        selectedIndices: Array.from(selectedSet).sort((a, b) => a - b),
+      });
+    }
   }
+
+  function toggleSelected(idx: number) {
+    setSelectedSet((prev) => {
+      const next = new Set(prev);
+      if (next.has(idx)) next.delete(idx);
+      else next.add(idx);
+      return next;
+    });
+  }
+
+  function selectAllInPage() {
+    setSelectedSet((prev) => {
+      const next = new Set(prev);
+      for (const e of entries) next.add(e.index);
+      return next;
+    });
+  }
+
+  function clearSelected() {
+    setSelectedSet(new Set());
+  }
+
+  // Virtual scroll math
+  const totalRows = entries.length;
+  const startIndex = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN);
+  const endIndex = Math.min(
+    totalRows,
+    Math.ceil((scrollTop + ROW_HEIGHT * VISIBLE_ROWS) / ROW_HEIGHT) + OVERSCAN,
+  );
+  const visibleSlice = entries.slice(startIndex, endIndex);
+  const topSpacer = startIndex * ROW_HEIGHT;
+  const bottomSpacer = Math.max(0, (totalRows - endIndex) * ROW_HEIGHT);
 
   return (
     <ModalShell
       open={open}
       onClose={onClose}
-      kicker={step === "form" ? "Rút kho" : "Xác nhận"}
-      title={step === "form" ? "Trích xuất tài khoản" : "Xác nhận rút kho"}
+      kicker={step === "form" ? "Bóc kho" : "Xác nhận"}
+      title={step === "form" ? "Trích xuất tài khoản" : "Xác nhận bóc kho"}
       icon={<PackageOpen className="h-4 w-4" style={{ color: "rgb(249,115,22)" }} />}
       accentColor="rgb(249,115,22)"
       accentBg="rgba(249,115,22,0.12)"
       accentBorder="rgba(249,115,22,0.3)"
+      maxWidth={mode === "MANUAL" ? 640 : 560}
       footer={
         step === "form" ? (
           <>
@@ -648,7 +871,7 @@ export function ExtractStockModal({
             </GhostButton>
             <PrimaryButton
               onClick={proceedToConfirm}
-              disabled={!validQty || isExtracting}
+              disabled={!canProceed || isExtracting}
               color="rgb(249,115,22)"
             >
               <Download className="h-3.5 w-3.5" /> Tiếp tục
@@ -664,7 +887,7 @@ export function ExtractStockModal({
             </GhostButton>
             <PrimaryButton
               onClick={handleConfirm}
-              disabled={isExtracting || !validQty}
+              disabled={isExtracting || !canProceed}
               color="rgb(249,115,22)"
             >
               {isExtracting ? (
@@ -672,7 +895,7 @@ export function ExtractStockModal({
               ) : (
                 <Download className="h-3.5 w-3.5" />
               )}
-              {isExtracting ? "Đang rút..." : "Xác nhận rút"}
+              {isExtracting ? "Đang bóc..." : "Xác nhận"}
             </PrimaryButton>
           </>
         )
@@ -699,63 +922,398 @@ export function ExtractStockModal({
 
         {step === "form" ? (
           <>
-            <div>
-              <p
-                className="mb-1.5 text-[11px] font-black uppercase tracking-widest"
-                style={{ color: "var(--tx-f)" }}
-              >
-                Số lượng cần rút
-              </p>
-              <input
-                type="number"
-                min={1}
-                max={currentStock}
-                value={quantity}
-                onChange={(e) => setQuantity(e.target.value)}
+            {/* Dry-run toggle */}
+            <label
+              className="flex cursor-pointer items-center justify-between gap-3 rounded-xl px-3 py-2.5"
+              style={{
+                background: dryRun
+                  ? "rgba(56,189,248,0.08)"
+                  : "var(--inp)",
+                border: dryRun
+                  ? "1px solid rgba(56,189,248,0.3)"
+                  : "1px solid var(--bd)",
+              }}
+            >
+              <div className="flex items-center gap-2 min-w-0">
+                <Eye
+                  className="h-4 w-4 shrink-0"
+                  style={{
+                    color: dryRun ? "rgb(56,189,248)" : "var(--tx-f)",
+                  }}
+                />
+                <div className="min-w-0">
+                  <p
+                    className="text-[12px] font-black"
+                    style={{ color: "var(--tx)" }}
+                  >
+                    Bóc không xóa (chỉ xem & copy)
+                  </p>
+                  <p
+                    className="text-[10px]"
+                    style={{ color: "var(--tx-f)" }}
+                  >
+                    Hiển thị acc nhưng kho không bị trừ.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={dryRun}
+                onClick={() => setDryRun((v) => !v)}
                 disabled={isExtracting}
-                placeholder="VD: 5"
-                className="w-full rounded-xl px-3 py-2 text-[14px] font-black outline-none"
+                className="relative h-6 w-11 shrink-0 rounded-full transition"
                 style={{
-                  background: "var(--inp)",
-                  border: "1px solid var(--bd)",
-                  color: "var(--tx)",
+                  background: dryRun
+                    ? "rgb(56,189,248)"
+                    : "var(--bd)",
                 }}
-              />
-              <p className="mt-1 text-[11px]" style={{ color: "var(--tx-f)" }}>
-                Tối đa {currentStock.toLocaleString("vi-VN")} tài khoản.
-              </p>
+              >
+                <span
+                  className="absolute top-0.5 h-5 w-5 rounded-full bg-white transition-all"
+                  style={{ left: dryRun ? "22px" : "2px" }}
+                />
+              </button>
+            </label>
+
+            {/* Tabs */}
+            <div
+              className="grid grid-cols-3 gap-1 rounded-xl p-1"
+              style={{ background: "var(--inp)", border: "1px solid var(--bd)" }}
+            >
+              {TAB_DEFS.map((tab) => {
+                const active = mode === tab.value;
+                return (
+                  <button
+                    key={tab.value}
+                    type="button"
+                    onClick={() => setMode(tab.value)}
+                    disabled={isExtracting}
+                    className="rounded-lg px-2 py-1.5 text-[12px] font-black transition"
+                    style={
+                      active
+                        ? {
+                            background: "rgba(249,115,22,0.15)",
+                            border: "1px solid rgba(249,115,22,0.3)",
+                            color: "rgb(249,115,22)",
+                          }
+                        : {
+                            background: "transparent",
+                            border: "1px solid transparent",
+                            color: "var(--tx-f)",
+                          }
+                    }
+                  >
+                    {tab.label}
+                  </button>
+                );
+              })}
             </div>
 
-            <div>
-              <p
-                className="mb-1.5 text-[11px] font-black uppercase tracking-widest"
-                style={{ color: "var(--tx-f)" }}
-              >
-                Phương pháp
-              </p>
-              <select
-                value={method}
-                onChange={(e) =>
-                  setMethod(e.target.value as StockExtractMethod)
-                }
-                disabled={isExtracting}
-                className="w-full rounded-xl px-3 py-2 text-[13px] outline-none"
-                style={{
-                  background: "var(--inp)",
-                  border: "1px solid var(--bd)",
-                  color: "var(--tx)",
-                }}
-              >
-                {EXTRACT_METHOD_OPTIONS.map((opt) => (
-                  <option key={opt.value} value={opt.value}>
-                    {opt.label}
-                  </option>
-                ))}
-              </select>
-              <p className="mt-1 text-[11px]" style={{ color: "var(--tx-f)" }}>
-                {selectedMethod.description}
-              </p>
-            </div>
+            {/* FAST */}
+            {mode === "FAST" && (
+              <>
+                <div>
+                  <p
+                    className="mb-1.5 text-[11px] font-black uppercase tracking-widest"
+                    style={{ color: "var(--tx-f)" }}
+                  >
+                    Số lượng cần bóc
+                  </p>
+                  <input
+                    type="number"
+                    min={1}
+                    max={currentStock}
+                    value={quantity}
+                    onChange={(e) => setQuantity(e.target.value)}
+                    disabled={isExtracting}
+                    placeholder="VD: 5"
+                    className="w-full rounded-xl px-3 py-2 text-[14px] font-black outline-none"
+                    style={{
+                      background: "var(--inp)",
+                      border: "1px solid var(--bd)",
+                      color: "var(--tx)",
+                    }}
+                  />
+                  <p className="mt-1 text-[11px]" style={{ color: "var(--tx-f)" }}>
+                    Tối đa {currentStock.toLocaleString("vi-VN")} tài khoản.
+                  </p>
+                </div>
+
+                <div>
+                  <p
+                    className="mb-1.5 text-[11px] font-black uppercase tracking-widest"
+                    style={{ color: "var(--tx-f)" }}
+                  >
+                    Phương pháp
+                  </p>
+                  <select
+                    value={method}
+                    onChange={(e) =>
+                      setMethod(e.target.value as StockExtractMethod)
+                    }
+                    disabled={isExtracting}
+                    className="w-full rounded-xl px-3 py-2 text-[13px] outline-none"
+                    style={{
+                      background: "var(--inp)",
+                      border: "1px solid var(--bd)",
+                      color: "var(--tx)",
+                    }}
+                  >
+                    {EXTRACT_METHOD_OPTIONS.map((opt) => (
+                      <option key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="mt-1 text-[11px]" style={{ color: "var(--tx-f)" }}>
+                    {selectedMethod.description}
+                  </p>
+                </div>
+              </>
+            )}
+
+            {/* RANGE */}
+            {mode === "RANGE" && (
+              <>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <p
+                      className="mb-1.5 text-[11px] font-black uppercase tracking-widest"
+                      style={{ color: "var(--tx-f)" }}
+                    >
+                      Từ vị trí
+                    </p>
+                    <input
+                      type="number"
+                      min={1}
+                      max={currentStock}
+                      value={fromIndex}
+                      onChange={(e) => setFromIndex(e.target.value)}
+                      disabled={isExtracting}
+                      placeholder="1"
+                      className="w-full rounded-xl px-3 py-2 text-[14px] font-black outline-none"
+                      style={{
+                        background: "var(--inp)",
+                        border: "1px solid var(--bd)",
+                        color: "var(--tx)",
+                      }}
+                    />
+                  </div>
+                  <div>
+                    <p
+                      className="mb-1.5 text-[11px] font-black uppercase tracking-widest"
+                      style={{ color: "var(--tx-f)" }}
+                    >
+                      Đến vị trí
+                    </p>
+                    <input
+                      type="number"
+                      min={fromNum || 1}
+                      max={currentStock}
+                      value={toIndex}
+                      onChange={(e) => setToIndex(e.target.value)}
+                      disabled={isExtracting}
+                      placeholder={String(currentStock)}
+                      className="w-full rounded-xl px-3 py-2 text-[14px] font-black outline-none"
+                      style={{
+                        background: "var(--inp)",
+                        border: "1px solid var(--bd)",
+                        color: "var(--tx)",
+                      }}
+                    />
+                  </div>
+                </div>
+                <div
+                  className="rounded-xl px-3 py-2.5 text-[12px]"
+                  style={{
+                    background: validRange
+                      ? "rgba(249,115,22,0.08)"
+                      : "var(--inp)",
+                    border: validRange
+                      ? "1px solid rgba(249,115,22,0.25)"
+                      : "1px solid var(--bd)",
+                    color: validRange ? "rgb(249,115,22)" : "var(--tx-f)",
+                  }}
+                >
+                  {validRange ? (
+                    <span className="font-black">
+                      Sẽ bóc {rangeCount.toLocaleString("vi-VN")} acc (#{fromNum} đến #{toNum})
+                    </span>
+                  ) : (
+                    <span>Nhập dải hợp lệ trong 1..{currentStock}.</span>
+                  )}
+                </div>
+              </>
+            )}
+
+            {/* MANUAL */}
+            {mode === "MANUAL" && (
+              <>
+                <div className="flex items-center gap-2">
+                  <div className="relative flex-1">
+                    <Search
+                      className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2"
+                      style={{ color: "var(--tx-f)" }}
+                    />
+                    <input
+                      type="text"
+                      value={searchInput}
+                      onChange={(e) => setSearchInput(e.target.value)}
+                      disabled={isExtracting}
+                      placeholder="Tìm acc..."
+                      className="w-full rounded-xl py-2 pl-8 pr-3 text-[13px] outline-none"
+                      style={{
+                        background: "var(--inp)",
+                        border: "1px solid var(--bd)",
+                        color: "var(--tx)",
+                      }}
+                    />
+                  </div>
+                  <span
+                    className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-black"
+                    style={{
+                      background: "rgba(249,115,22,0.12)",
+                      border: "1px solid rgba(249,115,22,0.3)",
+                      color: "rgb(249,115,22)",
+                    }}
+                  >
+                    Selected: {manualCount} / {filteredTotal.toLocaleString("vi-VN")}
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={selectAllInPage}
+                    disabled={isExtracting || entries.length === 0}
+                    className="rounded-lg px-2.5 py-1 text-[11px] font-black transition disabled:opacity-40"
+                    style={{
+                      background: "var(--inp)",
+                      border: "1px solid var(--bd)",
+                      color: "var(--tx-f)",
+                    }}
+                  >
+                    Chọn tất cả trong trang
+                  </button>
+                  <button
+                    type="button"
+                    onClick={clearSelected}
+                    disabled={isExtracting || manualCount === 0}
+                    className="rounded-lg px-2.5 py-1 text-[11px] font-black transition disabled:opacity-40"
+                    style={{
+                      background: "var(--inp)",
+                      border: "1px solid var(--bd)",
+                      color: "var(--tx-f)",
+                    }}
+                  >
+                    Bỏ chọn
+                  </button>
+                </div>
+
+                <div
+                  className="rounded-xl"
+                  style={{
+                    background: "var(--inp)",
+                    border: "1px solid var(--bd)",
+                  }}
+                >
+                  <div
+                    ref={listContainerRef}
+                    onScroll={(e) =>
+                      setScrollTop((e.target as HTMLDivElement).scrollTop)
+                    }
+                    style={{
+                      height: ROW_HEIGHT * VISIBLE_ROWS,
+                      overflowY: "auto",
+                    }}
+                  >
+                    {entries.length === 0 ? (
+                      <div
+                        className="flex h-full items-center justify-center gap-2 text-[12px]"
+                        style={{ color: "var(--tx-f)" }}
+                      >
+                        {isLoadingEntries ? (
+                          <>
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            Đang tải...
+                          </>
+                        ) : (
+                          <span>Không có acc.</span>
+                        )}
+                      </div>
+                    ) : (
+                      <>
+                        <div style={{ height: topSpacer }} />
+                        {visibleSlice.map((entry) => {
+                          const checked = selectedSet.has(entry.index);
+                          return (
+                            <label
+                              key={entry.index}
+                              className="flex cursor-pointer items-center gap-2 px-3"
+                              style={{
+                                height: ROW_HEIGHT,
+                                borderTop: "1px solid var(--bd)",
+                                background: checked
+                                  ? "rgba(249,115,22,0.06)"
+                                  : "transparent",
+                              }}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={() => toggleSelected(entry.index)}
+                                disabled={isExtracting}
+                                className="h-3.5 w-3.5 shrink-0 cursor-pointer"
+                              />
+                              <span
+                                className="w-10 shrink-0 font-mono text-[11px]"
+                                style={{ color: "var(--tx-f)" }}
+                              >
+                                #{entry.index}
+                              </span>
+                              <span
+                                className="min-w-0 flex-1 truncate font-mono text-[12px]"
+                                style={{ color: "var(--tx)" }}
+                                title={entry.text}
+                              >
+                                {entry.text}
+                              </span>
+                            </label>
+                          );
+                        })}
+                        <div style={{ height: bottomSpacer }} />
+                      </>
+                    )}
+                  </div>
+                  {filteredTotal > entries.length && (
+                    <div
+                      className="flex items-center justify-center px-3 py-2"
+                      style={{ borderTop: "1px solid var(--bd)" }}
+                    >
+                      <button
+                        type="button"
+                        onClick={() => void loadMore()}
+                        disabled={isLoadingEntries}
+                        className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1 text-[11px] font-black transition disabled:opacity-40"
+                        style={{
+                          background: "rgba(56,189,248,0.12)",
+                          border: "1px solid rgba(56,189,248,0.3)",
+                          color: "rgb(56,189,248)",
+                        }}
+                      >
+                        {isLoadingEntries ? (
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                        ) : (
+                          <Download className="h-3 w-3" />
+                        )}
+                        Load more ({entries.length}/{filteredTotal})
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
           </>
         ) : (
           <div
@@ -783,29 +1341,55 @@ export function ExtractStockModal({
                   className="text-[13px] font-black"
                   style={{ color: "var(--tx)" }}
                 >
-                  Xác nhận trích xuất
+                  Xác nhận
                 </p>
                 <p
                   className="mt-1 text-[12px] leading-relaxed"
                   style={{ color: "var(--tx-m)" }}
                 >
-                  Sẽ rút{" "}
+                  Sắp bóc{" "}
                   <span className="font-black" style={{ color: "rgb(249,115,22)" }}>
-                    {numericQty.toLocaleString("vi-VN")} tài khoản
+                    {actionCount.toLocaleString("vi-VN")} acc
                   </span>{" "}
-                  khỏi kho theo phương pháp{" "}
+                  theo{" "}
                   <span className="font-black" style={{ color: "rgb(249,115,22)" }}>
-                    {selectedMethod.label}
+                    {mode}
                   </span>
-                  . Tồn còn lại:{" "}
-                  <span className="font-black" style={{ color: "var(--tx)" }}>
-                    {(currentStock - numericQty).toLocaleString("vi-VN")}
-                  </span>
-                  .
+                  .{" "}
+                  {dryRun ? (
+                    <>
+                      Kho{" "}
+                      <span className="font-black" style={{ color: "var(--tx)" }}>
+                        {currentStock.toLocaleString("vi-VN")}
+                      </span>{" "}
+                      giữ nguyên.{" "}
+                      <span
+                        className="font-black"
+                        style={{ color: "rgb(56,189,248)" }}
+                      >
+                        (KHÔNG xóa)
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      Kho{" "}
+                      <span className="font-black" style={{ color: "var(--tx)" }}>
+                        {currentStock.toLocaleString("vi-VN")}
+                      </span>{" "}
+                      →{" "}
+                      <span className="font-black" style={{ color: "var(--tx)" }}>
+                        {(currentStock - actionCount).toLocaleString("vi-VN")}
+                      </span>
+                      .
+                    </>
+                  )}{" "}
+                  Tiếp tục?
                 </p>
-                <p className="mt-2 text-[11px]" style={{ color: "var(--tx-f)" }}>
-                  Hành động này KHÔNG thể hoàn tác.
-                </p>
+                {!dryRun && (
+                  <p className="mt-2 text-[11px]" style={{ color: "var(--tx-f)" }}>
+                    Hành động này KHÔNG thể hoàn tác.
+                  </p>
+                )}
               </div>
             </div>
           </div>
@@ -824,6 +1408,7 @@ type ExtractResult = {
   totalBefore: number;
   totalAfter: number;
   method: StockExtractMethod;
+  dryRun?: boolean;
 };
 
 type ExtractStockResultModalProps = {
@@ -884,6 +1469,34 @@ export function ExtractStockResultModal({
         </p>
       ) : (
         <div className="space-y-4">
+          {result.dryRun ? (
+            <div
+              className="flex items-start gap-2 rounded-xl px-3 py-2.5"
+              style={{
+                background: "rgba(56,189,248,0.08)",
+                border: "1px solid rgba(56,189,248,0.3)",
+              }}
+            >
+              <Eye
+                className="mt-0.5 h-4 w-4 shrink-0"
+                style={{ color: "rgb(56,189,248)" }}
+              />
+              <div className="min-w-0">
+                <p
+                  className="text-[12px] font-black"
+                  style={{ color: "rgb(56,189,248)" }}
+                >
+                  PREVIEW — kho không bị trừ
+                </p>
+                <p
+                  className="mt-0.5 text-[11px]"
+                  style={{ color: "var(--tx-f)" }}
+                >
+                  Đây là chế độ xem thử. Acc vẫn còn trong kho.
+                </p>
+              </div>
+            </div>
+          ) : null}
           <div
             className="rounded-xl p-4 text-center"
             style={{

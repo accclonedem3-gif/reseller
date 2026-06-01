@@ -1,5 +1,5 @@
 ﻿import type { ReactNode } from "react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import axios from "axios";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -41,6 +41,8 @@ import {
   StockHistoryModal,
   UploadStockModal,
   UploadStockResultModal,
+  type EntryListPage,
+  type ExtractPayload,
   type StockExtractMethod,
   type StockOperation,
 } from "@/components/dashboard/stock-modals";
@@ -979,6 +981,7 @@ export function ProductsPageStudio({
     totalBefore: number;
     totalAfter: number;
     method: StockExtractMethod;
+    dryRun?: boolean;
   } | null>(null);
   const [checkedIds, setCheckedIds] = useState<Set<string>>(new Set());
   const [showCategoryPanel, setShowCategoryPanel] = useState(false);
@@ -1450,29 +1453,46 @@ export function ProductsPageStudio({
   });
 
   const extractStockMutation = useMutation({
-    mutationFn: async (params: { quantity: number; method: StockExtractMethod }) => {
+    mutationFn: async (payload: ExtractPayload) => {
       if (!selectedProduct) throw new Error(t.errNoProduct);
       const res = await api.post<{
         extracted: string[];
         totalBefore: number;
         totalAfter: number;
         method: StockExtractMethod;
-      }>(`/products/source-products/${selectedProduct.id}/stock/extract`, params);
-      return res.data;
+        dryRun?: boolean;
+      }>(`/products/source-products/${selectedProduct.id}/stock/extract`, payload);
+      return { ...res.data, dryRun: res.data.dryRun ?? payload.dryRun };
     },
     onSuccess: async (data) => {
       setExtractResult(data);
       setStockModal("extractResult");
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["products"] }),
-        queryClient.invalidateQueries({ queryKey: ["products", selectedProduct?.id, "inventory"] }),
-        queryClient.invalidateQueries({ queryKey: ["stock-history", selectedProduct?.id] }),
-      ]);
+      if (!data.dryRun) {
+        await Promise.all([
+          queryClient.invalidateQueries({ queryKey: ["products"] }),
+          queryClient.invalidateQueries({ queryKey: ["products", selectedProduct?.id, "inventory"] }),
+          queryClient.invalidateQueries({ queryKey: ["stock-history", selectedProduct?.id] }),
+        ]);
+      }
     },
     onError: (error) => {
       showToast({ tone: "error", message: getErrorMessage(error, "Không thể bóc kho.") });
     },
   });
+
+  const listStockEntries = useCallback(
+    async (params: { limit: number; offset: number; search: string }): Promise<EntryListPage> => {
+      if (!selectedProduct) {
+        return { items: [], total: 0, filteredTotal: 0 };
+      }
+      const res = await api.get<EntryListPage>(
+        `/products/source-products/${selectedProduct.id}/stock/entries`,
+        { params },
+      );
+      return res.data;
+    },
+    [selectedProduct],
+  );
 
   const stockHistoryQuery = useQuery<{ items: StockOperation[]; total: number }>({
     queryKey: ["stock-history", selectedProduct?.id],
@@ -3896,7 +3916,8 @@ export function ProductsPageStudio({
         productName={selectedProduct?.displayName ?? ""}
         currentStock={manualInventory?.summary?.availableCount ?? selectedProduct?.available ?? 0}
         isExtracting={extractStockMutation.isPending}
-        onExtract={(quantity, method) => extractStockMutation.mutate({ quantity, method })}
+        onExtract={(payload) => extractStockMutation.mutate(payload)}
+        onListEntries={listStockEntries}
       />
       <ExtractStockResultModal
         open={stockModal === "extractResult"}

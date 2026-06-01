@@ -20,6 +20,7 @@ import type { AuthenticatedUser } from "../types";
 
 import {
   ExtractStockDto,
+  StockEntriesQueryDto,
   StockHistoryQueryDto,
   UploadStockDto,
 } from "./products-stock.dto";
@@ -76,5 +77,14 @@ export class ProductsStockController {
     @Query() query: StockHistoryQueryDto,
   ) {
     return this.stockService.listHistory(user, id, query);
+  }
+
+  @Get(":id/stock/entries")
+  listEntries(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param("id") id: string,
+    @Query() query: StockEntriesQueryDto,
+  ) {
+    return this.stockService.listEntries(user, id, query);
   }
 }

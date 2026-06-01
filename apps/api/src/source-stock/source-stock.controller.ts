@@ -23,6 +23,7 @@ import type { AuthenticatedUser } from "../types";
 
 import {
   ExtractSourceStockDto,
+  SourceStockEntriesQueryDto,
   SourceStockHistoryQueryDto,
   UploadSourceStockDto,
 } from "./source-stock.dto";
@@ -80,5 +81,14 @@ export class SourceStockController {
     @Query() query: SourceStockHistoryQueryDto,
   ) {
     return this.stockService.listHistory(user, id, query);
+  }
+
+  @Get(":id/stock/entries")
+  listEntries(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param("id") id: string,
+    @Query() query: SourceStockEntriesQueryDto,
+  ) {
+    return this.stockService.listEntries(user, id, query);
   }
 }

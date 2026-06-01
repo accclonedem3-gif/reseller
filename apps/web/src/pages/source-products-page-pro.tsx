@@ -17,7 +17,7 @@ import {
   X,
   Zap,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
@@ -29,6 +29,8 @@ import {
   StockHistoryModal,
   UploadStockModal,
   UploadStockResultModal,
+  type EntryListPage,
+  type ExtractPayload,
   type StockExtractMethod,
   type StockOperation,
 } from "@/components/dashboard/stock-modals";
@@ -1077,7 +1079,7 @@ export function SourceProductsPage({
   const [stockExtractOpen, setStockExtractOpen] = useState(false);
   const [stockHistoryOpen, setStockHistoryOpen] = useState(false);
   const [uploadResult, setUploadResult] = useState<{ added: number; totalBefore: number; totalAfter: number; preview: string[] } | null>(null);
-  const [extractResult, setExtractResult] = useState<{ extracted: string[]; totalBefore: number; totalAfter: number; method: StockExtractMethod } | null>(null);
+  const [extractResult, setExtractResult] = useState<{ extracted: string[]; totalBefore: number; totalAfter: number; method: StockExtractMethod; dryRun?: boolean } | null>(null);
 
   // Endpoint is always /source/products/:id/stock/* on THIS page — it operates on the
   // ULTRA's published source-provider catalog. The same modals can be reused on the
@@ -1104,19 +1106,33 @@ export function SourceProductsPage({
   });
 
   const extractStockMutation = useMutation({
-    mutationFn: async ({ quantity, method }: { quantity: number; method: StockExtractMethod }) => {
+    mutationFn: async (payload: ExtractPayload) => {
       if (!stockEndpointBase) throw new Error("No product selected.");
-      const res = await api.post(`${stockEndpointBase}/extract`, { quantity, method });
-      return res.data as { extracted: string[]; totalBefore: number; totalAfter: number; method: StockExtractMethod };
+      const res = await api.post(`${stockEndpointBase}/extract`, payload);
+      const data = res.data as { extracted: string[]; totalBefore: number; totalAfter: number; method: StockExtractMethod; dryRun?: boolean };
+      return { ...data, dryRun: data.dryRun ?? payload.dryRun };
     },
     onSuccess: async (data) => {
       setExtractResult(data);
       setStockExtractOpen(false);
-      await queryClient.invalidateQueries({ queryKey: ["source-products", "catalog"] });
-      await queryClient.invalidateQueries({ queryKey: ["source-stock-history", selectedProduct?.id] });
+      if (!data.dryRun) {
+        await queryClient.invalidateQueries({ queryKey: ["source-products", "catalog"] });
+        await queryClient.invalidateQueries({ queryKey: ["source-stock-history", selectedProduct?.id] });
+      }
     },
     onError: (error) => showToast({ tone: "error", message: getApiErrorMessage(error, t.errDefault) }),
   });
+
+  const listSourceStockEntries = useCallback(
+    async (params: { limit: number; offset: number; search: string }): Promise<EntryListPage> => {
+      if (!stockEndpointBase) {
+        return { items: [], total: 0, filteredTotal: 0 };
+      }
+      const res = await api.get<EntryListPage>(`${stockEndpointBase}/entries`, { params });
+      return res.data;
+    },
+    [stockEndpointBase],
+  );
 
   const stockHistoryQuery = useQuery<{ items: StockOperation[]; total: number }>({
     queryKey: ["source-stock-history", selectedProduct?.id],
@@ -1424,7 +1440,8 @@ export function SourceProductsPage({
             productName={selectedProductDisplay}
             currentStock={currentStock}
             isExtracting={extractStockMutation.isPending}
-            onExtract={(quantity, method) => extractStockMutation.mutate({ quantity, method })}
+            onExtract={(payload) => extractStockMutation.mutate(payload)}
+            onListEntries={listSourceStockEntries}
           />
           <ExtractStockResultModal
             open={Boolean(extractResult)}

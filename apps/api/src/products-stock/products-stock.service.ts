@@ -15,7 +15,11 @@ import {
 import { PrismaService } from "../db/prisma.service";
 import type { AuthenticatedUser } from "../types";
 
-import type { ExtractStockDto, StockHistoryQueryDto } from "./products-stock.dto";
+import type {
+  ExtractStockDto,
+  StockEntriesQueryDto,
+  StockHistoryQueryDto,
+} from "./products-stock.dto";
 
 @Injectable()
 export class ProductsStockService {
@@ -103,11 +107,11 @@ export class ProductsStockService {
     productId: string,
     dto: ExtractStockDto,
   ) {
-    const quantity = Number(dto.quantity);
-    if (!Number.isInteger(quantity) || quantity < 1) {
-      throw new BadRequestException("Quantity phải là số nguyên dương.");
+    if (!dto || !dto.mode) {
+      throw new BadRequestException("mode là bắt buộc (FAST | RANGE | MANUAL).");
     }
 
+    const dryRun = Boolean(dto.dryRun);
     const product = await this.loadOwnedProduct(user, productId);
 
     const result = await this.prisma.$transaction(async (tx) => {
@@ -134,13 +138,103 @@ export class ProductsStockService {
       const entries = this.readDeliveryEntries(metadataBefore);
       const availableBefore = entries.length;
 
-      if (availableBefore < quantity) {
+      let extracted: string[] = [];
+      let remaining: string[] = entries;
+      let methodUsed: StockExtractMethod;
+
+      if (dto.mode === "FAST") {
+        const quantity = Number(dto.quantity);
+        if (!Number.isInteger(quantity) || quantity < 1) {
+          throw new BadRequestException("Quantity phải là số nguyên dương.");
+        }
+        if (!dto.method) {
+          throw new BadRequestException("method là bắt buộc cho mode FAST.");
+        }
+        if (availableBefore < quantity) {
+          throw new BadRequestException(
+            `Kho không đủ. Hiện có ${availableBefore}, yêu cầu ${quantity}.`,
+          );
+        }
+        const popped = this.popByMethod(entries, quantity, dto.method);
+        extracted = popped.extracted;
+        remaining = popped.remaining;
+        methodUsed = dto.method;
+      } else if (dto.mode === "RANGE") {
+        const fromIndex = Number(dto.fromIndex);
+        const toIndex = Number(dto.toIndex);
+        if (!Number.isInteger(fromIndex) || !Number.isInteger(toIndex)) {
+          throw new BadRequestException(
+            "fromIndex và toIndex là bắt buộc cho mode RANGE.",
+          );
+        }
+        if (
+          !(fromIndex >= 1 && fromIndex <= toIndex && toIndex <= availableBefore)
+        ) {
+          throw new BadRequestException(
+            `Khoảng không hợp lệ. Yêu cầu 1 <= fromIndex (${fromIndex}) <= toIndex (${toIndex}) <= ${availableBefore}.`,
+          );
+        }
+        extracted = entries.slice(fromIndex - 1, toIndex);
+        remaining = entries.slice(0, fromIndex - 1).concat(entries.slice(toIndex));
+        methodUsed = StockExtractMethod.RANGE;
+      } else if (dto.mode === "MANUAL") {
+        const indices = dto.selectedIndices;
+        if (!Array.isArray(indices) || indices.length === 0) {
+          throw new BadRequestException(
+            "selectedIndices là bắt buộc và không được rỗng cho mode MANUAL.",
+          );
+        }
+        const seen = new Set<number>();
+        for (const raw of indices) {
+          const idx = Number(raw);
+          if (!Number.isInteger(idx) || idx < 1 || idx > availableBefore) {
+            throw new BadRequestException(
+              `selectedIndices chứa giá trị không hợp lệ (${raw}). Phải nằm trong 1..${availableBefore}.`,
+            );
+          }
+          if (seen.has(idx)) {
+            throw new BadRequestException(
+              `selectedIndices không được trùng lặp (${idx}).`,
+            );
+          }
+          seen.add(idx);
+        }
+        extracted = indices.map((i) => entries[i - 1] as string);
+        remaining = entries.filter((_, idx) => !seen.has(idx + 1));
+        methodUsed = StockExtractMethod.MANUAL;
+      } else {
         throw new BadRequestException(
-          `Kho không đủ. Hiện có ${availableBefore}, yêu cầu ${quantity}.`,
+          `mode không hợp lệ: ${String((dto as any).mode)}.`,
         );
       }
 
-      const { extracted, remaining } = this.popByMethod(entries, quantity, dto.method);
+      const quantityExtracted = extracted.length;
+
+      if (dryRun) {
+        await tx.productStockOperation.create({
+          data: {
+            sourceProductId: locked.id,
+            operationType: StockOperationType.PREVIEW,
+            extractMethod: methodUsed,
+            quantity: quantityExtracted,
+            availableBefore,
+            availableAfter: availableBefore,
+            payloadJson: {
+              preview: extracted.slice(0, 3),
+              dryRun: true,
+              mode: dto.mode,
+            } as Prisma.InputJsonValue,
+          },
+        });
+
+        return {
+          extracted,
+          availableBefore,
+          availableAfter: availableBefore,
+          methodUsed,
+        };
+      }
+
       const availableAfter = remaining.length;
       const remainingDeliveryText = this.toDeliveryText(remaining);
 
@@ -161,23 +255,53 @@ export class ProductsStockService {
         data: {
           sourceProductId: locked.id,
           operationType: StockOperationType.EXTRACT,
-          extractMethod: dto.method,
-          quantity,
+          extractMethod: methodUsed,
+          quantity: quantityExtracted,
           availableBefore,
           availableAfter,
-          payloadJson: { preview: extracted.slice(0, 3) } as Prisma.InputJsonValue,
+          payloadJson: {
+            preview: extracted.slice(0, 3),
+            mode: dto.mode,
+          } as Prisma.InputJsonValue,
         },
       });
 
-      return { extracted, availableBefore, availableAfter };
+      return { extracted, availableBefore, availableAfter, methodUsed };
     });
 
     return {
       extracted: result.extracted,
       totalBefore: result.availableBefore,
       totalAfter: result.availableAfter,
-      method: dto.method,
+      method: result.methodUsed,
+      dryRun,
     };
+  }
+
+  async listEntries(
+    user: AuthenticatedUser,
+    productId: string,
+    query: StockEntriesQueryDto,
+  ) {
+    const product = await this.loadOwnedProduct(user, productId);
+    const limit = Math.min(Math.max(Number(query.limit) || 200, 1), 1000);
+    const offset = Math.max(Number(query.offset) || 0, 0);
+    const searchRaw = typeof query.search === "string" ? query.search.trim() : "";
+    const search = searchRaw.length > 0 ? searchRaw.toLowerCase() : null;
+
+    const metadata = this.asRecord(product.metadataJson);
+    const entries = this.readDeliveryEntries(metadata);
+    const allItems = entries.map((text, idx) => ({ index: idx + 1, text }));
+    const total = allItems.length;
+
+    const filtered = search
+      ? allItems.filter((item) => item.text.toLowerCase().includes(search))
+      : allItems;
+    const filteredTotal = filtered.length;
+
+    const items = filtered.slice(offset, offset + limit);
+
+    return { items, total, filteredTotal };
   }
 
   async listHistory(

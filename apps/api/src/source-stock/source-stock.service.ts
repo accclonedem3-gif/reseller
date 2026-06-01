@@ -18,6 +18,8 @@ import type { AuthenticatedUser } from "../types";
 
 import type {
   ExtractSourceStockDto,
+  ExtractSourceStockMode,
+  SourceStockEntriesQueryDto,
   SourceStockHistoryQueryDto,
 } from "./source-stock.dto";
 
@@ -107,9 +109,11 @@ export class SourceStockService {
     productId: string,
     dto: ExtractSourceStockDto,
   ) {
-    const quantity = Number(dto.quantity);
-    if (!Number.isInteger(quantity) || quantity < 1) {
-      throw new BadRequestException("Quantity phải là số nguyên dương.");
+    const mode: ExtractSourceStockMode = dto.mode;
+    const dryRun = Boolean(dto.dryRun);
+
+    if (mode !== "FAST" && mode !== "RANGE" && mode !== "MANUAL") {
+      throw new BadRequestException("Mode không hợp lệ. Chấp nhận: FAST, RANGE, MANUAL.");
     }
 
     const product = await this.loadOwnedSourceProduct(user, productId);
@@ -138,40 +142,144 @@ export class SourceStockService {
       const entries = this.readDeliveryEntries(metadataBefore);
       const availableBefore = entries.length;
 
-      if (availableBefore < quantity) {
-        throw new BadRequestException(
-          `Kho không đủ. Hiện có ${availableBefore}, yêu cầu ${quantity}.`,
-        );
+      let extracted: string[] = [];
+      let remaining: string[] = [];
+      let extractMethod: StockExtractMethod | null = null;
+      let payloadDetail: Record<string, unknown> = {};
+
+      if (mode === "FAST") {
+        const quantity = Number(dto.quantity);
+        if (!Number.isInteger(quantity) || quantity < 1) {
+          throw new BadRequestException(
+            "FAST mode yêu cầu 'quantity' là số nguyên dương.",
+          );
+        }
+        if (!dto.method) {
+          throw new BadRequestException(
+            "FAST mode yêu cầu 'method' (FIFO | LIFO | RANDOM).",
+          );
+        }
+        if (
+          dto.method !== StockExtractMethod.FIFO &&
+          dto.method !== StockExtractMethod.LIFO &&
+          dto.method !== StockExtractMethod.RANDOM
+        ) {
+          throw new BadRequestException(
+            "FAST mode chỉ chấp nhận method: FIFO, LIFO, RANDOM.",
+          );
+        }
+        if (availableBefore < quantity) {
+          throw new BadRequestException(
+            `Kho không đủ. Hiện có ${availableBefore}, yêu cầu ${quantity}.`,
+          );
+        }
+        const popped = this.popByMethod(entries, quantity, dto.method);
+        extracted = popped.extracted;
+        remaining = popped.remaining;
+        extractMethod = dto.method;
+        payloadDetail = { mode, quantity };
+      } else if (mode === "RANGE") {
+        const fromIndex = Number(dto.fromIndex);
+        const toIndex = Number(dto.toIndex);
+        if (
+          !Number.isInteger(fromIndex) ||
+          !Number.isInteger(toIndex) ||
+          fromIndex < 1 ||
+          toIndex < 1
+        ) {
+          throw new BadRequestException(
+            "RANGE mode yêu cầu 'fromIndex' và 'toIndex' là số nguyên dương (1-based).",
+          );
+        }
+        if (fromIndex > toIndex) {
+          throw new BadRequestException(
+            "RANGE mode: 'fromIndex' phải <= 'toIndex'.",
+          );
+        }
+        if (toIndex > availableBefore) {
+          throw new BadRequestException(
+            `RANGE mode: 'toIndex' (${toIndex}) vượt quá kho hiện có (${availableBefore}).`,
+          );
+        }
+        const popped = this.popByRange(entries, fromIndex, toIndex);
+        extracted = popped.extracted;
+        remaining = popped.remaining;
+        extractMethod = StockExtractMethod.RANGE;
+        payloadDetail = { mode, fromIndex, toIndex, quantity: extracted.length };
+      } else {
+        // MANUAL
+        const selectedIndices = Array.isArray(dto.selectedIndices)
+          ? dto.selectedIndices
+          : [];
+        if (selectedIndices.length === 0) {
+          throw new BadRequestException(
+            "MANUAL mode yêu cầu 'selectedIndices' là mảng số nguyên dương (1-based).",
+          );
+        }
+        const uniqueIndices = new Set<number>();
+        for (const raw of selectedIndices) {
+          const idx = Number(raw);
+          if (!Number.isInteger(idx) || idx < 1) {
+            throw new BadRequestException(
+              "MANUAL mode: 'selectedIndices' phải là số nguyên dương (1-based).",
+            );
+          }
+          if (idx > availableBefore) {
+            throw new BadRequestException(
+              `MANUAL mode: index ${idx} vượt quá kho hiện có (${availableBefore}).`,
+            );
+          }
+          uniqueIndices.add(idx);
+        }
+        if (uniqueIndices.size !== selectedIndices.length) {
+          throw new BadRequestException(
+            "MANUAL mode: 'selectedIndices' không được chứa giá trị trùng lặp.",
+          );
+        }
+        const popped = this.popByIndices(entries, [...uniqueIndices]);
+        extracted = popped.extracted;
+        remaining = popped.remaining;
+        extractMethod = StockExtractMethod.MANUAL;
+        payloadDetail = {
+          mode,
+          selectedIndices: [...uniqueIndices].sort((a, b) => a - b),
+          quantity: extracted.length,
+        };
       }
 
-      const { extracted, remaining } = this.popByMethod(entries, quantity, dto.method);
-      const availableAfter = remaining.length;
-      const remainingDeliveryText = this.toDeliveryText(remaining);
+      const availableAfter = dryRun ? availableBefore : remaining.length;
 
-      await tx.sourceProduct.update({
-        where: { id: locked.id },
-        data: {
-          available: availableAfter,
-          metadataJson: {
-            ...metadataBefore,
-            manual: true,
-            deliveryEntries: remaining,
-            deliveryText: remainingDeliveryText,
-          } as Prisma.InputJsonValue,
-        },
-      });
+      if (!dryRun) {
+        const remainingDeliveryText = this.toDeliveryText(remaining);
+        await tx.sourceProduct.update({
+          where: { id: locked.id },
+          data: {
+            available: availableAfter,
+            metadataJson: {
+              ...metadataBefore,
+              manual: true,
+              deliveryEntries: remaining,
+              deliveryText: remainingDeliveryText,
+            } as Prisma.InputJsonValue,
+          },
+        });
+      }
 
       await tx.productStockOperation.create({
         data: {
           sourceProductId: locked.id,
-          operationType: StockOperationType.EXTRACT,
-          extractMethod: dto.method,
-          quantity,
+          operationType: dryRun
+            ? StockOperationType.PREVIEW
+            : StockOperationType.EXTRACT,
+          extractMethod: extractMethod ?? undefined,
+          quantity: extracted.length,
           availableBefore,
           availableAfter,
           payloadJson: {
             preview: extracted.slice(0, 3),
             scope: "source",
+            dryRun,
+            ...payloadDetail,
           } as Prisma.InputJsonValue,
         },
       });
@@ -183,7 +291,9 @@ export class SourceStockService {
       extracted: result.extracted,
       totalBefore: result.availableBefore,
       totalAfter: result.availableAfter,
-      method: dto.method,
+      mode,
+      method: dto.method ?? null,
+      dryRun,
     };
   }
 
@@ -209,6 +319,48 @@ export class SourceStockService {
     ]);
 
     return { items, total };
+  }
+
+  /**
+   * Returns paginated current deliveryEntries (the actual stock lines) for a
+   * source product. Reads from sourceProduct.metadataJson (NOT a separate
+   * table). Supports optional case-insensitive substring search.
+   */
+  async listEntries(
+    user: AuthenticatedUser,
+    productId: string,
+    query: SourceStockEntriesQueryDto,
+  ) {
+    const product = await this.loadOwnedSourceProduct(user, productId);
+    const limit = Math.min(Math.max(Number(query.limit) || 50, 1), 1000);
+    const offset = Math.max(Number(query.offset) || 0, 0);
+    const searchRaw = typeof query.search === "string" ? query.search.trim() : "";
+    const search = searchRaw.toLowerCase();
+
+    const fresh = await this.prisma.sourceProduct.findUnique({
+      where: { id: product.id },
+      select: { metadataJson: true, available: true },
+    });
+
+    if (!fresh) {
+      throw new NotFoundException("Sản phẩm không tồn tại.");
+    }
+
+    const entries = this.readDeliveryEntries(this.asRecord(fresh.metadataJson));
+    const totalAvailable = entries.length;
+
+    // Carry original 1-based index so the client can target MANUAL extracts.
+    let indexed = entries.map((value, idx) => ({ index: idx + 1, value }));
+    if (search) {
+      indexed = indexed.filter((entry) =>
+        entry.value.toLowerCase().includes(search),
+      );
+    }
+
+    const total = indexed.length;
+    const items = indexed.slice(offset, offset + limit);
+
+    return { items, total, totalAvailable };
   }
 
   /**
@@ -309,6 +461,41 @@ export class SourceStockService {
     indices.slice(0, quantity).forEach((idx) => extracted.push(entries[idx]!));
     entries.forEach((entry, idx) => {
       if (!pickedSet.has(idx)) remaining.push(entry);
+    });
+    return { extracted, remaining };
+  }
+
+  /**
+   * Extract entries in the inclusive 1-based range [fromIndex, toIndex].
+   * Caller MUST validate bounds (1 <= fromIndex <= toIndex <= entries.length).
+   */
+  private popByRange(
+    entries: string[],
+    fromIndex: number,
+    toIndex: number,
+  ): { extracted: string[]; remaining: string[] } {
+    const start = fromIndex - 1;
+    const end = toIndex; // slice end is exclusive — pass toIndex (already 1-based inclusive)
+    const extracted = entries.slice(start, end);
+    const remaining = [...entries.slice(0, start), ...entries.slice(end)];
+    return { extracted, remaining };
+  }
+
+  /**
+   * Extract entries at the given 1-based indices, preserving the order in
+   * which they appear in `entries` (NOT the order the caller listed them).
+   * Caller MUST validate uniqueness and in-range bounds.
+   */
+  private popByIndices(
+    entries: string[],
+    indices1Based: number[],
+  ): { extracted: string[]; remaining: string[] } {
+    const picked = new Set(indices1Based.map((i) => i - 1));
+    const extracted: string[] = [];
+    const remaining: string[] = [];
+    entries.forEach((entry, idx) => {
+      if (picked.has(idx)) extracted.push(entry);
+      else remaining.push(entry);
     });
     return { extracted, remaining };
   }

@@ -261,12 +261,15 @@ enum SourceWarrantyPolicy {
 enum StockOperationType {
   UPLOAD
   EXTRACT
+  PREVIEW
 }
 
 enum StockExtractMethod {
   FIFO
   LIFO
   RANDOM
+  RANGE
+  MANUAL
 }
 
 enum ConnectionTopupStatus {
