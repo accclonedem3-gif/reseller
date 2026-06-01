@@ -1549,18 +1549,9 @@ export class WarrantyService {
             } as Prisma.InputJsonValue,
           },
         });
-        await this.notifyOwnerAboutClaim({
-          shopId: claim.shopId,
-          orderCode: claim.orderCodeSnapshot,
-          productName: claim.productNameSnapshot,
-          claimNumber: claim.claimNumber,
-          status: WARRANTY_CLAIM_STATUS.PENDING_REVIEW,
-          customerLabel:
-            claim.customer.telegramUsername ||
-            [claim.customer.firstName, claim.customer.lastName].filter(Boolean).join(" ") ||
-            claim.customer.telegramUserId,
-          customerMessage: claim.customerMessage || undefined,
-        }).catch((e) => this.logger.warn(`Telegram notification failed: ${e?.message ?? e}`));
+        // Notify seller with the account + customer contact (so they can reach the customer), not the
+        // old generic "yêu cầu mới" label.
+        await this.notifySellerWarrantyResult(claim, "review", claim.customerMessage || undefined);
       } else {
         // Soft fail — keep PENDING, no seller notification. Customer-controlled retry phase.
         // Critical: ALSO clear `autoApplyInProgress` here. The `finally` block at the end of
@@ -1858,18 +1849,7 @@ export class WarrantyService {
 
         if (_stockRaceReview) {
           this.logger.warn(`Claim ${claim.id}: kho đổi giữa lúc xử lý đồng thời — chuyển PENDING_REVIEW (chống cấp trùng acc).`);
-          await this.notifyOwnerAboutClaim({
-            shopId: claim.shopId,
-            orderCode: claim.orderCodeSnapshot,
-            productName: claim.productNameSnapshot,
-            claimNumber: claim.claimNumber,
-            status: WARRANTY_CLAIM_STATUS.PENDING_REVIEW,
-            customerLabel:
-              claim.customer.telegramUsername ||
-              [claim.customer.firstName, claim.customer.lastName].filter(Boolean).join(" ") ||
-              claim.customer.telegramUserId,
-            customerMessage: claim.customerMessage || undefined,
-          }).catch((e) => this.logger.warn(`Telegram notification failed: ${e?.message ?? e}`));
+          await this.notifySellerWarrantyResult(claim, "review", claim.customerMessage || undefined);
           await this.sendAutoCheckCustomerNotice(claim, resultLine, "pending_review").catch(() => undefined);
           return;
         }
@@ -1922,18 +1902,7 @@ export class WarrantyService {
         } as Prisma.InputJsonValue,
       },
     });
-    await this.notifyOwnerAboutClaim({
-      shopId: claim.shopId,
-      orderCode: claim.orderCodeSnapshot,
-      productName: claim.productNameSnapshot,
-      claimNumber: claim.claimNumber,
-      status: WARRANTY_CLAIM_STATUS.PENDING_REVIEW,
-      customerLabel:
-        claim.customer.telegramUsername ||
-        [claim.customer.firstName, claim.customer.lastName].filter(Boolean).join(" ") ||
-        claim.customer.telegramUserId,
-      customerMessage: claim.customerMessage || undefined,
-    }).catch((e) => this.logger.warn(`Telegram notification failed: ${e?.message ?? e}`));
+    await this.notifySellerWarrantyResult(claim, "review", claim.customerMessage || undefined);
     await this.sendAutoCheckCustomerNotice(claim, resultLine, "pending_review");
     } finally {
       // Failsafe for crash mid-flight: if `autoApplyInProgress` sentinel is STILL set, clear
@@ -2264,19 +2233,13 @@ export class WarrantyService {
         .catch((e) => this.logger.warn(`Telegram notification failed: ${e?.message ?? e}`));
     }
 
-    // Notify shop owner — cascade refund to their upstream wallet runs below.
-    await this.notifyOwnerAboutClaim({
-      shopId: claim.shopId,
-      orderCode: claim.orderCodeSnapshot,
-      productName: claim.productNameSnapshot,
-      claimNumber: claim.claimNumber,
-      status: WARRANTY_CLAIM_STATUS.RESOLVED_MANUAL,
-      customerLabel:
-        claim.customer.telegramUsername ||
-        [claim.customer.firstName, claim.customer.lastName].filter(Boolean).join(" ") ||
-        claim.customer.telegramUserId,
-      customerMessage: `Hết hàng thay thế. Đã hoàn ${refundAmount.toLocaleString("vi-VN")}đ vào ví khách hàng. Hệ thống đang chuyển hoàn ngược upstream cho bạn (nếu có).`,
-    }).catch((e) => this.logger.warn(`Telegram notification failed: ${e?.message ?? e}`));
+    // Notify shop owner — with the account + customer contact — that we refunded (cascade upstream
+    // runs below). Replaces the old generic "yêu cầu mới" notify.
+    await this.notifySellerWarrantyResult(
+      claim,
+      "refunded",
+      `Hết hàng thay thế. Đã hoàn ${refundAmount.toLocaleString("vi-VN")}đ vào ví khách. Hệ thống đang chuyển hoàn ngược upstream cho bạn (nếu có).`,
+    );
 
     // Cascade refund UP the chain. Đại lý refunds CTV's wallet, Nguồn refunds Đại lý's wallet, etc.
     // Stops when reaching external provider (canboso) — admin reconciles those manually.
@@ -2615,7 +2578,10 @@ export class WarrantyService {
           ? `#${order.customer.telegramChatId}`
           : null;
     const support = order.shop.supportTelegram || order.shop.supportZalo || "";
-    const supportLine = support ? `💬 ${this.escapeHtml(support)}` : "";
+    // Actionable CTA (not just a bare handle): a customer whose replacement later dies needs to know
+    // exactly who to message to re-warranty. Shown on every warranty-result notice (this invoice
+    // block is appended to all of them).
+    const supportLine = support ? `💬 Cần bảo hành lại? Nhắn ${this.escapeHtml(support)}` : "";
     const rule = "━━━━━━━━━━━━━━━━━";
     // Per-account (retail) view hides order-level economics (qty·total) + the buyer's identity —
     // one order may be resold to several different end-customers (mirrors the web invoice scoping).
@@ -2734,6 +2700,9 @@ export class WarrantyService {
     ].filter((s, i, arr) => s !== "" || (i > 0 && arr[i - 1] !== "")).join("\n").trimEnd();
 
     await this.deliverBotMessage(claim, token, text);
+    // Let the seller know a replacement was issued (with which account + the customer's contact) so
+    // they can follow up — success had no seller notification before.
+    await this.notifySellerWarrantyResult(claim, "resolved");
   }
 
   /**
@@ -4810,6 +4779,55 @@ export class WarrantyService {
         .filter(Boolean)
         .join("\n"),
     ).catch((e) => this.logger.warn(`Telegram notification failed: ${e?.message ?? e}`));
+  }
+
+  /**
+   * Tell the shop owner (supportTelegram chat) that a warranty just FINISHED — replacement issued,
+   * refunded, or escalated to manual review — WITH the account + the customer's contact, so the
+   * seller can follow up / re-warranty a lẻ account without digging through the dashboard.
+   * Self-contained (fetches the shop itself) so it works regardless of the caller's claim include.
+   * Best-effort; never throws into the customer flow. Replaces the old generic
+   * "Có yêu cầu bảo hành mới" notify at the refund + escalation points (so no double-notify).
+   */
+  private async notifySellerWarrantyResult(
+    claim: {
+      shopId: string;
+      orderCodeSnapshot: string;
+      productNameSnapshot: string;
+      claimNumber: number;
+      targetAccountEmail?: string | null;
+      metadataJson?: Prisma.JsonValue | null;
+      customer?: { telegramUsername?: string | null; firstName?: string | null; telegramChatId?: string | null } | null;
+    },
+    outcome: "resolved" | "failed" | "refunded" | "review",
+    detail?: string | null,
+  ): Promise<void> {
+    try {
+      const shop = await this.prisma.shop.findUnique({
+        where: { id: claim.shopId },
+        include: { botConfig: true },
+      });
+      if (!shop?.botConfig?.telegramBotTokenEncrypted || !shop.supportTelegram) return;
+      const token = decryptSecret(shop.botConfig.telegramBotTokenEncrypted, this.config.encryptionKey);
+      const chatId = String(shop.supportTelegram || "").trim();
+      if (!token || !chatId || (this.config.mockTelegramEnabled && isMockBotToken(token))) return;
+      const header =
+        outcome === "resolved" ? "✅ Bảo hành XONG — đã cấp tài khoản thay thế"
+        : outcome === "refunded" ? "💸 Bảo hành XONG — đã hoàn tiền vào ví khách"
+        : outcome === "review" ? "⚠️ Bảo hành cần DUYỆT TAY (khách đã hết lượt tự kiểm)"
+        : "❌ Bảo hành KHÔNG thành công";
+      const text = [
+        `🛡️ <b>${header}</b>`,
+        `📝 Đơn: <code>${this.escapeHtml(claim.orderCodeSnapshot)}</code>`,
+        `📦 ${this.escapeHtml(claim.productNameSnapshot)} · Claim #${claim.claimNumber}`,
+        ...this.claimIdentityLines(claim as any),
+        detail ? this.escapeHtml(detail) : null,
+      ].filter(Boolean).join("\n");
+      await telegramSendMessage(token, chatId, text, { parse_mode: "HTML" })
+        .catch((e) => this.logger.warn(`Seller warranty-result notify failed: ${e?.message ?? e}`));
+    } catch (e: any) {
+      this.logger.warn(`notifySellerWarrantyResult error: ${e?.message ?? e}`);
+    }
   }
 
   private async notifyCustomerAboutResolvedClaim(
