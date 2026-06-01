@@ -15,6 +15,7 @@ import {
 } from "@prisma/client";
 
 import { PrismaService } from "../db/prisma.service";
+import { TelegramBotService } from "../lib/telegram-bot.service.v2";
 import type { AuthenticatedUser } from "../types";
 
 import type {
@@ -29,6 +30,8 @@ export class SourceStockService {
   constructor(
     @Inject(PrismaService)
     private readonly prisma: PrismaService,
+    @Inject(TelegramBotService)
+    private readonly telegramBotService: TelegramBotService,
   ) {}
 
   // ============================================================
@@ -152,6 +155,17 @@ export class SourceStockService {
 
       return { batch, addedCount: entries.length, availableTotal };
     });
+
+    this.telegramBotService
+      .sendCatalogStockUpdateMessages(product.shopId, [
+        {
+          externalProductId: product.externalProductId,
+          displayName: product.sourceName,
+          addedQuantity: result.addedCount,
+          available: result.availableTotal,
+        },
+      ])
+      .catch(() => undefined);
 
     return {
       batchId: result.batch.id,

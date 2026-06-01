@@ -14,6 +14,7 @@ import {
 } from "@prisma/client";
 
 import { PrismaService } from "../db/prisma.service";
+import { TelegramBotService } from "../lib/telegram-bot.service.v2";
 import type { AuthenticatedUser } from "../types";
 
 import type {
@@ -29,6 +30,8 @@ export class ProductsStockService {
   constructor(
     @Inject(PrismaService)
     private readonly prisma: PrismaService,
+    @Inject(TelegramBotService)
+    private readonly telegramBotService: TelegramBotService,
   ) {}
 
   // ============================================================
@@ -156,6 +159,21 @@ export class ProductsStockService {
 
       return { batch, addedCount: entries.length, availableTotal };
     });
+
+    // Fire-and-forget broadcast to all customers in this shop.
+    // Respects shop.providerConfig.sourceNotificationSyncEnabled internally? No — that
+    // flag governs the catalog-sync push path. For manual upload we always broadcast
+    // (seller explicitly added stock, so it's intentional).
+    this.telegramBotService
+      .sendCatalogStockUpdateMessages(product.shopId, [
+        {
+          externalProductId: product.externalProductId,
+          displayName: product.sourceName,
+          addedQuantity: result.addedCount,
+          available: result.availableTotal,
+        },
+      ])
+      .catch(() => undefined);
 
     return {
       batchId: result.batch.id,
