@@ -557,6 +557,7 @@ export class WarrantyAutoCheckService {
           deliveredAccountText: true,
           customerMessage: true,
           metadataJson: true,
+          targetAccountEmail: true,
         },
       });
       if (!claim) return null;
@@ -599,29 +600,59 @@ export class WarrantyAutoCheckService {
     const metaJson = claim.metadataJson as Record<string, unknown> | null;
     const storedHash = typeof metaJson?.accessTokenHash === "string" ? metaJson.accessTokenHash : null;
     const tokenOk = !!accessToken && !!storedHash && this.hashToken(accessToken) === storedHash;
-    let invoiceOut = invoice;
     if (!tokenOk) {
-      // Strip sensitive fields when no valid token is provided.
-      // deliveredAccountText contains credentials; autoCheckResult contains account health data.
+      // No valid token → strip the claim's own sensitive fields.
       (claim as any).deliveredAccountText = null;
       (claim as any).autoCheckResult = null;
       // autoCheckErrorMessage carries raw tool stdout/stderr (may include proxy/login internals).
-      // The sanitized `publicErrorType` below is what the UI shows; never leak the raw message to an
-      // unauthenticated poller.
       (claim as any).autoCheckErrorMessage = null;
-      // #6: the invoice is returned UNCONDITIONALLY and also carries deliveredAccountText
-      // (credentials) + buyer PII (telegram username / name / chat id). Without sanitizing it,
-      // the token gate above is trivially bypassed by reading invoice.deliveredAccountText.
-      // Clone (don't mutate the cached snapshot) and null the sensitive fields.
-      if (invoice) {
-        invoiceOut = {
-          ...invoice,
-          deliveredAccountText: null,
-          buyerUsername: null,
-          buyerName: null,
-          buyerTelegramId: null,
-        };
-      }
+    }
+
+    // PRIVACY: scope the invoice to THIS claim's account(s) so a retail customer who warranties one
+    // account on a SPLIT order (one order resold to several different end-customers) can't see the
+    // other customers' accounts, the buyer's identity, or the order code/economics.
+    // - buyer PII (username/name/telegramId) is ALWAYS stripped (no warranty UI needs it).
+    // - the displayed account list is scoped to the claim's target account(s); credentials still
+    //   require the valid token.
+    // - when account-scoped (a specific target, not a whole-order claim) the order code + quantity +
+    //   total are hidden too — a retail buyer only needs their own account + warranty status.
+    const _targetBare = new Set<string>();
+    if ((claim as any).targetAccountEmail) {
+      _targetBare.add(String((claim as any).targetAccountEmail).toLowerCase().trim().split("@")[0] || "");
+    }
+    const _tu = Array.isArray((metaJson as any)?.targetUsernames) ? ((metaJson as any).targetUsernames as unknown[]) : [];
+    for (const u of _tu) {
+      const b = String(u ?? "").toLowerCase().trim().split("@")[0];
+      if (b) _targetBare.add(b);
+    }
+    const _accountScoped = _targetBare.size > 0;
+    const _scopeAccountText = (text: string | null | undefined): string | null => {
+      if (!text) return null;
+      const lines = String(text).split(/\r?\n+/).map((l) => l.trim()).filter(Boolean).filter((line) => {
+        for (const c of this.parseAllCredentials(line)) {
+          const bare = (c.email || "").toLowerCase().split("@")[0] || "";
+          if (bare && _targetBare.has(bare)) return true;
+        }
+        return false;
+      });
+      return lines.length > 0 ? lines.join("\n") : null;
+    };
+    let invoiceOut = invoice;
+    if (invoice) {
+      invoiceOut = {
+        ...invoice,
+        buyerUsername: null,
+        buyerName: null,
+        buyerTelegramId: null,
+        deliveredAccountText: !tokenOk
+          ? null
+          : _accountScoped
+            ? _scopeAccountText(invoice.deliveredAccountText)
+            : invoice.deliveredAccountText,
+        ...(_accountScoped
+          ? { orderCode: null, quantity: null, totalSaleAmount: null, resolvedAccountCount: null, resolvedClaimCount: null }
+          : {}),
+      };
     }
     // Always strip metadataJson from the response since it contains the hash.
     (claim as any).metadataJson = undefined;

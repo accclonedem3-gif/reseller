@@ -3892,9 +3892,19 @@ export class WarrantyService {
   // buildPublicInvoice carries the ORIGINAL delivered account (creds) + buyer PII; the token-gated
   // status endpoint sanitizes these, but the submit body has no token, so null them here. The client
   // gets credentials only via the token-gated poll.
-  private stripInvoiceSecretsForSubmit(inv: Awaited<ReturnType<WarrantyService["buildPublicInvoice"]>>) {
+  private stripInvoiceSecretsForSubmit(
+    inv: Awaited<ReturnType<WarrantyService["buildPublicInvoice"]>>,
+    accountScoped = false,
+  ) {
     if (!inv) return inv;
-    return { ...inv, deliveredAccountText: null, buyerUsername: null, buyerName: null, buyerTelegramId: null };
+    const base = { ...inv, deliveredAccountText: null, buyerUsername: null, buyerName: null, buyerTelegramId: null };
+    // Account-scoped (retail customer warranting their own account on a possibly-split order):
+    // also hide the order code + economics — they only need product + warranty status. Matches the
+    // scoping the token-gated status poll applies.
+    if (accountScoped) {
+      return { ...base, orderCode: null, quantity: null, totalSaleAmount: null, resolvedAccountCount: null, resolvedClaimCount: null };
+    }
+    return base;
   }
 
   private async buildPublicInvoice(orderId: string) {
@@ -4235,7 +4245,7 @@ export class WarrantyService {
           queuePosition: _enq.queuePosition,
           queueLoad: _enq.queueLoad,
         },
-        invoice: this.stripInvoiceSecretsForSubmit(await this.buildPublicInvoice(order.id)),
+        invoice: this.stripInvoiceSecretsForSubmit(await this.buildPublicInvoice(order.id), !!(dto.targetUsernames && dto.targetUsernames.length > 0)),
       };
     }
 
@@ -4432,7 +4442,7 @@ export class WarrantyService {
       message: decision.customerMessage,
       supportTelegram: order.shop.supportTelegram,
       supportZalo: order.shop.supportZalo,
-      invoice: this.stripInvoiceSecretsForSubmit(await this.buildPublicInvoice(order.id)),
+      invoice: this.stripInvoiceSecretsForSubmit(await this.buildPublicInvoice(order.id), !!(dto.targetUsernames && dto.targetUsernames.length > 0)),
     };
   }
 

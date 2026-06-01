@@ -277,7 +277,7 @@ type SearchResponse = {
 };
 
 type WarrantyInvoice = {
-  orderCode: string;
+  orderCode: string | null; // null when account-scoped (hidden from retail customers)
   productName: string;
   sellerContact: string | null;
   sellerShopName: string;
@@ -285,16 +285,16 @@ type WarrantyInvoice = {
   buyerName: string | null;
   buyerTelegramId: string | null;
   deliveredAccountText: string | null;
-  quantity: number;
-  totalSaleAmount: number;
+  quantity: number | null; // null when account-scoped
+  totalSaleAmount: number | null;
   warrantyPolicy: string | null;
   warrantyStartedAt: string | null;
   warrantyExpiresAt: string | null;
   createdAt: string;
   deliveredAt: string | null;
   orderStatus: string;
-  resolvedClaimCount: number;
-  resolvedAccountCount?: number;
+  resolvedClaimCount: number | null;
+  resolvedAccountCount?: number | null;
 };
 
 type ClaimResponse = {
@@ -464,9 +464,11 @@ function WarrantyInvoiceCard({ invoice }: { invoice: WarrantyInvoice }) {
 
   // Count ACCOUNTS resolved (refunded/replaced), not claims — a single claim can cover several
   // accounts (e.g. 4 of a 5-acc order). Fall back to claim count for older API responses.
-  const refunded = invoice.resolvedAccountCount ?? invoice.resolvedClaimCount;
+  const refunded = invoice.resolvedAccountCount ?? invoice.resolvedClaimCount ?? 0;
   const refundIsDone = refunded > 0;
-  const pricePerAcc = invoice.quantity > 0 ? Math.round(invoice.totalSaleAmount / invoice.quantity) : invoice.totalSaleAmount;
+  const pricePerAcc = invoice.quantity && invoice.quantity > 0
+    ? Math.round((invoice.totalSaleAmount ?? 0) / invoice.quantity)
+    : (invoice.totalSaleAmount ?? 0);
   const accountLines = parseAccountList(invoice.deliveredAccountText);
   const warrantyShort = invoice.warrantyPolicy
     ? (WARRANTY_POLICY_LABEL[invoice.warrantyPolicy.toUpperCase()] || invoice.warrantyPolicy)
@@ -490,10 +492,13 @@ function WarrantyInvoiceCard({ invoice }: { invoice: WarrantyInvoice }) {
 
       {/* ── Order identity ─────────────────────────── */}
       <div className="space-y-1.5">
-        <Row icon="📦"><span className="font-mono">{invoice.orderCode}</span></Row>
+        {/* Order code hidden when account-scoped (retail customer) */}
+        {invoice.orderCode && <Row icon="📦"><span className="font-mono">{invoice.orderCode}</span></Row>}
         <Row icon="🏷">
           <span className="font-medium">{invoice.productName}</span>
-          <span style={{ color: "var(--tx-m)" }}> · {invoice.quantity} acc · {formatVnd(invoice.totalSaleAmount)}</span>
+          {invoice.quantity != null && (
+            <span style={{ color: "var(--tx-m)" }}> · {invoice.quantity} acc · {formatVnd(invoice.totalSaleAmount ?? 0)}</span>
+          )}
         </Row>
         {(invoice.buyerUsername || invoice.buyerName || invoice.buyerTelegramId) && (
           <Row icon="👤">
@@ -544,18 +549,21 @@ function WarrantyInvoiceCard({ invoice }: { invoice: WarrantyInvoice }) {
 
       {/* ── Refund + meta ──────────────────────────── */}
       <div className="space-y-1.5 pt-2 border-t" style={{ borderColor: "var(--bd)" }}>
-        <Row icon={refundIsDone ? "✅" : "⏳"}>
-          <span
-            className="inline-block rounded-full px-2 py-0.5 text-xs font-semibold mr-2"
-            style={{
-              background: refundIsDone ? "var(--ok-bg, #d1fae5)" : "var(--warn-bg, #fef3c7)",
-              color: refundIsDone ? "var(--ok-fg, #047857)" : "var(--warn-fg, #92400e)",
-            }}
-          >
-            {refundIsDone ? `Đã refund ${refunded}/${invoice.quantity}` : `Chưa refund 0/${invoice.quantity}`}
-          </span>
-          <span style={{ color: "var(--tx-m)" }}>{formatVnd(pricePerAcc)}/acc</span>
-        </Row>
+        {/* Refund/economics hidden when account-scoped (retail customer sees only their account + status) */}
+        {invoice.quantity != null && (
+          <Row icon={refundIsDone ? "✅" : "⏳"}>
+            <span
+              className="inline-block rounded-full px-2 py-0.5 text-xs font-semibold mr-2"
+              style={{
+                background: refundIsDone ? "var(--ok-bg, #d1fae5)" : "var(--warn-bg, #fef3c7)",
+                color: refundIsDone ? "var(--ok-fg, #047857)" : "var(--warn-fg, #92400e)",
+              }}
+            >
+              {refundIsDone ? `Đã refund ${refunded}/${invoice.quantity}` : `Chưa refund 0/${invoice.quantity}`}
+            </span>
+            <span style={{ color: "var(--tx-m)" }}>{formatVnd(pricePerAcc)}/acc</span>
+          </Row>
+        )}
         <Row icon="📅"><span style={{ color: "var(--tx-m)" }}>Tạo {createdLabel}</span></Row>
       </div>
     </div>
