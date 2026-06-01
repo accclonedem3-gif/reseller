@@ -24,6 +24,8 @@ import {
   ResetShopCustomizationDto,
   SetBotTokenDto,
   SetProductDefaultDto,
+  TestInvoiceDto,
+  UpdateInvoiceTemplateDto,
   UpdateTemplateCustomizationDto,
   UploadMediaUrlDto,
 } from "./admin-template.dto";
@@ -125,5 +127,26 @@ export class AdminTemplateController {
   @Post("backfill-icons")
   backfillIcons(@CurrentUser() user: AuthenticatedUser) {
     return this.service.backfillIcons(user);
+  }
+
+  @Get("invoice-template")
+  getInvoiceTemplate(@CurrentUser() user: AuthenticatedUser) {
+    return this.service.getInvoiceTemplate(user);
+  }
+
+  @Put("invoice-template")
+  updateInvoiceTemplate(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() body: UpdateInvoiceTemplateDto,
+  ) {
+    return this.service.updateInvoiceTemplate(user, body);
+  }
+
+  @Post("invoice-template/test")
+  testInvoice(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() body: TestInvoiceDto,
+  ) {
+    return this.service.testInvoice(user, body);
   }
 }

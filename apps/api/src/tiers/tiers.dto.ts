@@ -11,8 +11,12 @@ export class PurchaseTierDto {
   @IsString()
   referralCode?: string;
 
-  @IsEnum(["PAYOS", "WALLET_BALANCE"])
-  paymentMethod!: "PAYOS" | "WALLET_BALANCE";
+  @IsOptional()
+  @IsString()
+  discountCode?: string;
+
+  @IsEnum(["PAYOS", "WALLET_BALANCE", "USDT_TRC20", "USDT_SOL"])
+  paymentMethod!: "PAYOS" | "WALLET_BALANCE" | "USDT_TRC20" | "USDT_SOL";
 }
 
 export class SetAutoRenewDto {
@@ -36,6 +40,12 @@ export class GrantUltraDto {
   @Min(1)
   days!: number;
 
+  @IsOptional()
+  @IsString()
+  note?: string;
+}
+
+export class RefundTierSubscriptionDto {
   @IsOptional()
   @IsString()
   note?: string;

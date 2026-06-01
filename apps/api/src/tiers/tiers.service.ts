@@ -14,6 +14,7 @@ import { PaymentService } from "../lib/payment.service";
 import { decimalToNumber, generateExternalPaymentCode, toDecimal } from "../lib/utils";
 import type { AuthenticatedUser } from "../types";
 
+import { DiscountCodesService } from "../discount-codes/discount-codes.service";
 import { TierAffiliateService } from "./tier-affiliate.service";
 import {
   PLAN_LABELS,
@@ -21,7 +22,9 @@ import {
   PAYMENT_EXPIRY_MINUTES,
   TIER_LABELS,
   TierKey,
+  getDiscountedPrice,
   getDurationMs,
+  getListPrice,
   getPrice,
   planEnumToKey,
   planKeyToEnum,
@@ -44,6 +47,8 @@ export class TiersService {
     private readonly config: AppConfigService,
     @Inject(TierAffiliateService)
     private readonly tierAffiliate: TierAffiliateService,
+    @Inject(DiscountCodesService)
+    private readonly discountCodes: DiscountCodesService,
   ) {}
 
   /**
@@ -60,6 +65,7 @@ export class TiersService {
         tierExpiresAt: true,
         affiliateUnlockedTier: true,
         referralCode: true,
+        referredBySellerId: true,
         autoRenewConfig: true,
       },
     });
@@ -74,13 +80,47 @@ export class TiersService {
     const wallet = await this.prisma.sellerWallet.findUnique({ where: { sellerId: seller.id } });
     const walletBalance = wallet ? decimalToNumber(wallet.balance) : 0;
 
+    // Find an active discount code owned by this seller's referrer that the seller hasn't used yet.
+    let availableDiscount: { code: string; discountPercent: number } | null = null;
+    if (seller.referredBySellerId) {
+      const dc = await this.prisma.discountCode.findFirst({
+        where: {
+          active: true,
+          referrerSellerId: seller.referredBySellerId,
+          usages: { none: { sellerId: seller.id } },
+        },
+        orderBy: [{ discountPercent: "desc" }, { createdAt: "desc" }],
+        select: { code: true, discountPercent: true },
+      });
+      if (dc) {
+        availableDiscount = {
+          code: dc.code,
+          discountPercent: decimalToNumber(dc.discountPercent),
+        };
+      }
+    }
+
     const buildPlans = (tier: TierKey) => (
       ["monthly", "quarterly", "semi_annual", "annual"] as PlanKey[]
-    ).map((plan) => ({
-      plan,
-      label: PLAN_LABELS[plan],
-      priceVnd: getPrice(tier, plan),
-    }));
+    ).map((plan) => {
+      if (availableDiscount) {
+        // Discount-code buyer: skip volume discount, use list price (monthly × N)
+        // as the strike-through reference, and the discounted price as the actual price.
+        const listPrice = getListPrice(tier, plan);
+        const discounted = getDiscountedPrice(tier, plan, availableDiscount.discountPercent);
+        return {
+          plan,
+          label: PLAN_LABELS[plan],
+          priceVnd: discounted,
+          originalPriceVnd: listPrice,
+        };
+      }
+      return {
+        plan,
+        label: PLAN_LABELS[plan],
+        priceVnd: getPrice(tier, plan),
+      };
+    });
 
     return {
       currentTier: seller.tier,
@@ -89,6 +129,7 @@ export class TiersService {
       walletBalance,
       autoRenewConfig: seller.autoRenewConfig,
       affiliateUnlockedTier: seller.affiliateUnlockedTier,
+      availableDiscount,
       pro: { tier: "pro" as const, label: TIER_LABELS.pro, plans: buildPlans("pro") },
       ultra: showUltra
         ? { tier: "ultra" as const, label: TIER_LABELS.ultra, plans: buildPlans("ultra") }
@@ -102,6 +143,7 @@ export class TiersService {
       tier: TierKey;
       plan: PlanKey;
       referralCode?: string | null;
+      discountCode?: string | null;
       paymentMethod: PaymentMethodInput;
       clientIp?: string;
       deviceFingerprint?: string;
@@ -131,11 +173,35 @@ export class TiersService {
       }
     }
 
-    const priceVnd = getPrice(args.tier, args.plan);
     const durationMs = getDurationMs(args.plan);
+
+    // ── Resolve discount code (if provided) ─────────────────────────
+    let discountCodeInfo: { id: string; discountPercent: number; referrerSellerId: string } | null = null;
+    if (args.discountCode) {
+      discountCodeInfo = await this.discountCodes.validateForSeller(args.discountCode, seller.id);
+    }
+
+    // Pricing rule:
+    //   No discount code → volume-discounted price (with -3/-7/-16% baked into TIER_PRICES)
+    //   With discount code → list price (monthly × N) × (1 - discountPercent)
+    //     i.e. discount-code buyers skip the volume discount.
+    const basePriceVnd = discountCodeInfo
+      ? getListPrice(args.tier, args.plan)
+      : getPrice(args.tier, args.plan);
+    const priceVnd = discountCodeInfo
+      ? getDiscountedPrice(args.tier, args.plan, discountCodeInfo.discountPercent)
+      : basePriceVnd;
 
     // ── Resolve referrer (only if seller doesn't already have one) ────
     let referrerSellerId: string | null = seller.referredBySellerId;
+    if (!referrerSellerId && discountCodeInfo) {
+      // Discount code links seller to its referrer
+      referrerSellerId = discountCodeInfo.referrerSellerId;
+      await this.prisma.seller.update({
+        where: { id: seller.id },
+        data: { referredBySellerId: referrerSellerId },
+      });
+    }
     if (!referrerSellerId && args.referralCode) {
       referrerSellerId = await this.tierAffiliate.resolveReferrer(
         args.referralCode,
@@ -165,7 +231,16 @@ export class TiersService {
 
     // ── Wallet balance payment shortcut ─────────────────────────────
     if (args.paymentMethod === "WALLET_BALANCE") {
-      return this.purchaseFromWalletBalance(seller.id, args.tier, args.plan, priceVnd, durationMs, referrerSellerId, grandReferrerSellerId);
+      return this.purchaseFromWalletBalance(
+        seller.id,
+        args.tier,
+        args.plan,
+        priceVnd,
+        durationMs,
+        referrerSellerId,
+        grandReferrerSellerId,
+        discountCodeInfo ? { id: discountCodeInfo.id, amountDiscounted: basePriceVnd - priceVnd } : null,
+      );
     }
 
     // ── External payment path: PayOS / USDT_TRC20 / USDT_SOL ────────
@@ -202,7 +277,7 @@ export class TiersService {
         checkoutUrl: payment.checkoutUrl,
         qrCode: payment.qrCode,
         expiresAt,
-        note: `TIER_SUB:${args.tier}:${args.plan}:${seller.id}:${referrerSellerId ?? ""}:${grandReferrerSellerId ?? ""}`,
+        note: `TIER_SUB:${args.tier}:${args.plan}:${seller.id}:${referrerSellerId ?? ""}:${grandReferrerSellerId ?? ""}:${discountCodeInfo?.id ?? ""}:${discountCodeInfo ? basePriceVnd - priceVnd : 0}`,
         rawPayloadJson: payment.providerPayload as any,
       },
     });
@@ -235,11 +310,16 @@ export class TiersService {
     durationMs: number,
     referrerSellerId: string | null,
     grandReferrerSellerId: string | null,
+    discountCode: { id: string; amountDiscounted: number } | null = null,
   ) {
     const result = await this.prisma.$transaction(async (tx) => {
       const wallet = await tx.sellerWallet.findUnique({ where: { sellerId } });
       if (!wallet) throw new BadRequestException("Ví seller chưa tồn tại, hãy nạp tiền trước.");
-      const balanceBefore = decimalToNumber(wallet.balance);
+      await tx.$queryRaw(
+        Prisma.sql`SELECT id FROM seller_wallets WHERE id = ${wallet.id} FOR UPDATE`,
+      );
+      const fresh = await tx.sellerWallet.findUniqueOrThrow({ where: { id: wallet.id } });
+      const balanceBefore = decimalToNumber(fresh.balance);
       if (balanceBefore < priceVnd) {
         throw new BadRequestException(`Số dư ví không đủ. Cần ${priceVnd.toLocaleString("vi-VN")}đ, hiện có ${balanceBefore.toLocaleString("vi-VN")}đ.`);
       }
@@ -306,6 +386,18 @@ export class TiersService {
         sourceLabel,
       });
 
+      // Mark discount code as used (unique [discountCodeId, sellerId] prevents reuse)
+      if (discountCode) {
+        await tx.discountCodeUsage.create({
+          data: {
+            discountCodeId: discountCode.id,
+            sellerId,
+            subscriptionId: subscription.id,
+            amountDiscounted: toDecimal(discountCode.amountDiscounted),
+          },
+        });
+      }
+
       return { subscription, commissions, balanceAfter };
     });
 
@@ -331,13 +423,15 @@ export class TiersService {
     const deposit = await this.prisma.depositRequest.findUnique({ where: { externalOrderCode } });
     if (!deposit) return null;
     const note = deposit.note || "";
-    const match = note.match(/^TIER_SUB:(pro|ultra):(monthly|quarterly|semi_annual|annual):([^:]+):([^:]*):([^:]*)$/);
+    const match = note.match(/^TIER_SUB:(pro|ultra):(monthly|quarterly|semi_annual|annual):([^:]+):([^:]*):([^:]*)(?::([^:]*):([^:]*))?$/);
     if (!match) return null;
     const tier = match[1] as TierKey;
     const plan = match[2] as PlanKey;
     const sellerId = match[3]!;
     const referrerSellerId = match[4] ? match[4] : null;
     const grandReferrerSellerId = match[5] ? match[5] : null;
+    const discountCodeId = match[6] ? match[6] : null;
+    const discountAmount = match[7] ? Number(match[7]) || 0 : 0;
 
     if (deposit.status === "CONFIRMED") {
       this.logger.log(`TIER_SUB already confirmed: ${externalOrderCode}`);
@@ -425,6 +519,19 @@ export class TiersService {
         grandReferrerSellerId,
         sourceLabel,
       });
+
+      if (discountCodeId) {
+        await tx.discountCodeUsage.create({
+          data: {
+            discountCodeId,
+            sellerId,
+            subscriptionId: subscription.id,
+            amountDiscounted: toDecimal(discountAmount),
+          },
+        }).catch((err) => {
+          this.logger.warn(`Failed to record discount usage for ${externalOrderCode}: ${err.message}`);
+        });
+      }
     });
 
     return { success: true, tier, plan };
@@ -471,6 +578,126 @@ export class TiersService {
     });
 
     return { success: true, subscriptionId: subscription.id, endsAt };
+  }
+
+  /**
+   * Admin refunds a tier subscription:
+   *   - marks it REFUNDED + refundedAt
+   *   - claws back affiliate commissions paid out (within 7d window)
+   *   - if paid from wallet, credits the price back to the seller's wallet
+   *   - if paid via gateway, returns a marker so admin handles the external refund
+   *   - downgrades seller.tier to FREE if this was their active subscription
+   */
+  async refundTierSubscription(
+    adminUser: AuthenticatedUser,
+    args: { subscriptionId: string; note?: string },
+  ) {
+    if (adminUser.role !== "SUPER_ADMIN") {
+      throw new ForbiddenException("Only super admin can refund tier subscriptions.");
+    }
+
+    const sub = await this.prisma.tierSubscription.findUnique({
+      where: { id: args.subscriptionId },
+      select: {
+        id: true,
+        sellerId: true,
+        tier: true,
+        priceVnd: true,
+        startsAt: true,
+        endsAt: true,
+        status: true,
+        paidFromWalletBalance: true,
+        refundedAt: true,
+        isAdminGrant: true,
+        seller: { select: { tier: true, tierExpiresAt: true } },
+      },
+    });
+    if (!sub) throw new NotFoundException("Tier subscription not found.");
+    if (sub.refundedAt || sub.status === "REFUNDED") {
+      throw new BadRequestException("Subscription đã được refund trước đó.");
+    }
+    if (sub.isAdminGrant) {
+      throw new BadRequestException("Admin grant không thể refund (không có thanh toán).");
+    }
+
+    const priceVnd = decimalToNumber(sub.priceVnd);
+    const isStillActive =
+      sub.seller.tier === sub.tier &&
+      sub.seller.tierExpiresAt &&
+      sub.seller.tierExpiresAt.getTime() === sub.endsAt.getTime();
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.tierSubscription.update({
+        where: { id: sub.id },
+        data: {
+          status: "REFUNDED",
+          refundedAt: new Date(),
+          adminGrantNote: args.note
+            ? `[refund by admin] ${args.note}`
+            : "[refund by admin]",
+        },
+      });
+
+      // 1) Claw back commissions (referrer + grand-referrer) if within window
+      await this.tierAffiliate.clawBackCommissions(tx, sub.id);
+
+      // 2) Refund money to seller's wallet if they paid from wallet balance
+      if (sub.paidFromWalletBalance && priceVnd > 0) {
+        const wallet = await tx.sellerWallet.upsert({
+          where: { sellerId: sub.sellerId },
+          update: {},
+          create: { sellerId: sub.sellerId, balance: toDecimal(0) },
+        });
+        await tx.$queryRaw(
+          Prisma.sql`SELECT id FROM seller_wallets WHERE id = ${wallet.id} FOR UPDATE`,
+        );
+        const fresh = await tx.sellerWallet.findUniqueOrThrow({ where: { id: wallet.id } });
+        const balanceBefore = decimalToNumber(fresh.balance);
+        const balanceAfter = balanceBefore + priceVnd;
+        await tx.sellerWallet.update({
+          where: { id: wallet.id },
+          data: { balance: toDecimal(balanceAfter) },
+        });
+        await tx.walletLedger.create({
+          data: {
+            sellerId: sub.sellerId,
+            walletId: wallet.id,
+            type: WalletLedgerType.ADJUST,
+            amount: toDecimal(priceVnd),
+            balanceBefore: toDecimal(balanceBefore),
+            balanceAfter: toDecimal(balanceAfter),
+            referenceType: "tier_subscription_refund",
+            referenceId: sub.id,
+            note: `Hoàn ví khi admin refund subscription ${sub.id.slice(0, 8)}`,
+          },
+        });
+      }
+
+      // 3) Downgrade seller tier if this was the active subscription
+      if (isStillActive) {
+        await tx.seller.update({
+          where: { id: sub.sellerId },
+          data: {
+            tier: SellerTier.FREE,
+            tierStartedAt: null,
+            tierExpiresAt: null,
+          },
+        });
+      }
+    });
+
+    this.logger.log(
+      `Admin ${adminUser.id} refunded tier subscription ${sub.id} (seller=${sub.sellerId}, price=${priceVnd}, walletRefunded=${sub.paidFromWalletBalance})`,
+    );
+
+    return {
+      success: true,
+      subscriptionId: sub.id,
+      walletRefunded: sub.paidFromWalletBalance,
+      priceRefunded: priceVnd,
+      externalRefundRequired: !sub.paidFromWalletBalance,
+      tierDowngraded: isStillActive,
+    };
   }
 
   /**

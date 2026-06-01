@@ -3,23 +3,37 @@ import {
   Boxes,
   ChevronDown,
   Crown,
+  Download,
   Eye,
   EyeOff,
+  History,
   PackagePlus,
   Save,
   Search,
   ShieldCheck,
   Sparkles,
   TrendingUp,
+  Upload,
   X,
   Zap,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { useAuth } from "@/auth/auth-provider";
 import { Field } from "@/components/dashboard/field";
+import {
+  ExtractStockModal,
+  ExtractStockResultModal,
+  StockHistoryModal,
+  UploadStockModal,
+  UploadStockResultModal,
+  type EntryListPage,
+  type ExtractPayload,
+  type StockExtractMethod,
+  type StockOperation,
+} from "@/components/dashboard/stock-modals";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -1060,6 +1074,78 @@ export function SourceProductsPage({
   const publishedCount = useMemo(() => products.filter((p) => p.internalSourceEnabled).length, [products]);
   const manualCount = useMemo(() => products.filter((p) => p.isManual).length, [products]);
 
+  // ----- Stock modals (Upload / Extract / History) — ULTRA source-provider only -----
+  const [stockUploadOpen, setStockUploadOpen] = useState(false);
+  const [stockExtractOpen, setStockExtractOpen] = useState(false);
+  const [stockHistoryOpen, setStockHistoryOpen] = useState(false);
+  const [uploadResult, setUploadResult] = useState<{ added: number; totalBefore: number; totalAfter: number; preview: string[] } | null>(null);
+  const [extractResult, setExtractResult] = useState<{ extracted: string[]; totalBefore: number; totalAfter: number; method: StockExtractMethod; dryRun?: boolean } | null>(null);
+
+  // Endpoint is always /source/products/:id/stock/* on THIS page — it operates on the
+  // ULTRA's published source-provider catalog. The same modals can be reused on the
+  // generic seller products page by branching the URL to /products/source-products/:id/stock/*.
+  const stockEndpointBase = selectedProduct ? `/source/products/${selectedProduct.id}/stock` : null;
+
+  const uploadStockMutation = useMutation({
+    mutationFn: async (file: File) => {
+      if (!stockEndpointBase) throw new Error("No product selected.");
+      const form = new FormData();
+      form.append("file", file);
+      const res = await api.post(`${stockEndpointBase}/upload`, form, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
+      return res.data as { added: number; totalBefore: number; totalAfter: number; preview: string[] };
+    },
+    onSuccess: async (data) => {
+      setUploadResult(data);
+      setStockUploadOpen(false);
+      await queryClient.invalidateQueries({ queryKey: ["source-products", "catalog"] });
+      await queryClient.invalidateQueries({ queryKey: ["source-stock-history", selectedProduct?.id] });
+    },
+    onError: (error) => showToast({ tone: "error", message: getApiErrorMessage(error, t.errDefault) }),
+  });
+
+  const extractStockMutation = useMutation({
+    mutationFn: async (payload: ExtractPayload) => {
+      if (!stockEndpointBase) throw new Error("No product selected.");
+      const res = await api.post(`${stockEndpointBase}/extract`, payload);
+      const data = res.data as { extracted: string[]; totalBefore: number; totalAfter: number; method: StockExtractMethod; dryRun?: boolean };
+      return { ...data, dryRun: data.dryRun ?? payload.dryRun };
+    },
+    onSuccess: async (data) => {
+      setExtractResult(data);
+      setStockExtractOpen(false);
+      if (!data.dryRun) {
+        await queryClient.invalidateQueries({ queryKey: ["source-products", "catalog"] });
+        await queryClient.invalidateQueries({ queryKey: ["source-stock-history", selectedProduct?.id] });
+      }
+    },
+    onError: (error) => showToast({ tone: "error", message: getApiErrorMessage(error, t.errDefault) }),
+  });
+
+  const listSourceStockEntries = useCallback(
+    async (params: { limit: number; offset: number; search: string }): Promise<EntryListPage> => {
+      if (!stockEndpointBase) {
+        return { items: [], total: 0, filteredTotal: 0 };
+      }
+      const res = await api.get<EntryListPage>(`${stockEndpointBase}/entries`, { params });
+      return res.data;
+    },
+    [stockEndpointBase],
+  );
+
+  const stockHistoryQuery = useQuery<{ items: StockOperation[]; total: number }>({
+    queryKey: ["source-stock-history", selectedProduct?.id],
+    queryFn: async () => (await api.get(`${stockEndpointBase}/history`, { params: { limit: 100, offset: 0 } })).data,
+    enabled: stockHistoryOpen && Boolean(stockEndpointBase),
+  });
+
+  // Show stock action buttons only when (a) ULTRA can manage internal source (covered by gate below),
+  // (b) a product is selected, and (c) that product is published as a source-provider product.
+  const showStockButtons = Boolean(selectedProduct?.internalSourceEnabled);
+  const currentStock = selectedProduct?.available ?? 0;
+  const selectedProductDisplay = selectedProduct ? localizeProductName(selectedProduct.displayName, lang) : "";
+
   if (!canManageInternalSource) return <TierGate />;
 
   return (
@@ -1222,6 +1308,37 @@ export function SourceProductsPage({
                   </div>
                   <p className="hidden shrink-0 text-right text-xs text-slate-600 sm:block">{t.editing}</p>
                 </div>
+                {showStockButtons && (
+                  <div className="mt-4 flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setStockUploadOpen(true)}
+                      className="inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider transition-all hover:opacity-80"
+                      style={{ background: "rgba(16,185,129,0.10)", border: "1px solid rgba(16,185,129,0.30)", color: "rgb(110,231,183)" }}
+                    >
+                      <Upload className="h-3 w-3" />
+                      Upload
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setStockExtractOpen(true)}
+                      className="inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider transition-all hover:opacity-80"
+                      style={{ background: "rgba(249,115,22,0.10)", border: "1px solid rgba(249,115,22,0.30)", color: "rgb(251,146,60)" }}
+                    >
+                      <Download className="h-3 w-3" />
+                      Extract
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setStockHistoryOpen(true)}
+                      className="inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider transition-all hover:opacity-80"
+                      style={{ background: "rgba(139,92,246,0.10)", border: "1px solid rgba(139,92,246,0.30)", color: "rgb(196,181,253)" }}
+                    >
+                      <History className="h-3 w-3" />
+                      History
+                    </button>
+                  </div>
+                )}
               </div>
               <div className="p-6">
                 <ProductForm
@@ -1299,6 +1416,46 @@ export function SourceProductsPage({
           </div>
         </div>,
         document.body,
+      )}
+
+      {/* Stock modals — ULTRA source-provider only (gated above) */}
+      {selectedProduct && (
+        <>
+          <UploadStockModal
+            open={stockUploadOpen}
+            onClose={() => setStockUploadOpen(false)}
+            productName={selectedProductDisplay}
+            currentStock={currentStock}
+            isUploading={uploadStockMutation.isPending}
+            onUpload={(file) => uploadStockMutation.mutate(file)}
+          />
+          <UploadStockResultModal
+            open={Boolean(uploadResult)}
+            onClose={() => setUploadResult(null)}
+            result={uploadResult}
+          />
+          <ExtractStockModal
+            open={stockExtractOpen}
+            onClose={() => setStockExtractOpen(false)}
+            productName={selectedProductDisplay}
+            currentStock={currentStock}
+            isExtracting={extractStockMutation.isPending}
+            onExtract={(payload) => extractStockMutation.mutate(payload)}
+            onListEntries={listSourceStockEntries}
+          />
+          <ExtractStockResultModal
+            open={Boolean(extractResult)}
+            onClose={() => setExtractResult(null)}
+            result={extractResult}
+          />
+          <StockHistoryModal
+            open={stockHistoryOpen}
+            onClose={() => setStockHistoryOpen(false)}
+            productName={selectedProductDisplay}
+            items={stockHistoryQuery.data?.items ?? []}
+            isLoading={stockHistoryQuery.isLoading}
+          />
+        </>
       )}
     </div>
   );

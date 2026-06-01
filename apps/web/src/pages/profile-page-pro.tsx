@@ -643,8 +643,8 @@ export function ProfilePage() {
     e.preventDefault();
     setDepositError(null);
     const amount = Number(depositAmount);
-    if (!amount || amount < 1000) {
-      setDepositError("Số tiền tối thiểu 1.000đ.");
+    if (!amount || amount < 100000) {
+      setDepositError("Số tiền tối thiểu 100.000đ.");
       return;
     }
     depositMutation.mutate({ amount, paymentMethod: depositMethod });
@@ -659,8 +659,8 @@ export function ProfilePage() {
     e.preventDefault();
     setWithdrawError(null);
     const amount = Number(withdrawForm.amount);
-    if (!amount || amount < 1000) {
-      setWithdrawError("Số tiền tối thiểu 1.000đ.");
+    if (!amount || amount < 100000) {
+      setWithdrawError("Số tiền tối thiểu 100.000đ.");
       return;
     }
     if (sellerWallet && amount > sellerWallet.withdrawableBalance) {
@@ -1319,9 +1319,10 @@ export function ProfilePage() {
               <form onSubmit={handleDepositSubmit} className="space-y-4 px-6 py-5">
                 <div>
                   <p className="mb-1.5 text-[11px] font-black uppercase tracking-widest" style={{ color: "var(--tx-f)" }}>Số tiền (đ)</p>
-                  <input type="number" inputMode="numeric" min={1000} value={depositAmount}
+                  <input type="number" inputMode="numeric" min={100000} step={1000} value={depositAmount}
                     onChange={(e) => setDepositAmount(e.target.value)}
                     placeholder="100000" className={inputCls} style={inputStyle} />
+                  <p className="mt-1 text-[10px]" style={{ color: "var(--tx-f)" }}>Tối thiểu: 100.000đ</p>
                   <div className="mt-2 flex flex-wrap gap-1.5">
                     {[100000, 500000, 1000000, 5000000].map((v) => (
                       <button key={v} type="button" onClick={() => setDepositAmount(String(v))}
@@ -1402,9 +1403,10 @@ export function ProfilePage() {
             <form onSubmit={handleWithdrawSubmit} className="space-y-3 px-6 py-5">
               <div>
                 <p className="mb-1.5 text-[11px] font-black uppercase tracking-widest" style={{ color: "var(--tx-f)" }}>Số tiền (đ)</p>
-                <input type="number" inputMode="numeric" min={1000} value={withdrawForm.amount}
+                <input type="number" inputMode="numeric" min={100000} step={1000} value={withdrawForm.amount}
                   onChange={(e) => setWithdrawForm((f) => ({ ...f, amount: e.target.value }))}
                   placeholder="100000" className={inputCls} style={inputStyle} />
+                <p className="mt-1 text-[10px]" style={{ color: "var(--tx-f)" }}>Tối thiểu: 100.000đ</p>
               </div>
               <div className="grid gap-3 sm:grid-cols-2">
                 <div>

@@ -38,6 +38,10 @@ import { OrdersController } from "./orders/orders.controller";
 import { OrdersService } from "./orders/orders.service";
 import { ProductsController } from "./products/products.controller";
 import { ProductsService } from "./products/products.service";
+import { ProductsStockController } from "./products-stock/products-stock.controller";
+import { ProductsStockService } from "./products-stock/products-stock.service";
+import { SourceStockController } from "./source-stock/source-stock.controller";
+import { SourceStockService } from "./source-stock/source-stock.service";
 import { ReportsController } from "./reports/reports.controller";
 import { ReportsService } from "./reports/reports.service";
 import { ShopsController } from "./shops/shops.controller";
@@ -71,6 +75,10 @@ import { TiersService } from "./tiers/tiers.service";
 import { TierAffiliateService } from "./tiers/tier-affiliate.service";
 import { AdminTemplateController } from "./admin-template/admin-template.controller";
 import { AdminTemplateService } from "./admin-template/admin-template.service";
+import { DiscountCodesController } from "./discount-codes/discount-codes.controller";
+import { DiscountCodesService } from "./discount-codes/discount-codes.service";
+import { AdminNotifyService } from "./lib/admin-notify.service";
+import { MailService } from "./lib/mail.service";
 
 @Module({
   imports: [
@@ -81,6 +89,8 @@ import { AdminTemplateService } from "./admin-template/admin-template.service";
     AuthController,
     ShopsController,
     ProductsController,
+    ProductsStockController,
+    SourceStockController,
     OrdersController,
     WalletController,
     ReportsController,
@@ -104,6 +114,7 @@ import { AdminTemplateService } from "./admin-template/admin-template.service";
     IconCatalogController,
     MiniAppController,
     AdminTemplateController,
+    DiscountCodesController,
   ],
   providers: [
     AppConfigService,
@@ -118,6 +129,8 @@ import { AdminTemplateService } from "./admin-template/admin-template.service";
     ShopsService,
     CustomerWalletService,
     ProductsService,
+    ProductsStockService,
+    SourceStockService,
     WalletService,
     WalletPromotionService,
     WarrantyService,
@@ -149,6 +162,9 @@ import { AdminTemplateService } from "./admin-template/admin-template.service";
     MiniAppService,
     GramJsService,
     AdminTemplateService,
+    DiscountCodesService,
+    MailService,
+    AdminNotifyService,
   ],
 })
 export class AppModule implements NestModule {

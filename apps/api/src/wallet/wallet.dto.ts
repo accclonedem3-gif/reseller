@@ -2,7 +2,7 @@ import { IsDateString, IsEnum, IsNumber, IsOptional, IsString, Max, Min, MinLeng
 
 export class CreateDepositRequestDto {
   @IsNumber()
-  @Min(1000)
+  @Min(100000)
   amount!: number;
 
   @IsOptional()
@@ -16,7 +16,7 @@ export class CreateDepositRequestDto {
 
 export class CreateWithdrawRequestDto {
   @IsNumber()
-  @Min(1000)
+  @Min(100000)
   amount!: number;
 
   @IsString()
@@ -60,4 +60,16 @@ export class CreateWalletPromotionDto {
 
   @IsDateString()
   endAt!: string;
+}
+
+export class ApproveWithdrawRequestDto {
+  @IsOptional()
+  @IsString()
+  note?: string;
+}
+
+export class RejectWithdrawRequestDto {
+  @IsString()
+  @MinLength(3)
+  reason!: string;
 }

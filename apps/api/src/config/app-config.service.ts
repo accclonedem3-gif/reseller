@@ -53,8 +53,36 @@ export class AppConfigService {
     return process.env.RESEND_API_KEY || "";
   }
 
+  get brevoApiKey() {
+    return process.env.BREVO_API_KEY || "";
+  }
+
+  /** "brevo" | "resend" — auto-detected if not set explicitly. */
+  get mailProvider(): "brevo" | "resend" | "" {
+    const explicit = String(process.env.MAIL_PROVIDER || "").toLowerCase();
+    if (explicit === "brevo" || explicit === "resend") return explicit;
+    if (process.env.BREVO_API_KEY) return "brevo";
+    if (process.env.RESEND_API_KEY) return "resend";
+    return "";
+  }
+
   get mailFrom() {
     return process.env.MAIL_FROM || "Reseller Platform <onboarding@resend.dev>";
+  }
+
+  get adminTelegramBotToken() {
+    return process.env.ADMIN_TG_BOT_TOKEN || "";
+  }
+
+  get adminTelegramChatId() {
+    return process.env.ADMIN_TG_CHAT_ID || "";
+  }
+
+  /** Optional webhook URL of an external alert bot (e.g. Trâm Anh) that exposes
+   *  POST /alert with body { level, service, message }. If set, AdminNotifyService
+   *  prefers this over direct Telegram API calls. */
+  get adminAlertWebhookUrl() {
+    return process.env.ADMIN_ALERT_WEBHOOK_URL || "";
   }
 
   get encryptionKey() {

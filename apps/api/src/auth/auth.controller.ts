@@ -8,8 +8,10 @@ import {
   Post,
   Put,
   Query,
+  Req,
   UseGuards,
 } from "@nestjs/common";
+import type { Request } from "express";
 import { Throttle, ThrottlerGuard } from "@nestjs/throttler";
 import { UserRole } from "@prisma/client";
 
@@ -71,8 +73,20 @@ export class AuthController {
   @Post("auth/register")
   @UseGuards(ThrottlerGuard)
   @Throttle({ default: { ttl: 60000, limit: 5 } })
-  register(@Body() body: RegisterSellerDto) {
-    return this.authService.register(body.username, body.email, body.password, body.displayName, body.referralCode);
+  register(@Body() body: RegisterSellerDto, @Req() req: Request) {
+    const xff = req.headers["x-forwarded-for"];
+    const signupIp = (Array.isArray(xff) ? xff[0] : xff?.split(",")[0]?.trim()) || req.ip || null;
+    const userAgent = String(req.headers["user-agent"] || "").slice(0, 255);
+    const acceptLang = String(req.headers["accept-language"] || "").slice(0, 50);
+    const signupDeviceFingerprint = userAgent ? `${userAgent}|${acceptLang}` : null;
+    return this.authService.register(
+      body.username,
+      body.email,
+      body.password,
+      body.displayName,
+      body.referralCode,
+      { signupIp, signupDeviceFingerprint },
+    );
   }
 
   @Post("auth/me/referral-code")

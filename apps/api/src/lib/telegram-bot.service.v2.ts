@@ -291,7 +291,11 @@ export class TelegramBotService {
     private readonly connectionTopupService: SellerSourceConnectionService,
     @Inject(GramJsService)
     private readonly gramJsService: GramJsService,
-  ) {}
+  ) {
+    this.redis = new IORedis(this.config.redisUrl, {
+      maxRetriesPerRequest: null,
+    });
+  }
 
   private _globalDefaultCust: { data: Record<string, unknown> | null; ts: number } | null = null;
 
@@ -2047,9 +2051,15 @@ export class TelegramBotService {
       return;
     }
 
-    await this.sendText(token, customer.telegramChatId, paymentLines.join("\n"), actions, {
+    const sentResult = await this.sendText(token, customer.telegramChatId, paymentLines.join("\n"), actions, {
       inline_keyboard: inlineKeyboard,
-    }, "HTML");
+    }, "HTML") as { message_id?: number } | undefined;
+    if (sentResult?.message_id && created.order.paymentTransaction?.externalOrderCode) {
+      await this.prisma.paymentTransaction.update({
+        where: { externalOrderCode: created.order.paymentTransaction.externalOrderCode },
+        data: { qrTelegramMessageId: sentResult.message_id },
+      }).catch(() => undefined);
+    }
   }
 
   private async handleBuyWithWallet(
@@ -2319,7 +2329,7 @@ export class TelegramBotService {
       return;
     }
 
-    const selection = this.getPendingPaymentSelection(shopId, telegramUserId);
+    const selection = await this.getPendingPaymentSelection(shopId, telegramUserId);
     const provider = this.normalizePaymentOption(rawProvider);
 
     if (!selection || !provider) {
@@ -3231,7 +3241,7 @@ export class TelegramBotService {
   ) {
     const telegramUserId = String(message.from?.id || "");
     const language = await this.getCustomerLanguage(shopId, telegramUserId);
-    const pending = this.getPendingWarrantyClaimSubmission(shopId, telegramUserId);
+    const pending = await this.getPendingWarrantyClaimSubmission(shopId, telegramUserId);
 
     if (!pending) {
       return false;
@@ -3400,7 +3410,7 @@ export class TelegramBotService {
   ) {
     const telegramUserId = String(message.from?.id || "");
     const language = await this.getCustomerLanguage(shopId, telegramUserId);
-    const pending = this.getPendingWarrantyAccountSelection(shopId, telegramUserId);
+    const pending = await this.getPendingWarrantyAccountSelection(shopId, telegramUserId);
 
     if (!pending) {
       return false;
@@ -3515,7 +3525,7 @@ export class TelegramBotService {
   ) {
     const telegramUserId = String(message.from?.id || "");
     const language = await this.getCustomerLanguage(shopId, telegramUserId);
-    let pending = this.getPendingTxHashSubmission(shopId, telegramUserId);
+    let pending = await this.getPendingTxHashSubmission(shopId, telegramUserId);
 
     if (!pending) {
       // Fallback: detect tx hash format and try to match a recent pending USDT order
@@ -3754,7 +3764,7 @@ export class TelegramBotService {
   ) {
     const telegramUserId = String(message.from?.id || "");
     const language = await this.getCustomerLanguage(shopId, telegramUserId);
-    const selection = this.getPendingQuantitySelection(shopId, telegramUserId);
+    const selection = await this.getPendingQuantitySelection(shopId, telegramUserId);
 
     if (!selection) {
       return false;
@@ -3870,7 +3880,7 @@ export class TelegramBotService {
   ) {
     const telegramUserId = String(message.from?.id || "");
     const language = await this.getCustomerLanguage(shopId, telegramUserId);
-    const pending = this.getPendingWalletTopup(shopId, telegramUserId);
+    const pending = await this.getPendingWalletTopup(shopId, telegramUserId);
 
     if (!pending) {
       return false;
@@ -4315,14 +4325,22 @@ export class TelegramBotService {
     const localizedName = this.localizeProductName(selection.displayName, language);
     const priceStr = this.formatBotMoneyWithUsdOverride(selection.salePrice, (selection as any).salePriceUsd, language, usdtVndRate);
     const stockLabel = selection.available === null ? "∞" : String(Math.max(0, selection.available));
+    // If a custom emoji is set, Telegram renders it as the button icon already.
+    // Strip the leading text emoji from the label to avoid two icons stacked side-by-side.
+    const buyOtherCustomEmoji = custEmojiIdsQty["buyOther"];
+    const buyOtherText = buyOtherCustomEmoji
+      ? this.buttonLabel("buyOther", language).replace(/^[^\p{L}\p{N}]+/u, "").trim()
+      : this.buttonLabel("buyOther", language);
     const replyMarkup = {
       inline_keyboard: [
-        [{ text: this.buttonLabel("buyOther", language), callback_data: "home:products", ...(custEmojiIdsQty["buyOther"] ? { icon_custom_emoji_id: custEmojiIdsQty["buyOther"] } : {}) }],
+        [{ text: buyOtherText, callback_data: "home:products", ...(buyOtherCustomEmoji ? { icon_custom_emoji_id: buyOtherCustomEmoji } : {}) }],
       ],
     };
     const quantityLine = this.buildQuantityPromptText(selection.maxQuantity, language, msgEmojiIds["quantityInput"] || "");
     const hasLabelEmojis = Object.values(labelEmojiIds).some((v) => v?.trim());
-    const useHtml = !!(dbEmojiId || productNoteEmojiId || hasLabelEmojis);
+    // Force HTML mode when a description exists so the <blockquote> wrap renders
+    // as a styled card instead of leaking raw tags into the caption.
+    const useHtml = !!(dbEmojiId || productNoteEmojiId || hasLabelEmojis || selection.description?.trim());
 
     const mkLabel = (key: string, fallback: string) => {
       const eid = labelEmojiIds[key]?.trim();
@@ -4352,16 +4370,21 @@ export class TelegramBotService {
         `${mkLabel("stock", "📦")} ${stockLabelText}: ${stockLabel} ${unitLabel}`,
       ];
 
-      if (selection.soldCount != null && selection.soldCount > 0) {
-        lines.push(`${mkLabel("sold", "📊")} ${soldLabel}: ${selection.soldCount} ${unitLabel}`);
-      }
+      lines.push(`${mkLabel("sold", "📊")} ${soldLabel}: ${selection.soldCount ?? 0} ${unitLabel}`);
 
       if ((selection as any).deliveryFormatHint?.trim()) {
         lines.push(``, `${mkLabel("format", "🔑")} ${formatLabel}: ${escFn((selection as any).deliveryFormatHint.trim())}`);
       }
 
       if (selection.description?.trim()) {
-        lines.push(``, `${mkLabel("description", "💬")} ${descLabel}:`, escFn(selection.description.trim()));
+        const descLines: string[] = [`${mkLabel("description", "💬")} ${descLabel}:`];
+        for (const rawLine of selection.description.trim().split(/\r?\n/)) {
+          const trimmed = rawLine.trim();
+          if (!trimmed) continue;
+          const bulleted = /^[•·*\-]\s*/.test(trimmed) ? trimmed : `• ${trimmed}`;
+          descLines.push(escFn(bulleted));
+        }
+        lines.push(``, `<blockquote>${descLines.join("\n")}</blockquote>`);
       }
 
       if (selection.promoBanner) {
@@ -4417,16 +4440,21 @@ export class TelegramBotService {
         `${mkLabel("stock", "📦")} ${stockLabelText}: ${stockLabel} ${unitLabel}`,
       );
 
-      if (selection.soldCount != null && selection.soldCount > 0) {
-        textLines.push(`${mkLabel("sold", "📊")} ${soldLabel}: ${selection.soldCount} ${unitLabel}`);
-      }
+      textLines.push(`${mkLabel("sold", "📊")} ${soldLabel}: ${selection.soldCount ?? 0} ${unitLabel}`);
 
       if ((selection as any).deliveryFormatHint?.trim()) {
         textLines.push(``, `${mkLabel("format", "🔑")} ${formatLabel}: ${escFn((selection as any).deliveryFormatHint.trim())}`);
       }
 
       if (selection.description?.trim()) {
-        textLines.push(``, `${mkLabel("description", "💬")} ${descLabel}:`, escFn(selection.description.trim()));
+        const descLines: string[] = [`${mkLabel("description", "💬")} ${descLabel}:`];
+        for (const rawLine of selection.description.trim().split(/\r?\n/)) {
+          const trimmed = rawLine.trim();
+          if (!trimmed) continue;
+          const bulleted = /^[•·*\-]\s*/.test(trimmed) ? trimmed : `• ${trimmed}`;
+          descLines.push(escFn(bulleted));
+        }
+        textLines.push(``, `<blockquote>${descLines.join("\n")}</blockquote>`);
       }
 
       if (selection.promoBanner) {
@@ -4632,7 +4660,7 @@ export class TelegramBotService {
     return `${shopId}:${telegramUserId}`;
   }
 
-  private getPendingWalletTopup(shopId: string, telegramUserId: string) {
+  private async getPendingWalletTopup(shopId: string, telegramUserId: string) {
     const key = this.getPendingQuantityKey(shopId, telegramUserId);
     const pending = await this.getPendingSession<PendingWalletTopupSelection>('pendingWalletTopups', key);
 
@@ -4648,7 +4676,7 @@ export class TelegramBotService {
     return pending;
   }
 
-  private getPendingQuantitySelection(shopId: string, telegramUserId: string) {
+  private async getPendingQuantitySelection(shopId: string, telegramUserId: string) {
     const key = this.getPendingQuantityKey(shopId, telegramUserId);
     const selection = await this.getPendingSession<PendingQuantitySelection>('pendingQuantitySelections', key);
 
@@ -4664,7 +4692,7 @@ export class TelegramBotService {
     return selection;
   }
 
-  private getPendingPaymentSelection(shopId: string, telegramUserId: string) {
+  private async getPendingPaymentSelection(shopId: string, telegramUserId: string) {
     const key = this.getPendingQuantityKey(shopId, telegramUserId);
     const selection = await this.getPendingSession<PendingPaymentSelection>('pendingPaymentSelections', key);
 
@@ -4680,7 +4708,7 @@ export class TelegramBotService {
     return selection;
   }
 
-  private getPendingTxHashSubmission(shopId: string, telegramUserId: string) {
+  private async getPendingTxHashSubmission(shopId: string, telegramUserId: string) {
     const key = this.getPendingQuantityKey(shopId, telegramUserId);
     const pending = await this.getPendingSession<PendingTxHashSubmission>('pendingTxHashSubmissions', key);
 
@@ -4696,7 +4724,7 @@ export class TelegramBotService {
     return pending;
   }
 
-  private getPendingWarrantyClaimSubmission(shopId: string, telegramUserId: string) {
+  private async getPendingWarrantyClaimSubmission(shopId: string, telegramUserId: string) {
     const key = this.getPendingQuantityKey(shopId, telegramUserId);
     const pending = await this.getPendingSession<PendingWarrantyClaimSubmission>('pendingWarrantyClaimSubmissions', key);
 
@@ -4759,7 +4787,7 @@ export class TelegramBotService {
     await this.delPendingSession("pendingWarrantyIssueDescriptions", this.getPendingQuantityKey(shopId, telegramUserId));
   }
 
-  private getPendingWarrantyAccountSelection(shopId: string, telegramUserId: string) {
+  private async getPendingWarrantyAccountSelection(shopId: string, telegramUserId: string) {
     const key = this.getPendingQuantityKey(shopId, telegramUserId);
     const pending = await this.getPendingSession<PendingWarrantyAccountSelection>('pendingWarrantyAccountSelections', key);
 
@@ -5104,15 +5132,24 @@ export class TelegramBotService {
         firstName: from.firstName,
         lastName: from.lastName,
       },
-      select: { id: true, referredById: true },
+      select: { id: true, referredById: true, telegramUserId: true, telegramChatId: true },
     });
     if (customer.referredById) return;
 
     const referrer = await this.prisma.customer.findFirst({
       where: { shopId, OR: [{ referralCode: refParam }, { id: refParam }] },
-      select: { id: true },
+      select: { id: true, telegramUserId: true, telegramChatId: true },
     });
-    if (!referrer || referrer.id === customer.id) return;
+    if (!referrer) return;
+    if (referrer.id === customer.id) return;
+    if (referrer.telegramUserId && referrer.telegramUserId === customer.telegramUserId) {
+      this.logger.warn(`Self-referral blocked (same telegramUserId=${customer.telegramUserId}, shop=${shopId})`);
+      return;
+    }
+    if (referrer.telegramChatId && referrer.telegramChatId === customer.telegramChatId) {
+      this.logger.warn(`Self-referral blocked (same telegramChatId=${customer.telegramChatId}, shop=${shopId})`);
+      return;
+    }
 
     await this.prisma.customer.update({
       where: { id: customer.id },
@@ -5174,7 +5211,7 @@ export class TelegramBotService {
       ``,
       programInfo,
       ``,
-      `💰 Commission earned: <b>${stats.commissionBalance.toLocaleString("vi-VN")} ₫</b>`,
+      `💰 Commission earned: <b>${stats.lifetimeCommission.toLocaleString("vi-VN")} ₫</b>`,
       `👥 Referred customers: <b>${stats.downlineCount}</b>`,
       refLink ? `\n🔗 <b>Your referral link:</b>\n<code>${refLink}</code>` : ``,
     ] : language === "th" ? [
@@ -5182,7 +5219,7 @@ export class TelegramBotService {
       ``,
       programInfo,
       ``,
-      `💰 ค่าคอมมิชชันสะสม: <b>${stats.commissionBalance.toLocaleString("vi-VN")} ₫</b>`,
+      `💰 ค่าคอมมิชชันสะสม: <b>${stats.lifetimeCommission.toLocaleString("vi-VN")} ₫</b>`,
       `👥 ลูกค้าที่แนะนำ: <b>${stats.downlineCount}</b>`,
       refLink ? `\n🔗 <b>ลิงก์แนะนำของคุณ:</b>\n<code>${refLink}</code>` : ``,
     ] : [
@@ -5190,7 +5227,7 @@ export class TelegramBotService {
       ``,
       programInfo,
       ``,
-      `💰 Hoa hồng tích lũy: <b>${stats.commissionBalance.toLocaleString("vi-VN")} ₫</b>`,
+      `💰 Hoa hồng tích lũy: <b>${stats.lifetimeCommission.toLocaleString("vi-VN")} ₫</b>`,
       `👥 Người đã giới thiệu: <b>${stats.downlineCount}</b>`,
       refLink ? `\n🔗 <b>Link giới thiệu của bạn:</b>\n<code>${refLink}</code>` : ``,
     ];
@@ -6635,9 +6672,14 @@ export class TelegramBotService {
       : this.formatCompactBotMoney(product.salePrice, language, usdtVndRate);
     const stockLabel = product.available === null ? "∞" : String(Math.max(0, product.available));
     const suffix = ` | ${priceLabel} | 📦 ${stockLabel}`;
-    // Button labels (inline keyboard) chỉ hỗ trợ plain text — không render được custom emoji động.
-    // Luôn fallback về productIcon (text emoji) hoặc auto-detect, kể cả khi có customEmojiId.
-    const emoji = product.productIcon?.trim() || this.resolveProductEmoji(product.displayName, product.sourceName);
+    // If the product has a custom emoji icon (iconCustomEmojiId), Telegram renders it
+    // beside the button on its own (Premium users see the animated logo, others see the
+    // fallback character bundled with the custom emoji). In that case we DON'T also
+    // prepend a text emoji — otherwise Premium users see two icons stacked.
+    // No custom emoji → fall back to productIcon (admin-set) or auto-resolved emoji.
+    const emoji = product.iconCustomEmojiId
+      ? ""
+      : product.productIcon?.trim() || this.resolveProductEmoji(product.displayName, product.sourceName);
     const normalizedName = [emoji, this.compactProductName(this.localizeProductName(product.displayName, language))].filter(Boolean).join(" ");
     const safeNameLength = Math.max(16, 58 - suffix.length);
 

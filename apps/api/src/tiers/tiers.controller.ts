@@ -5,6 +5,7 @@ import {
   Headers,
   Inject,
   NotFoundException,
+  Param,
   Post,
   Req,
   UseGuards,
@@ -16,7 +17,7 @@ import { JwtAuthGuard } from "../common/guards/jwt-auth.guard";
 import { AppConfigService } from "../config/app-config.service";
 import type { AuthenticatedUser } from "../types";
 
-import { GrantUltraDto, PurchaseTierDto, SetAutoRenewDto } from "./tiers.dto";
+import { GrantUltraDto, PurchaseTierDto, RefundTierSubscriptionDto, SetAutoRenewDto } from "./tiers.dto";
 import { TiersService } from "./tiers.service";
 
 @Controller("tiers")
@@ -60,6 +61,7 @@ export class TiersController {
       tier: body.tier,
       plan: body.plan,
       referralCode: body.referralCode,
+      discountCode: body.discountCode,
       paymentMethod: body.paymentMethod,
       clientIp,
     });
@@ -75,5 +77,18 @@ export class TiersController {
   @UseGuards(JwtAuthGuard)
   adminGrantUltra(@CurrentUser() user: AuthenticatedUser, @Body() body: GrantUltraDto) {
     return this.tiersService.adminGrantUltra(user, body);
+  }
+
+  @Post("admin/subscriptions/:id/refund")
+  @UseGuards(JwtAuthGuard)
+  refundSubscription(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param("id") subscriptionId: string,
+    @Body() body: RefundTierSubscriptionDto,
+  ) {
+    return this.tiersService.refundTierSubscription(user, {
+      subscriptionId,
+      note: body.note,
+    });
   }
 }

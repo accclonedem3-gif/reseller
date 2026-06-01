@@ -103,6 +103,42 @@ export async function telegramSendPhoto(
   });
 }
 
+export async function telegramSendDocument(
+  token: string,
+  chatId: string | number,
+  documentBuffer: Buffer,
+  filename: string,
+  options?: Record<string, unknown>,
+): Promise<{ message_id: number }> {
+  const form = new FormData();
+  form.append("chat_id", String(chatId));
+  const ab = documentBuffer.buffer.slice(
+    documentBuffer.byteOffset,
+    documentBuffer.byteOffset + documentBuffer.byteLength,
+  ) as ArrayBuffer;
+  form.append("document", new Blob([ab], { type: "text/plain; charset=utf-8" }), filename);
+  for (const [key, value] of Object.entries(options || {})) {
+    if (value !== undefined && value !== null) {
+      form.append(key, typeof value === "object" ? JSON.stringify(value) : String(value));
+    }
+  }
+  let response: any;
+  try {
+    response = await axios.post(
+      `https://api.telegram.org/bot${token}/sendDocument`,
+      form,
+      { timeout: 30000, maxContentLength: Infinity, maxBodyLength: Infinity },
+    );
+  } catch (err: any) {
+    const desc = err?.response?.data?.description || err?.message || String(err);
+    throw new Error(`Telegram API method sendDocument failed: ${desc}`);
+  }
+  if (!response.data?.ok) {
+    throw new Error(`Telegram API method sendDocument failed: ${response.data?.description || "unknown"}`);
+  }
+  return response.data.result as { message_id: number };
+}
+
 export async function telegramSendPhotoBuffer(
   token: string,
   chatId: string | number,

@@ -20,7 +20,16 @@ import {
   UserStatus,
 } from "@prisma/client";
 import bcrypt from "bcryptjs";
-import { encryptSecret } from "@reseller/shared/server";
+import {
+  DEFAULT_INVOICE_TEMPLATE,
+  buildSampleInvoiceData,
+  buildSampleInvoiceDataLarge,
+  decryptSecret,
+  encryptSecret,
+  resolveInvoiceTemplate,
+  sendInvoiceMessages,
+  type InvoiceTemplateConfig,
+} from "@reseller/shared/server";
 
 import { AppConfigService } from "../config/app-config.service";
 import { PrismaService } from "../db/prisma.service";
@@ -31,6 +40,8 @@ import type {
   RemoveProductDefaultDto,
   ResetShopCustomizationDto,
   SetProductDefaultDto,
+  TestInvoiceDto,
+  UpdateInvoiceTemplateDto,
   UpdateTemplateCustomizationDto,
   UploadMediaUrlDto,
 } from "./admin-template.dto";
@@ -467,6 +478,89 @@ export class AdminTemplateService {
     }
 
     return { scanned: products.length, familyDetected, updated };
+  }
+
+  /**
+   * Admin: read the current invoice template (with defaults merged).
+   */
+  async getInvoiceTemplate(user: AuthenticatedUser) {
+    await this.assertSuperAdmin(user);
+    const shop = await this.findTemplateShop();
+    const cust = (shop.botConfig?.customizationJson as Record<string, any>) ?? {};
+    const resolved = resolveInvoiceTemplate(null, cust);
+    return {
+      defaults: DEFAULT_INVOICE_TEMPLATE,
+      template: resolved,
+      raw: cust.invoiceTemplate ?? null,
+    };
+  }
+
+  /**
+   * Admin: update the invoice template inside customizationJson.invoiceTemplate.
+   */
+  async updateInvoiceTemplate(user: AuthenticatedUser, dto: UpdateInvoiceTemplateDto) {
+    await this.assertSuperAdmin(user);
+    const shop = await this.findTemplateShop();
+    if (!shop.botConfig) {
+      throw new BadRequestException("BotConfig missing for template shop.");
+    }
+    const cust = ((shop.botConfig.customizationJson as Record<string, any>) ?? {}) as Record<string, any>;
+    cust.invoiceTemplate = dto.template ?? null;
+    await this.prisma.botConfig.update({
+      where: { id: shop.botConfig.id },
+      data: { customizationJson: cust as Prisma.InputJsonValue },
+    });
+    return { success: true };
+  }
+
+  /**
+   * Admin: send a sample delivered-order message using the admin template
+   * to a Telegram chat (defaults to the admin template bot owner).
+   */
+  async testInvoice(user: AuthenticatedUser, dto: TestInvoiceDto) {
+    await this.assertSuperAdmin(user);
+    const shop = await this.findTemplateShop();
+    if (!shop.botConfig?.telegramBotTokenEncrypted) {
+      throw new BadRequestException("Admin template chưa có bot token. Hãy set bot token trước.");
+    }
+    const token = decryptSecret(shop.botConfig.telegramBotTokenEncrypted, this.config.encryptionKey);
+    if (!token) {
+      throw new BadRequestException("Không decrypt được bot token admin template.");
+    }
+    const chatId = (dto?.telegramChatId || "").trim()
+      || (shop.botConfig.ownerTelegramUserId || "").trim();
+    if (!chatId) {
+      throw new BadRequestException("Cần truyền telegramChatId hoặc set ownerTelegramUserId cho admin template.");
+    }
+    const cust = (shop.botConfig.customizationJson as Record<string, any>) ?? {};
+    const template = resolveInvoiceTemplate(null, cust);
+    const sample = dto?.mode === "large" ? buildSampleInvoiceDataLarge() : buildSampleInvoiceData();
+    await sendInvoiceMessages({
+      botToken: token,
+      chatId,
+      template,
+      data: sample,
+      buyMoreButton: { text: "🛍️ Mua tiếp", callback_data: "home:products" },
+      warrantyButton: { text: "🛡️ Bảo hành", callback_data: `warranty_claim:${sample.orderCode}` },
+    });
+    return { success: true, sentTo: chatId, mode: dto?.mode ?? "small" };
+  }
+
+  /**
+   * Resolve invoice template for a given shopId: shop override > admin template > defaults.
+   * Used by API + worker. Returns plain JSON-safe object.
+   */
+  async resolveInvoiceTemplateForShop(shopId: string): Promise<InvoiceTemplateConfig> {
+    const [adminTpl, shopCfg] = await Promise.all([
+      this.findTemplateShopOrNull(),
+      this.prisma.botConfig.findFirst({
+        where: { shopId },
+        select: { customizationJson: true },
+      }),
+    ]);
+    const adminCust = (adminTpl?.botConfig?.customizationJson as Record<string, any>) ?? null;
+    const shopCust = (shopCfg?.customizationJson as Record<string, any>) ?? null;
+    return resolveInvoiceTemplate(shopCust, adminCust);
   }
 
   /**

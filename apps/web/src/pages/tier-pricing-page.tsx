@@ -12,6 +12,8 @@ type TierKey = "pro" | "ultra";
 type PaymentMethodKey = "PAYOS" | "USDT" | "WALLET_BALANCE";
 type UsdtNetwork = "TRC20" | "SOL";
 
+type PlanQuote = { plan: PlanKey; label: string; priceVnd: number; originalPriceVnd?: number };
+
 type TierQuote = {
   currentTier: string;
   currentTierExpiresAt: string | null;
@@ -19,8 +21,9 @@ type TierQuote = {
   walletBalance: number;
   affiliateUnlockedTier: number;
   autoRenewConfig?: { enabled?: boolean; plan?: PlanKey; useWallet?: boolean } | null;
-  pro: { tier: "pro"; label: string; plans: Array<{ plan: PlanKey; label: string; priceVnd: number }> };
-  ultra: { tier: "ultra"; label: string; plans: Array<{ plan: PlanKey; label: string; priceVnd: number }> } | null;
+  availableDiscount: { code: string; discountPercent: number } | null;
+  pro: { tier: "pro"; label: string; plans: PlanQuote[] };
+  ultra: { tier: "ultra"; label: string; plans: PlanQuote[] } | null;
 };
 
 type PurchaseResponse = {
@@ -70,6 +73,7 @@ export function TierPricingPage() {
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethodKey>("PAYOS");
   const [usdtNetwork, setUsdtNetwork] = useState<UsdtNetwork>("TRC20");
   const [referralCode, setReferralCode] = useState("");
+  const [discountCode, setDiscountCode] = useState("");
   const [paymentResponse, setPaymentResponse] = useState<PurchaseResponse | null>(null);
 
   const quoteQuery = useQuery<TierQuote>({
@@ -78,17 +82,32 @@ export function TierPricingPage() {
   });
   const quote = quoteQuery.data;
 
+  // Auto-fill the input with the discount code the seller signed up with (if any)
+  useEffect(() => {
+    const auto = quote?.availableDiscount?.code;
+    if (auto && !discountCode && !referralCode) {
+      setDiscountCode(auto);
+      setReferralCode(auto);
+    }
+  }, [quote?.availableDiscount?.code]);
+
   const purchaseMutation = useMutation({
     mutationFn: async () => {
       if (!modalTier) throw new Error("No tier selected");
       const backendMethod = paymentMethod === "USDT"
         ? (usdtNetwork === "TRC20" ? "USDT_TRC20" : "USDT_SOL")
         : paymentMethod;
+      // Single code field — backend tries discount table first, then seller.referralCode.
+      // We send it as BOTH so each handler gets a shot:
+      //  - discountCode → applies % off if it matches an active DiscountCode
+      //  - referralCode → sets referrer if it matches Seller.referralCode OR DiscountCode.code
+      const trimmedCode = (discountCode || referralCode).trim() || undefined;
       const { data } = await api.post<PurchaseResponse>("/tiers/purchase", {
         tier: modalTier,
         plan: billingCycle,
         paymentMethod: backendMethod,
-        referralCode: referralCode.trim() || undefined,
+        referralCode: trimmedCode,
+        discountCode: trimmedCode,
       });
       return data;
     },
@@ -129,6 +148,7 @@ export function TierPricingPage() {
     setModalTier(null);
     setPaymentResponse(null);
     setReferralCode("");
+    setDiscountCode("");
     setPaymentMethod("PAYOS");
   };
 
@@ -158,6 +178,16 @@ export function TierPricingPage() {
         <p className="mx-auto mt-4 max-w-lg text-base sm:text-lg" style={{ color: "var(--tx-m)" }}>Chọn gói phù hợp với quy mô shop của bạn.</p>
       </div>
 
+      {quote.availableDiscount && (
+        <div className="mx-auto mt-8 max-w-2xl rounded-2xl px-5 py-4 text-center"
+          style={{ background: "rgba(16,185,129,0.08)", border: "1px solid rgba(16,185,129,0.3)" }}>
+          <p className="text-sm" style={{ color: "rgb(16,185,129)" }}>
+            🎁 Bạn được giảm <b>{quote.availableDiscount.discountPercent}%</b> cho lần đầu mua gói bằng mã{" "}
+            <code className="rounded bg-white/5 px-2 py-0.5 font-mono">{quote.availableDiscount.code}</code>
+          </p>
+        </div>
+      )}
+
       <div className="mt-10 flex justify-center">
         <div className="inline-flex items-center gap-1 rounded-full p-1" style={{ background: "var(--inp)" }}>
           {(["monthly", "quarterly", "semi_annual", "annual"] as PlanKey[]).map((p) => {
@@ -179,14 +209,18 @@ export function TierPricingPage() {
       <div className={`mt-14 grid gap-6 ${quote.ultra ? "lg:grid-cols-2" : "mx-auto max-w-md"}`}>
         {proPlan && (
           <TierCard tierKey="pro" label="Pro" tagline="Cho shop kinh doanh chuyên nghiệp"
-            priceVnd={proPlan.priceVnd} pricePerMonth={pricePerMonth(proPlan.priceVnd)} features={TIER_FEATURES.pro}
+            priceVnd={proPlan.priceVnd} originalPriceVnd={proPlan.originalPriceVnd}
+            discountPercent={quote.availableDiscount?.discountPercent}
+            pricePerMonth={pricePerMonth(proPlan.priceVnd)} features={TIER_FEATURES.pro}
             isCurrent={currentTierLower === "pro"} featured={false}
             onPurchase={() => { setModalTier("pro"); setPaymentMethod("PAYOS"); }}
             currentExpiresAt={currentTierLower === "pro" ? quote.currentTierExpiresAt : null} />
         )}
         {ultraPlan && (
           <TierCard tierKey="ultra" label="Ultra" tagline="Cho seller có mạng lưới CTV"
-            priceVnd={ultraPlan.priceVnd} pricePerMonth={pricePerMonth(ultraPlan.priceVnd)} features={TIER_FEATURES.ultra}
+            priceVnd={ultraPlan.priceVnd} originalPriceVnd={ultraPlan.originalPriceVnd}
+            discountPercent={quote.availableDiscount?.discountPercent}
+            pricePerMonth={pricePerMonth(ultraPlan.priceVnd)} features={TIER_FEATURES.ultra}
             isCurrent={currentTierLower === "ultra"} featured={true}
             onPurchase={() => { setModalTier("ultra"); setPaymentMethod("PAYOS"); }}
             currentExpiresAt={currentTierLower === "ultra" ? quote.currentTierExpiresAt : null} />
@@ -212,11 +246,13 @@ export function TierPricingPage() {
           paymentMethod={paymentMethod}
           usdtNetwork={usdtNetwork}
           referralCode={referralCode}
+          discountCode={discountCode}
           isPending={purchaseMutation.isPending}
           paymentResponse={paymentResponse}
           onChangePaymentMethod={setPaymentMethod}
           onChangeUsdtNetwork={setUsdtNetwork}
           onChangeReferralCode={setReferralCode}
+          onChangeDiscountCode={setDiscountCode}
           onClose={closeModal}
           onConfirm={() => purchaseMutation.mutate()}
         />
@@ -318,10 +354,11 @@ function AutoRenewCard({ quote }: { quote: TierQuote }) {
   );
 }
 
-function TierCard({ tierKey, label, tagline, priceVnd, pricePerMonth, features, isCurrent, featured, onPurchase, currentExpiresAt }: {
-  tierKey: TierKey; label: string; tagline: string; priceVnd: number; pricePerMonth: number; features: string[];
+function TierCard({ tierKey, label, tagline, priceVnd, originalPriceVnd, pricePerMonth, discountPercent, features, isCurrent, featured, onPurchase, currentExpiresAt }: {
+  tierKey: TierKey; label: string; tagline: string; priceVnd: number; originalPriceVnd?: number; pricePerMonth: number; discountPercent?: number; features: string[];
   isCurrent: boolean; featured: boolean; onPurchase: () => void; currentExpiresAt: string | null;
 }) {
+  const hasDiscount = !!originalPriceVnd && originalPriceVnd > priceVnd;
   return (
     <div className="relative flex flex-col rounded-3xl p-8 sm:p-10" style={{
       background: featured ? "linear-gradient(180deg, rgba(99,102,241,0.06), transparent 60%), var(--surface)" : "var(--surface)",
@@ -336,6 +373,18 @@ function TierCard({ tierKey, label, tagline, priceVnd, pricePerMonth, features, 
       </div>
 
       <div className="mt-8">
+        {hasDiscount && (
+          <div className="mb-2 flex items-center gap-2">
+            <span className="text-base font-medium line-through" style={{ color: "var(--tx-f)" }}>
+              {formatCurrency(originalPriceVnd!)}
+            </span>
+            {discountPercent && (
+              <span className="rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider" style={{ background: "rgba(16,185,129,0.15)", color: "rgb(16,185,129)" }}>
+                -{discountPercent}%
+              </span>
+            )}
+          </div>
+        )}
         <div className="flex items-baseline gap-1">
           <span className="text-6xl font-semibold tracking-tight" style={{ color: "var(--tx)", letterSpacing: "-0.04em" }}>{Math.round(priceVnd / 1000)}</span>
           <span className="text-2xl font-medium" style={{ color: "var(--tx-m)" }}>k</span>
@@ -365,15 +414,16 @@ function TierCard({ tierKey, label, tagline, priceVnd, pricePerMonth, features, 
 
 function PaymentModal({
   tier, plan, priceVnd, walletBalance, showReferralInput,
-  paymentMethod, usdtNetwork, referralCode, isPending, paymentResponse,
-  onChangePaymentMethod, onChangeUsdtNetwork, onChangeReferralCode, onClose, onConfirm,
+  paymentMethod, usdtNetwork, referralCode, discountCode, isPending, paymentResponse,
+  onChangePaymentMethod, onChangeUsdtNetwork, onChangeReferralCode, onChangeDiscountCode, onClose, onConfirm,
 }: {
   tier: TierKey; plan: PlanKey; priceVnd: number; walletBalance: number; showReferralInput: boolean;
-  paymentMethod: PaymentMethodKey; usdtNetwork: UsdtNetwork; referralCode: string; isPending: boolean;
+  paymentMethod: PaymentMethodKey; usdtNetwork: UsdtNetwork; referralCode: string; discountCode: string; isPending: boolean;
   paymentResponse: PurchaseResponse | null;
   onChangePaymentMethod: (m: PaymentMethodKey) => void;
   onChangeUsdtNetwork: (n: UsdtNetwork) => void;
   onChangeReferralCode: (c: string) => void;
+  onChangeDiscountCode: (c: string) => void;
   onClose: () => void; onConfirm: () => void;
 }) {
   const tierLabel = tier === "ultra" ? "Ultra" : "Pro";
@@ -449,12 +499,40 @@ function PaymentModal({
               />
             </div>
 
+            {/* Mã giới thiệu / Mã giảm giá (1 ô duy nhất) */}
+            <div className="mt-5">
+              <label className="text-[11px] font-semibold uppercase tracking-[0.18em]" style={{ color: "var(--tx-f)" }}>
+                Mã giới thiệu / giảm giá (tuỳ chọn)
+              </label>
+              <input
+                type="text"
+                value={discountCode}
+                onChange={(e) => {
+                  const v = e.target.value.toUpperCase();
+                  onChangeDiscountCode(v);
+                  onChangeReferralCode(v);
+                }}
+                placeholder="VD: LAMTHANHTHIEN hoặc E4360EEA"
+                maxLength={32}
+                className="mt-1.5 w-full rounded-xl px-4 py-3 font-mono text-sm uppercase tracking-wider outline-none"
+                style={{ background: "var(--inp)", border: "1px solid var(--bd)", color: "var(--tx)" }}
+              />
+              <p className="mt-1.5 text-[11px]" style={{ color: "var(--tx-f)" }}>
+                Mã hợp lệ sẽ tự áp dụng giảm giá (nếu có) và ghi nhận người giới thiệu.
+              </p>
+            </div>
+
             {/* Summary */}
             <div className="mt-6 rounded-2xl p-4" style={{ background: "var(--inp)" }}>
               <div className="flex items-center justify-between text-sm">
                 <span style={{ color: "var(--tx-m)" }}>Tổng cộng</span>
                 <span className="text-lg font-semibold" style={{ color: "var(--tx)" }}>{formatCurrency(priceVnd)}</span>
               </div>
+              {discountCode.trim() && (
+                <p className="mt-1 text-[11px]" style={{ color: "var(--tx-f)" }}>
+                  ℹ️ Giá cuối có thể thấp hơn nếu mã có % giảm.
+                </p>
+              )}
             </div>
 
             <button

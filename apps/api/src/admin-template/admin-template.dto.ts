@@ -63,3 +63,18 @@ export class SetBotTokenDto {
   @IsString()
   token!: string;
 }
+
+export class UpdateInvoiceTemplateDto {
+  @IsObject()
+  template!: Record<string, any>;
+}
+
+export class TestInvoiceDto {
+  @IsOptional()
+  @IsString()
+  telegramChatId?: string;
+
+  @IsOptional()
+  @IsString()
+  mode?: "small" | "large";
+}

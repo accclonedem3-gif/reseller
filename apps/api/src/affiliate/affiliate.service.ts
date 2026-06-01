@@ -61,7 +61,7 @@ export class AffiliateService {
       this.prisma.customer.count({ where: { referredById: customerId } }),
     ]);
     return {
-      commissionBalance: Number(commissionSum._sum.affiliateCommission ?? 0),
+      lifetimeCommission: Number(commissionSum._sum.affiliateCommission ?? 0),
       downlineCount,
     };
   }
@@ -114,6 +114,61 @@ export class AffiliateService {
           commissionBalanceAfter: toDecimal(commissionAfter),
           referenceType: "order",
           referenceId: orderId,
+        },
+      });
+    });
+  }
+
+  async revokeCommission(orderId: string) {
+    const order = await this.prisma.order.findUnique({
+      where: { id: orderId },
+      select: { id: true, affiliateCustomerId: true, affiliateCommission: true },
+    });
+    if (!order?.affiliateCustomerId) return;
+    const amount = Number(order.affiliateCommission ?? 0);
+    if (amount <= 0) return;
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.order.update({
+        where: { id: orderId },
+        data: { affiliateCommission: toDecimal(0) },
+      });
+
+      const wallet = await tx.customerWallet.upsert({
+        where: { customerId: order.affiliateCustomerId as string },
+        update: {},
+        create: { customerId: order.affiliateCustomerId as string },
+      });
+
+      await tx.$queryRaw(
+        Prisma.sql`SELECT id FROM customer_wallets WHERE id = ${wallet.id} FOR UPDATE`,
+      );
+
+      const fresh = await tx.customerWallet.findUnique({ where: { id: wallet.id } });
+      if (!fresh) return;
+
+      const balance = decimalToNumber(fresh.balance);
+      const commissionBefore = decimalToNumber(fresh.commissionBalance);
+      const commissionAfter = commissionBefore - amount;
+
+      await tx.customerWallet.update({
+        where: { id: wallet.id },
+        data: { commissionBalance: toDecimal(commissionAfter) },
+      });
+
+      await tx.customerWalletLedger.create({
+        data: {
+          customerId: order.affiliateCustomerId as string,
+          walletId: wallet.id,
+          type: "REFUND_ORDER",
+          amount: toDecimal(-amount),
+          balanceBefore: toDecimal(balance),
+          balanceAfter: toDecimal(balance),
+          commissionBalanceBefore: toDecimal(commissionBefore),
+          commissionBalanceAfter: toDecimal(commissionAfter),
+          referenceType: "order",
+          referenceId: orderId,
+          note: "Claw back commission when order failed/refunded",
         },
       });
     });

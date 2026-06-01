@@ -3,18 +3,24 @@ import { SellerTier, TierPlan } from "@prisma/client";
 export type PlanKey = "monthly" | "quarterly" | "semi_annual" | "annual";
 export type TierKey = "pro" | "ultra";
 
+// Formula:
+//   monthly      = base
+//   quarterly    = base × 3 × 0.97  (3% off)
+//   semi_annual  = base × 6 × 0.93  (7% off)
+//   annual       = base × 12 × 0.84 (16% off)
+// Rounded to nearest 1.000đ.
 export const TIER_PRICES: Record<TierKey, Record<PlanKey, number>> = {
   pro: {
-    monthly: 179_000,
-    quarterly: 520_000,
-    semi_annual: 999_000,
-    annual: 1_799_000,
+    monthly: 199_000,
+    quarterly: 579_000,
+    semi_annual: 1_110_000,
+    annual: 2_006_000,
   },
   ultra: {
     monthly: 279_000,
-    quarterly: 810_000,
-    semi_annual: 1_549_000,
-    annual: 2_799_000,
+    quarterly: 812_000,
+    semi_annual: 1_557_000,
+    annual: 2_812_000,
   },
 };
 
@@ -23,6 +29,15 @@ export const PLAN_DURATION_DAYS: Record<PlanKey, number> = {
   quarterly: 90,
   semi_annual: 180,
   annual: 365,
+};
+
+// Number of "monthly" units in each plan — used when computing prices for
+// discount-code purchases (those skip the volume discount and price = monthly × N).
+export const PLAN_MONTHS_COUNT: Record<PlanKey, number> = {
+  monthly: 1,
+  quarterly: 3,
+  semi_annual: 6,
+  annual: 12,
 };
 
 export const PLAN_LABELS: Record<PlanKey, string> = {
@@ -87,6 +102,28 @@ export function tierEnumToKey(tier: SellerTier): TierKey | null {
 
 export function getPrice(tier: TierKey, plan: PlanKey): number {
   return TIER_PRICES[tier][plan];
+}
+
+/**
+ * Price when a discount code is applied: skip the volume discount, use the
+ * straight monthly × N base, then apply the discount percent.
+ * Rationale: combining volume discount + discount-code discount + commission
+ * leaves the seller (anh) with too little. Discount-code buyers don't get the
+ * volume discount; they get the discount-code discount on the "list" price.
+ */
+export function getDiscountedPrice(tier: TierKey, plan: PlanKey, discountPercent: number): number {
+  const monthly = TIER_PRICES[tier].monthly;
+  const months = PLAN_MONTHS_COUNT[plan];
+  const listPrice = monthly * months;
+  return Math.round(listPrice * (1 - discountPercent / 100));
+}
+
+/**
+ * "List" price for a plan: monthly × N — the price before any volume discount.
+ * Used as the strike-through reference when a discount code is shown.
+ */
+export function getListPrice(tier: TierKey, plan: PlanKey): number {
+  return TIER_PRICES[tier].monthly * PLAN_MONTHS_COUNT[plan];
 }
 
 export function getDurationMs(plan: PlanKey): number {

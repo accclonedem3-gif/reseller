@@ -25,6 +25,7 @@ import {
 
 import { AppConfigService } from "../config/app-config.service";
 import { PrismaService } from "../db/prisma.service";
+import { AdminNotifyService } from "../lib/admin-notify.service";
 import { decimalToNumber } from "../lib/utils";
 import { ShopsService } from "../shops/shops.service";
 import type { AuthenticatedUser } from "../types";
@@ -74,7 +75,48 @@ export class WarrantyService {
     private readonly config: AppConfigService,
     @Inject(ShopsService)
     private readonly shopsService: ShopsService,
+    @Inject(AdminNotifyService)
+    private readonly adminNotify: AdminNotifyService,
   ) {}
+
+  /** Ping admin Telegram when a warranty claim needs human review. */
+  private async notifyAdminOfClaim(claimId: string) {
+    const claim = await this.prisma.warrantyClaim.findUnique({
+      where: { id: claimId },
+      select: {
+        status: true,
+        claimNumber: true,
+        orderCodeSnapshot: true,
+        productNameSnapshot: true,
+        customerMessage: true,
+        shop: { select: { name: true, seller: { select: { displayName: true } } } },
+        customer: { select: { telegramUsername: true } },
+      },
+    });
+    if (!claim) return;
+    // Only ping admin for statuses that require human action
+    if (claim.status !== "PENDING_REVIEW" && claim.status !== "PENDING_MANUAL") return;
+
+    const esc = (s: string | null | undefined) => this.adminNotify.escape(s);
+    const statusLabel = claim.status === "PENDING_REVIEW"
+      ? "⚠️ Cần review (đã yêu cầu BH >2 lần)"
+      : "📞 Cần xử lý thủ công";
+
+    const text = [
+      `🛡️ <b>Khiếu nại bảo hành mới</b>`,
+      `Trạng thái: <b>${statusLabel}</b>`,
+      ``,
+      `Đơn: <code>${esc(claim.orderCodeSnapshot)}</code>`,
+      `Sản phẩm: ${esc(claim.productNameSnapshot)}`,
+      `Lần khiếu nại thứ: ${claim.claimNumber}`,
+      `Shop: ${esc(claim.shop.name)} (${esc(claim.shop.seller.displayName)})`,
+      `Khách: @${esc(claim.customer.telegramUsername || "?")}`,
+      ``,
+      `💬 ${esc(claim.customerMessage || "(không có lời nhắn)")}`,
+    ].join("\n");
+    const level = claim.status === "PENDING_REVIEW" ? "warning" : "info";
+    this.adminNotify.send(text, { level, service: "Warranty" }).catch(() => undefined);
+  }
 
   async snapshotWarrantyForDeliveredOrder(
     orderId: string,
@@ -315,6 +357,7 @@ export class WarrantyService {
         status: decision.nextStatus,
         customerMessage: dto.customerMessage,
       });
+      this.notifyAdminOfClaim(createdClaim.id).catch(() => undefined);
     }
 
     return {
@@ -1216,6 +1259,7 @@ export class WarrantyService {
         customerLabel: dto.contactInfo,
         customerMessage: dto.customerMessage,
       });
+      this.notifyAdminOfClaim(createdClaim.id).catch(() => undefined);
     }
 
     return {

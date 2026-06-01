@@ -177,6 +177,8 @@ export class AdminService {
 
     return users.map((u) => ({
       id: u.id,
+      sellerId: u.seller?.id || null,
+      referralCode: u.seller?.referralCode || null,
       username: u.email,
       recoveryEmail: u.recoveryEmail,
       status: u.status.toLowerCase(),

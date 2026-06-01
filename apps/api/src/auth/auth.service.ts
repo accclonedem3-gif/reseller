@@ -16,6 +16,7 @@ import {
   isSellerReadOnly,
 } from "../business/seller-tier";
 import { PrismaService } from "../db/prisma.service";
+import { MailService } from "../lib/mail.service";
 import { decimalToNumber, durationToMs, hashValue, slugify, toDecimal } from "../lib/utils";
 
 import type { AuthenticatedUser } from "../types";
@@ -30,6 +31,8 @@ export class AuthService {
     private readonly jwtService: JwtService,
     @Inject(AppConfigService)
     private readonly config: AppConfigService,
+    @Inject(MailService)
+    private readonly mail: MailService,
   ) {}
 
   async login(username: string, password: string) {
@@ -689,6 +692,8 @@ export class AuthService {
     recoveryEmail?: string | null;
     sellerTier?: SellerTier;
     referralCode?: string | null;
+    signupIp?: string | null;
+    signupDeviceFingerprint?: string | null;
   }) {
     const username = input.username.toLowerCase().trim();
     const existing = await this.prisma.user.findUnique({
@@ -735,7 +740,9 @@ export class AuthService {
         }
       }
 
-      // Resolve referrer from referralCode if provided
+      // Resolve referrer from referralCode if provided.
+      // Looks up Seller.referralCode first, then falls back to active DiscountCode.code
+      // (so admin-created custom codes like "LAMTHANHTHIEN" can also act as ref).
       let referredBySellerId: string | null = null;
       if (input.referralCode) {
         const normalizedRef = input.referralCode.trim().toUpperCase();
@@ -746,6 +753,14 @@ export class AuthService {
           });
           if (referrer) {
             referredBySellerId = referrer.id;
+          } else {
+            const discountCode = await tx.discountCode.findUnique({
+              where: { code: normalizedRef },
+              select: { active: true, referrerSellerId: true },
+            });
+            if (discountCode?.active) {
+              referredBySellerId = discountCode.referrerSellerId;
+            }
           }
         }
       }
@@ -758,8 +773,8 @@ export class AuthService {
           tier: input.sellerTier || SellerTier.PRO,
           referralCode,
           referredBySellerId,
-          signupIp: (input as any).signupIp ?? null,
-          signupDeviceFingerprint: (input as any).signupDeviceFingerprint ?? null,
+          signupIp: input.signupIp ?? null,
+          signupDeviceFingerprint: input.signupDeviceFingerprint ?? null,
         },
       });
 
@@ -880,35 +895,7 @@ export class AuthService {
       </div>
     `;
 
-    if (!this.config.resendApiKey) {
-      console.log(`[password-reset] ${input.to}: ${input.resetLink}`);
-      return;
-    }
-
-    try {
-      const response = await fetch("https://api.resend.com/emails", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${this.config.resendApiKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          from: this.config.mailFrom,
-          to: [input.to],
-          subject,
-          text,
-          html,
-        }),
-      });
-
-      if (!response.ok) {
-        console.error(
-          `[password-reset] Failed to send reset email: ${response.status} ${await response.text()}`,
-        );
-      }
-    } catch (error) {
-      console.error("[password-reset] Failed to send reset email.", error);
-    }
+    await this.mail.send({ to: input.to, subject, text, html });
   }
 
   private escapeHtml(value: string) {
@@ -961,7 +948,14 @@ export class AuthService {
     return user;
   }
 
-  async register(username: string, email: string, password: string, displayName: string, referralCode?: string | null) {
+  async register(
+    username: string,
+    email: string,
+    password: string,
+    displayName: string,
+    referralCode?: string | null,
+    signupMeta?: { signupIp?: string | null; signupDeviceFingerprint?: string | null },
+  ) {
     // Nếu email được cung cấp, lưu thành recoveryEmail để dùng reset mật khẩu
     const created = await this.createSellerAccount({
       username,
@@ -970,6 +964,8 @@ export class AuthService {
       recoveryEmail: email || null,
       sellerTier: SellerTier.FREE,
       referralCode: referralCode ?? null,
+      signupIp: signupMeta?.signupIp ?? null,
+      signupDeviceFingerprint: signupMeta?.signupDeviceFingerprint ?? null,
     });
 
     return this.issueAuthResponse({

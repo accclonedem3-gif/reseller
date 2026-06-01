@@ -303,7 +303,7 @@ export class OrdersService {
           customerId: prepared.customer.id,
           walletId: currentWallet.id,
           type: CustomerWalletLedgerType.SPEND_ORDER,
-          amount: toDecimal(prepared.totalSaleAmount),
+          amount: toDecimal(-prepared.totalSaleAmount),
           balanceBefore: toDecimal(balanceBefore),
           balanceAfter: toDecimal(balanceAfter),
           commissionBalanceBefore: toDecimal(commissionBefore),
@@ -1075,9 +1075,17 @@ export class OrdersService {
   private async creditAffiliateCommission(orderId: string) {
     const order = await this.prisma.order.findUnique({
       where: { id: orderId },
-      select: { id: true, shopId: true, customerId: true, totalSaleAmount: true, customer: { select: { referredById: true } } },
+      select: {
+        id: true,
+        shopId: true,
+        customerId: true,
+        totalSaleAmount: true,
+        affiliateCommission: true,
+        customer: { select: { referredById: true } },
+      },
     });
     if (!order?.customer?.referredById) return;
+    if (order.affiliateCommission != null && Number(order.affiliateCommission) > 0) return;
 
     const config = await this.affiliateService.getConfigByShopId(order.shopId);
     if (!config?.enabled || !config.commissionPct) return;
