@@ -3881,6 +3881,37 @@ export class WarrantyService {
 
       const _prodIcon = order.sourceProduct?.imageUrl || order.sourceProduct?.productIcon || null;
 
+      // Already-issued replacement account(s), surfaced so a customer who didn't copy their
+      // replacement in time can re-copy it by searching again. Proof of ownership = knowing the
+      // account / order code (same as the rest of this public flow). Scoped: account mode → only
+      // the replacement(s) tied to the searched account; order mode → all the order's replacements.
+      const _resolvedClaims = await this.prisma.warrantyClaim.findMany({
+        where: {
+          orderId: order.id,
+          status: { in: ["AUTO_RESOLVED", "RESOLVED_MANUAL"] as any },
+          deliveredAccountText: { not: null },
+        },
+        orderBy: { resolvedAt: "asc" },
+        select: { deliveredAccountText: true, targetAccountEmail: true, resolvedAt: true },
+      });
+      const _qBare = _q.split("@")[0] || _q;
+      const resolvedAccounts = Array.from(
+        new Set(
+          _resolvedClaims
+            .filter((c) => {
+              if (isOrderCodeSearch) return true;
+              const tgt = (c.targetAccountEmail || "").toLowerCase();
+              const tgtBare = tgt.split("@")[0] || tgt;
+              const dat = (c.deliveredAccountText || "").toLowerCase();
+              // replacement issued FOR the searched account, OR the customer searched the
+              // replacement text itself (re-copy the account they currently hold).
+              return tgt === _q || tgtBare === _qBare || dat.includes(_q);
+            })
+            .map((c) => (c.deliveredAccountText || "").trim())
+            .filter(Boolean),
+        ),
+      );
+
       results.push({
         orderId: order.id,
         // Hide the order code from retail (account) searchers — they only know/need their own account.
@@ -3894,6 +3925,8 @@ export class WarrantyService {
         hasActiveClaim,
         previousReplacement,
         accountUsernames,
+        // Full replacement credentials already issued (for re-copy). May be empty.
+        resolvedAccounts,
       });
     }
 

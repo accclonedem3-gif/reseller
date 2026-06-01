@@ -41,6 +41,9 @@ const T = {
     clearAllLabel: "Bỏ chọn tất cả",
     changedPwToggle: "Tôi đã đổi mật khẩu (nhập mật khẩu mới cho từng tài khoản)",
     newPwPh: "Mật khẩu mới",
+    resolvedTitle: "Tài khoản thay thế đã cấp",
+    resolvedHint: "Bạn đã được bảo hành — bấm để copy lại tài khoản thay thế",
+    copiedToast: "Đã copy!",
     submitBtn: "Gửi yêu cầu bảo hành",
     successTitle: "Bảo hành đã được duyệt!",
     successOrder: (code: string) => `Đơn #${code}`,
@@ -124,6 +127,9 @@ const T = {
     clearAllLabel: "Clear all",
     changedPwToggle: "I changed the password (enter a new password per account)",
     newPwPh: "New password",
+    resolvedTitle: "Replacement account(s) issued",
+    resolvedHint: "You were already issued these — tap to copy again",
+    copiedToast: "Copied!",
     submitBtn: "Submit warranty claim",
     successTitle: "Warranty approved!",
     successOrder: (code: string) => `Order #${code}`,
@@ -207,6 +213,9 @@ const T = {
     clearAllLabel: "ล้างการเลือก",
     changedPwToggle: "ฉันเปลี่ยนรหัสผ่านแล้ว (กรอกรหัสผ่านใหม่ของแต่ละบัญชี)",
     newPwPh: "รหัสผ่านใหม่",
+    resolvedTitle: "บัญชีทดแทนที่ออกให้แล้ว",
+    resolvedHint: "คุณได้รับการรับประกันแล้ว — แตะเพื่อคัดลอกอีกครั้ง",
+    copiedToast: "คัดลอกแล้ว!",
     submitBtn: "ส่งคำร้องขอรับประกัน",
     successTitle: "อนุมัติการรับประกันแล้ว!",
     successOrder: (code: string) => `คำสั่งซื้อ #${code}`,
@@ -269,6 +278,7 @@ type OrderResult = {
   warrantyPolicy: string | null;
   hasActiveClaim: boolean;
   accountUsernames?: string[];
+  resolvedAccounts?: string[]; // replacement creds already issued (for re-copy)
 };
 
 type SearchResponse = {
@@ -588,6 +598,7 @@ export function WarrantyClaimPage() {
   const [hasNewPassword, setHasNewPassword] = useState(false);
   const [passwordMap, setPasswordMap] = useState<Record<string, string>>({});
   const [revealMap, setRevealMap] = useState<Record<string, boolean>>({});
+  const [copiedAt, setCopiedAt] = useState<number | null>(null);
 
   const [orders, setOrders] = useState<OrderResult[]>([]);
   const [selectedOrder, setSelectedOrder] = useState<OrderResult | null>(null);
@@ -1020,6 +1031,33 @@ export function WarrantyClaimPage() {
           {selectedOrder && (
             <Card>
               <div className="space-y-4">
+                {/* Already-issued replacement account(s) — re-copy for a customer who didn't catch
+                    their replacement in time. Tap the box to copy. */}
+                {(selectedOrder.resolvedAccounts?.length || 0) > 0 && (
+                  <div>
+                    <h3 className="mb-1 text-sm font-bold" style={{ color: "var(--tx)" }}>
+                      🔑 {t.resolvedTitle}
+                    </h3>
+                    <p className="mb-2 text-xs" style={{ color: "var(--tx-f)" }}>{t.resolvedHint}</p>
+                    <pre
+                      onClick={() => {
+                        const txt = (selectedOrder.resolvedAccounts || []).join("\n");
+                        navigator.clipboard?.writeText(txt).then(
+                          () => { setError(null); setCopiedAt(Date.now()); },
+                          () => {},
+                        );
+                      }}
+                      className="w-full cursor-pointer overflow-x-auto whitespace-pre-wrap break-all rounded-[10px] border px-3.5 py-2.5 font-mono text-sm"
+                      style={{ background: "var(--inp)", borderColor: "rgb(16,185,129)", color: "var(--tx)" }}
+                      title={t.resolvedHint}
+                    >
+                      {(selectedOrder.resolvedAccounts || []).join("\n")}
+                    </pre>
+                    {copiedAt && Date.now() - copiedAt < 2500 && (
+                      <p className="mt-1 text-xs font-medium text-emerald-600">{t.copiedToast}</p>
+                    )}
+                  </div>
+                )}
                 <div>
                   <div className="mb-1 flex items-center justify-between">
                     <h3 className="text-sm font-bold" style={{ color: "var(--tx)" }}>
