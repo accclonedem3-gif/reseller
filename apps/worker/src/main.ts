@@ -358,7 +358,6 @@ function buildDeliveredAccountMessage(input) {
             ...(formatHint ? [`Format: ${escapeTelegramHtml(formatHint)}`, ""] : []),
             `<pre>${escapeTelegramHtml(input.deliveredText)}</pre>`,
             ...(input.metadata?.usageInstructions ? ["", escapeTelegramHtml(String(input.metadata.usageInstructions))] : []),
-            ...(input.warrantyClaimCode ? ["", `🔐 Warranty code: <code>${escapeTelegramHtml(input.warrantyClaimCode)}</code>`, "Keep this private — you must enter it to request warranty for this order."] : []),
             "",
             "A detailed bill will be sent in the next message.",
         ]
@@ -372,7 +371,6 @@ function buildDeliveredAccountMessage(input) {
             ...(formatHint ? [`Format: ${escapeTelegramHtml(formatHint)}`, ""] : []),
             `<pre>${escapeTelegramHtml(input.deliveredText)}</pre>`,
             ...(input.metadata?.usageInstructions ? ["", escapeTelegramHtml(String(input.metadata.usageInstructions))] : []),
-            ...(input.warrantyClaimCode ? ["", `🔐 Mã bảo hành: <code>${escapeTelegramHtml(input.warrantyClaimCode)}</code>`, "Giữ kín mã này — bạn cần nhập mã khi yêu cầu bảo hành cho đơn này."] : []),
             "",
             "Hóa đơn chi tiết sẽ được gửi ở tin nhắn tiếp theo.",
         ];

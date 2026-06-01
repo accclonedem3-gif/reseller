@@ -974,9 +974,6 @@ export class OrdersService {
               ? [
                   `✅ Order ${order.orderCode} has been marked completed by the seller.`,
                   `Product: ${order.productNameSnapshot}`,
-                  order.warrantyClaimCode
-                    ? `🔐 Warranty code: ${order.warrantyClaimCode} (keep private — required to request warranty)`
-                    : null,
                   "",
                   "If you still need setup guidance or warranty support, please contact the support channel below.",
                   supportFooter.trim() ? supportFooter.trim() : null,
@@ -984,9 +981,6 @@ export class OrdersService {
               : [
                   `✅ Đơn hàng ${order.orderCode} đã được seller xác nhận hoàn tất.`,
                   `Sản phẩm: ${order.productNameSnapshot}`,
-                  order.warrantyClaimCode
-                    ? `🔐 Mã bảo hành: ${order.warrantyClaimCode} (giữ kín — cần khi yêu cầu bảo hành)`
-                    : null,
                   "",
                   "Nếu bạn vẫn cần thêm hướng dẫn sử dụng hoặc hỗ trợ bảo hành, vui lòng liên hệ bên dưới.",
                   supportFooter.trim() ? supportFooter.trim() : null,
