@@ -1506,16 +1506,31 @@ export class WarrantyService {
       // though old soft-fail claims are now REJECTED and would no longer appear in the DB count.
       // Fall back to DB count for legacy claims that predate this tracking.
       const _inheritedMeta = typeof metaBase.autoCheckSlotsUsed === "number" ? metaBase.autoCheckSlotsUsed : null;
-      const claimSlotCount = _inheritedMeta !== null
-        ? _inheritedMeta + 1
-        : await this.prisma.warrantyClaim.count({
-            where: {
-              orderId: claim.orderId,
-              status: { notIn: [WARRANTY_CLAIM_STATUS.REJECTED] as any },
-              ...(claim.targetAccountEmail ? { targetAccountEmail: claim.targetAccountEmail } : {}),
-            },
-          });
-      const isLastSlot = claimSlotCount >= MAX_CLAIMS_PER_ORDER_APPLY;
+      // A PROXY/CONNECTION failure means the check couldn't run through no fault of the customer —
+      // it must NOT consume one of their warranty attempts (else a dead proxy could eat all 3).
+      // The dead proxy is already (a) retried on a live proxy within this job and (b) marked dead
+      // in Redis so the NEXT attempt skips it — so the retry only stays a proxy failure when ALL
+      // proxies are down. Keep the slot count UNCHANGED so the customer can retry once proxies
+      // recover without losing an attempt.
+      const _infraFail =
+        errorTypeLower === "proxy_die" ||
+        /econnreset|econnrefused|etimedout|err_connection|err_timed_out|net::err_|err_tunnel|\bproxy[_ ]?die\b/i.test(
+          String(claim.autoCheckErrorMessage || result.error || "").toLowerCase(),
+        );
+      const claimSlotCount = _infraFail
+        ? (_inheritedMeta ?? 0) // infra failure → do NOT count this attempt against the cap
+        : _inheritedMeta !== null
+          ? _inheritedMeta + 1
+          : await this.prisma.warrantyClaim.count({
+              where: {
+                orderId: claim.orderId,
+                status: { notIn: [WARRANTY_CLAIM_STATUS.REJECTED] as any },
+                ...(claim.targetAccountEmail ? { targetAccountEmail: claim.targetAccountEmail } : {}),
+              },
+            });
+      // Never escalate to seller on an infra failure alone (proxies need fixing, not manual review);
+      // let the customer retry. Only a genuine ambiguous result that exhausts the 3 attempts escalates.
+      const isLastSlot = !_infraFail && claimSlotCount >= MAX_CLAIMS_PER_ORDER_APPLY;
 
       if (isLastSlot) {
         // Customer used all 3 attempts — now escalate to seller manual review queue.
