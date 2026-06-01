@@ -45,7 +45,13 @@ const child = spawn(process.execPath, [serverPath], {
     PORT: port,
     WARMER: "1",
     GROK_POOL: process.env.GROK_POOL || "1",
-    GROK_POOL_MAX: process.env.GROK_POOL_MAX || String(Math.max(2, Math.min(8, proxyCount || 5))),
+    // DEV/DEMO caps: keep peak Chromium small so a dev laptop isn't slammed (each Chrome ≈ 350MB +
+    // CPU). Was POOL_MAX up to 8 + MAX_CONCURRENCY 6 (~2GB+ of browsers) — heavy enough to spike a
+    // weak machine. Cap pool at 3, concurrent checks at 2, warm 1 proxy at a time. Prod sizing is
+    // separate (ecosystem.config.cjs per DEPLOY_TIER). Override via env if needed.
+    GROK_POOL_MAX: process.env.GROK_POOL_MAX || String(Math.max(1, Math.min(3, proxyCount || 2))),
+    MAX_CONCURRENCY: process.env.GROK_MAX_CONCURRENCY || process.env.MAX_CONCURRENCY || "2",
+    WARMER_PARALLEL: process.env.WARMER_PARALLEL || "1",
   },
 });
 

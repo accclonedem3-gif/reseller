@@ -2546,7 +2546,7 @@ export class WarrantyService {
    * handle so the receipt is self-identifying when forwarded (or when the customer cross-
    * references with shop chat history).
    */
-  private async buildClaimInvoiceMessage(orderId: string): Promise<string | null> {
+  private async buildClaimInvoiceMessage(orderId: string, accountScoped = false): Promise<string | null> {
     const order = await this.prisma.order.findUnique({
       where: { id: orderId },
       select: {
@@ -2575,10 +2575,12 @@ export class WarrantyService {
     const support = order.shop.supportTelegram || order.shop.supportZalo || "";
     const supportLine = support ? `💬 ${this.escapeHtml(support)}` : "";
     const rule = "━━━━━━━━━━━━━━━━━";
+    // Per-account (retail) view hides order-level economics (qty·total) + the buyer's identity —
+    // one order may be resold to several different end-customers (mirrors the web invoice scoping).
     return [
       rule,
-      `📦 ${product} · ${qty} acc · ${total}đ`,
-      buyerLabel ? `👤 ${this.escapeHtml(buyerLabel)}` : null,
+      accountScoped ? `📦 ${product}` : `📦 ${product} · ${qty} acc · ${total}đ`,
+      (!accountScoped && buyerLabel) ? `👤 ${this.escapeHtml(buyerLabel)}` : null,
       `⏰ Hạn ${this.escapeHtml(expiresLine)}`,
       supportLine,
       rule,
@@ -2674,12 +2676,13 @@ export class WarrantyService {
     if (!token || !claim.customer?.telegramChatId || (this.config.mockTelegramEnabled && isMockBotToken(token))) {
       return;
     }
-    const invoice = await this.buildClaimInvoiceMessage(claim.orderId).catch(() => null);
+    const accountScoped = !!(claim as any).targetAccountEmail;
+    const invoice = await this.buildClaimInvoiceMessage(claim.orderId, accountScoped).catch(() => null);
     const text = [
       "✨🎉 <b>BẢO HÀNH</b> ✓ 🎉✨",
       "",
-      `📝 Mã đơn: <code>${this.escapeHtml(claim.orderCodeSnapshot)}</code>`,
-      "",
+      // Order code hidden on a per-account (retail) warranty — they only need their replacement.
+      ...(accountScoped ? [] : [`📝 Mã đơn: <code>${this.escapeHtml(claim.orderCodeSnapshot)}</code>`, ""]),
       "🔑 <b>Tài khoản thay thế</b>",
       `<pre>${this.escapeHtml(deliveredAccountText)}</pre>`,
       "",
@@ -2722,7 +2725,8 @@ export class WarrantyService {
     if (!token || !claim.customer?.telegramChatId || (this.config.mockTelegramEnabled && isMockBotToken(token))) {
       return;
     }
-    const invoice = await this.buildClaimInvoiceMessage(claim.orderId).catch(() => null);
+    const _acctScoped = !!(claim as any).targetAccountEmail;
+    const invoice = await this.buildClaimInvoiceMessage(claim.orderId, _acctScoped).catch(() => null);
     const autoResult = claim.autoCheckResult && typeof claim.autoCheckResult === "object" && !Array.isArray(claim.autoCheckResult)
       ? (claim.autoCheckResult as Record<string, unknown>)
       : null;
@@ -2747,8 +2751,7 @@ export class WarrantyService {
     const text = [
       header,
       "",
-      `📝 Mã đơn: <code>${this.escapeHtml(claim.orderCodeSnapshot)}</code>`,
-      "",
+      ...(_acctScoped ? [] : [`📝 Mã đơn: <code>${this.escapeHtml(claim.orderCodeSnapshot)}</code>`, ""]),
       this.escapeHtml(reasonLine) + ".",
       actionLine,
       "",
@@ -4749,13 +4752,14 @@ export class WarrantyService {
     if (!token || !claim.customer?.telegramChatId || (this.config.mockTelegramEnabled && isMockBotToken(token))) {
       return;
     }
-    const invoice = await this.buildClaimInvoiceMessage(claim.orderId).catch(() => null);
+    const _acctScoped = !!(claim as any).targetAccountEmail;
+    const invoice = await this.buildClaimInvoiceMessage(claim.orderId, _acctScoped).catch(() => null);
     const parts: (string | null)[] = [
       claim.deliveredAccountText
         ? "✅ <b>Bảo hành đã được duyệt — tài khoản thay thế bên dưới</b>"
         : "✅ <b>Bảo hành đã được xử lý</b>",
       "",
-      `📝 Mã đơn: <code>${this.escapeHtml(claim.orderCodeSnapshot)}</code>`,
+      _acctScoped ? null : `📝 Mã đơn: <code>${this.escapeHtml(claim.orderCodeSnapshot)}</code>`,
       `📦 Sản phẩm: ${this.escapeHtml(claim.productNameSnapshot)}`,
       `🔢 Claim #${claim.claimNumber}`,
     ];
@@ -4822,11 +4826,12 @@ export class WarrantyService {
       return;
     }
 
-    const invoice = await this.buildClaimInvoiceMessage(claim.orderId).catch(() => null);
+    const _acctScoped = !!(claim as any).targetAccountEmail;
+    const invoice = await this.buildClaimInvoiceMessage(claim.orderId, _acctScoped).catch(() => null);
     const parts: (string | null)[] = [
       "❌ <b>Yêu cầu bảo hành bị từ chối</b>",
       "",
-      `📝 Mã đơn: <code>${this.escapeHtml(claim.orderCodeSnapshot)}</code>`,
+      _acctScoped ? null : `📝 Mã đơn: <code>${this.escapeHtml(claim.orderCodeSnapshot)}</code>`,
       `📦 Sản phẩm: ${this.escapeHtml(claim.productNameSnapshot)}`,
       `🔢 Claim #${claim.claimNumber}`,
     ];
