@@ -12,7 +12,19 @@ import {
   Max,
   Min,
 } from "class-validator";
+import { Transform, Type } from "class-transformer";
 import { StockEntryStatus, StockExtractMethod } from "@prisma/client";
+
+/**
+ * multipart/form-data sends every field as a string.
+ * These helpers coerce "123" → 123 (or undefined when empty / NaN)
+ * so class-validator's @IsNumber / @IsInt accept the values.
+ */
+const toNumberOrUndefined = ({ value }: { value: unknown }) => {
+  if (value === undefined || value === null || value === "") return undefined;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : value;
+};
 
 export class UploadStockDto {
   @IsOptional()
@@ -24,20 +36,24 @@ export class CreateBatchDto {
   @IsString()
   name!: string;
 
+  @IsOptional()
   @IsString()
-  text!: string;
+  text?: string;
 
   @IsOptional()
+  @Transform(toNumberOrUndefined)
   @IsNumber()
   @Min(0)
   costPerAcc?: number;
 
   @IsOptional()
+  @Transform(toNumberOrUndefined)
   @IsNumber()
   @Min(0)
   totalCost?: number;
 
   @IsOptional()
+  @Transform(toNumberOrUndefined)
   @IsInt()
   @Min(1)
   expiresInDays?: number;

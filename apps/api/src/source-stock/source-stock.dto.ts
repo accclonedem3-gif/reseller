@@ -12,7 +12,14 @@ import {
   Max,
   Min,
 } from "class-validator";
+import { Transform } from "class-transformer";
 import { StockEntryStatus, StockExtractMethod } from "@prisma/client";
+
+const toNumberOrUndefined = ({ value }: { value: unknown }) => {
+  if (value === undefined || value === null || value === "") return undefined;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : value;
+};
 
 export class UploadSourceStockDto {
   @IsOptional()
@@ -24,20 +31,24 @@ export class CreateSourceBatchDto {
   @IsString()
   name!: string;
 
+  @IsOptional()
   @IsString()
-  text!: string;
+  text?: string;
 
   @IsOptional()
+  @Transform(toNumberOrUndefined)
   @IsNumber()
   @Min(0)
   costPerAcc?: number;
 
   @IsOptional()
+  @Transform(toNumberOrUndefined)
   @IsNumber()
   @Min(0)
   totalCost?: number;
 
   @IsOptional()
+  @Transform(toNumberOrUndefined)
   @IsInt()
   @Min(1)
   expiresInDays?: number;
