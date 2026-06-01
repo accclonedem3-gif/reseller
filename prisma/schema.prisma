@@ -654,9 +654,56 @@ model SourceProduct {
   orders                  Order[]
   internalSourceOrders    InternalSourceOrder[]
   operations              ProductStockOperation[]
+  stockBatches            StockBatch[]
+  stockEntries            StockEntry[]
 
   @@unique([shopId, externalProductId])
   @@map("source_products")
+}
+
+enum StockEntryStatus {
+  AVAILABLE
+  SOLD
+  EXTRACTED
+}
+
+model StockBatch {
+  id              String        @id @default(cuid())
+  sourceProductId String        @map("source_product_id")
+  name            String
+  costPerUnit     Decimal?      @map("cost_per_unit") @db.Decimal(18, 2)
+  expiresAt       DateTime?     @map("expires_at")
+  createdAt       DateTime      @default(now()) @map("created_at")
+  deletedAt       DateTime?     @map("deleted_at")
+  sourceProduct   SourceProduct @relation(fields: [sourceProductId], references: [id], onDelete: Cascade)
+  entries         StockEntry[]
+
+  @@index([sourceProductId, createdAt])
+  @@index([sourceProductId, deletedAt])
+  @@map("stock_batches")
+}
+
+model StockEntry {
+  id               String           @id @default(cuid())
+  sourceProductId  String           @map("source_product_id")
+  batchId          String?          @map("batch_id")
+  text             String
+  status           StockEntryStatus @default(AVAILABLE)
+  uploadedAt       DateTime         @default(now()) @map("uploaded_at")
+  soldAt           DateTime?        @map("sold_at")
+  soldToOrderId    String?          @map("sold_to_order_id")
+  soldToCustomerId String?          @map("sold_to_customer_id")
+  extractedAt      DateTime?        @map("extracted_at")
+  sourceProduct    SourceProduct    @relation(fields: [sourceProductId], references: [id], onDelete: Cascade)
+  batch            StockBatch?      @relation(fields: [batchId], references: [id], onDelete: SetNull)
+  soldToOrder      Order?           @relation("OrderStockEntries", fields: [soldToOrderId], references: [id], onDelete: SetNull)
+  soldToCustomer   Customer?        @relation("CustomerPurchasedEntries", fields: [soldToCustomerId], references: [id], onDelete: SetNull)
+
+  @@index([sourceProductId, status, uploadedAt])
+  @@index([batchId, status])
+  @@index([soldToOrderId])
+  @@index([soldToCustomerId])
+  @@map("stock_entries")
 }
 
 model ProductStockOperation {
@@ -776,6 +823,7 @@ model Customer {
   walletLedgers     CustomerWalletLedger[]
   walletTopups      CustomerWalletTopup[]
   warrantyClaims    WarrantyClaim[]
+  purchasedEntries  StockEntry[]           @relation("CustomerPurchasedEntries")
 
   @@unique([shopId, telegramUserId])
   @@map("customers")
@@ -889,6 +937,7 @@ model Order {
   events                       OrderEvent[]
   paymentTransaction           PaymentTransaction?
   warrantyClaims               WarrantyClaim[]
+  stockEntries                 StockEntry[]          @relation("OrderStockEntries")
 
   @@index([sellerId, createdAt])
   @@index([shopId, status])

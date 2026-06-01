@@ -8,6 +8,7 @@ import {
 import { randomInt } from "node:crypto";
 import {
   Prisma,
+  StockEntryStatus,
   StockExtractMethod,
   StockOperationType,
 } from "@prisma/client";
@@ -16,9 +17,11 @@ import { PrismaService } from "../db/prisma.service";
 import type { AuthenticatedUser } from "../types";
 
 import type {
+  CreateBatchDto,
   ExtractStockDto,
   StockEntriesQueryDto,
   StockHistoryQueryDto,
+  UploadStockDto,
 } from "./products-stock.dto";
 
 @Injectable()
@@ -28,240 +31,320 @@ export class ProductsStockService {
     private readonly prisma: PrismaService,
   ) {}
 
-  async uploadStock(
-    user: AuthenticatedUser,
-    productId: string,
-    rawText: string | null | undefined,
-  ) {
-    const newEntries = this.parseStockText(rawText);
+  // ============================================================
+  // BATCHES
+  // ============================================================
 
-    if (newEntries.length === 0) {
-      throw new BadRequestException("Không có dòng kho hợp lệ trong nội dung gửi lên.");
+  async listBatches(user: AuthenticatedUser, productId: string) {
+    const product = await this.loadOwnedProduct(user, productId);
+    const batches = await this.prisma.stockBatch.findMany({
+      where: { sourceProductId: product.id, deletedAt: null },
+      orderBy: { createdAt: "asc" },
+      include: {
+        _count: { select: { entries: true } },
+      },
+    });
+    const batchIds = batches.map((b) => b.id);
+    const availableCounts = batchIds.length > 0
+      ? await this.prisma.stockEntry.groupBy({
+          by: ["batchId"],
+          where: {
+            sourceProductId: product.id,
+            batchId: { in: batchIds },
+            status: StockEntryStatus.AVAILABLE,
+          },
+          _count: { _all: true },
+        })
+      : [];
+    const availableByBatch = new Map<string, number>();
+    for (const row of availableCounts) {
+      if (row.batchId) availableByBatch.set(row.batchId, row._count._all);
     }
 
-    const product = await this.loadOwnedProduct(user, productId);
+    const legacyAvailable = await this.prisma.stockEntry.count({
+      where: {
+        sourceProductId: product.id,
+        batchId: null,
+        status: StockEntryStatus.AVAILABLE,
+      },
+    });
 
-    const preview = newEntries.slice(0, 3);
+    return {
+      legacy: { availableCount: legacyAvailable },
+      batches: batches.map((b) => ({
+        id: b.id,
+        name: b.name,
+        costPerUnit: b.costPerUnit ? Number(b.costPerUnit) : null,
+        expiresAt: b.expiresAt,
+        createdAt: b.createdAt,
+        totalCount: b._count.entries,
+        availableCount: availableByBatch.get(b.id) ?? 0,
+        isExpired: !!b.expiresAt && b.expiresAt < new Date(),
+      })),
+    };
+  }
+
+  async createBatch(user: AuthenticatedUser, productId: string, dto: CreateBatchDto) {
+    const product = await this.loadOwnedProduct(user, productId);
+    const entries = this.parseStockText(dto.text);
+    if (entries.length === 0) {
+      throw new BadRequestException("Chưa có dòng tài khoản hợp lệ trong nội dung.");
+    }
+    const name = String(dto.name || "").trim();
+    if (!name) {
+      throw new BadRequestException("Cần tên lô.");
+    }
+    const costPerUnit = this.resolveCostPerUnit(dto, entries.length);
+
+    let expiresAt: Date | null = null;
+    if (typeof dto.expiresInDays === "number" && Number.isFinite(dto.expiresInDays) && dto.expiresInDays > 0) {
+      expiresAt = new Date(Date.now() + Math.floor(dto.expiresInDays) * 24 * 60 * 60 * 1000);
+    } else if (dto.expiresAt) {
+      const parsed = new Date(dto.expiresAt);
+      if (!Number.isNaN(parsed.getTime())) expiresAt = parsed;
+    }
 
     const result = await this.prisma.$transaction(async (tx) => {
-      // Row-level lock to prevent lost-update races with concurrent
-      // extracts / worker deliveries / other uploads.
       await tx.$queryRaw<{ id: string }[]>(
         Prisma.sql`SELECT id FROM source_products WHERE id = ${product.id} FOR UPDATE`,
       );
 
-      const fresh = await tx.sourceProduct.findUnique({
-        where: { id: product.id },
-        select: { metadataJson: true, available: true },
+      const batch = await tx.stockBatch.create({
+        data: {
+          sourceProductId: product.id,
+          name,
+          costPerUnit: costPerUnit !== null ? new Prisma.Decimal(costPerUnit) : null,
+          expiresAt,
+        },
       });
 
-      if (!fresh) {
-        throw new NotFoundException("Sản phẩm không tồn tại.");
-      }
+      const uploadedAt = new Date();
+      await tx.stockEntry.createMany({
+        data: entries.map((text) => ({
+          sourceProductId: product.id,
+          batchId: batch.id,
+          text,
+          status: StockEntryStatus.AVAILABLE,
+          uploadedAt,
+        })),
+      });
 
-      const freshMeta = this.asRecord(fresh.metadataJson);
-      const freshEntries = this.readDeliveryEntries(freshMeta);
-      const availableBefore = freshEntries.length;
-      const mergedEntries = [...freshEntries, ...newEntries];
-      const availableAfter = mergedEntries.length;
-      const mergedDeliveryText = this.toDeliveryText(mergedEntries);
-
+      const availableTotal = await tx.stockEntry.count({
+        where: { sourceProductId: product.id, status: StockEntryStatus.AVAILABLE },
+      });
       await tx.sourceProduct.update({
         where: { id: product.id },
-        data: {
-          available: availableAfter,
-          totalCount: Math.max(product.soldCount + availableAfter, product.totalCount),
-          metadataJson: {
-            ...freshMeta,
-            manual: true,
-            deliveryEntries: mergedEntries,
-            deliveryText: mergedDeliveryText,
-          } as Prisma.InputJsonValue,
-        },
+        data: { available: availableTotal },
       });
 
       await tx.productStockOperation.create({
         data: {
           sourceProductId: product.id,
           operationType: StockOperationType.UPLOAD,
-          quantity: newEntries.length,
-          availableBefore,
-          availableAfter,
-          payloadJson: { preview } as Prisma.InputJsonValue,
+          quantity: entries.length,
+          availableBefore: availableTotal - entries.length,
+          availableAfter: availableTotal,
+          payloadJson: {
+            preview: entries.slice(0, 3),
+            batchId: batch.id,
+            batchName: name,
+            costPerUnit,
+            expiresAt: expiresAt?.toISOString() ?? null,
+          } as Prisma.InputJsonValue,
         },
       });
 
-      return { availableBefore, availableAfter };
+      return { batch, addedCount: entries.length, availableTotal };
     });
 
     return {
-      added: newEntries.length,
-      totalBefore: result.availableBefore,
-      totalAfter: result.availableAfter,
-      preview,
+      batchId: result.batch.id,
+      batchName: result.batch.name,
+      added: result.addedCount,
+      totalAfter: result.availableTotal,
+      preview: entries.slice(0, 3),
     };
   }
 
-  async extractStock(
-    user: AuthenticatedUser,
-    productId: string,
-    dto: ExtractStockDto,
-  ) {
-    if (!dto || !dto.mode) {
-      throw new BadRequestException("mode là bắt buộc (FAST | RANGE | MANUAL).");
+  async deleteBatch(user: AuthenticatedUser, productId: string, batchId: string) {
+    const product = await this.loadOwnedProduct(user, productId);
+    const batch = await this.prisma.stockBatch.findFirst({
+      where: { id: batchId, sourceProductId: product.id, deletedAt: null },
+    });
+    if (!batch) throw new NotFoundException("Lô không tồn tại.");
+
+    const remaining = await this.prisma.stockEntry.count({
+      where: { batchId: batch.id, status: StockEntryStatus.AVAILABLE },
+    });
+    if (remaining > 0) {
+      throw new BadRequestException(
+        `Lô còn ${remaining} tài khoản chưa bán. Hãy bóc hết hoặc đợi bán hết trước khi xóa.`,
+      );
     }
 
-    const dryRun = Boolean(dto.dryRun);
+    await this.prisma.stockBatch.update({
+      where: { id: batch.id },
+      data: { deletedAt: new Date() },
+    });
+    return { success: true };
+  }
+
+  // ============================================================
+  // UPLOAD (legacy — adds entries without a batch; we now ALWAYS
+  // require batch creation, so this method is kept for backwards
+  // compat but routes through createBatch with a default name)
+  // ============================================================
+
+  async uploadStock(user: AuthenticatedUser, productId: string, rawText: string) {
+    const dto: CreateBatchDto = {
+      name: `Lô ${this.formatDateForName(new Date())}`,
+      text: rawText,
+      costPerAcc: 0,
+    };
+    return this.createBatch(user, productId, dto);
+  }
+
+  // ============================================================
+  // EXTRACT
+  // ============================================================
+
+  async extractStock(user: AuthenticatedUser, productId: string, dto: ExtractStockDto) {
     const product = await this.loadOwnedProduct(user, productId);
+    const dryRun = !!dto.dryRun;
 
     const result = await this.prisma.$transaction(async (tx) => {
-      // Row-level lock to prevent concurrent extracts
       await tx.$queryRaw<{ id: string }[]>(
         Prisma.sql`SELECT id FROM source_products WHERE id = ${product.id} FOR UPDATE`,
       );
 
-      const locked = await tx.sourceProduct.findUnique({
-        where: { id: product.id },
-        select: {
-          id: true,
-          metadataJson: true,
-          soldCount: true,
-          totalCount: true,
-        },
+      // Load all AVAILABLE entries (legacy + batched), oldest first
+      const availableEntries = await tx.stockEntry.findMany({
+        where: { sourceProductId: product.id, status: StockEntryStatus.AVAILABLE },
+        orderBy: [{ uploadedAt: "asc" }, { id: "asc" }],
+        select: { id: true, text: true, batchId: true, uploadedAt: true },
       });
+      const availableBefore = availableEntries.length;
 
-      if (!locked) {
-        throw new NotFoundException("Sản phẩm không tồn tại.");
-      }
-
-      const metadataBefore = this.asRecord(locked.metadataJson);
-      const entries = this.readDeliveryEntries(metadataBefore);
-      const availableBefore = entries.length;
-
-      let extracted: string[] = [];
-      let remaining: string[] = entries;
+      let pickedIds: string[] = [];
       let methodUsed: StockExtractMethod;
 
       if (dto.mode === "FAST") {
         const quantity = Number(dto.quantity);
         if (!Number.isInteger(quantity) || quantity < 1) {
-          throw new BadRequestException("Quantity phải là số nguyên dương.");
-        }
-        if (!dto.method) {
-          throw new BadRequestException("method là bắt buộc cho mode FAST.");
+          throw new BadRequestException("quantity phải là số nguyên dương.");
         }
         if (availableBefore < quantity) {
           throw new BadRequestException(
             `Kho không đủ. Hiện có ${availableBefore}, yêu cầu ${quantity}.`,
           );
         }
-        const popped = this.popByMethod(entries, quantity, dto.method);
-        extracted = popped.extracted;
-        remaining = popped.remaining;
-        methodUsed = dto.method;
+        const method = dto.method ?? StockExtractMethod.FIFO;
+        methodUsed = method;
+        pickedIds = this.pickIdsByMethod(availableEntries, quantity, method);
       } else if (dto.mode === "RANGE") {
         const fromIndex = Number(dto.fromIndex);
         const toIndex = Number(dto.toIndex);
         if (!Number.isInteger(fromIndex) || !Number.isInteger(toIndex)) {
+          throw new BadRequestException("fromIndex và toIndex là bắt buộc cho mode RANGE.");
+        }
+        if (!(fromIndex >= 1 && fromIndex <= toIndex && toIndex <= availableBefore)) {
           throw new BadRequestException(
-            "fromIndex và toIndex là bắt buộc cho mode RANGE.",
+            `Khoảng không hợp lệ. Yêu cầu 1 ≤ fromIndex (${fromIndex}) ≤ toIndex (${toIndex}) ≤ ${availableBefore}.`,
           );
         }
-        if (
-          !(fromIndex >= 1 && fromIndex <= toIndex && toIndex <= availableBefore)
-        ) {
-          throw new BadRequestException(
-            `Khoảng không hợp lệ. Yêu cầu 1 <= fromIndex (${fromIndex}) <= toIndex (${toIndex}) <= ${availableBefore}.`,
-          );
-        }
-        extracted = entries.slice(fromIndex - 1, toIndex);
-        remaining = entries.slice(0, fromIndex - 1).concat(entries.slice(toIndex));
+        pickedIds = availableEntries.slice(fromIndex - 1, toIndex).map((e) => e.id);
         methodUsed = StockExtractMethod.RANGE;
-      } else if (dto.mode === "MANUAL") {
-        const indices = dto.selectedIndices;
-        if (!Array.isArray(indices) || indices.length === 0) {
-          throw new BadRequestException(
-            "selectedIndices là bắt buộc và không được rỗng cho mode MANUAL.",
-          );
+      } else if (dto.mode === "MANUAL_BY_INDEX") {
+        const indices = Array.isArray(dto.selectedIndices) ? dto.selectedIndices : [];
+        if (indices.length === 0) {
+          throw new BadRequestException("selectedIndices không được rỗng cho mode MANUAL_BY_INDEX.");
         }
-        const seen = new Set<number>();
+        const uniq = new Set<number>();
         for (const raw of indices) {
           const idx = Number(raw);
           if (!Number.isInteger(idx) || idx < 1 || idx > availableBefore) {
             throw new BadRequestException(
-              `selectedIndices chứa giá trị không hợp lệ (${raw}). Phải nằm trong 1..${availableBefore}.`,
+              `Index không hợp lệ: ${idx}. Phải là 1..${availableBefore}.`,
             );
           }
-          if (seen.has(idx)) {
-            throw new BadRequestException(
-              `selectedIndices không được trùng lặp (${idx}).`,
-            );
-          }
-          seen.add(idx);
+          uniq.add(idx);
         }
-        extracted = indices.map((i) => entries[i - 1] as string);
-        remaining = entries.filter((_, idx) => !seen.has(idx + 1));
+        if (uniq.size !== indices.length) {
+          throw new BadRequestException("selectedIndices chứa giá trị trùng lặp.");
+        }
+        pickedIds = Array.from(uniq).sort((a, b) => a - b).map((i) => availableEntries[i - 1]!.id);
+        methodUsed = StockExtractMethod.MANUAL;
+      } else if (dto.mode === "MANUAL_BY_ID") {
+        const ids = Array.isArray(dto.entryIds) ? dto.entryIds : [];
+        if (ids.length === 0) {
+          throw new BadRequestException("entryIds không được rỗng cho mode MANUAL_BY_ID.");
+        }
+        const idSet = new Set(ids);
+        if (idSet.size !== ids.length) {
+          throw new BadRequestException("entryIds chứa giá trị trùng lặp.");
+        }
+        const availableIds = new Set(availableEntries.map((e) => e.id));
+        for (const id of idSet) {
+          if (!availableIds.has(id)) {
+            throw new BadRequestException(
+              `Entry ${id} không có trong kho available của sản phẩm này.`,
+            );
+          }
+        }
+        pickedIds = availableEntries.filter((e) => idSet.has(e.id)).map((e) => e.id);
+        methodUsed = StockExtractMethod.MANUAL;
+      } else if (dto.mode === "BATCH") {
+        if (!dto.batchId) {
+          throw new BadRequestException("batchId bắt buộc cho mode BATCH.");
+        }
+        const batchEntries = availableEntries.filter((e) => e.batchId === dto.batchId);
+        if (batchEntries.length === 0) {
+          throw new BadRequestException("Lô này không còn tài khoản nào available.");
+        }
+        pickedIds = batchEntries.map((e) => e.id);
         methodUsed = StockExtractMethod.MANUAL;
       } else {
-        throw new BadRequestException(
-          `mode không hợp lệ: ${String((dto as any).mode)}.`,
-        );
+        throw new BadRequestException("mode không hợp lệ.");
       }
 
-      const quantityExtracted = extracted.length;
+      const extracted = availableEntries
+        .filter((e) => pickedIds.includes(e.id))
+        .map((e) => e.text);
 
-      if (dryRun) {
-        await tx.productStockOperation.create({
+      if (!dryRun) {
+        await tx.stockEntry.updateMany({
+          where: { id: { in: pickedIds } },
           data: {
-            sourceProductId: locked.id,
-            operationType: StockOperationType.PREVIEW,
-            extractMethod: methodUsed,
-            quantity: quantityExtracted,
-            availableBefore,
-            availableAfter: availableBefore,
-            payloadJson: {
-              preview: extracted.slice(0, 3),
-              dryRun: true,
-              mode: dto.mode,
-            } as Prisma.InputJsonValue,
+            status: StockEntryStatus.EXTRACTED,
+            extractedAt: new Date(),
           },
         });
-
-        return {
-          extracted,
-          availableBefore,
-          availableAfter: availableBefore,
-          methodUsed,
-        };
       }
 
-      const availableAfter = remaining.length;
-      const remainingDeliveryText = this.toDeliveryText(remaining);
+      const availableAfter = dryRun ? availableBefore : availableBefore - pickedIds.length;
 
-      await tx.sourceProduct.update({
-        where: { id: locked.id },
-        data: {
-          available: availableAfter,
-          metadataJson: {
-            ...metadataBefore,
-            manual: true,
-            deliveryEntries: remaining,
-            deliveryText: remainingDeliveryText,
-          } as Prisma.InputJsonValue,
-        },
-      });
+      if (!dryRun) {
+        await tx.sourceProduct.update({
+          where: { id: product.id },
+          data: { available: availableAfter },
+        });
+        // Auto-delete empty batches
+        await this.autoCleanEmptyBatches(tx, product.id);
+      }
 
       await tx.productStockOperation.create({
         data: {
-          sourceProductId: locked.id,
-          operationType: StockOperationType.EXTRACT,
+          sourceProductId: product.id,
+          operationType: dryRun ? StockOperationType.PREVIEW : StockOperationType.EXTRACT,
           extractMethod: methodUsed,
-          quantity: quantityExtracted,
+          quantity: pickedIds.length,
           availableBefore,
           availableAfter,
           payloadJson: {
             preview: extracted.slice(0, 3),
             mode: dto.mode,
+            dryRun,
+            ...(dto.batchId ? { batchId: dto.batchId } : {}),
           } as Prisma.InputJsonValue,
         },
       });
@@ -278,31 +361,93 @@ export class ProductsStockService {
     };
   }
 
+  // ============================================================
+  // LIST ENTRIES (for Xem TK modal)
+  // ============================================================
+
   async listEntries(
     user: AuthenticatedUser,
     productId: string,
     query: StockEntriesQueryDto,
   ) {
     const product = await this.loadOwnedProduct(user, productId);
-    const limit = Math.min(Math.max(Number(query.limit) || 200, 1), 1000);
+    const limit = Math.min(Math.max(Number(query.limit) || 500, 1), 2000);
     const offset = Math.max(Number(query.offset) || 0, 0);
     const searchRaw = typeof query.search === "string" ? query.search.trim() : "";
-    const search = searchRaw.length > 0 ? searchRaw.toLowerCase() : null;
+    const search = searchRaw.length > 0 ? searchRaw : null;
+    const status = (query.status as StockEntryStatus | undefined) ?? null;
 
-    const metadata = this.asRecord(product.metadataJson);
-    const entries = this.readDeliveryEntries(metadata);
-    const allItems = entries.map((text, idx) => ({ index: idx + 1, text }));
-    const total = allItems.length;
+    const where: Prisma.StockEntryWhereInput = { sourceProductId: product.id };
+    if (status) where.status = status;
+    if (query.batchId) where.batchId = query.batchId;
+    if (search) where.text = { contains: search, mode: "insensitive" };
 
-    const filtered = search
-      ? allItems.filter((item) => item.text.toLowerCase().includes(search))
-      : allItems;
-    const filteredTotal = filtered.length;
+    const [items, total, available, sold, extractedCount] = await Promise.all([
+      this.prisma.stockEntry.findMany({
+        where,
+        orderBy: [
+          { batchId: { sort: "asc", nulls: "first" } },
+          { uploadedAt: "asc" },
+          { id: "asc" },
+        ],
+        skip: offset,
+        take: limit,
+        include: {
+          batch: { select: { id: true, name: true, costPerUnit: true, expiresAt: true } },
+          soldToOrder: { select: { id: true, orderCode: true, deliveredAt: true } },
+          soldToCustomer: {
+            select: { id: true, telegramUsername: true, telegramUserId: true, firstName: true },
+          },
+        },
+      }),
+      this.prisma.stockEntry.count({ where }),
+      this.prisma.stockEntry.count({
+        where: { sourceProductId: product.id, status: StockEntryStatus.AVAILABLE },
+      }),
+      this.prisma.stockEntry.count({
+        where: { sourceProductId: product.id, status: StockEntryStatus.SOLD },
+      }),
+      this.prisma.stockEntry.count({
+        where: { sourceProductId: product.id, status: StockEntryStatus.EXTRACTED },
+      }),
+    ]);
 
-    const items = filtered.slice(offset, offset + limit);
-
-    return { items, total, filteredTotal };
+    return {
+      items: items.map((e) => ({
+        id: e.id,
+        text: e.text,
+        status: e.status,
+        uploadedAt: e.uploadedAt,
+        soldAt: e.soldAt,
+        extractedAt: e.extractedAt,
+        batchId: e.batchId,
+        batchName: e.batch?.name ?? null,
+        batchCost: e.batch?.costPerUnit ? Number(e.batch.costPerUnit) : null,
+        batchExpiresAt: e.batch?.expiresAt ?? null,
+        soldToOrder: e.soldToOrder
+          ? {
+              id: e.soldToOrder.id,
+              code: e.soldToOrder.orderCode,
+              deliveredAt: e.soldToOrder.deliveredAt,
+            }
+          : null,
+        soldToCustomer: e.soldToCustomer
+          ? {
+              id: e.soldToCustomer.id,
+              telegramUsername: e.soldToCustomer.telegramUsername,
+              telegramUserId: e.soldToCustomer.telegramUserId,
+              firstName: e.soldToCustomer.firstName,
+            }
+          : null,
+      })),
+      total,
+      counts: { available, sold, extracted: extractedCount },
+    };
   }
+
+  // ============================================================
+  // HISTORY (operation log unchanged)
+  // ============================================================
 
   async listHistory(
     user: AuthenticatedUser,
@@ -328,6 +473,10 @@ export class ProductsStockService {
     return { items, total };
   }
 
+  // ============================================================
+  // Helpers
+  // ============================================================
+
   private async loadOwnedProduct(user: AuthenticatedUser, productId: string) {
     const product = await this.prisma.sourceProduct.findUnique({
       where: { id: productId },
@@ -335,62 +484,63 @@ export class ProductsStockService {
         shop: {
           select: {
             id: true,
-            seller: {
-              select: { id: true, userId: true },
-            },
+            seller: { select: { id: true, userId: true } },
           },
         },
       },
     });
-
-    if (!product) {
-      throw new NotFoundException("Sản phẩm không tồn tại.");
-    }
-
+    if (!product) throw new NotFoundException("Sản phẩm không tồn tại.");
     if (!product.shop?.seller || product.shop.seller.userId !== user.id) {
       throw new ForbiddenException("Bạn không có quyền truy cập sản phẩm này.");
     }
-
     return product;
   }
 
   private parseStockText(rawText: string | null | undefined): string[] {
     if (rawText == null) return [];
     let text = String(rawText);
-    if (text.charCodeAt(0) === 0xfeff) {
-      text = text.slice(1);
-    }
+    if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
     text = text.replace(/\r\n/g, "\n").trim();
     if (!text) return [];
-
-    const parts = text.includes("\n\n")
-      ? text.split(/\n\n+/)
-      : text.split(/\r?\n/);
-
+    const parts = text.includes("\n\n") ? text.split(/\n\n+/) : text.split(/\r?\n/);
     return parts.map((entry) => entry.trim()).filter((entry) => entry.length > 0);
   }
 
-  private popByMethod(
-    entries: string[],
+  private resolveCostPerUnit(dto: CreateBatchDto, entryCount: number): number | null {
+    if (typeof dto.costPerAcc === "number" && Number.isFinite(dto.costPerAcc) && dto.costPerAcc >= 0) {
+      return Math.round(dto.costPerAcc * 100) / 100;
+    }
+    if (
+      typeof dto.totalCost === "number" &&
+      Number.isFinite(dto.totalCost) &&
+      dto.totalCost >= 0 &&
+      entryCount > 0
+    ) {
+      return Math.round((dto.totalCost / entryCount) * 100) / 100;
+    }
+    return null;
+  }
+
+  private formatDateForName(d: Date): string {
+    const dd = String(d.getDate()).padStart(2, "0");
+    const mm = String(d.getMonth() + 1).padStart(2, "0");
+    const hh = String(d.getHours()).padStart(2, "0");
+    const mi = String(d.getMinutes()).padStart(2, "0");
+    return `${dd}/${mm} ${hh}:${mi}`;
+  }
+
+  private pickIdsByMethod(
+    entries: { id: string; text: string }[],
     quantity: number,
     method: StockExtractMethod,
-  ): { extracted: string[]; remaining: string[] } {
+  ): string[] {
     if (method === StockExtractMethod.FIFO) {
-      return {
-        extracted: entries.slice(0, quantity),
-        remaining: entries.slice(quantity),
-      };
+      return entries.slice(0, quantity).map((e) => e.id);
     }
-
     if (method === StockExtractMethod.LIFO) {
-      const tail = entries.slice(-quantity);
-      return {
-        extracted: tail.slice().reverse(),
-        remaining: entries.slice(0, entries.length - quantity),
-      };
+      return entries.slice(-quantity).reverse().map((e) => e.id);
     }
-
-    // RANDOM — Fisher-Yates on indices, then split preserving uniqueness
+    // RANDOM — Fisher-Yates on indices
     const indices = entries.map((_, i) => i);
     for (let i = indices.length - 1; i > 0; i--) {
       const j = randomInt(0, i + 1);
@@ -399,48 +549,27 @@ export class ProductsStockService {
       indices[i] = b;
       indices[j] = a;
     }
-    const pickedIndices = indices.slice(0, quantity);
-    const pickedSet = new Set(pickedIndices);
-    const extracted: string[] = [];
-    const remaining: string[] = [];
-    pickedIndices.forEach((idx) => {
-      const value = entries[idx];
-      if (value !== undefined) extracted.push(value);
+    const picked = indices.slice(0, quantity);
+    return picked.map((idx) => entries[idx]!.id);
+  }
+
+  private async autoCleanEmptyBatches(
+    tx: Prisma.TransactionClient,
+    sourceProductId: string,
+  ): Promise<void> {
+    const candidates = await tx.stockBatch.findMany({
+      where: { sourceProductId, deletedAt: null },
+      select: {
+        id: true,
+        _count: { select: { entries: { where: { status: StockEntryStatus.AVAILABLE } } } },
+      },
     });
-    entries.forEach((entry, idx) => {
-      if (!pickedSet.has(idx)) remaining.push(entry);
-    });
-    return { extracted, remaining };
-  }
-
-  private readDeliveryEntries(metadata: Record<string, any>): string[] {
-    if (Array.isArray(metadata.deliveryEntries)) {
-      return metadata.deliveryEntries
-        .map((entry: unknown) => String(entry || "").trim())
-        .filter(Boolean);
+    const emptyIds = candidates.filter((b) => b._count.entries === 0).map((b) => b.id);
+    if (emptyIds.length > 0) {
+      await tx.stockBatch.updateMany({
+        where: { id: { in: emptyIds } },
+        data: { deletedAt: new Date() },
+      });
     }
-
-    if (typeof metadata.deliveryText === "string") {
-      const normalized = metadata.deliveryText.replace(/\r\n/g, "\n").trim();
-      if (!normalized) return [];
-      const parts = normalized.includes("\n\n")
-        ? normalized.split(/\n\n+/)
-        : normalized.split(/\r?\n/);
-      return parts.map((entry: string) => entry.trim()).filter(Boolean);
-    }
-
-    return [];
-  }
-
-  private toDeliveryText(entries: string[]): string | null {
-    if (entries.length === 0) return null;
-    return entries.join("\n\n");
-  }
-
-  private asRecord(value: Prisma.JsonValue | null | undefined) {
-    if (!value || typeof value !== "object" || Array.isArray(value)) {
-      return {} as Record<string, any>;
-    }
-    return value as Record<string, any>;
   }
 }

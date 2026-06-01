@@ -500,6 +500,75 @@ async function enqueuePaidOrder(queue, orderId, totalSourceAmount) {
         throw error;
     }
 }
+// ============================================================
+// Manual stock — StockEntry pop logic
+// Returns { extracted, totalCost, entryIds } on success, or null on shortage.
+// FIFO: kho cũ (batchId NULL) first, then batches by createdAt ASC.
+// Skips entries in expired or soft-deleted batches.
+// ============================================================
+async function popManualStockEntries(tx, sourceProductId, quantity, opts) {
+    const now = new Date();
+    const entries = await tx.stockEntry.findMany({
+        where: {
+            sourceProductId,
+            status: "AVAILABLE",
+            OR: [
+                { batchId: null },
+                { batch: { deletedAt: null, expiresAt: null } },
+                { batch: { deletedAt: null, expiresAt: { gt: now } } },
+            ],
+        },
+        orderBy: [
+            { batchId: { sort: "asc", nulls: "first" } },
+            { uploadedAt: "asc" },
+            { id: "asc" },
+        ],
+        take: quantity,
+        include: { batch: { select: { id: true, costPerUnit: true } } },
+    });
+    if (entries.length < quantity) {
+        return null;
+    }
+    const entryIds = entries.map((e) => e.id);
+    await tx.stockEntry.updateMany({
+        where: { id: { in: entryIds } },
+        data: {
+            status: "SOLD",
+            soldAt: now,
+            soldToOrderId: opts?.orderId ?? null,
+            soldToCustomerId: opts?.customerId ?? null,
+        },
+    });
+    const extracted = entries.map((e) => e.text);
+    const totalCost = entries.reduce((sum, e) => sum + (e.batch?.costPerUnit ? Number(e.batch.costPerUnit) : 0), 0);
+    const affectedBatchIds = Array.from(new Set(entries.map((e) => e.batchId).filter(Boolean)));
+    for (const bId of affectedBatchIds) {
+        const remaining = await tx.stockEntry.count({
+            where: { batchId: bId, status: "AVAILABLE" },
+        });
+        if (remaining === 0) {
+            await tx.stockBatch.update({
+                where: { id: bId },
+                data: { deletedAt: new Date() },
+            });
+        }
+    }
+    return { extracted, totalCost, entryIds };
+}
+async function countAvailableManualEntries(client, sourceProductId) {
+    const now = new Date();
+    return client.stockEntry.count({
+        where: {
+            sourceProductId,
+            status: "AVAILABLE",
+            OR: [
+                { batchId: null },
+                { batch: { deletedAt: null, expiresAt: null } },
+                { batch: { deletedAt: null, expiresAt: { gt: now } } },
+            ],
+        },
+    });
+}
 let __adminTemplateCustCache = null;
 let __adminTemplateCustCacheAt = 0;
 async function getAdminTemplateCustomizationCached() {
@@ -1327,24 +1396,20 @@ async function processPurchase(job) {
             }
             return;
         }
-        const deliveryEntries = readManualDeliveryEntries(sourceMetadata);
-        if (deliveryEntries.length >= order.quantity) {
+        const availableManualEntries = await countAvailableManualEntries(prisma, order.sourceProductId);
+        if (availableManualEntries >= order.quantity) {
             const deliveredAt = new Date();
             const __SHORTAGE_SENTINEL = Symbol.for("manual_delivery_shortage");
             let txDeliveredText = "";
-            let txDeliveredEntries = [];
+            let txTotalCost = 0;
             try {
                 await prisma.$transaction(async (tx) => {
                     await tx.$queryRawUnsafe("SELECT id FROM source_products WHERE id = $1 FOR UPDATE", order.sourceProductId);
-                    const freshProduct = await tx.sourceProduct.findUnique({
-                        where: { id: order.sourceProductId },
-                        select: { metadataJson: true, available: true },
+                    const popped = await popManualStockEntries(tx, order.sourceProductId, order.quantity, {
+                        customerId: order.customerId,
+                        orderId: order.id,
                     });
-                    const freshMeta = (freshProduct && typeof freshProduct.metadataJson === "object" && !Array.isArray(freshProduct.metadataJson))
-                        ? freshProduct.metadataJson
-                        : {};
-                    const freshEntries = readManualDeliveryEntries(freshMeta);
-                    if (freshEntries.length < order.quantity) {
+                    if (!popped) {
                         const shortageReason = "Kho tai khoan giao tu dong khong du so luong. Don da chuyen sang cho seller xu ly thu cong.";
                         await tx.order.update({
                             where: { id: order.id },
@@ -1356,7 +1421,6 @@ async function processPurchase(job) {
                                 eventType: "manual_product_pending",
                                 payloadJson: {
                                     reason: shortageReason,
-                                    availableEntries: freshEntries.length,
                                     requestedQuantity: order.quantity,
                                     raceDetected: true,
                                 },
@@ -1364,18 +1428,17 @@ async function processPurchase(job) {
                         });
                         throw __SHORTAGE_SENTINEL;
                     }
-                    const deliveredEntries = freshEntries.slice(0, order.quantity);
-                    const remainingEntries = freshEntries.slice(order.quantity);
-                    const deliveredText = deliveredEntries.join("\n\n");
-                    const remainingDeliveryText = normalizeManualDeliveryText(remainingEntries.join("\n\n")) || null;
+                    const deliveredText = popped.extracted.join("\n\n");
                     txDeliveredText = deliveredText;
-                    txDeliveredEntries = deliveredEntries;
+                    txTotalCost = popped.totalCost;
+                    const totalSourceAmount = popped.totalCost > 0 ? popped.totalCost : Number(order.totalSourceAmount || 0);
                     await tx.order.update({
                         where: { id: order.id },
                         data: {
                             status: "DELIVERED",
                             deliveredAccountText: deliveredText,
                             deliveredAt,
+                            totalSourceAmount: new client_1.Prisma.Decimal(totalSourceAmount.toFixed(2)),
                         },
                     });
                     await tx.orderEvent.create({
@@ -1384,23 +1447,20 @@ async function processPurchase(job) {
                             eventType: "manual_product_delivered",
                             payloadJson: {
                                 deliveredText,
-                                deliveredCount: deliveredEntries.length,
+                                deliveredCount: popped.extracted.length,
+                                entryIds: popped.entryIds,
+                                totalCost: popped.totalCost,
                             },
                         },
+                    });
+                    const remainingAvailable = await tx.stockEntry.count({
+                        where: { sourceProductId: order.sourceProductId, status: "AVAILABLE" },
                     });
                     await tx.sourceProduct.update({
                         where: { id: order.sourceProductId },
                         data: {
-                            soldCount: {
-                                increment: order.quantity,
-                            },
-                            available: remainingEntries.length,
-                            metadataJson: {
-                                ...freshMeta,
-                                manual: true,
-                                deliveryEntries: remainingEntries,
-                                deliveryText: remainingDeliveryText,
-                            },
+                            soldCount: { increment: order.quantity },
+                            available: remainingAvailable,
                         },
                     });
                 });
@@ -1441,7 +1501,7 @@ async function processPurchase(job) {
             }
             return;
         }
-        if (deliveryEntries.length > 0 && deliveryEntries.length < order.quantity) {
+        if (availableManualEntries > 0 && availableManualEntries < order.quantity) {
             const shortageReason = "Kho tai khoan giao tu dong khong du so luong. Don da chuyen sang cho seller xu ly thu cong.";
             await prisma.$transaction(async (tx) => {
                 await tx.order.update({
@@ -1457,7 +1517,7 @@ async function processPurchase(job) {
                         eventType: "manual_product_pending",
                         payloadJson: {
                             reason: shortageReason,
-                            availableEntries: deliveryEntries.length,
+                            availableEntries: availableManualEntries,
                             requestedQuantity: order.quantity,
                         },
                     },
@@ -1536,28 +1596,20 @@ async function processPurchase(job) {
         const upstreamMetadata = upstreamProduct?.metadataJson && typeof upstreamProduct.metadataJson === "object" && !Array.isArray(upstreamProduct.metadataJson)
             ? upstreamProduct.metadataJson
             : {};
-        const deliveryEntries = readManualDeliveryEntries(upstreamMetadata);
-        if (deliveryEntries.length >= order.quantity) {
+        const upstreamAvailable = upstreamProduct ? await countAvailableManualEntries(prisma, upstreamProduct.id) : 0;
+        if (upstreamAvailable >= order.quantity && upstreamProduct) {
             const deliveredAt = new Date();
             const __UPSTREAM_SHORTAGE_SENTINEL = Symbol.for("manual_delivery_upstream_shortage");
             let txDeliveredText = "";
-            let txDeliveredEntries = [];
+            let txTotalCost = 0;
             try {
                 await prisma.$transaction(async (tx) => {
-                    if (upstreamProduct) {
-                        await tx.$queryRawUnsafe("SELECT id FROM source_products WHERE id = $1 FOR UPDATE", upstreamProduct.id);
-                    }
-                    const freshUpstream = upstreamProduct
-                        ? await tx.sourceProduct.findUnique({
-                            where: { id: upstreamProduct.id },
-                            select: { metadataJson: true, available: true },
-                        })
-                        : null;
-                    const freshMeta = (freshUpstream && typeof freshUpstream.metadataJson === "object" && !Array.isArray(freshUpstream.metadataJson))
-                        ? freshUpstream.metadataJson
-                        : {};
-                    const freshEntries = readManualDeliveryEntries(freshMeta);
-                    if (freshEntries.length < order.quantity) {
+                    await tx.$queryRawUnsafe("SELECT id FROM source_products WHERE id = $1 FOR UPDATE", upstreamProduct.id);
+                    const popped = await popManualStockEntries(tx, upstreamProduct.id, order.quantity, {
+                        customerId: order.customerId,
+                        orderId: order.id,
+                    });
+                    if (!popped) {
                         const shortageReason = "Kho tai khoan giao tu dong khong du so luong. Don da chuyen sang cho seller xu ly thu cong.";
                         await tx.order.update({
                             where: { id: order.id },
@@ -1569,30 +1621,38 @@ async function processPurchase(job) {
                                 eventType: "manual_product_pending",
                                 payloadJson: {
                                     reason: shortageReason,
-                                    availableEntries: freshEntries.length,
                                     requestedQuantity: order.quantity,
                                     raceDetected: true,
-                                    upstreamProductId: upstreamProduct?.id || null,
+                                    upstreamProductId: upstreamProduct.id,
                                 },
                             },
                         });
                         throw __UPSTREAM_SHORTAGE_SENTINEL;
                     }
-                    const deliveredEntries = freshEntries.slice(0, order.quantity);
-                    const remainingEntries = freshEntries.slice(order.quantity);
-                    const deliveredText = deliveredEntries.join("\n\n");
-                    const remainingDeliveryText = normalizeManualDeliveryText(remainingEntries.join("\n\n")) || null;
+                    const deliveredText = popped.extracted.join("\n\n");
                     txDeliveredText = deliveredText;
-                    txDeliveredEntries = deliveredEntries;
+                    txTotalCost = popped.totalCost;
+                    const totalSourceAmount = popped.totalCost > 0 ? popped.totalCost : Number(order.totalSourceAmount || 0);
                     await tx.order.update({
                         where: { id: order.id },
-                        data: { status: "DELIVERED", deliveredAccountText: deliveredText, deliveredAt, failureReason: null },
+                        data: {
+                            status: "DELIVERED",
+                            deliveredAccountText: deliveredText,
+                            deliveredAt,
+                            failureReason: null,
+                            totalSourceAmount: new client_1.Prisma.Decimal(totalSourceAmount.toFixed(2)),
+                        },
                     });
                     await tx.orderEvent.create({
                         data: {
                             orderId: order.id,
                             eventType: "internal_source_delivered",
-                            payloadJson: { deliveredCount: deliveredEntries.length, deliveredText },
+                            payloadJson: {
+                                deliveredCount: popped.extracted.length,
+                                deliveredText,
+                                entryIds: popped.entryIds,
+                                totalCost: popped.totalCost,
+                            },
                         },
                     });
                     await tx.sourceProduct.update({
@@ -1602,21 +1662,16 @@ async function processPurchase(job) {
                             available: order.sourceProduct.available === null ? undefined : { decrement: order.quantity },
                         },
                     });
-                    if (upstreamProduct) {
-                        await tx.sourceProduct.update({
-                            where: { id: upstreamProduct.id },
-                            data: {
-                                soldCount: { increment: order.quantity },
-                                available: remainingEntries.length,
-                                metadataJson: {
-                                    ...freshMeta,
-                                    manual: true,
-                                    deliveryEntries: remainingEntries,
-                                    deliveryText: remainingDeliveryText,
-                                },
-                            },
-                        });
-                    }
+                    const remainingUpstreamAvailable = await tx.stockEntry.count({
+                        where: { sourceProductId: upstreamProduct.id, status: "AVAILABLE" },
+                    });
+                    await tx.sourceProduct.update({
+                        where: { id: upstreamProduct.id },
+                        data: {
+                            soldCount: { increment: order.quantity },
+                            available: remainingUpstreamAvailable,
+                        },
+                    });
                 });
             }
             catch (e) {
@@ -1628,7 +1683,7 @@ async function processPurchase(job) {
             }
             await snapshotWarrantyForDeliveredOrder(order.id);
             await creditAffiliateCommission(order.id).catch(() => undefined);
-            const totalSourceAmount = Number(order.totalSourceAmount || 0);
+            const totalSourceAmount = txTotalCost > 0 ? txTotalCost : Number(order.totalSourceAmount || 0);
             if (totalSourceAmount > 0) {
                 await debitConnectionBalance(providerConfig.internalSourceConnectionId, totalSourceAmount, order.id).catch(() => undefined);
             }

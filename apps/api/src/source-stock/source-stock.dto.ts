@@ -6,12 +6,13 @@ import {
   IsEnum,
   IsIn,
   IsInt,
+  IsNumber,
   IsOptional,
   IsString,
   Max,
   Min,
 } from "class-validator";
-import { StockExtractMethod } from "@prisma/client";
+import { StockEntryStatus, StockExtractMethod } from "@prisma/client";
 
 export class UploadSourceStockDto {
   @IsOptional()
@@ -19,17 +20,48 @@ export class UploadSourceStockDto {
   text?: string;
 }
 
-export type ExtractSourceStockMode = "FAST" | "RANGE" | "MANUAL";
+export class CreateSourceBatchDto {
+  @IsString()
+  name!: string;
+
+  @IsString()
+  text!: string;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  costPerAcc?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  totalCost?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  expiresInDays?: number;
+
+  @IsOptional()
+  @IsString()
+  expiresAt?: string;
+}
+
+export type ExtractSourceStockMode =
+  | "FAST"
+  | "RANGE"
+  | "MANUAL_BY_INDEX"
+  | "MANUAL_BY_ID"
+  | "BATCH";
 
 export class ExtractSourceStockDto {
-  @IsIn(["FAST", "RANGE", "MANUAL"])
+  @IsIn(["FAST", "RANGE", "MANUAL_BY_INDEX", "MANUAL_BY_ID", "BATCH"])
   mode!: ExtractSourceStockMode;
 
   @IsOptional()
   @IsBoolean()
   dryRun?: boolean;
 
-  // FAST mode
   @IsOptional()
   @IsInt()
   @Min(1)
@@ -40,7 +72,6 @@ export class ExtractSourceStockDto {
   @IsEnum(StockExtractMethod)
   method?: StockExtractMethod;
 
-  // RANGE mode (1-indexed inclusive)
   @IsOptional()
   @IsInt()
   @Min(1)
@@ -51,7 +82,6 @@ export class ExtractSourceStockDto {
   @Min(1)
   toIndex?: number;
 
-  // MANUAL mode (1-indexed)
   @IsOptional()
   @IsArray()
   @ArrayNotEmpty()
@@ -59,6 +89,16 @@ export class ExtractSourceStockDto {
   @IsInt({ each: true })
   @Min(1, { each: true })
   selectedIndices?: number[];
+
+  @IsOptional()
+  @IsArray()
+  @ArrayNotEmpty()
+  @IsString({ each: true })
+  entryIds?: string[];
+
+  @IsOptional()
+  @IsString()
+  batchId?: string;
 }
 
 export class SourceStockHistoryQueryDto {
@@ -78,7 +118,7 @@ export class SourceStockEntriesQueryDto {
   @IsOptional()
   @IsInt()
   @Min(1)
-  @Max(1000)
+  @Max(2000)
   limit?: number;
 
   @IsOptional()
@@ -89,4 +129,12 @@ export class SourceStockEntriesQueryDto {
   @IsOptional()
   @IsString()
   search?: string;
+
+  @IsOptional()
+  @IsEnum(StockEntryStatus)
+  status?: StockEntryStatus;
+
+  @IsOptional()
+  @IsString()
+  batchId?: string;
 }

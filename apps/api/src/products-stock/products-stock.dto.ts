@@ -6,12 +6,13 @@ import {
   IsEnum,
   IsIn,
   IsInt,
+  IsNumber,
   IsOptional,
   IsString,
   Max,
   Min,
 } from "class-validator";
-import { StockExtractMethod } from "@prisma/client";
+import { StockEntryStatus, StockExtractMethod } from "@prisma/client";
 
 export class UploadStockDto {
   @IsOptional()
@@ -19,10 +20,47 @@ export class UploadStockDto {
   text?: string;
 }
 
-export type ExtractStockMode = "FAST" | "RANGE" | "MANUAL";
+export class CreateBatchDto {
+  @IsString()
+  name!: string;
+
+  @IsString()
+  text!: string;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  costPerAcc?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  totalCost?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  expiresInDays?: number;
+
+  @IsOptional()
+  @IsString()
+  expiresAt?: string;
+}
+
+export class AppendToBatchDto {
+  @IsString()
+  text!: string;
+}
+
+export type ExtractStockMode =
+  | "FAST"
+  | "RANGE"
+  | "MANUAL_BY_INDEX"
+  | "MANUAL_BY_ID"
+  | "BATCH";
 
 export class ExtractStockDto {
-  @IsIn(["FAST", "RANGE", "MANUAL"])
+  @IsIn(["FAST", "RANGE", "MANUAL_BY_INDEX", "MANUAL_BY_ID", "BATCH"])
   mode!: ExtractStockMode;
 
   @IsOptional()
@@ -51,7 +89,7 @@ export class ExtractStockDto {
   @Min(1)
   toIndex?: number;
 
-  // MANUAL mode (1-indexed)
+  // MANUAL_BY_INDEX (legacy index-based)
   @IsOptional()
   @IsArray()
   @ArrayNotEmpty()
@@ -59,6 +97,18 @@ export class ExtractStockDto {
   @IsInt({ each: true })
   @Min(1, { each: true })
   selectedIndices?: number[];
+
+  // MANUAL_BY_ID — new: pick entries by their id
+  @IsOptional()
+  @IsArray()
+  @ArrayNotEmpty()
+  @IsString({ each: true })
+  entryIds?: string[];
+
+  // BATCH — extract whole batch
+  @IsOptional()
+  @IsString()
+  batchId?: string;
 }
 
 export class StockHistoryQueryDto {
@@ -78,7 +128,7 @@ export class StockEntriesQueryDto {
   @IsOptional()
   @IsInt()
   @Min(1)
-  @Max(1000)
+  @Max(2000)
   limit?: number;
 
   @IsOptional()
@@ -89,4 +139,12 @@ export class StockEntriesQueryDto {
   @IsOptional()
   @IsString()
   search?: string;
+
+  @IsOptional()
+  @IsEnum(StockEntryStatus)
+  status?: StockEntryStatus;
+
+  @IsOptional()
+  @IsString()
+  batchId?: string;
 }

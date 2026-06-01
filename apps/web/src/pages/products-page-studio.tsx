@@ -36,15 +36,20 @@ import {
 
 import { useAuth } from "@/auth/auth-provider";
 import {
+  CreateBatchModal,
   ExtractStockModal,
   ExtractStockResultModal,
   StockHistoryModal,
   UploadStockModal,
   UploadStockResultModal,
+  ViewStockModal,
+  type CreateBatchPayload,
   type EntryListPage,
   type ExtractPayload,
+  type StockBatchSummary,
   type StockExtractMethod,
   type StockOperation,
+  type ViewStockData,
 } from "@/components/dashboard/stock-modals";
 import {
   StudioBadge,
@@ -968,8 +973,16 @@ export function ProductsPageStudio({
   const [promoBannerUploading, setPromoBannerUploading] = useState(false);
   const [addAccountsText, setAddAccountsText] = useState("");
   const [stockModal, setStockModal] = useState<
-    "upload" | "uploadResult" | "extract" | "extractResult" | "history" | null
+    "upload" | "uploadResult" | "extract" | "extractResult" | "history" | "createBatch" | "viewStock" | null
   >(null);
+  const [stockStatusFilter, setStockStatusFilter] = useState<"ALL" | "AVAILABLE" | "SOLD" | "EXTRACTED">("AVAILABLE");
+  const [createBatchResult, setCreateBatchResult] = useState<{
+    batchId: string;
+    batchName: string;
+    added: number;
+    totalAfter: number;
+    preview: string[];
+  } | null>(null);
   const [uploadResult, setUploadResult] = useState<{
     added: number;
     totalBefore: number;
@@ -1455,13 +1468,16 @@ export function ProductsPageStudio({
   const extractStockMutation = useMutation({
     mutationFn: async (payload: ExtractPayload) => {
       if (!selectedProduct) throw new Error(t.errNoProduct);
+      // Map legacy frontend mode "MANUAL" to backend "MANUAL_BY_INDEX"
+      const apiPayload: any = { ...payload };
+      if (apiPayload.mode === "MANUAL") apiPayload.mode = "MANUAL_BY_INDEX";
       const res = await api.post<{
         extracted: string[];
         totalBefore: number;
         totalAfter: number;
         method: StockExtractMethod;
         dryRun?: boolean;
-      }>(`/products/source-products/${selectedProduct.id}/stock/extract`, payload);
+      }>(`/products/source-products/${selectedProduct.id}/stock/extract`, apiPayload);
       return { ...res.data, dryRun: res.data.dryRun ?? payload.dryRun };
     },
     onSuccess: async (data) => {
@@ -1493,6 +1509,72 @@ export function ProductsPageStudio({
     },
     [selectedProduct],
   );
+
+  const createBatchMutation = useMutation({
+    mutationFn: async (payload: CreateBatchPayload) => {
+      if (!selectedProduct) throw new Error("No product");
+      const fd = new FormData();
+      fd.append("name", payload.name);
+      if (payload.costPerAcc !== undefined) fd.append("costPerAcc", String(payload.costPerAcc));
+      if (payload.totalCost !== undefined) fd.append("totalCost", String(payload.totalCost));
+      if (payload.expiresInDays != null) fd.append("expiresInDays", String(payload.expiresInDays));
+      if (payload.file) fd.append("file", payload.file);
+      else if (payload.text) fd.append("text", payload.text);
+      const res = await api.post(
+        `/products/source-products/${selectedProduct.id}/stock/batches`,
+        fd,
+        { headers: { "Content-Type": "multipart/form-data" } },
+      );
+      return res.data as { batchId: string; batchName: string; added: number; totalAfter: number; preview: string[] };
+    },
+    onSuccess: async (data) => {
+      setCreateBatchResult(data);
+      setStockModal(null);
+      showToast({ tone: "success", message: `Đã tạo lô "${data.batchName}" — thêm ${data.added} acc.` });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["products"] }),
+        queryClient.invalidateQueries({ queryKey: ["stock-batches", selectedProduct?.id] }),
+        queryClient.invalidateQueries({ queryKey: ["stock-view", selectedProduct?.id] }),
+      ]);
+    },
+    onError: (error) => showToast({ tone: "error", message: getErrorMessage(error, "Không tạo được lô.") }),
+  });
+
+  const stockBatchesQuery = useQuery<{ legacy: { availableCount: number }; batches: StockBatchSummary[] }>({
+    queryKey: ["stock-batches", selectedProduct?.id],
+    enabled: Boolean(selectedProduct?.id) && stockModal === "viewStock",
+    queryFn: async () =>
+      (await api.get(`/products/source-products/${selectedProduct?.id}/stock/batches`)).data,
+  });
+
+  const stockViewQuery = useQuery<ViewStockData>({
+    queryKey: ["stock-view", selectedProduct?.id, stockStatusFilter],
+    enabled: Boolean(selectedProduct?.id) && stockModal === "viewStock",
+    queryFn: async () => {
+      const params: Record<string, any> = { limit: 1000 };
+      if (stockStatusFilter !== "ALL") params.status = stockStatusFilter;
+      const res = await api.get(`/products/source-products/${selectedProduct?.id}/stock/entries`, { params });
+      return res.data;
+    },
+  });
+
+  const deleteBatchMutation = useMutation({
+    mutationFn: async (batchId: string) => {
+      if (!selectedProduct) throw new Error("No product");
+      const res = await api.delete(
+        `/products/source-products/${selectedProduct.id}/stock/batches/${batchId}`,
+      );
+      return res.data;
+    },
+    onSuccess: async () => {
+      showToast({ tone: "success", message: "Đã xóa lô." });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["stock-batches", selectedProduct?.id] }),
+        queryClient.invalidateQueries({ queryKey: ["stock-view", selectedProduct?.id] }),
+      ]);
+    },
+    onError: (error) => showToast({ tone: "error", message: getErrorMessage(error, "Không xóa được lô.") }),
+  });
 
   const stockHistoryQuery = useQuery<{ items: StockOperation[]; total: number }>({
     queryKey: ["stock-history", selectedProduct?.id],
@@ -1774,7 +1856,7 @@ export function ProductsPageStudio({
                   <div className="mb-2 flex flex-wrap items-center gap-2">
                     <button
                       type="button"
-                      onClick={() => setStockModal("upload")}
+                      onClick={() => setStockModal("createBatch")}
                       disabled={uploadStockMutation.isPending}
                       className="inline-flex items-center gap-1.5 rounded-xl px-3 py-2 text-[11px] font-black uppercase tracking-widest transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                       style={{
@@ -2371,6 +2453,7 @@ export function ProductsPageStudio({
                                   >
                                     <OverflowItem icon={<Eye className="h-3.5 w-3.5" />} label={t.aView} onClick={() => { setSelectedId(product.id); setDrawerMode("view"); setOpenMenuId(null); }} />
                                     {product.isManual && <OverflowItem icon={<PackagePlus className="h-3.5 w-3.5" />} label={t.aStock} onClick={() => { setSelectedId(product.id); setDrawerMode("inventory"); setOpenMenuId(null); }} />}
+                                    {product.isManual && <OverflowItem icon={<Eye className="h-3.5 w-3.5" />} label="Xem kho" onClick={() => { setSelectedId(product.id); setStockStatusFilter("AVAILABLE"); setStockModal("viewStock"); setOpenMenuId(null); }} />}
                                     {product.isManual && <OverflowItem icon={<Copy className="h-3.5 w-3.5" />} label={t.aDuplicate} onClick={() => { duplicateMutation.mutate(product.id); setOpenMenuId(null); }} />}
                                     <OverflowItem icon={<Tag className="h-3.5 w-3.5" />} label={t.aPromo} onClick={() => { setSelectedId(product.id); setDrawerMode("promo"); setOpenMenuId(null); }} />
                                     {product.isManual && (
@@ -3930,6 +4013,32 @@ export function ProductsPageStudio({
         productName={selectedProduct?.displayName ?? ""}
         items={stockHistoryQuery.data?.items ?? []}
         isLoading={stockHistoryQuery.isLoading}
+      />
+      <CreateBatchModal
+        open={stockModal === "createBatch"}
+        onClose={() => setStockModal(null)}
+        productName={selectedProduct?.displayName ?? ""}
+        isSubmitting={createBatchMutation.isPending}
+        onSubmit={(payload) => createBatchMutation.mutate(payload)}
+      />
+      <ViewStockModal
+        open={stockModal === "viewStock"}
+        onClose={() => setStockModal(null)}
+        productName={selectedProduct?.displayName ?? ""}
+        data={stockViewQuery.data ?? null}
+        batches={stockBatchesQuery.data ?? null}
+        isLoading={stockViewQuery.isLoading || stockBatchesQuery.isLoading}
+        statusFilter={stockStatusFilter}
+        onStatusChange={(s) => setStockStatusFilter(s)}
+        onCreateBatchRequest={() => setStockModal("createBatch")}
+        onShowHistory={() => setStockModal("history")}
+        onExtractRequest={(ids) => {
+          if (ids.length === 0) return;
+          extractStockMutation.mutate({ mode: "MANUAL_BY_ID", entryIds: ids } as any);
+        }}
+        onDeleteBatch={(batchId) => {
+          if (window.confirm("Xóa lô này?")) deleteBatchMutation.mutate(batchId);
+        }}
       />
     </div>
   );

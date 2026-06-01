@@ -574,16 +574,18 @@ export function UploadStockResultModal({
 // 3) ExtractStockModal — v2 (FAST / RANGE / MANUAL + dry-run)
 // ============================================================================
 
-export type ExtractMode = "FAST" | "RANGE" | "MANUAL";
+export type ExtractMode = "FAST" | "RANGE" | "MANUAL" | "MANUAL_BY_ID" | "BATCH";
 
 export type ExtractPayload = {
   mode: ExtractMode;
-  dryRun: boolean;
+  dryRun?: boolean;
   quantity?: number;
   method?: StockExtractMethod;
   fromIndex?: number;
   toIndex?: number;
   selectedIndices?: number[];
+  entryIds?: string[];
+  batchId?: string;
 };
 
 export type EntryListPage = {
@@ -1799,5 +1801,690 @@ export function StockHistoryModal({
         )}
       </div>
     </ModalShell>
+  );
+}
+
+// ============================================================================
+// CreateBatchModal — form to create a new stock batch (name + cost + expiresInDays + file)
+// ============================================================================
+
+export type CreateBatchPayload = {
+  name: string;
+  costPerAcc?: number;
+  totalCost?: number;
+  expiresInDays?: number | null;
+  file?: File | null;
+  text?: string | null;
+};
+
+export type CreateBatchResult = {
+  batchId: string;
+  batchName: string;
+  added: number;
+  totalAfter: number;
+  preview: string[];
+};
+
+export function CreateBatchModal({
+  open,
+  onClose,
+  productName,
+  onSubmit,
+  isSubmitting,
+}: {
+  open: boolean;
+  onClose: () => void;
+  productName: string;
+  onSubmit: (payload: CreateBatchPayload) => Promise<void> | void;
+  isSubmitting?: boolean;
+}) {
+  const { showToast } = useToast();
+  const [name, setName] = useState("");
+  const [costMode, setCostMode] = useState<"per_acc" | "total">("per_acc");
+  const [costPerAcc, setCostPerAcc] = useState<string>("");
+  const [totalCost, setTotalCost] = useState<string>("");
+  const [expiresInDays, setExpiresInDays] = useState<string>("");
+  const [file, setFile] = useState<File | null>(null);
+  const [textArea, setTextArea] = useState<string>("");
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (open) {
+      const now = new Date();
+      const dd = String(now.getDate()).padStart(2, "0");
+      const mm = String(now.getMonth() + 1).padStart(2, "0");
+      const hh = String(now.getHours()).padStart(2, "0");
+      const mi = String(now.getMinutes()).padStart(2, "0");
+      setName(`Lô ${dd}/${mm} ${hh}:${mi}`);
+      setCostMode("per_acc");
+      setCostPerAcc("");
+      setTotalCost("");
+      setExpiresInDays("");
+      setFile(null);
+      setTextArea("");
+    }
+  }, [open]);
+
+  const parsedCount = useMemo(() => {
+    const src = file ? null : textArea;
+    if (!src) return 0;
+    const cleaned = src.replace(/\r\n/g, "\n").trim();
+    if (!cleaned) return 0;
+    const parts = cleaned.includes("\n\n") ? cleaned.split(/\n\n+/) : cleaned.split(/\r?\n/);
+    return parts.map((p) => p.trim()).filter(Boolean).length;
+  }, [file, textArea]);
+
+  function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    if (f.size > 2 * MAX_UPLOAD_BYTES) {
+      showToast({ tone: "error", message: "File quá lớn (max 2MB)." });
+      e.target.value = "";
+      return;
+    }
+    setFile(f);
+    setTextArea("");
+  }
+
+  async function handleSubmit() {
+    const trimmedName = name.trim();
+    if (!trimmedName) {
+      showToast({ tone: "error", message: "Tên lô không được trống." });
+      return;
+    }
+    let cost: { costPerAcc?: number; totalCost?: number } = {};
+    if (costMode === "per_acc") {
+      const v = Number(costPerAcc);
+      if (!Number.isFinite(v) || v < 0) {
+        showToast({ tone: "error", message: "Giá vốn/acc không hợp lệ." });
+        return;
+      }
+      cost.costPerAcc = v;
+    } else {
+      const v = Number(totalCost);
+      if (!Number.isFinite(v) || v < 0) {
+        showToast({ tone: "error", message: "Tổng tiền lô không hợp lệ." });
+        return;
+      }
+      cost.totalCost = v;
+    }
+    let exp: number | null = null;
+    if (expiresInDays.trim()) {
+      const d = Number(expiresInDays);
+      if (!Number.isInteger(d) || d < 1) {
+        showToast({ tone: "error", message: "Hạn dùng phải là số nguyên dương." });
+        return;
+      }
+      exp = d;
+    }
+    if (!file && !textArea.trim()) {
+      showToast({ tone: "error", message: "Cần file .txt hoặc paste tài khoản vào ô." });
+      return;
+    }
+    await onSubmit({
+      name: trimmedName,
+      ...cost,
+      expiresInDays: exp,
+      file,
+      text: file ? null : textArea,
+    });
+  }
+
+  return (
+    <ModalShell
+      open={open}
+      onClose={onClose}
+      title="Tạo lô mới"
+      kicker={productName}
+      icon={<Package className="h-4 w-4" style={{ color: "rgb(249,115,22)" }} />}
+      accentColor="rgb(249,115,22)"
+      accentBg="rgba(249,115,22,0.1)"
+      accentBorder="rgba(249,115,22,0.3)"
+      maxWidth={640}
+    >
+      <div className="space-y-4 p-5">
+        <div>
+          <label className="mb-1.5 block text-[11px] font-black uppercase tracking-widest" style={{ color: "var(--tx-f)" }}>
+            🏷 Tên lô <span style={{ color: "rgb(239,68,68)" }}>*</span>
+          </label>
+          <input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            className="w-full rounded-xl px-3 py-2 text-[13px] outline-none"
+            style={{ background: "var(--inp)", border: "1px solid var(--bd)", color: "var(--tx)" }}
+            placeholder="VD: Lô 02/06 từ VodicH"
+          />
+        </div>
+
+        <div>
+          <label className="mb-1.5 block text-[11px] font-black uppercase tracking-widest" style={{ color: "var(--tx-f)" }}>
+            💰 Giá vốn <span style={{ color: "rgb(239,68,68)" }}>*</span>
+          </label>
+          <div className="mb-2 flex gap-2">
+            <button
+              type="button"
+              onClick={() => setCostMode("per_acc")}
+              className="flex-1 rounded-xl px-3 py-1.5 text-[12px] font-black transition-all"
+              style={{
+                background: costMode === "per_acc" ? "rgba(249,115,22,0.15)" : "var(--inp)",
+                border: `1px solid ${costMode === "per_acc" ? "rgba(249,115,22,0.4)" : "var(--bd)"}`,
+                color: costMode === "per_acc" ? "rgb(249,115,22)" : "var(--tx-m)",
+              }}
+            >
+              Giá / acc
+            </button>
+            <button
+              type="button"
+              onClick={() => setCostMode("total")}
+              className="flex-1 rounded-xl px-3 py-1.5 text-[12px] font-black transition-all"
+              style={{
+                background: costMode === "total" ? "rgba(249,115,22,0.15)" : "var(--inp)",
+                border: `1px solid ${costMode === "total" ? "rgba(249,115,22,0.4)" : "var(--bd)"}`,
+                color: costMode === "total" ? "rgb(249,115,22)" : "var(--tx-m)",
+              }}
+            >
+              Tổng lô
+            </button>
+          </div>
+          {costMode === "per_acc" ? (
+            <div className="relative">
+              <input
+                type="number"
+                value={costPerAcc}
+                onChange={(e) => setCostPerAcc(e.target.value)}
+                className="w-full rounded-xl px-3 py-2 pr-12 text-[13px] outline-none"
+                style={{ background: "var(--inp)", border: "1px solid var(--bd)", color: "var(--tx)" }}
+                placeholder="VD: 13000"
+                min={0}
+              />
+              <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[11px]" style={{ color: "var(--tx-f)" }}>đ/acc</span>
+            </div>
+          ) : (
+            <div className="relative">
+              <input
+                type="number"
+                value={totalCost}
+                onChange={(e) => setTotalCost(e.target.value)}
+                className="w-full rounded-xl px-3 py-2 pr-12 text-[13px] outline-none"
+                style={{ background: "var(--inp)", border: "1px solid var(--bd)", color: "var(--tx)" }}
+                placeholder="VD: 390000"
+                min={0}
+              />
+              <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[11px]" style={{ color: "var(--tx-f)" }}>đ tổng</span>
+            </div>
+          )}
+        </div>
+
+        <div>
+          <label className="mb-1.5 block text-[11px] font-black uppercase tracking-widest" style={{ color: "var(--tx-f)" }}>
+            🕐 Hạn dùng (tùy chọn — không show khách)
+          </label>
+          <div className="relative">
+            <input
+              type="number"
+              value={expiresInDays}
+              onChange={(e) => setExpiresInDays(e.target.value)}
+              className="w-full rounded-xl px-3 py-2 pr-12 text-[13px] outline-none"
+              style={{ background: "var(--inp)", border: "1px solid var(--bd)", color: "var(--tx)" }}
+              placeholder="Để trống = không có hạn"
+              min={1}
+            />
+            <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[11px]" style={{ color: "var(--tx-f)" }}>ngày</span>
+          </div>
+        </div>
+
+        <div>
+          <label className="mb-1.5 block text-[11px] font-black uppercase tracking-widest" style={{ color: "var(--tx-f)" }}>
+            📁 Danh sách tài khoản
+          </label>
+          <div className="flex gap-2">
+            <label
+              className="flex flex-1 cursor-pointer items-center justify-center gap-2 rounded-xl px-3 py-2 text-[12px] font-black transition-all hover:opacity-80"
+              style={{ background: "var(--inp)", border: "1px dashed var(--bd)", color: "var(--tx-m)" }}
+            >
+              <Upload className="h-3.5 w-3.5" />
+              {file ? `${file.name} (${(file.size / 1024).toFixed(1)}KB)` : "Chọn file .txt"}
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".txt"
+                onChange={handleFileChange}
+                className="hidden"
+              />
+            </label>
+            {file && (
+              <button
+                type="button"
+                onClick={() => {
+                  setFile(null);
+                  if (fileInputRef.current) fileInputRef.current.value = "";
+                }}
+                className="rounded-xl px-3 py-2 text-[11px] font-black transition-all hover:opacity-80"
+                style={{ background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.3)", color: "rgb(239,68,68)" }}
+              >
+                Xóa
+              </button>
+            )}
+          </div>
+          {!file && (
+            <>
+              <p className="mt-2 mb-1 text-[10px]" style={{ color: "var(--tx-f)" }}>
+                Hoặc paste trực tiếp ở đây:
+              </p>
+              <textarea
+                value={textArea}
+                onChange={(e) => setTextArea(e.target.value)}
+                className="w-full rounded-xl px-3 py-2 text-[12px] outline-none font-mono"
+                style={{ background: "var(--inp)", border: "1px solid var(--bd)", color: "var(--tx)", minHeight: 120 }}
+                placeholder={"acc1@vodich.com|pass1\nacc2@vodich.com|pass2\nacc3@vodich.com|pass3"}
+              />
+            </>
+          )}
+          {parsedCount > 0 && (
+            <p className="mt-1.5 text-[11px] font-bold" style={{ color: "rgb(52,211,153)" }}>
+              ✓ {parsedCount} tài khoản đã đọc
+            </p>
+          )}
+        </div>
+      </div>
+
+      <div className="flex shrink-0 items-center justify-end gap-2 px-5 py-3" style={{ borderTop: "1px solid var(--bd)", background: "var(--inp)" }}>
+        <button
+          type="button"
+          onClick={onClose}
+          className="rounded-xl px-4 py-2 text-[12px] font-black transition-all hover:opacity-80"
+          style={{ background: "var(--surface)", border: "1px solid var(--bd)", color: "var(--tx-m)" }}
+        >
+          Huỷ
+        </button>
+        <button
+          type="button"
+          onClick={handleSubmit}
+          disabled={isSubmitting}
+          className="rounded-xl px-4 py-2 text-[12px] font-black transition-all hover:opacity-90 disabled:opacity-40"
+          style={{ background: "rgb(249,115,22)", color: "#fff" }}
+        >
+          {isSubmitting ? "Đang lưu..." : "📦 Tạo lô"}
+        </button>
+      </div>
+    </ModalShell>
+  );
+}
+
+// ============================================================================
+// ViewStockModal — Display stock entries grouped by batch with filter
+// ============================================================================
+
+export type StockBatchSummary = {
+  id: string;
+  name: string;
+  costPerUnit: number | null;
+  expiresAt: string | Date | null;
+  createdAt: string | Date;
+  totalCount: number;
+  availableCount: number;
+  isExpired: boolean;
+};
+
+export type StockEntryItem = {
+  id: string;
+  text: string;
+  status: "AVAILABLE" | "SOLD" | "EXTRACTED";
+  uploadedAt: string | Date;
+  soldAt: string | Date | null;
+  extractedAt: string | Date | null;
+  batchId: string | null;
+  batchName: string | null;
+  batchCost: number | null;
+  batchExpiresAt: string | Date | null;
+  soldToOrder: { id: string; code: string; deliveredAt: string | Date | null } | null;
+  soldToCustomer: { id: string; telegramUsername: string | null; telegramUserId: string; firstName: string | null } | null;
+};
+
+export type ViewStockData = {
+  items: StockEntryItem[];
+  total: number;
+  counts: { available: number; sold: number; extracted: number };
+};
+
+export function ViewStockModal({
+  open,
+  onClose,
+  productName,
+  data,
+  batches,
+  isLoading,
+  statusFilter,
+  onStatusChange,
+  onExtractRequest,
+  onCreateBatchRequest,
+  onShowHistory,
+  onDeleteBatch,
+}: {
+  open: boolean;
+  onClose: () => void;
+  productName: string;
+  data: ViewStockData | null;
+  batches: { legacy: { availableCount: number }; batches: StockBatchSummary[] } | null;
+  isLoading: boolean;
+  statusFilter: "ALL" | "AVAILABLE" | "SOLD" | "EXTRACTED";
+  onStatusChange: (s: "ALL" | "AVAILABLE" | "SOLD" | "EXTRACTED") => void;
+  onExtractRequest: (selectedIds: string[]) => void;
+  onCreateBatchRequest: () => void;
+  onShowHistory: () => void;
+  onDeleteBatch: (batchId: string) => void;
+}) {
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [lastClickedIdx, setLastClickedIdx] = useState<number | null>(null);
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (!open) {
+      setSelectedIds(new Set());
+      setLastClickedIdx(null);
+    }
+  }, [open]);
+
+  const grouped = useMemo(() => {
+    if (!data) return [] as Array<{ key: string; label: string; cost: number | null; expiresAt: string | Date | null; items: StockEntryItem[] }>;
+    const map = new Map<string, { key: string; label: string; cost: number | null; expiresAt: string | Date | null; items: StockEntryItem[] }>();
+    for (const item of data.items) {
+      const key = item.batchId ?? "__legacy__";
+      if (!map.has(key)) {
+        map.set(key, {
+          key,
+          label: item.batchName ?? "🟢 Kho cũ",
+          cost: item.batchCost,
+          expiresAt: item.batchExpiresAt,
+          items: [],
+        });
+      }
+      map.get(key)!.items.push(item);
+    }
+    return Array.from(map.values());
+  }, [data]);
+
+  function toggleSelect(entryId: string, globalIndex: number, withShift: boolean) {
+    if (!data) return;
+    const next = new Set(selectedIds);
+    if (withShift && lastClickedIdx !== null) {
+      const start = Math.min(lastClickedIdx, globalIndex);
+      const end = Math.max(lastClickedIdx, globalIndex);
+      const shouldSelect = !next.has(entryId);
+      for (let i = start; i <= end; i++) {
+        const id = data.items[i]?.id;
+        if (id && data.items[i]?.status === "AVAILABLE") {
+          if (shouldSelect) next.add(id);
+          else next.delete(id);
+        }
+      }
+    } else {
+      if (next.has(entryId)) next.delete(entryId);
+      else next.add(entryId);
+    }
+    setSelectedIds(next);
+    setLastClickedIdx(globalIndex);
+  }
+
+  function selectAllInGroup(groupItems: StockEntryItem[]) {
+    const next = new Set(selectedIds);
+    const allAvailable = groupItems.filter((it) => it.status === "AVAILABLE");
+    const allSelected = allAvailable.every((it) => next.has(it.id));
+    if (allSelected) {
+      for (const it of allAvailable) next.delete(it.id);
+    } else {
+      for (const it of allAvailable) next.add(it.id);
+    }
+    setSelectedIds(next);
+  }
+
+  function toggleCollapse(key: string) {
+    const next = new Set(collapsed);
+    if (next.has(key)) next.delete(key);
+    else next.add(key);
+    setCollapsed(next);
+  }
+
+  const selectedCount = selectedIds.size;
+
+  return (
+    <ModalShell
+      open={open}
+      onClose={onClose}
+      title="Xem tài khoản"
+      kicker={productName}
+      icon={<Eye className="h-4 w-4" style={{ color: "rgb(56,189,248)" }} />}
+      accentColor="rgb(56,189,248)"
+      accentBg="rgba(56,189,248,0.1)"
+      accentBorder="rgba(56,189,248,0.3)"
+      maxWidth={900}
+    >
+      <div className="flex flex-col overflow-hidden" style={{ maxHeight: "70vh" }}>
+        {/* Stats */}
+        {data && (
+          <div className="grid shrink-0 grid-cols-4 gap-2 border-b p-4" style={{ borderColor: "var(--bd)" }}>
+            <StatTile label="Tổng" value={data.counts.available + data.counts.sold + data.counts.extracted} color="var(--tx)" />
+            <StatTile label="Còn sẵn" value={data.counts.available} color="rgb(52,211,153)" />
+            <StatTile label="Đã bán" value={data.counts.sold} color="rgb(239,68,68)" />
+            <StatTile label="Đã bóc" value={data.counts.extracted} color="rgb(168,85,247)" />
+          </div>
+        )}
+
+        {/* Toolbar */}
+        <div className="flex shrink-0 flex-wrap items-center gap-2 p-3" style={{ borderBottom: "1px solid var(--bd)" }}>
+          <StatusPill label="📊 Tất cả" active={statusFilter === "ALL"} onClick={() => onStatusChange("ALL")} />
+          <StatusPill label="🟢 Còn sẵn" active={statusFilter === "AVAILABLE"} onClick={() => onStatusChange("AVAILABLE")} />
+          <StatusPill label="🔴 Đã bán" active={statusFilter === "SOLD"} onClick={() => onStatusChange("SOLD")} />
+          <StatusPill label="🟣 Đã bóc" active={statusFilter === "EXTRACTED"} onClick={() => onStatusChange("EXTRACTED")} />
+          <div className="flex-1" />
+          <button
+            type="button"
+            onClick={onCreateBatchRequest}
+            className="rounded-xl px-3 py-1.5 text-[11px] font-black transition-all hover:opacity-90"
+            style={{ background: "rgb(249,115,22)", color: "#fff" }}
+          >
+            📦 Tạo lô mới
+          </button>
+          <button
+            type="button"
+            onClick={onShowHistory}
+            className="rounded-xl px-3 py-1.5 text-[11px] font-black transition-all hover:opacity-80"
+            style={{ background: "var(--inp)", border: "1px solid var(--bd)", color: "var(--tx-m)" }}
+          >
+            🕐 Lịch sử
+          </button>
+        </div>
+
+        {selectedCount > 0 && (
+          <div
+            className="flex shrink-0 items-center justify-between gap-2 px-4 py-2"
+            style={{ background: "rgba(249,115,22,0.08)", borderBottom: "1px solid var(--bd)" }}
+          >
+            <p className="text-[12px] font-bold" style={{ color: "rgb(249,115,22)" }}>
+              Đã chọn {selectedCount} tài khoản
+            </p>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => setSelectedIds(new Set())}
+                className="rounded-lg px-3 py-1 text-[10px] font-black"
+                style={{ background: "var(--surface)", border: "1px solid var(--bd)", color: "var(--tx-m)" }}
+              >
+                Bỏ chọn
+              </button>
+              <button
+                type="button"
+                onClick={() => onExtractRequest(Array.from(selectedIds))}
+                className="rounded-lg px-3 py-1 text-[10px] font-black"
+                style={{ background: "rgb(168,85,247)", color: "#fff" }}
+              >
+                🔪 Bóc {selectedCount} tài khoản
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Content */}
+        <div className="flex-1 overflow-y-auto p-3">
+          {isLoading && !data ? (
+            <div className="flex items-center justify-center py-12">
+              <Loader2 className="h-6 w-6 animate-spin" style={{ color: "var(--tx-f)" }} />
+            </div>
+          ) : grouped.length === 0 ? (
+            <p className="py-8 text-center text-[12px]" style={{ color: "var(--tx-f)" }}>
+              Không có dòng nào trong kho.
+            </p>
+          ) : (
+            <div className="space-y-3">
+              {grouped.map((group) => {
+                const isCollapsed = collapsed.has(group.key);
+                const groupStartIdx = data ? data.items.findIndex((it) => it.id === group.items[0]!.id) : 0;
+                const isExpired = group.expiresAt ? new Date(group.expiresAt) < new Date() : false;
+                return (
+                  <div
+                    key={group.key}
+                    className="rounded-xl overflow-hidden"
+                    style={{
+                      border: "1px solid var(--bd)",
+                      background: "var(--inp)",
+                    }}
+                  >
+                    <div
+                      className="flex flex-wrap items-center justify-between gap-2 p-3 cursor-pointer"
+                      onClick={() => toggleCollapse(group.key)}
+                      style={{ background: "var(--surface)" }}
+                    >
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px]" style={{ color: "var(--tx-f)" }}>
+                          {isCollapsed ? "▶" : "▼"}
+                        </span>
+                        <span className="text-[12px] font-black" style={{ color: "var(--tx)" }}>
+                          {group.label}
+                        </span>
+                        {group.cost !== null && (
+                          <span
+                            className="rounded-md px-1.5 py-0.5 text-[10px] font-bold"
+                            style={{ background: "rgba(249,115,22,0.12)", color: "rgb(249,115,22)" }}
+                          >
+                            {group.cost.toLocaleString("vi-VN")}đ/acc
+                          </span>
+                        )}
+                        {isExpired && (
+                          <span
+                            className="rounded-md px-1.5 py-0.5 text-[10px] font-bold"
+                            style={{ background: "rgba(239,68,68,0.12)", color: "rgb(239,68,68)" }}
+                          >
+                            ⚠️ Hết hạn
+                          </span>
+                        )}
+                        <span className="text-[10px]" style={{ color: "var(--tx-f)" }}>
+                          {group.items.length} dòng
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                        <button
+                          type="button"
+                          onClick={() => selectAllInGroup(group.items)}
+                          className="rounded-md px-2 py-1 text-[10px] font-bold transition-all hover:opacity-80"
+                          style={{ background: "var(--inp)", border: "1px solid var(--bd)", color: "var(--tx-m)" }}
+                        >
+                          Chọn cả lô
+                        </button>
+                        {group.key !== "__legacy__" && group.items.length === 0 && (
+                          <button
+                            type="button"
+                            onClick={() => onDeleteBatch(group.key)}
+                            className="rounded-md px-2 py-1 text-[10px] font-bold transition-all hover:opacity-80"
+                            style={{ background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.3)", color: "rgb(239,68,68)" }}
+                          >
+                            🗑 Xóa lô
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                    {!isCollapsed && (
+                      <div className="divide-y" style={{ borderColor: "var(--bd)" }}>
+                        {group.items.map((item, localIdx) => {
+                          const globalIdx = groupStartIdx + localIdx;
+                          const isSelected = selectedIds.has(item.id);
+                          const isAvailable = item.status === "AVAILABLE";
+                          return (
+                            <div
+                              key={item.id}
+                              className="flex items-start gap-3 p-2.5 hover:bg-black/5 cursor-pointer"
+                              onClick={(e) => {
+                                if (!isAvailable) return;
+                                toggleSelect(item.id, globalIdx, e.shiftKey);
+                              }}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={isSelected}
+                                disabled={!isAvailable}
+                                onChange={() => undefined}
+                                className="mt-0.5"
+                              />
+                              <div className="min-w-0 flex-1">
+                                <p
+                                  className="break-all font-mono text-[11.5px]"
+                                  style={{ color: item.status === "AVAILABLE" ? "var(--tx)" : "var(--tx-f)" }}
+                                >
+                                  {item.text}
+                                </p>
+                                <p className="mt-0.5 text-[10px]" style={{ color: "var(--tx-f)" }}>
+                                  {item.status === "AVAILABLE" && <>🟢 Nhập {formatDateTime(item.uploadedAt)}</>}
+                                  {item.status === "SOLD" && item.soldToOrder && (
+                                    <>
+                                      🔴 Bán {formatDateTime(item.soldToOrder.deliveredAt || item.soldAt!)}{" "}
+                                      cho <b>@{item.soldToCustomer?.telegramUsername ?? item.soldToCustomer?.telegramUserId ?? "?"}</b>{" "}
+                                      ({item.soldToOrder.code})
+                                    </>
+                                  )}
+                                  {item.status === "EXTRACTED" && <>🟣 Đã bóc {item.extractedAt ? formatDateTime(item.extractedAt) : ""}</>}
+                                </p>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
+function StatTile({ label, value, color }: { label: string; value: number; color: string }) {
+  return (
+    <div className="rounded-xl p-2" style={{ background: "var(--inp)", border: "1px solid var(--bd)" }}>
+      <p className="text-[9px] font-black uppercase tracking-widest" style={{ color: "var(--tx-f)" }}>
+        {label}
+      </p>
+      <p className="mt-0.5 text-[18px] font-black" style={{ color }}>
+        {value}
+      </p>
+    </div>
+  );
+}
+
+function StatusPill({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="rounded-xl px-3 py-1.5 text-[11px] font-black transition-all"
+      style={{
+        background: active ? "rgba(56,189,248,0.15)" : "var(--inp)",
+        border: `1px solid ${active ? "rgba(56,189,248,0.4)" : "var(--bd)"}`,
+        color: active ? "rgb(56,189,248)" : "var(--tx-m)",
+      }}
+    >
+      {label}
+    </button>
   );
 }
