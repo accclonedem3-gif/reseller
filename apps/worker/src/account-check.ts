@@ -13,10 +13,24 @@ import axios from "axios";
 import { QUEUES, JOBS, SYSTEM_CONFIG_KEYS, WARRANTY_AUTO_CHECK_STATUS } from "@reseller/shared";
 import { buildInternalRequestHeaders } from "@reseller/shared/server";
 
+function firstExistingPath(candidates: string[]): string {
+  return candidates.find((candidate) => existsSync(candidate)) || candidates[0];
+}
+
+function siblingToolPath(folder: string, file = "single-check.js"): string {
+  const cwd = process.cwd();
+  return firstExistingPath([
+    path.resolve(cwd, "..", folder, file),             // reseller/ -> ../tool
+    path.resolve(cwd, "..", "..", "..", folder, file), // apps/worker/ -> ../../../tool
+    path.resolve(cwd, "..", "..", folder, file),       // apps/*/ -> ../../tool
+    path.resolve(cwd, folder, file),                   // D:/DuAn/ -> ./tool
+  ]);
+}
+
 const DEFAULT_TOOL_PATHS = {
-  veo: path.resolve(process.cwd(), "..", "..", "..", "check_veo", "single-check.js"),
-  grok: path.resolve(process.cwd(), "..", "..", "..", "CheckGrokJS", "single-check.js"),
-  gpt: path.resolve(process.cwd(), "..", "..", "..", "check_gpt", "single-check.js"),
+  veo: siblingToolPath("check_veo"),
+  grok: siblingToolPath("CheckGrokJS"),
+  gpt: siblingToolPath("check_gpt"),
 };
 
 function resolveToolPath(tool: "veo" | "grok" | "gpt"): string {
@@ -29,12 +43,12 @@ const JOB_TIMEOUT_MS = Number(process.env.ACCOUNT_CHECK_JOB_TIMEOUT_MS || 90000)
 // Grok HTTP API: nếu set, worker gọi long-running server.js của CheckGrokJS
 // (CF warmer 24/7, cookie share giữa các check → ~3s/acc thay vì ~20s cold-start).
 // Fallback subprocess nếu HTTP request fail (server down / timeout).
-const CHECK_GROK_URL = (process.env.CHECK_GROK_URL || "").replace(/\/+$/, "");
+const CHECK_GROK_URL = (process.env.CHECK_GROK_URL || "http://127.0.0.1:4001").replace(/\/+$/, "");
 const CHECK_GROK_API_KEY = process.env.CHECK_GROK_API_KEY || "";
 const GROK_HTTP_TIMEOUT_MS = Math.max(30_000, Number(process.env.CHECK_GROK_HTTP_TIMEOUT_MS || 180_000));
 // Veo HTTP API: same pattern as grok above. Long-running check_veo/server.js holds a
 // browser pool so each check skips the ~3-5s Chromium cold launch. Empty = subprocess-only.
-const CHECK_VEO_URL = (process.env.CHECK_VEO_URL || "").replace(/\/+$/, "");
+const CHECK_VEO_URL = (process.env.CHECK_VEO_URL || "http://127.0.0.1:4002").replace(/\/+$/, "");
 const CHECK_VEO_API_KEY = process.env.CHECK_VEO_API_KEY || "";
 const VEO_HTTP_TIMEOUT_MS = Math.max(30_000, Number(process.env.CHECK_VEO_HTTP_TIMEOUT_MS || 180_000));
 const CONCURRENCY = Math.max(1, Number(process.env.ACCOUNT_CHECK_CONCURRENCY || 3));
@@ -206,7 +220,6 @@ function deriveGrokResultShape(input: {
   errorType?: string | null;
 }) {
   const errorType = input.errorType || null;
-  const isDead = errorType === "blocked";
   const plan = input.error ? null : String(input.plan || "Free");
   const status = String(input.status || "Unknown");
   const tier = (() => {
@@ -217,17 +230,34 @@ function deriveGrokResultShape(input: {
     return "FREE";
   })();
   const daysRem = typeof input.daysRemaining === "number" ? input.daysRemaining : null;
+  // SuperGrok/Heavy mà KHÔNG active (Inactive/Canceled/Expired/PastDue/...) HOẶC đã hết hạn
+  // (daysRem<=0) = mất gói trả phí → coi như CHẾT (shop bán SuperGrok đang ACTIVE) → kích bảo
+  // hành. status "Unknown" KHÔNG tính (mơ hồ/lỗi tạm → để seller review, tránh false dead).
+  // CHỈ dead khi status KHÔNG active (tránh hoàn nhầm acc còn Active dù date qua). Khớp đúng
+  // logic warranty.service paidTierWithExpiredWindow (status!=active) + regex inactive.
+  const expiredPaid =
+    (tier === "SUPERGROK" || tier === "HEAVY") &&
+    !input.error &&
+    !/^active$/i.test(status) &&
+    (/inactive|cancel|expired|past.?due|unpaid|incomplete|suspend/i.test(status) ||
+      (typeof daysRem === "number" && daysRem <= 0));
+  const isDead = errorType === "blocked" || expiredPaid;
   const stillPaid =
     !isDead &&
     !input.error &&
     (tier === "SUPERGROK" || tier === "HEAVY") &&
     /^active$/i.test(status) &&
     (daysRem === null || daysRem > 0);
+  // UI: SuperGrok/Heavy đã hết hạn/Inactive → hiển thị "Free" cho khách khỏi hiểu nhầm còn gói.
+  // Giữ tier/plan gốc trong originalTier/originalPlan + expires/status để seller audit.
+  const outTier = expiredPaid ? "FREE" : tier;
+  const outPlan = expiredPaid ? "Free" : plan;
   return {
     ok: !input.error,
     tool: "grok" as const,
-    tier,
-    plan,
+    tier: outTier,
+    plan: outPlan,
+    ...(expiredPaid ? { originalTier: tier, originalPlan: plan } : {}),
     status,
     expires: input.expires || null,
     daysRemaining: daysRem,
@@ -301,10 +331,16 @@ async function runGrokBatchViaHttp(
 
   return new Promise((resolve, reject) => {
     let settled = false;
+    // #17: hoist the stream handle so the deadline/finish paths can tear down the underlying
+    // socket. Otherwise a timeout resolves the promise but leaves the SSE connection open —
+    // leaking a socket and making the server stream to a listener nobody reads.
+    let streamResp: any = null;
+    const cleanupStream = () => { try { streamResp?.data?.destroy(); } catch {} };
 
     const deadline = setTimeout(() => {
       if (settled) return;
       settled = true;
+      cleanupStream();
       // Missing entries marked timedOut=true → retry pass / allTimed fallback
       resolve(accounts.map((_, i) => buildEntry(i, true)));
     }, GROK_HTTP_TIMEOUT_MS);
@@ -313,6 +349,7 @@ async function runGrokBatchViaHttp(
       if (settled) return;
       settled = true;
       clearTimeout(deadline);
+      cleanupStream();
       if (err) { reject(err); return; }
       resolve(accounts.map((_, i) => buildEntry(i, false)));
     }
@@ -324,6 +361,7 @@ async function runGrokBatchViaHttp(
         timeout: 0, // SSE connection is long-lived — no axios timeout
       })
       .then((resp) => {
+        streamResp = resp;
         let buf = "";
         resp.data.on("data", (chunk: Buffer) => {
           buf += chunk.toString("utf8");
@@ -388,10 +426,14 @@ function deriveVeoResultShape(input: {
   // Same dead-set as single-check.js: shop sells Ultra so plan_lost (Free) counts as dead.
   // Pro/Premium and unknown plans fall through to seller review.
   const isDead = ["flow_blocked", "plan_lost", "account_disabled"].includes(String(errorType || ""));
+  // #13 INVARIANT: stillPaid requires a POSITIVELY-read Ultra plan. A LIVE account whose plan
+  // scrape returned null (popup didn't render) is NEITHER dead NOR confirmed-paid → it stays
+  // stillPaid=false + isDead=false → seller review. Do NOT relax this to `status === "LIVE"`
+  // alone: that would wrongly REJECT a warranty on an account we never confirmed is still Ultra.
   const stillPaid = status === "LIVE" && isUltraPlan;
 
   return {
-    ok: status !== "TIMEOUT",
+    ok: !errorType,
     tool: "veo" as const,
     status,
     credit,
@@ -460,10 +502,14 @@ async function runVeoBatchViaHttp(
 
   return new Promise((resolve, reject) => {
     let settled = false;
+    // #17: same SSE socket-leak guard as runGrokBatchViaHttp.
+    let streamResp: any = null;
+    const cleanupStream = () => { try { streamResp?.data?.destroy(); } catch {} };
 
     const deadline = setTimeout(() => {
       if (settled) return;
       settled = true;
+      cleanupStream();
       resolve(accounts.map((_, i) => buildEntry(i, true)));
     }, VEO_HTTP_TIMEOUT_MS);
 
@@ -471,6 +517,7 @@ async function runVeoBatchViaHttp(
       if (settled) return;
       settled = true;
       clearTimeout(deadline);
+      cleanupStream();
       if (err) { reject(err); return; }
       resolve(accounts.map((_, i) => buildEntry(i, false)));
     }
@@ -482,6 +529,7 @@ async function runVeoBatchViaHttp(
         timeout: 0,
       })
       .then((resp) => {
+        streamResp = resp;
         let buf = "";
         resp.data.on("data", (chunk: Buffer) => {
           buf += chunk.toString("utf8");
@@ -746,6 +794,17 @@ async function getCheckConcurrency(prisma: PrismaClient): Promise<number> {
   return CONCURRENCY;
 }
 
+// Số account check song song trong 1 job. Đọc hot từ DB (admin chỉnh không cần restart),
+// fallback env ACCOUNT_PARALLEL_LIMIT. Clamp 1..10 — chặn nhập số to gây OOM/sập.
+async function getPerJobParallel(prisma: PrismaClient): Promise<number> {
+  const row = await prisma.systemConfig
+    .findUnique({ where: { key: SYSTEM_CONFIG_KEYS.warrantyCheckPerJobParallel } })
+    .catch(() => null);
+  const parsed = row?.value ? Number(row.value) : NaN;
+  if (Number.isFinite(parsed) && parsed > 0) return Math.min(10, Math.floor(parsed));
+  return ACCOUNT_PARALLEL_LIMIT;
+}
+
 /**
  * Pull the admin-configured proxy list and split into trimmed lines. Empty values or comment
  * lines (#...) are dropped. Returned as-is — single-check.js wrappers parse the format
@@ -785,6 +844,9 @@ async function processJob(prisma: PrismaClient, redis: Redis, job: Job): Promise
     .split(",")
     .map((s) => s.trim().toLowerCase())
     .filter(Boolean);
+  // Safety floor (mirror resolveToolForFamily): gpt stays disabled regardless of env until its
+  // single-check.js stops defaulting transient failures / wrong-password to DIE.
+  if (!disabledTools.includes("gpt")) disabledTools.push("gpt");
   if (disabledTools.includes(String(tool).toLowerCase())) {
     console.warn(`[account-check] claim=${claimId} tool '${tool}' is disabled (WARRANTY_DISABLED_TOOLS) — marking FAILED for manual review.`);
     await prisma.warrantyClaim
@@ -818,6 +880,10 @@ async function processJob(prisma: PrismaClient, redis: Redis, job: Job): Promise
   // Wrap everything below in a try/catch so any unexpected throw still marks the claim FAILED
   // instead of leaving it stuck in RUNNING forever.
   let finalState: { ok: boolean; timedOut: boolean; parsed: any } = { ok: false, timedOut: false, parsed: null };
+  // Whether THIS job's terminal write actually landed (it still owns the row). Guards against the
+  // sweep/recheck having already taken the row over (M2): we only fire the callback when we wrote.
+  let _ownedTerminal = false;
+  const _jobId = String(job.id || "");
   try {
     // Multi-account: run all accounts in parallel; primary (email/password) drives the verdict.
     const allAccounts: Array<{ email: string; password: string; extra?: string | null }> =
@@ -1014,10 +1080,14 @@ async function processJob(prisma: PrismaClient, redis: Redis, job: Job): Promise
       }
     }
 
+    // Đọc hot từ DB (admin chỉnh /admin không cần restart). Quyết định bao nhiêu acc/job chạy
+    // cùng lúc — đây là throttle chống bung 10 Chrome 1 lúc trên VPS RAM thấp.
+    const perJobParallel = await getPerJobParallel(prisma);
+
     if (!allResults) {
       allResults = await parallelLimit(
         allAccounts.map((_, idx) => wrapTask(idx, 0)),
-        ACCOUNT_PARALLEL_LIMIT,
+        perJobParallel,
         SPAWN_STAGGER_MS,
       );
     }
@@ -1045,7 +1115,7 @@ async function processJob(prisma: PrismaClient, redis: Redis, job: Job): Promise
       // (sticky mode: rời proxy gốc nếu nó lỗi; legacy: như cũ).
       const retried = await parallelLimit(
         retryIdx.map((i) => wrapTask(i, pass + 1)),
-        ACCOUNT_PARALLEL_LIMIT,
+        perJobParallel,
       );
       for (let j = 0; j < retryIdx.length; j++) {
         allResults[retryIdx[j]] = retried[j];
@@ -1170,10 +1240,13 @@ async function processJob(prisma: PrismaClient, redis: Redis, job: Job): Promise
     const aggregatedParsed = parsed ? { ...parsed, accounts: accountEntries } : null;
 
     const completedAt = new Date();
+    // GUARDED terminal write (M2): only write if this row is still ours (RUNNING + our jobId).
+    // A flat-cutoff sweep or a recheck may have flipped/reset the row and (re)started a new job;
+    // an unconditional update would clobber that fresh state with our stale verdict.
     if (timedOut || !aggregatedParsed) {
-      await prisma.warrantyClaim
-        .update({
-          where: { id: claimId },
+      const res = await prisma.warrantyClaim
+        .updateMany({
+          where: { id: claimId, autoCheckJobId: _jobId, autoCheckStatus: WARRANTY_AUTO_CHECK_STATUS.RUNNING },
           data: {
             autoCheckStatus: WARRANTY_AUTO_CHECK_STATUS.FAILED,
             autoCheckCompletedAt: completedAt,
@@ -1182,11 +1255,12 @@ async function processJob(prisma: PrismaClient, redis: Redis, job: Job): Promise
               : `Could not parse JSON_RESULT from tool (exit ${exitCode}). Raw: ${raw.slice(-500)}`,
           },
         })
-        .catch(() => undefined);
+        .catch(() => ({ count: 0 }));
+      _ownedTerminal = res.count === 1;
     } else {
-      await prisma.warrantyClaim
-        .update({
-          where: { id: claimId },
+      const res = await prisma.warrantyClaim
+        .updateMany({
+          where: { id: claimId, autoCheckJobId: _jobId, autoCheckStatus: WARRANTY_AUTO_CHECK_STATUS.RUNNING },
           data: {
             autoCheckStatus: WARRANTY_AUTO_CHECK_STATUS.COMPLETED,
             autoCheckCompletedAt: completedAt,
@@ -1194,24 +1268,29 @@ async function processJob(prisma: PrismaClient, redis: Redis, job: Job): Promise
             autoCheckErrorMessage: null,
           },
         })
-        .catch(() => undefined);
+        .catch(() => ({ count: 0 }));
+      _ownedTerminal = res.count === 1;
     }
     finalState = { ok: !!aggregatedParsed, timedOut, parsed: aggregatedParsed };
   } catch (err: any) {
     console.error("[account-check] processJob threw:", err?.message || err);
-    await prisma.warrantyClaim
-      .update({
-        where: { id: claimId },
+    const res = await prisma.warrantyClaim
+      .updateMany({
+        where: { id: claimId, autoCheckJobId: _jobId, autoCheckStatus: WARRANTY_AUTO_CHECK_STATUS.RUNNING },
         data: {
           autoCheckStatus: WARRANTY_AUTO_CHECK_STATUS.FAILED,
           autoCheckCompletedAt: new Date(),
           autoCheckErrorMessage: `Worker exception: ${err?.message || String(err)}`,
         },
       })
-      .catch(() => undefined);
+      .catch(() => ({ count: 0 }));
+    _ownedTerminal = res.count === 1;
   }
 
-  await notifyApiCallback(claimId);
+  // Only fire the callback when our terminal write actually landed. If the sweep/recheck already
+  // took the row (count===0), the entity that took it owns the follow-up — we must not drive an
+  // apply on our now-stale verdict.
+  if (_ownedTerminal) await notifyApiCallback(claimId);
   return finalState;
 }
 
@@ -1220,12 +1299,19 @@ async function processJob(prisma: PrismaClient, redis: Redis, job: Job): Promise
  * (e.g. worker died mid-job). Mark them FAILED and trigger the callback so
  * `applyAutoCheckResult` can route them to PENDING_REVIEW for the seller.
  */
-async function sweepStuckAutoChecks(prisma: PrismaClient) {
-  // 10-minute cutoff: must be larger than (JOB_TIMEOUT_MS × max attempts + queue buffer) so
-  // we never mark a still-running job as stuck. With attempts=1 and JOB_TIMEOUT_MS=90s, the
-  // worst case is ~2-3 min; 10 min leaves headroom for redis/network blips before we decide
-  // the worker truly died.
-  const cutoff = new Date(Date.now() - 10 * 60 * 1000);
+async function sweepStuckAutoChecks(prisma: PrismaClient, queue?: Queue) {
+  // Dynamic cutoff (M1): a big multi-account claim legitimately runs far longer than a flat 10 min
+  // — many accounts × JOB_TIMEOUT_MS, in waves of ACCOUNT_PARALLEL_LIMIT, across the initial + retry
+  // passes. A flat cutoff would mark a still-RUNNING job FAILED and lose its real verdict. Size the
+  // cutoff to that worst case, floored at 10 min for small jobs. The BullMQ job-state gate below is
+  // the primary "is it really dead" signal; this cutoff is the backstop for evicted job records.
+  const ambiguousRetry = Math.max(0, Number(process.env.ACCOUNT_CHECK_AMBIGUOUS_RETRY || 2));
+  const passes = 1 + ACCOUNT_RETRY_COUNT + ambiguousRetry;
+  const maxAccts = Math.max(1, Number(process.env.ACCOUNT_CHECK_SWEEP_MAX_ACCOUNTS || 20));
+  const dynMs = JOB_TIMEOUT_MS * Math.ceil(maxAccts / ACCOUNT_PARALLEL_LIMIT) * passes * 1.5;
+  const cutoffMs = Math.max(10 * 60 * 1000, dynMs);
+  const cutoff = new Date(Date.now() - cutoffMs);
+  const cutoffMin = Math.round(cutoffMs / 60000);
   const stuck = await prisma.warrantyClaim.findMany({
     where: {
       autoCheckStatus: { in: [WARRANTY_AUTO_CHECK_STATUS.QUEUED, WARRANTY_AUTO_CHECK_STATUS.RUNNING] },
@@ -1234,21 +1320,33 @@ async function sweepStuckAutoChecks(prisma: PrismaClient) {
         { AND: [{ autoCheckStartedAt: null }, { createdAt: { lt: cutoff } }] },
       ],
     },
-    select: { id: true },
+    select: { id: true, autoCheckJobId: true },
     take: 50,
   });
   for (const claim of stuck) {
-    await prisma.warrantyClaim
-      .update({
-        where: { id: claim.id },
+    // Never sweep a job that's STILL ALIVE in BullMQ — only sweep when the worker truly died
+    // (job gone, or already in a finished/failed state). This prevents the false-FAILED race
+    // where a slow-but-running multi-account job gets marked dead and its verdict is lost.
+    if (queue && claim.autoCheckJobId) {
+      const job = await queue.getJob(claim.autoCheckJobId).catch(() => null);
+      if (job) {
+        const st = await job.getState().catch(() => null);
+        if (st === "active" || st === "waiting" || st === "delayed" || st === "waiting-children") continue;
+      }
+    }
+    // Status guard: no-op if processJob wrote a terminal status between our read and this write,
+    // so the sweep can never clobber a verdict the live job just committed.
+    const res = await prisma.warrantyClaim
+      .updateMany({
+        where: { id: claim.id, autoCheckStatus: { in: [WARRANTY_AUTO_CHECK_STATUS.QUEUED, WARRANTY_AUTO_CHECK_STATUS.RUNNING] } },
         data: {
           autoCheckStatus: WARRANTY_AUTO_CHECK_STATUS.FAILED,
           autoCheckCompletedAt: new Date(),
-          autoCheckErrorMessage: "Auto-check job did not complete within 10 minutes — worker likely restarted.",
+          autoCheckErrorMessage: `Auto-check job did not complete within ${cutoffMin} minutes — worker likely restarted.`,
         },
       })
-      .catch(() => undefined);
-    await notifyApiCallback(claim.id);
+      .catch(() => ({ count: 0 }));
+    if (res.count === 1) await notifyApiCallback(claim.id);
   }
   return stuck.length;
 }
@@ -1258,6 +1356,14 @@ export async function setupAccountCheckWorker(prisma: PrismaClient, redis: Redis
 
   const concurrency = await getCheckConcurrency(prisma).catch(() => CONCURRENCY);
 
+  // #5: a multi-account check legitimately runs minutes; on a busy box BullMQ's default lock
+  // (30s) expires mid-job → it considers the job "stalled" and RE-RUNS it, causing DUPLICATE
+  // real provider logins (ban risk) + a second verdict-apply. Size the lock to comfortably exceed
+  // one job's worst case, and set maxStalledCount:0 so a genuinely-stalled long job is FAILED
+  // (our worker.on("failed") + sweep recover it) instead of silently re-executed.
+  const _maxAccts = Math.max(1, Number(process.env.ACCOUNT_CHECK_SWEEP_MAX_ACCOUNTS || 20));
+  const _passes = 1 + ACCOUNT_RETRY_COUNT + Math.max(0, Number(process.env.ACCOUNT_CHECK_AMBIGUOUS_RETRY || 2));
+  const _lockMs = Math.max(180_000, JOB_TIMEOUT_MS * Math.ceil(_maxAccts / ACCOUNT_PARALLEL_LIMIT) * _passes);
   const worker = new Worker(
     QUEUES.accountCheck,
     async (job) => {
@@ -1267,11 +1373,34 @@ export async function setupAccountCheckWorker(prisma: PrismaClient, redis: Redis
     {
       connection: redis,
       concurrency,
+      lockDuration: _lockMs,
+      stalledInterval: Math.min(_lockMs, 60_000),
+      maxStalledCount: 0,
     },
   );
 
-  worker.on("failed", (job, error) => {
+  worker.on("failed", async (job, error) => {
     console.error("[account-check] job failed:", job?.id, error?.message || error);
+    // M1 fast-recovery: BullMQ marks a job failed when the worker crashed/stalled (or an error
+    // escaped processJob's own try/catch). processJob normally catches everything and returns, so
+    // this fires for genuinely-dead jobs — the claim is wedged in RUNNING. Escalate it NOW instead
+    // of waiting for the time-gated sweep (tens of minutes). Guarded on QUEUED/RUNNING so it can
+    // never clobber a terminal row a healthy job/sweep/recheck already wrote; callback only if owned.
+    const claimId = (job?.data as any)?.claimId;
+    if (!claimId) return;
+    try {
+      const res = await prisma.warrantyClaim.updateMany({
+        where: { id: String(claimId), autoCheckStatus: { in: [WARRANTY_AUTO_CHECK_STATUS.QUEUED, WARRANTY_AUTO_CHECK_STATUS.RUNNING] } },
+        data: {
+          autoCheckStatus: WARRANTY_AUTO_CHECK_STATUS.FAILED,
+          autoCheckCompletedAt: new Date(),
+          autoCheckErrorMessage: `Job failed (worker crash/stall): ${error?.message || "unknown"}`,
+        },
+      });
+      if (res.count === 1) await notifyApiCallback(String(claimId));
+    } catch (e: any) {
+      console.error("[account-check] failed-handler escalation error:", e?.message || e);
+    }
   });
   worker.on("error", (error) => {
     console.error("[account-check] worker error:", error?.message || error);
@@ -1305,12 +1434,12 @@ export async function setupAccountCheckWorker(prisma: PrismaClient, redis: Redis
   // Periodic sweep for stuck claims (worker restarts, network blips, etc.)
   const SWEEP_INTERVAL_MS = Number(process.env.ACCOUNT_CHECK_SWEEP_INTERVAL_MS || 60_000);
   const sweepTimer = setInterval(() => {
-    sweepStuckAutoChecks(prisma).catch((err) => {
+    sweepStuckAutoChecks(prisma, queue).catch((err) => {
       console.error("[account-check] sweep failed:", err?.message || err);
     });
   }, SWEEP_INTERVAL_MS);
   // Run once on startup so a crash recovery cleans up immediately.
-  sweepStuckAutoChecks(prisma).catch(() => undefined);
+  sweepStuckAutoChecks(prisma, queue).catch(() => undefined);
 
   const proxyCount = (await getCheckProxies(prisma).catch(() => [])).length;
   const grokHttp = CHECK_GROK_URL

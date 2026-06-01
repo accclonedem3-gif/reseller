@@ -128,6 +128,16 @@ export class UpdateProductDto {
   @IsEnum(SourceWarrantyPolicy)
   warrantyPolicy?: SourceWarrantyPolicy;
 
+  // Batch lifetime in days — when set, warranty submissions arriving past
+  // (accBatchStartedAt + N days) auto-resolve without spawning the auto-check tool.
+  // Pass null to clear. Backend auto-stamps accBatchStartedAt=NOW() whenever this value
+  // changes (so admin just sets the days; the batch-start anchor follows automatically).
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(3650)
+  accLifetimeDays?: number | null;
+
   @IsOptional()
   @IsString()
   imageUrl?: string;
@@ -284,6 +294,16 @@ export class CreateManualProductDto {
   @IsOptional()
   @IsEnum(SourceWarrantyPolicy)
   warrantyPolicy?: SourceWarrantyPolicy;
+
+  // Batch lifetime in days — when set, warranty submissions arriving past
+  // (accBatchStartedAt + N days) auto-resolve without spawning the auto-check tool.
+  // Pass null to clear. Backend auto-stamps accBatchStartedAt=NOW() whenever this value
+  // changes (so admin just sets the days; the batch-start anchor follows automatically).
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(3650)
+  accLifetimeDays?: number | null;
 
   @IsOptional()
   @IsString()

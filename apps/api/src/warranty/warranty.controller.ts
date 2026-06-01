@@ -38,14 +38,15 @@ export class WarrantyController {
     return status || { autoCheckStatus: null };
   }
 
-  // SECURITY NOTE: this endpoint is unauthenticated — any caller knowing an orderCode can
-  // open a claim. It was the legacy pre-publicSubmitClaim path and the JwtAuthGuard was never
-  // added. TODO: add @UseGuards(JwtAuthGuard, SellerCapabilitiesGuard), inject @CurrentUser(),
-  // and scope the order lookup to the seller's own shop in openClaim().
+  // Seller-only claim open (legacy dashboard path; customers use POST /public/warranty/claim).
+  // Now authenticated + scoped to the seller's own shop — previously this was unauthenticated,
+  // letting anyone knowing an orderCode open a claim (triggering provider logins / auto-refunds).
   @Post("claim")
+  @UseGuards(JwtAuthGuard, SellerCapabilitiesGuard)
+  @RequireSellerCapabilities("warranty_manage")
   @Throttle({ default: { ttl: 60000, limit: 5 } })
-  openClaim(@Body() dto: OpenWarrantyClaimDto) {
-    return this.warrantyService.openClaim(dto);
+  openClaim(@CurrentUser() user: AuthenticatedUser, @Body() dto: OpenWarrantyClaimDto) {
+    return this.warrantyService.openClaim(dto, user);
   }
 
   @Get("claims")

@@ -358,6 +358,7 @@ function buildDeliveredAccountMessage(input) {
             ...(formatHint ? [`Format: ${escapeTelegramHtml(formatHint)}`, ""] : []),
             `<pre>${escapeTelegramHtml(input.deliveredText)}</pre>`,
             ...(input.metadata?.usageInstructions ? ["", escapeTelegramHtml(String(input.metadata.usageInstructions))] : []),
+            ...(input.warrantyClaimCode ? ["", `🔐 Warranty code: <code>${escapeTelegramHtml(input.warrantyClaimCode)}</code>`, "Keep this private — you must enter it to request warranty for this order."] : []),
             "",
             "A detailed bill will be sent in the next message.",
         ]
@@ -371,6 +372,7 @@ function buildDeliveredAccountMessage(input) {
             ...(formatHint ? [`Format: ${escapeTelegramHtml(formatHint)}`, ""] : []),
             `<pre>${escapeTelegramHtml(input.deliveredText)}</pre>`,
             ...(input.metadata?.usageInstructions ? ["", escapeTelegramHtml(String(input.metadata.usageInstructions))] : []),
+            ...(input.warrantyClaimCode ? ["", `🔐 Mã bảo hành: <code>${escapeTelegramHtml(input.warrantyClaimCode)}</code>`, "Giữ kín mã này — bạn cần nhập mã khi yêu cầu bảo hành cho đơn này."] : []),
             "",
             "Hóa đơn chi tiết sẽ được gửi ở tin nhắn tiếp theo.",
         ];
@@ -1121,6 +1123,13 @@ async function creditAffiliateCommission(orderId) {
     const commission = Math.round(Number(order.totalSaleAmount) * Number(config.commissionPct) / 100);
     if (commission <= 0) return;
     await prisma.$transaction(async (tx) => {
+        // Idempotency (mirror apps/api affiliate.service.creditCommission): lock the order row +
+        // re-check inside the tx. The line-1120 fast-path read is OUTSIDE any lock, so a concurrent
+        // API completePendingManualOrder (which DOES take this lock) and this worker path can both
+        // pass it and double-credit the affiliate wallet. Serialize on the order row + no-op the loser.
+        await tx.$queryRaw`SELECT id FROM orders WHERE id = ${orderId} FOR UPDATE`;
+        const _freshOrder = await tx.order.findUnique({ where: { id: orderId }, select: { affiliateCommission: true } });
+        if (_freshOrder?.affiliateCommission != null && Number(_freshOrder.affiliateCommission) > 0) return;
         await tx.order.update({ where: { id: orderId }, data: { affiliateCommission: commission, affiliateCustomerId: order.customer.referredById } });
         const wallet = await tx.customerWallet.findUnique({ where: { customerId: order.customer.referredById } });
         if (!wallet) return;
@@ -1180,6 +1189,13 @@ async function processPurchase(job) {
             return;
         }
     }
+    // Idempotent entry: a re-enqueued/duplicate purchase job (e.g. a web2m sweep re-add, or a job
+    // re-added after completion) must NOT re-deliver an order that already reached a terminal state —
+    // that would double-decrement stock + re-fire commission/B2B-debit. Concurrent same-order jobs
+    // are additionally prevented by the stable BullMQ jobId (`purchase-<orderId>`).
+    if (order.status === "DELIVERED" || order.status === "REFUNDED") {
+        return;
+    }
     const providerConfig = order.shop.providerConfig;
     if (!providerConfig) {
         return;
@@ -1225,6 +1241,7 @@ async function processPurchase(job) {
                     botToken,
                     chatId: order.customer.telegramChatId,
                     orderCode: order.orderCode,
+                    warrantyClaimCode: order.warrantyClaimCode,
                     productName: order.productNameSnapshot,
                     quantity: order.quantity,
                     amount: order.totalSaleAmount,
@@ -1290,6 +1307,7 @@ async function processPurchase(job) {
                     botToken,
                     chatId: order.customer.telegramChatId,
                     orderCode: order.orderCode,
+                    warrantyClaimCode: order.warrantyClaimCode,
                     productName: order.productNameSnapshot,
                     quantity: order.quantity,
                     amount: order.totalSaleAmount,
@@ -1455,6 +1473,7 @@ async function processPurchase(job) {
                     botToken,
                     chatId: order.customer.telegramChatId,
                     orderCode: order.orderCode,
+                    warrantyClaimCode: order.warrantyClaimCode,
                     productName: order.productNameSnapshot,
                     quantity: order.quantity,
                     amount: order.totalSaleAmount,
@@ -1530,6 +1549,7 @@ async function processPurchase(job) {
                         botToken,
                         chatId: order.customer.telegramChatId,
                         orderCode: order.orderCode,
+                        warrantyClaimCode: order.warrantyClaimCode,
                         productName: order.productNameSnapshot,
                         quantity: order.quantity,
                         amount: order.totalSaleAmount,
@@ -1691,6 +1711,7 @@ async function processPurchase(job) {
                 botToken,
                 chatId: order.customer.telegramChatId,
                 orderCode: order.orderCode,
+                warrantyClaimCode: order.warrantyClaimCode,
                 productName: order.productNameSnapshot,
                 quantity: order.quantity,
                 amount: order.totalSaleAmount,
@@ -1788,9 +1809,14 @@ async function reconcilePendingInternalSourceOrders() {
             }
             if (result.status === "delivered" && result.deliveredText) {
                 const deliveredAt = new Date();
+                let _delivered = false;
                 await prisma.$transaction(async (tx) => {
-                    await tx.order.update({
-                        where: { id: order.id },
+                    // Idempotent delivery: this reconciler runs on a setInterval with NO in-flight
+                    // guard, so two overlapping passes (or a pass racing the purchase worker) can both
+                    // reach here. Guard the transition on the pre-delivery status so only ONE pass
+                    // delivers — otherwise stock double-decrements + commission/B2B-debit double-fire.
+                    const _claimed = await tx.order.updateMany({
+                        where: { id: order.id, status: { in: ["PROCESSING_PURCHASE", "PAID_WAITING_STOCK"] } },
                         data: {
                             status: "DELIVERED",
                             deliveredAccountText: result.deliveredText,
@@ -1800,6 +1826,8 @@ async function reconcilePendingInternalSourceOrders() {
                             failureReason: null,
                         },
                     });
+                    if (_claimed.count === 0) return; // already delivered by a concurrent pass → skip
+                    _delivered = true;
                     await tx.orderEvent.create({
                         data: {
                             orderId: order.id,
@@ -1824,6 +1852,7 @@ async function reconcilePendingInternalSourceOrders() {
                         },
                     });
                 });
+                if (!_delivered) continue; // lost the race → don't double snapshot/commission/send
                 await snapshotWarrantyForDeliveredOrder(order.id);
                 await creditAffiliateCommission(order.id).catch(() => undefined);
                 const botToken = (0, server_1.decryptSecret)(order.shop.botConfig?.telegramBotTokenEncrypted, process.env.APP_ENCRYPTION_KEY || "change-me-32-byte-key");
@@ -1841,6 +1870,7 @@ async function reconcilePendingInternalSourceOrders() {
                         botToken,
                         chatId: order.customer.telegramChatId,
                         orderCode: order.orderCode,
+                        warrantyClaimCode: order.warrantyClaimCode,
                         productName: order.productNameSnapshot,
                         quantity: order.quantity,
                         amount: order.totalSaleAmount,
@@ -2439,8 +2469,10 @@ async function pollWeb2mShops(purchaseQueue) {
                             });
                             // Enqueue purchase job
                             try {
-                                await purchaseQueue.add(server_1.JOBS.processPurchase, { orderId: order.id }, {
-                                    jobId: `purchase-${order.id}-${Date.now()}`,
+                                await purchaseQueue.add(server_1.JOBS.purchaseUpstream, { orderId: order.id }, {
+                                    // Stable jobId (NOT timestamped) so BullMQ dedups a re-swept order
+                                    // against the API's `purchase-<orderId>` job → no double purchase/deliver.
+                                    jobId: `purchase-${order.id}`,
                                     removeOnComplete: 100,
                                     removeOnFail: 100,
                                 });
@@ -2636,26 +2668,36 @@ async function bootstrap() {
         if (shuttingDown) return;
         shuttingDown = true;
         console.log(`[worker] Received ${signal} — beginning graceful shutdown.`);
+        // 1. Stop the stuck-claim sweep immediately so it can't enqueue new work mid-shutdown.
+        if (accountCheckHandles && accountCheckHandles.sweepTimer) clearInterval(accountCheckHandles.sweepTimer);
+        // 2. DRAIN in-flight account-check jobs FIRST (bounded ~12s). worker.close(false) stops
+        //    accepting new jobs and resolves once active jobs finish. We must do this BEFORE
+        //    killAllChildren — otherwise a check mid-login has its Chromium killed under it and
+        //    reports a false failure instead of a real verdict. Bound it so a genuinely stuck job
+        //    can't block exit past the orchestrator's SIGKILL window.
+        if (accountCheckHandles) {
+            await Promise.race([
+                accountCheckHandles.worker.close().catch((e) => console.error("[worker] account-check worker.close failed:", formatError(e))),
+                new Promise((resolve) => setTimeout(resolve, 12000)),
+            ]);
+        }
+        // 3. NOW kill any subprocess children that didn't finish within the drain window
+        //    (best-effort; primary mechanism is the process-group kill inside spawnSingleCheck).
+        if (typeof account_check_1.killAllChildren === "function") {
+            try { account_check_1.killAllChildren(); } catch {}
+        }
+        // 4. Close queues + the remaining workers (fast — no in-flight work left to drain).
         const tasks = [];
         if (accountCheckHandles) {
-            if (accountCheckHandles.sweepTimer) clearInterval(accountCheckHandles.sweepTimer);
-            tasks.push(accountCheckHandles.worker.close().catch((e) => console.error("[worker] account-check worker.close failed:", formatError(e))));
             tasks.push(accountCheckHandles.queue.close().catch((e) => console.error("[worker] account-check queue.close failed:", formatError(e))));
         }
         try { tasks.push(syncWorker.close().catch(() => undefined)); } catch {}
         try { tasks.push(syncQueue.close().catch(() => undefined)); } catch {}
         try { tasks.push(purchaseQueue.close().catch(() => undefined)); } catch {}
         try { tasks.push(broadcastQueue.close().catch(() => undefined)); } catch {}
-        // Kill any subprocess children we still own (best-effort; primary mechanism is the
-        // process-group kill inside spawnSingleCheck on timeout).
-        if (typeof account_check_1.killAllChildren === "function") {
-            try { account_check_1.killAllChildren(); } catch {}
-        }
-        // Bound the shutdown to 15s — beyond that, accept the loss and exit so the orchestrator
-        // doesn't escalate to SIGKILL (which would skip the finally blocks we still rely on).
         await Promise.race([
             Promise.all(tasks),
-            new Promise((resolve) => setTimeout(resolve, 15000)),
+            new Promise((resolve) => setTimeout(resolve, 3000)),
         ]);
         try { await redis.quit(); } catch {}
         console.log("[worker] Shutdown complete.");
@@ -2663,6 +2705,17 @@ async function bootstrap() {
     };
     process.on("SIGTERM", () => { void shutdown("SIGTERM"); });
     process.on("SIGINT", () => { void shutdown("SIGINT"); });
+    // Crash safety: a stray rejected promise (e.g. a fire-and-forget .catch omission) must NOT take
+    // the worker down mid-check — log and keep going. An uncaughtException leaves the process in an
+    // undefined state, so close Chromium children + redis (bounded by shutdown's 3s race) and let
+    // PM2 restart clean — avoids zombie browsers from a hard exit.
+    process.on("unhandledRejection", (reason) => {
+        console.error("[worker] UNHANDLED REJECTION:", reason instanceof Error ? (reason.stack || reason.message) : reason);
+    });
+    process.on("uncaughtException", (err) => {
+        console.error("[worker] UNCAUGHT EXCEPTION:", err?.stack || err);
+        void shutdown("uncaughtException");
+    });
 }
 bootstrap().catch((error) => {
     console.error(error);

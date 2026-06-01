@@ -6,7 +6,7 @@ import { Prisma, SellerTier } from "@prisma/client";
 
 import { AppConfigService } from "../config/app-config.service";
 import { PrismaService } from "../db/prisma.service";
-import { toDecimal } from "../lib/utils";
+import { toDecimal, extractAccountEmails } from "../lib/utils";
 import type { AuthenticatedUser } from "../types";
 import { ShopsService } from "../shops/shops.service";
 import { QueueService } from "../lib/queue.service";
@@ -25,6 +25,12 @@ type SourceProductBusinessFields = {
   durationTypeOther?: string | null;
   sourceDeliveryMode?: CreateManualProductDto["sourceDeliveryMode"];
   warrantyPolicy?: CreateManualProductDto["warrantyPolicy"];
+  accLifetimeDays?: number | null;
+  // Batch start date — server-computed (auto-set to NOW() when accLifetimeDays changes).
+  // Never accepted from the client to keep the contract simple: "tell us the lifetime; we
+  // anchor the clock at the moment you saved." Admin can SQL-override if they need to
+  // backdate (e.g. lô về 28/05 mà mãi 30/05 mới config).
+  accBatchStartedAt?: Date | null;
 };
 
 @Injectable()
@@ -166,12 +172,17 @@ export class ProductsService {
         productIcon: dto.productIcon?.trim() || null,
         iconCustomEmojiId: dto.iconCustomEmojiId?.trim() || null,
         ...businessFields,
+        // Anchor the batch-lifetime clock at creation (= "ngày nhập lô") when the product ships
+        // with stock, so the warranty term-bypass measures from here. Re-stamped on every refill.
+        ...(available != null && available > 0 ? { accBatchStartedAt: new Date() } : {}),
         metadataJson: {
           manual: true,
           shared: isShared,
           sharedContent: isShared ? dto.sharedContent!.trim() : undefined,
           deliveryText: normalizedDeliveryText,
           deliveryEntries,
+          // Per-account add-date map (see mergeAccountAddedAt) — seeds the initial batch's import day.
+          accountAddedAt: this.mergeAccountAddedAt({}, normalizedDeliveryText),
           deliveryFormatHint: dto.deliveryFormatHint?.trim() || null,
           hiddenDeliveredKeys: [],
           sourceDescription: dto.sourceDescription?.trim() || null,
@@ -248,7 +259,7 @@ export class ProductsService {
     }
 
     const isManual = this.isManualProduct(product);
-    const classificationFields = this.buildClassificationFields(dto);
+    const classificationFields = this.buildClassificationFields(dto, { accLifetimeDays: product.accLifetimeDays ?? null });
     const wholesaleFields =
       user.sellerTier === SellerTier.ULTRA ? this.buildWholesaleFields(dto) : {};
     const businessFields = { ...classificationFields, ...wholesaleFields };
@@ -340,6 +351,8 @@ export class ProductsService {
             sharedContent: undefined,
             deliveryText: normalizedDeliveryText,
             deliveryEntries,
+            // Per-account add-date map (warranty term-bypass measures from each acc's own import day).
+            accountAddedAt: this.mergeAccountAddedAt(currentMetadata, normalizedDeliveryText),
             deliveryFormatHint:
               dto.deliveryFormatHint !== undefined
                 ? (dto.deliveryFormatHint?.trim() || null)
@@ -388,6 +401,39 @@ export class ProductsService {
           data: externalUpdate,
         });
       }
+    }
+
+    // Auto-anchor the batch-lifetime clock to NOW whenever stock is (re)filled (available
+    // increased, or anchor never set yet) OR the term ("Thời hạn") itself changes. The warranty
+    // term-bypass measures from this anchor + the term to skip the heavy check tool once a batch
+    // is past its expected lifetime. Re-stamping on refill AND on term-change keeps a stale anchor
+    // from ever flagging a still-live account dead — the term-bypass reads durationType, so a
+    // term edit MUST move the clock too (else an old anchor + a newly-shortened term would
+    // instantly auto-replace every live order on the lot). Anchor only ever moves forward.
+    const _stockIncreased =
+      newAvailable != null && newAvailable > 0 && (product.available == null || newAvailable > product.available);
+    const _firstAnchor = product.accBatchStartedAt == null && newAvailable != null && newAvailable > 0;
+    const _termChanged =
+      (dto.durationType !== undefined && dto.durationType !== product.durationType) ||
+      (dto.durationTypeOther !== undefined &&
+        (dto.durationTypeOther?.trim() || null) !== (product.durationTypeOther || null));
+    // Also re-stamp when the seller REPLACES the account list without the count going up — e.g.
+    // swapping a dead/expired same-size batch for fresh accounts. Without this, _stockIncreased is
+    // false so the new live accounts inherit the OLD (possibly expired) anchor → the term-bypass
+    // would wrongly auto-resolve them as dead. Re-stamping only moves the clock FORWARD (safe: at
+    // worst it delays the skip-check optimization; it never flags a still-live account dead).
+    const _curDeliveryText = (() => {
+      const m = this.asRecord(product.metadataJson);
+      return typeof m?.deliveryText === "string" ? this.normalizeManualDeliveryText(m.deliveryText) : null;
+    })();
+    const _entriesChanged =
+      dto.deliveryText !== undefined &&
+      this.normalizeManualDeliveryText(dto.deliveryText) !== _curDeliveryText;
+    if (_stockIncreased || _firstAnchor || _termChanged || _entriesChanged) {
+      await this.prisma.sourceProduct.update({
+        where: { id: product.id },
+        data: { accBatchStartedAt: new Date() },
+      });
     }
 
     if (
@@ -724,6 +770,47 @@ export class ProductsService {
     return normalized || null;
   }
 
+  /**
+   * Maintain the per-account "added-to-stock date" map used by the warranty term-bypass.
+   * Key = account email (via the shared extractAccountEmails). Each email is dated NOW the FIRST
+   * time it appears in stock and keeps that date forever after — including once the account has
+   * been delivered and removed from deliveryEntries (the warranty bypass still needs its date to
+   * measure "Thời hạn" from when THAT account was imported, not from the lot's latest refill).
+   * So accounts added on different days each expire on their own schedule (e.g. 10 accs added today
+   * → +term; 9 added tomorrow → +term, one day later) even though they share one product/term.
+   * Old entries (> ~13 months, far past any warranty window) are pruned to bound metadata size.
+   */
+  private mergeAccountAddedAt(
+    currentMetadata: Record<string, any>,
+    deliveryText: string | null | undefined,
+  ): Record<string, string> {
+    const existing = this.asRecord(currentMetadata?.accountAddedAt);
+    // Emails that were ALREADY in stock before this edit (the previous deliveryText). Used to tell a
+    // no-op re-save (keep date) from a fresh (re-)add (stamp NOW).
+    const prevStock = new Set(
+      extractAccountEmails(typeof currentMetadata?.deliveryText === "string" ? currentMetadata.deliveryText : null),
+    );
+    const nowIso = new Date().toISOString();
+    const cutoff = Date.now() - 400 * 86400_000;
+    const merged: Record<string, string> = {};
+    // Preserve existing dates (incl. already-delivered accounts removed from stock — the bypass still
+    // needs their date) within the prune window.
+    for (const [email, date] of Object.entries(existing)) {
+      if (typeof date === "string" && Number.isFinite(Date.parse(date)) && Date.parse(date) >= cutoff) {
+        merged[email] = date;
+      }
+    }
+    for (const email of extractAccountEmails(deliveryText)) {
+      // Re-date to NOW when the email is (re-)ENTERING stock now: brand-new, OR a RECYCLED email that
+      // had left stock (delivered/removed) and is being re-added — a recycled email is a genuinely
+      // NEW live account, so it must NOT inherit the old date (which would batch-bypass it as dead).
+      // Only KEEP the prior date when the email was already in stock before (a no-op resave).
+      if (prevStock.has(email) && merged[email]) continue;
+      merged[email] = nowIso;
+    }
+    return merged;
+  }
+
   private parseManualDeliveryEntries(value: string | null | undefined) {
     const normalized = this.unwrapManualDeliveryEnvelope(
       this.normalizeManualDeliveryText(value),
@@ -835,6 +922,7 @@ export class ProductsService {
 
   private buildClassificationFields(
     dto: Partial<CreateManualProductDto & UpdateProductDto>,
+    currentProduct?: { accLifetimeDays: number | null } | null,
   ): SourceProductBusinessFields {
     return {
       productFamily: dto.productFamily ?? undefined,
@@ -861,6 +949,33 @@ export class ProductsService {
             : undefined,
       sourceDeliveryMode: dto.sourceDeliveryMode ?? undefined,
       warrantyPolicy: dto.warrantyPolicy ?? undefined,
+      ...this.buildBatchLifetimeFields(dto, currentProduct ?? null),
+    };
+  }
+
+  /**
+   * Batch-lifetime fields (`accLifetimeDays` + `accBatchStartedAt`). Split out from
+   * buildClassificationFields because it needs the CURRENT product row to decide whether to
+   * reset `accBatchStartedAt`: if admin saves the form with the same days value, we should
+   * NOT bump the clock back to NOW() — that would silently extend every old order's
+   * expiry. Only stamp NOW() when the lifetime actually changed (or was newly set).
+   */
+  private buildBatchLifetimeFields(
+    dto: Partial<CreateManualProductDto & UpdateProductDto>,
+    current: { accLifetimeDays: number | null } | null,
+  ): { accLifetimeDays?: number | null; accBatchStartedAt?: Date | null } {
+    if (dto.accLifetimeDays === undefined) return {};
+    const next = dto.accLifetimeDays === null || dto.accLifetimeDays === 0 ? null : Number(dto.accLifetimeDays);
+    const prev = current?.accLifetimeDays ?? null;
+    if (next === prev) {
+      // Value unchanged — touch nothing. The DB row keeps its existing accBatchStartedAt.
+      return {};
+    }
+    return {
+      accLifetimeDays: next,
+      // null lifetime → null anchor (orphan timestamp serves no purpose).
+      // non-null → stamp NOW() so the clock starts when admin set/changed it.
+      accBatchStartedAt: next === null ? null : new Date(),
     };
   }
 

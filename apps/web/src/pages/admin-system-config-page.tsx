@@ -91,6 +91,20 @@ export function AdminSystemConfigPage() {
     onError: (e) => showToast({ tone: "error", message: getApiErrorMessage(e) }),
   });
 
+  // Test proxy TRƯỚC khi lưu — biết con nào sống/khỏe (latency) để lọc proxy dùng cho tool.
+  const testProxyMutation = useMutation({
+    mutationFn: () =>
+      api
+        .post("/admin/test-proxies", { proxies: form["warranty.check.proxies"] ?? "", mode: "full" })
+        .then((r) => r.data as { ok: boolean; error?: string; summary?: { total: number; alive: number; dead: number }; results?: any[] }),
+    onError: (e) => showToast({ tone: "error", message: getApiErrorMessage(e) }),
+  });
+  const testData = testProxyMutation.data;
+  // Sống trước, rồi sắp theo độ trễ HTTP tăng dần (proxy "mạnh" = latency thấp ở đầu).
+  const testRows = testData?.results
+    ? [...testData.results].sort((a, b) => (Number(b.ok) - Number(a.ok)) || ((a.httpMs ?? a.tcpMs ?? 9e9) - (b.httpMs ?? b.tcpMs ?? 9e9)))
+    : [];
+
   function handleChange(key: string, value: string) {
     setForm((prev) => ({ ...prev, [key]: value }));
     setDirty(true);
@@ -165,8 +179,8 @@ export function AdminSystemConfigPage() {
             />
           </Field>
           <Field
-            label="Số luồng check song song"
-            description="Mỗi luồng dùng 1 Chrome instance (~300MB RAM). Hàng chờ quá ngưỡng × 4 sẽ báo 'hệ thống quá tải' với customer."
+            label="Số luồng check song song (số đơn cùng lúc)"
+            description="Bao nhiêu ĐƠN xử lý song song. Hàng chờ quá ngưỡng × 4 sẽ báo 'hệ thống quá tải' với customer. VPS 4GB nên để 1."
           >
             <Input
               type="number"
@@ -174,6 +188,18 @@ export function AdminSystemConfigPage() {
               max={20}
               value={form["warranty.check.concurrency"] ?? "3"}
               onChange={(e) => handleChange("warranty.check.concurrency", e.target.value)}
+            />
+          </Field>
+          <Field
+            label="Số acc/đơn check song song"
+            description="1 đơn nhiều acc thì kiểm bao nhiêu acc CÙNG LÚC (số còn lại xếp hàng). Mỗi acc ~1 Chrome (~300MB). VPS 4GB để 2 — KHÔNG nên cao, dễ hết RAM/sập server. Đổi áp dụng ngay, không cần restart."
+          >
+            <Input
+              type="number"
+              min={1}
+              max={10}
+              value={form["warranty.check.perJobParallel"] ?? "2"}
+              onChange={(e) => handleChange("warranty.check.perJobParallel", e.target.value)}
             />
           </Field>
           <Field
@@ -192,6 +218,52 @@ export function AdminSystemConfigPage() {
               className="flex w-full rounded-[10px] border border-white/8 bg-[#18233c] px-3.5 py-2.5 font-mono text-xs text-slate-200 outline-none focus:border-white/20"
             />
           </Field>
+
+          {/* Test proxy TRƯỚC khi lưu — TCP + HTTP GET x.ai qua từng proxy, hiện sống/chết + độ trễ */}
+          <div className="space-y-2">
+            <div className="flex flex-wrap items-center gap-3">
+              <Button
+                onClick={() => testProxyMutation.mutate()}
+                disabled={testProxyMutation.isPending || !(form["warranty.check.proxies"] ?? "").trim()}
+              >
+                {testProxyMutation.isPending ? "Đang test..." : "🔍 Test proxy"}
+              </Button>
+              <p className="text-xs text-slate-500">
+                Kiểm tra TCP + thử vào x.ai qua từng proxy (~6s/con). Sống + độ trễ thấp = dùng tốt.
+              </p>
+              {testData?.summary && (
+                <span className="text-xs font-medium text-slate-300">
+                  Sống <span className="text-emerald-400">{testData.summary.alive}</span>/{testData.summary.total}
+                  {testData.error ? ` — ${testData.error}` : ""}
+                </span>
+              )}
+            </div>
+            {testRows.length > 0 && (
+              <div className="max-h-72 overflow-auto rounded-[10px] border border-white/8 bg-[#0f1626]">
+                {testRows.map((r: any, i: number) => {
+                  const lat = r.httpMs ?? r.tcpMs;
+                  const latColor = !r.ok ? "text-rose-400" : lat == null ? "text-slate-400" : lat < 1500 ? "text-emerald-400" : lat < 3500 ? "text-amber-300" : "text-orange-400";
+                  return (
+                    <div key={i} className="flex items-center gap-3 border-b border-white/5 px-3 py-1.5 text-xs font-mono last:border-0">
+                      <span className={r.ok ? "text-emerald-400" : "text-rose-400"}>{r.ok ? "● sống" : "○ chết"}</span>
+                      <span className="min-w-0 flex-1 truncate text-slate-300">{r.proxy}</span>
+                      <span className={latColor}>
+                        {r.tcpMs != null ? `TCP ${r.tcpMs}ms` : ""}
+                        {r.httpMs != null ? ` · HTTP ${r.httpMs}ms` : ""}
+                        {r.status ? ` (${r.status})` : ""}
+                        {r.error ? ` · ${r.error}` : ""}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+            {testRows.length > 0 && (
+              <p className="text-[11px] text-slate-500">
+                💡 Xanh = nhanh (&lt;1.5s) · Vàng = trung bình · Cam = chậm. Bỏ con "chết"/chậm khỏi ô trên rồi bấm Lưu.
+              </p>
+            )}
+          </div>
         </div>
       </Card>
 

@@ -3218,6 +3218,7 @@ export function ProductsPageStudio({
                     </select>
                   </Field>
                 </div>
+
               </div>
 
               <div className="space-y-4 rounded-2xl border p-4" style={{ borderColor: "var(--bd)", background: "var(--inp)" }}>

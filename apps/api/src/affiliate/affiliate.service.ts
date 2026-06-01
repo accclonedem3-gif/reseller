@@ -72,6 +72,19 @@ export class AffiliateService {
 
   async creditCommission(orderId: string, affiliateCustomerId: string, amount: number) {
     await this.prisma.$transaction(async (tx) => {
+      // Idempotency: lock the order row, then re-check whether commission was already credited.
+      // Two concurrent callers (e.g. a double-fired manual-complete) serialize on this lock; the
+      // loser sees affiliateCommission already set and no-ops — no double wallet credit, no
+      // duplicate AFFILIATE_COMMISSION ledger row (the ledger has no unique constraint to catch it).
+      await tx.$queryRaw(Prisma.sql`SELECT id FROM orders WHERE id = ${orderId} FOR UPDATE`);
+      const existing = await tx.order.findUnique({
+        where: { id: orderId },
+        select: { affiliateCommission: true },
+      });
+      if (existing?.affiliateCommission != null && decimalToNumber(existing.affiliateCommission) > 0) {
+        return;
+      }
+
       await tx.order.update({
         where: { id: orderId },
         data: {

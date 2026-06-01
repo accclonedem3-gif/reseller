@@ -44,6 +44,13 @@ export class MiniAppService {
     const expectedHash = createHmac("sha256", secretKey).update(checkString).digest("hex");
     if (expectedHash !== hash) throw new UnauthorizedException("Invalid initData.");
 
+    // Replay window: reject initData older than 24h so a captured payload can't be reused
+    // indefinitely. Telegram stamps auth_date (unix seconds) inside the signed payload.
+    const authDate = Number(params.get("auth_date"));
+    if (!authDate || Date.now() / 1000 - authDate > 86400) {
+      throw new UnauthorizedException("initData expired. Please reopen the app.");
+    }
+
     const userData = JSON.parse(params.get("user") ?? "{}");
     if (!userData?.id) throw new UnauthorizedException("Missing user in initData.");
     return { userId: String(userData.id), username: userData.username };

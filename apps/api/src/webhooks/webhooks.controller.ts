@@ -12,6 +12,7 @@ import {
   Req,
 } from "@nestjs/common";
 import { Request } from "express";
+import { timingSafeEqual } from "node:crypto";
 import { verifyPay2sIpnSignature, verifyPayOSWebhook } from "@reseller/shared/server";
 
 import { AppConfigService } from "../config/app-config.service";
@@ -221,7 +222,9 @@ export class WebhooksController {
     if (this.config.nodeEnv === "production") {
       if (!authHeader || !creds.secretKey) return { success: true };
       const expected = `Bearer ${creds.secretKey}`;
-      if (authHeader !== expected) return { success: true };
+      const a = Buffer.from(authHeader, "utf8");
+      const b = Buffer.from(expected, "utf8");
+      if (a.length !== b.length || !timingSafeEqual(a, b)) return { success: true };
     }
 
     return this.processPaymentCompletion(matched, { source: "pay2s_balance_webhook", ...body });

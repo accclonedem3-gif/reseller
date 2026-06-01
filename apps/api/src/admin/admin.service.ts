@@ -35,6 +35,50 @@ export class AdminService {
    * Errors are logged but don't fail the admin config save — the DB is the source of truth,
    * worker reads from there. Grok server sync is an optimisation, not correctness-critical.
    */
+  private async syncProxiesToVeoServer(proxyValue: string): Promise<void> {
+    const veoUrl = (process.env.CHECK_VEO_URL || "").replace(/\/+$/, "");
+
+    const candidates = process.env.CHECK_VEO_PROXY_FILE
+      ? [process.env.CHECK_VEO_PROXY_FILE]
+      : [
+          path.resolve(process.cwd(), "..", "..", "..", "check_veo", "proxies.txt"),
+          path.resolve(process.cwd(), "..", "..", "check_veo", "proxies.txt"),
+          path.resolve(process.cwd(), "..", "check_veo", "proxies.txt"),
+          path.resolve(process.cwd(), "check_veo", "proxies.txt"),
+        ];
+
+    const proxyFile: string =
+      candidates.find((p): p is string => !!p && fs.existsSync(path.dirname(p))) ||
+      candidates[0] || "";
+    if (!proxyFile) {
+      this.logger.warn("No proxies.txt path candidate resolved — skipping veo sync.");
+      return;
+    }
+
+    try {
+      fs.writeFileSync(proxyFile, proxyValue, "utf8");
+      this.logger.log(`Wrote ${proxyValue.split(/\r?\n/).filter(Boolean).length} proxy lines to ${proxyFile}`);
+    } catch (err: any) {
+      this.logger.warn(`Failed to write proxies.txt at ${proxyFile}: ${err?.message ?? err}`);
+      return;
+    }
+
+    if (!veoUrl) {
+      this.logger.log("CHECK_VEO_URL not set — skipping veo server reload (proxies.txt written though, will pick up on next server restart).");
+      return;
+    }
+
+    try {
+      const headers: Record<string, string> = {};
+      if (process.env.CHECK_VEO_API_KEY) headers["X-API-Key"] = process.env.CHECK_VEO_API_KEY;
+      const res = await axios.post(`${veoUrl}/admin/reload-proxies`, {}, { headers, timeout: 5_000 });
+      this.logger.log(`Veo server reloaded: ${res.data?.proxies ?? "?"} proxies active`);
+      await axios.post(`${veoUrl}/admin/warm-now`, {}, { headers, timeout: 5_000 }).catch(() => undefined);
+    } catch (err: any) {
+      this.logger.warn(`Veo server /admin/reload-proxies failed: ${err?.message ?? err}`);
+    }
+  }
+
   private async syncProxiesToGrokServer(proxyValue: string): Promise<void> {
     const grokUrl = (process.env.CHECK_GROK_URL || "").replace(/\/+$/, "");
 
@@ -447,6 +491,7 @@ export class AdminService {
     // Fire-and-forget so the HTTP response doesn't wait on the grok server.
     if (key === "warranty.check.proxies") {
       void this.syncProxiesToGrokServer(value);
+      void this.syncProxiesToVeoServer(value);
     }
     return { key, value };
   }
@@ -464,7 +509,53 @@ export class AdminService {
     this.cache.memoDel("wac:config");
     if ("warranty.check.proxies" in configs) {
       void this.syncProxiesToGrokServer(configs["warranty.check.proxies"]);
+      void this.syncProxiesToVeoServer(configs["warranty.check.proxies"]);
     }
     return this.getSystemConfigs();
+  }
+
+  /**
+   * Test proxy list TRƯỚC khi lưu — forward sang grok server /admin/test-proxy (TCP + HTTP GET
+   * x.ai qua proxy, kèm latency). Admin dán proxy vào ô → bấm Test → biết con nào sống/khỏe để
+   * lọc. Chunk 50/request (giới hạn của grok server). Không sửa config — chỉ probe.
+   */
+  async testProxies(proxiesText: string, mode: "tcp" | "full" = "full") {
+    const lines = String(proxiesText || "")
+      .split(/\r?\n/)
+      .map((s) => s.trim())
+      .filter((s) => s && !s.startsWith("#"));
+    if (lines.length === 0) {
+      return { ok: false, error: "Chưa có proxy nào", summary: { total: 0, alive: 0, dead: 0 }, results: [] };
+    }
+    // Default to the local grok server (same fallback the worker uses in account-check.ts) so the
+    // admin proxy test works out-of-the-box even when CHECK_GROK_URL isn't explicitly set in env.
+    // Previously this had no default → it returned 0/N + "chưa set" (never probing the proxies)
+    // whenever the API was started without that env var, which read as "all proxies dead".
+    const grokUrl = (process.env.CHECK_GROK_URL || "http://127.0.0.1:4001").replace(/\/+$/, "");
+    const headers: Record<string, string> = {};
+    if (process.env.CHECK_GROK_API_KEY) headers["X-API-Key"] = process.env.CHECK_GROK_API_KEY;
+
+    const CHUNK = 50;
+    const results: any[] = [];
+    try {
+      for (let i = 0; i < lines.length; i += CHUNK) {
+        const batch = lines.slice(i, i + CHUNK);
+        const res = await axios.post(
+          `${grokUrl}/admin/test-proxy?mode=${mode === "tcp" ? "tcp" : "full"}`,
+          { proxies: batch },
+          { headers, timeout: 90_000 },
+        );
+        if (Array.isArray(res.data?.results)) results.push(...res.data.results);
+      }
+    } catch (err: any) {
+      return {
+        ok: false,
+        error: `Test lỗi (grok server): ${err?.message ?? err}`,
+        summary: { total: lines.length, alive: results.filter((r) => r.ok).length, dead: 0 },
+        results,
+      };
+    }
+    const alive = results.filter((r) => r.ok).length;
+    return { ok: true, mode, summary: { total: results.length, alive, dead: results.length - alive }, results };
   }
 }

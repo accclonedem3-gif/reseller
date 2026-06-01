@@ -16,6 +16,13 @@ services:
     image: redis:7-alpine
     container_name: reseller-platform-redis
     restart: unless-stopped
+    # Cap RAM so Redis can't starve Chromium/Postgres on a 4GB VPS. 256mb is ample given BullMQ
+    # removeOnComplete/Fail keep the queue small; LRU eviction protects against unbounded growth.
+    # noeviction (NOT allkeys-lru): BullMQ keys carry no TTL — LRU eviction could drop an in-flight
+    # job/lock key and lose a check. With the tiny queue (removeOnComplete/Fail capped) 256mb is never
+    # hit, so noeviction just means "reject writes loudly if something ever blows up" — the safe choice.
+    command: ["redis-server", "--maxmemory", "256mb", "--maxmemory-policy", "noeviction", "--save", ""]
+    mem_limit: 320m
     ports:
       - "127.0.0.1:6379:6379"
     volumes:

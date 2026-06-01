@@ -193,14 +193,22 @@ function isOutOfStock(payload: unknown, statusCode?: number) {
     typed.message || typed.desc || typed.error || "",
   ).toUpperCase();
 
-  return (
-    [404, 409, 410, 422].includes(Number(statusCode)) ||
+  // MONEY-SAFETY (#4): only treat as out-of-stock on a POSITIVE stock signal in the body. A bare
+  // HTTP 404/409/410/422 with no stock-specific code/message is AMBIGUOUS (transient gateway 410,
+  // auth 409, wrong endpoint 404…) and must NOT auto-refund real money — the caller routes those to
+  // PENDING_REVIEW for the seller instead. statusCode now only STRENGTHENS an explicit body match.
+  const hasStockSignal =
     normalizedCode.includes("OUT_OF_STOCK") ||
     normalizedCode.includes("SOLD_OUT") ||
+    normalizedCode.includes("HET_HANG") ||
     normalizedMessage.includes("OUT OF STOCK") ||
+    normalizedMessage.includes("SOLD OUT") ||
     normalizedMessage.includes("INVENTORY NOT ENOUGH") ||
-    normalizedMessage.includes("HET HANG")
-  );
+    normalizedMessage.includes("OUT_OF_STOCK") ||
+    normalizedMessage.includes("HET HANG") ||
+    normalizedMessage.includes("HẾT HÀNG");
+  void statusCode; // intentionally NOT a standalone trigger anymore
+  return hasStockSignal;
 }
 
 export async function verifyProviderConnection(credentials: ProviderCredentials) {

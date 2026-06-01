@@ -85,8 +85,31 @@ export class QueueService implements OnModuleDestroy {
     proxy?: string | null;
     accounts?: { email: string; password: string; extra?: string | null }[];
   }) {
+    // STABLE jobId per claim (no Date.now()): a real provider login is money/ban-sensitive,
+    // so a duplicate enqueue for the same claim (double-submit, sweep race, retry) must NOT
+    // spawn a second concurrent check. BullMQ dedups by jobId — but only while the job exists
+    // in Redis, and a prior COMPLETED/FAILED attempt is retained (removeOnComplete/Fail), which
+    // would block a legitimate re-check (recheckClaim). So: if a finished attempt is retained,
+    // remove it first; if one is still in flight (waiting/active/delayed), return it as-is
+    // instead of enqueuing a duplicate.
+    const jobId = `account-check-${payload.claimId}`;
+    const existing = await this.accountCheckQueue.getJob(jobId).catch(() => null);
+    if (existing) {
+      const state = await existing.getState().catch(() => "unknown");
+      if (state === "completed" || state === "failed") {
+        await existing.remove().catch(() => undefined);
+      } else {
+        // waiting / active / delayed / unknown(locked) → a check is already in flight for this
+        // claim. Suppress the duplicate and hand back the existing job (same jobId the caller
+        // will persist as autoCheckJobId). Flag it as pre-existing so the caller's hard-cap
+        // defender does NOT remove a job it didn't add (which would cancel another caller's
+        // legitimate in-flight check).
+        (existing as unknown as { __preExisting?: boolean }).__preExisting = true;
+        return existing;
+      }
+    }
     return this.accountCheckQueue.add(JOBS.accountCheck, payload, {
-      jobId: `account-check-${payload.claimId}-${Date.now()}`,
+      jobId,
       // attempts=1: subprocess hitting the real provider must NOT be retried.
       // A second login attempt with the same creds risks the upstream provider flagging the
       // account as suspicious / rate-limited. On failure we route the claim to PENDING_REVIEW

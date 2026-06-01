@@ -24,11 +24,29 @@ if (!fs.existsSync(serverPath)) {
   process.exit(0);
 }
 
-console.log(`[grok] starting CheckGrokJS server.js on :${port} (warmer enabled)`);
+// Count proxies just for logging context — the server reads proxy.txt itself.
+// toolgrok browser pool (GROK_POOL=1) keeps one Chrome alive per proxy across checks
+// (saves ~3s launch/check + stable RAM at peak). GROK_POOL_MAX caps concurrent browsers.
+const proxyCount = (() => {
+  try {
+    const proxyFile = path.resolve(path.dirname(serverPath), "proxy.txt");
+    if (!fs.existsSync(proxyFile)) return 0;
+    return fs.readFileSync(proxyFile, "utf8")
+      .split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !l.startsWith("#")).length;
+  } catch { return 0; }
+})();
+
+console.log(`[grok] starting CheckGrokJS server.js on :${port} (warmer enabled, proxies=${proxyCount})`);
 const child = spawn(process.execPath, [serverPath], {
   cwd: path.dirname(serverPath),
   stdio: "inherit",
-  env: { ...process.env, PORT: port, WARMER: "1" },
+  env: {
+    ...process.env,
+    PORT: port,
+    WARMER: "1",
+    GROK_POOL: process.env.GROK_POOL || "1",
+    GROK_POOL_MAX: process.env.GROK_POOL_MAX || String(Math.max(2, Math.min(8, proxyCount || 5))),
+  },
 });
 
 child.on("exit", (code, signal) => {

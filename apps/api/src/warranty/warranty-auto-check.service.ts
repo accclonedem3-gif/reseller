@@ -11,6 +11,7 @@ import {
 import { PrismaService } from "../db/prisma.service";
 import { CacheService } from "../lib/cache.service";
 import { QueueService } from "../lib/queue.service";
+import { countResolvedWarrantyAccounts } from "../lib/utils";
 
 export type AutoCheckTool = "veo" | "grok" | "gpt";
 
@@ -163,6 +164,10 @@ export class WarrantyAutoCheckService {
       .split(",")
       .map((s) => s.trim().toLowerCase())
       .filter(Boolean);
+    // Safety FLOOR: gpt's single-check.js defaults transient failures (timeout/error) AND
+    // wrong-password to DIE → wrongful auto-refund. Until that tool is hardened, keep gpt disabled
+    // regardless of the env value so an unrelated WARRANTY_DISABLED_TOOLS edit can't silently expose it.
+    if (!disabled.includes("gpt")) disabled.push("gpt");
     if (disabled.includes(tool)) return null;
     return tool;
   }
@@ -257,6 +262,24 @@ export class WarrantyAutoCheckService {
    *   email's prefix should still proceed).
    * - No targetUsername → first credential.
    */
+  /**
+   * EXACT membership test: is `email` one of the ORIGINAL delivered accounts of this text?
+   * Unlike parseFirstCredential, there is NO single-credential `creds[0]` fallback — an email that
+   * isn't actually present returns false. Used to detect a warranty-ISSUED replacement account
+   * (which is never in the original delivery) so re-warranty of a replacement routes to manual
+   * review instead of auto-issuing yet another replacement (the unbounded replacement-chain abuse).
+   */
+  isOriginalDeliveredEmail(deliveredText: string | null | undefined, email: string | null | undefined): boolean {
+    if (!email) return false;
+    const want = String(email).toLowerCase().trim();
+    if (!want) return false;
+    const wantPrefix = want.split("@")[0];
+    return this.parseAllCredentials(deliveredText).some((c) => {
+      const e = c.email.toLowerCase().trim();
+      return e === want || (!!wantPrefix && e.split("@")[0] === wantPrefix);
+    });
+  }
+
   parseFirstCredential(
     deliveredText: string | null | undefined,
     targetUsername?: string | null,
@@ -344,7 +367,11 @@ export class WarrantyAutoCheckService {
     // it's overloaded. Customer experience matches what they'd see if the soft check had won.
     const postLoad = await this.queue.getAccountCheckLoad().catch(() => null);
     const hardCap = config.overloadThreshold * 2;
-    if (postLoad && postLoad.waiting + postLoad.active + postLoad.delayed > hardCap) {
+    // Only enforce the hard cap on a job WE actually added. If addAccountCheckJob handed back a
+    // pre-existing in-flight job (a concurrent duplicate enqueue for the same claim), removing it
+    // would cancel another caller's legitimate check — skip the hard-cap removal/overload marking.
+    const _jobPreExisting = (job as unknown as { __preExisting?: boolean }).__preExisting === true;
+    if (!_jobPreExisting && postLoad && postLoad.waiting + postLoad.active + postLoad.delayed > hardCap) {
       try {
         await this.queue.removeAccountCheckJob(String(job.id ?? ""));
       } catch (e: any) {
@@ -554,15 +581,47 @@ export class WarrantyAutoCheckService {
           }
         : null;
 
+    // Extract non-sensitive soft-fail markers BEFORE any token-gated stripping so the UI
+    // can detect the soft-fail state and show the right message regardless of token.
+    // autoCheckResult.errorType / .ok don't contain credentials — only isDead/errorType booleans.
+    const rawResultForPublic: any = result;
+    const softFailed =
+      rawResultForPublic &&
+      typeof rawResultForPublic === "object" &&
+      rawResultForPublic.ok === false &&
+      claim.status === "PENDING";
+    const publicErrorType =
+      softFailed && typeof rawResultForPublic.errorType === "string"
+        ? rawResultForPublic.errorType
+        : null;
+
     // Verify access token before exposing deliveredAccountText (which contains credentials).
     const metaJson = claim.metadataJson as Record<string, unknown> | null;
     const storedHash = typeof metaJson?.accessTokenHash === "string" ? metaJson.accessTokenHash : null;
     const tokenOk = !!accessToken && !!storedHash && this.hashToken(accessToken) === storedHash;
+    let invoiceOut = invoice;
     if (!tokenOk) {
       // Strip sensitive fields when no valid token is provided.
       // deliveredAccountText contains credentials; autoCheckResult contains account health data.
       (claim as any).deliveredAccountText = null;
       (claim as any).autoCheckResult = null;
+      // autoCheckErrorMessage carries raw tool stdout/stderr (may include proxy/login internals).
+      // The sanitized `publicErrorType` below is what the UI shows; never leak the raw message to an
+      // unauthenticated poller.
+      (claim as any).autoCheckErrorMessage = null;
+      // #6: the invoice is returned UNCONDITIONALLY and also carries deliveredAccountText
+      // (credentials) + buyer PII (telegram username / name / chat id). Without sanitizing it,
+      // the token gate above is trivially bypassed by reading invoice.deliveredAccountText.
+      // Clone (don't mutate the cached snapshot) and null the sensitive fields.
+      if (invoice) {
+        invoiceOut = {
+          ...invoice,
+          deliveredAccountText: null,
+          buyerUsername: null,
+          buyerName: null,
+          buyerTelegramId: null,
+        };
+      }
     }
     // Always strip metadataJson from the response since it contains the hash.
     (claim as any).metadataJson = undefined;
@@ -588,7 +647,7 @@ export class WarrantyAutoCheckService {
     }
 
     (claim as any).orderId = undefined;
-    return { ...claim, queuePosition, queueState, queueAheadCount, autoCheckProgress, invoice };
+    return { ...claim, queuePosition, queueState, queueAheadCount, autoCheckProgress, invoice: invoiceOut, softFailed, publicErrorType };
   }
 
   // Mirror of WarrantyService.buildPublicInvoice — kept here to avoid a cross-service
@@ -610,12 +669,9 @@ export class WarrantyAutoCheckService {
         warrantyExpiresAt: true,
         customer: { select: { telegramUsername: true, firstName: true, telegramChatId: true } },
         shop: { select: { supportTelegram: true, name: true } },
-        _count: {
-          select: {
-            warrantyClaims: {
-              where: { status: { in: ["AUTO_RESOLVED", "RESOLVED_MANUAL"] as any } },
-            },
-          },
+        warrantyClaims: {
+          where: { status: { in: ["AUTO_RESOLVED", "RESOLVED_MANUAL"] as any } },
+          select: { id: true, metadataJson: true },
         },
       },
     });
@@ -637,7 +693,9 @@ export class WarrantyAutoCheckService {
       createdAt:            order.createdAt.toISOString(),
       deliveredAt:          order.deliveredAt?.toISOString() || null,
       orderStatus:          order.status,
-      resolvedClaimCount:   order._count.warrantyClaims,
+      resolvedClaimCount:   order.warrantyClaims.length,
+      // Accounts resolved (refunded/replaced), not claims — matches the UI "/quantity" denominator.
+      resolvedAccountCount: countResolvedWarrantyAccounts(order.warrantyClaims, order.quantity),
     };
   }
 

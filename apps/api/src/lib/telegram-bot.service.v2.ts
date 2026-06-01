@@ -795,17 +795,30 @@ export class TelegramBotService {
             actions,
           );
         } else {
-          await this.routeWarrantyByAccountCount(
-            outboundToken,
-            chatId,
-            messageId,
-            shopId,
-            telegramUserId,
-            check.orderCode,
-            check.accounts,
-            actions,
-            callbackLanguage,
-          );
+          if (check.wrongPasswordRetry) {
+            await this.promptDirectPasswordInput(
+              outboundToken,
+              chatId,
+              messageId,
+              shopId,
+              telegramUserId,
+              check.orderCode,
+              actions,
+              callbackLanguage,
+            );
+          } else {
+            await this.routeWarrantyByAccountCount(
+              outboundToken,
+              chatId,
+              messageId,
+              shopId,
+              telegramUserId,
+              check.orderCode,
+              check.accounts,
+              actions,
+              callbackLanguage,
+            );
+          }
         }
       } else if (data.startsWith("prokey:reissue:")) {
         const downstreamSellerId = data.slice("prokey:reissue:".length);
@@ -1034,75 +1047,6 @@ export class TelegramBotService {
     }
 
     return { ok: true, actions };
-  }
-
-  async sendDeliveredMessage(
-    shopId: string,
-    chatId: string,
-    productName: string,
-    deliveredAccountText: string,
-    orderCode?: string,
-    formatHint?: string | null,
-  ) {
-    const shop = await this.shopsService.getSellerShopByShopId(shopId);
-    const language = await this.getCustomerLanguageByChatId(shopId, chatId);
-    const token = decryptSecret(
-      shop.botConfig?.telegramBotTokenEncrypted,
-      this.config.encryptionKey,
-    );
-
-    if (!token) {
-      return;
-    }
-
-    const custData = await this.resolveCustomization(shop.botConfig?.customizationJson as Record<string, unknown> | null ?? null);
-    const footerMap = (custData?.footerBill && typeof custData.footerBill === "object")
-      ? custData.footerBill as Record<string, string> : {};
-    const msgEmojiIdsDelivery = (custData?.messageEmojiIds && typeof custData.messageEmojiIds === "object")
-      ? custData.messageEmojiIds as Record<string, string> : {};
-    const footerBillEmojiId = msgEmojiIdsDelivery["footerBill"]?.trim() || "";
-    const footerRaw = footerMap[language]?.trim() || footerMap["vi"]?.trim() || (
-      language === "en"
-        ? "Please change the password right after logging in for safety."
-        : language === "th"
-          ? "กรุณาเปลี่ยนรหัสผ่านทันทีหลังจากเข้าสู่ระบบเพื่อความปลอดภัย"
-          : "Vui lòng đổi mật khẩu ngay sau khi đăng nhập để bảo đảm an toàn."
-    );
-    const footerText = footerBillEmojiId
-      ? `<tg-emoji emoji-id="${footerBillEmojiId}">🧾</tg-emoji> ${footerRaw}`
-      : footerRaw;
-
-    const hasWarrantyFeature = shop.seller.tier === SellerTier.ULTRA
-      || shop.providerConfig?.providerKind === "INTERNAL";
-    const warrantyButton = hasWarrantyFeature && orderCode
-      ? {
-          inline_keyboard: [
-            [{ text: language === "en" ? "🛡️ Warranty" : language === "th" ? "🛡️ การรับประกัน" : "🛡️ Bảo hành", callback_data: `warranty_claim:${orderCode}` }],
-          ],
-        }
-      : undefined;
-
-    await this.sendText(
-      token,
-      chatId,
-      [
-        language === "en" ? "✅ Payment successful" : language === "th" ? "✅ ชำระเงินสำเร็จ" : "✅ Thanh toán thành công",
-        language === "en"
-          ? `Product: ${this.localizeProductName(productName, language)}`
-          : language === "th"
-            ? `สินค้า: ${this.localizeProductName(productName, language)}`
-            : `Sản phẩm: ${this.localizeProductName(productName, language)}`,
-        "",
-        language === "en" ? "🔐 Your account:" : language === "th" ? "🔐 บัญชีของคุณ:" : "🔐 Tài khoản của bạn:",
-        ...(formatHint ? [`Format: ${formatHint}`, ""] : []),
-        deliveredAccountText,
-        "",
-        footerText,
-      ].join("\n"),
-      [],
-      warrantyButton,
-      footerBillEmojiId ? "HTML" : undefined,
-    );
   }
 
   private async renderHome(
@@ -3300,6 +3244,47 @@ export class TelegramBotService {
         language,
       );
     }
+  }
+
+  /**
+   * Skip the Y/N step entirely when we already know the password is wrong (errorType=wrong_password
+   * on a soft-failed claim). Sets awaitingPasswordInput=true immediately and asks the customer
+   * to type their new password.
+   */
+  private async promptDirectPasswordInput(
+    token: string,
+    chatId: number,
+    messageId: number | undefined,
+    shopId: string,
+    telegramUserId: string,
+    orderCode: string,
+    actions: unknown[],
+    language: BotLanguage = "vi",
+  ) {
+    this.setPendingWarrantyPasswordPrompt(shopId, telegramUserId, {
+      orderCode,
+      targetUsernames: undefined,
+      awaitingPasswordInput: true,
+    });
+
+    const text = language === "en"
+      ? `🔑 Wrong password detected\n\nOrder: ${orderCode}\n\nPlease reply with the NEW account password.\nWe'll use it only for this check and won't store it.`
+      : language === "th"
+        ? `🔑 ตรวจพบรหัสผ่านไม่ถูกต้อง\n\nคำสั่งซื้อ: ${orderCode}\n\nกรุณาตอบกลับด้วยรหัสผ่านใหม่\nระบบใช้เฉพาะการตรวจสอบครั้งนี้และไม่ได้จัดเก็บ`
+        : `🔑 Mật khẩu không đúng\n\nĐơn: ${orderCode}\n\nVui lòng trả lời với mật khẩu MỚI của tài khoản.\nHệ thống chỉ dùng cho lần kiểm tra này và không lưu lại.`;
+
+    await this.editOrSend(
+      token,
+      chatId,
+      messageId,
+      text,
+      {
+        inline_keyboard: [
+          [{ text: language === "en" ? "Cancel" : language === "th" ? "ยกเลิก" : "Hủy", callback_data: "home:menu" }],
+        ],
+      },
+      actions,
+    );
   }
 
   /**

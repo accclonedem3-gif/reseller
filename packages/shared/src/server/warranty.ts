@@ -173,24 +173,28 @@ export function calculateWarrantyExpiry(
     return expiresAt;
   }
 
-  if (policy === "BH1M") {
-    expiresAt.setMonth(expiresAt.getMonth() + 1);
-    return expiresAt;
-  }
-
-  if (policy === "BH3M") {
-    expiresAt.setMonth(expiresAt.getMonth() + 3);
-    return expiresAt;
-  }
-
-  if (policy === "BH6M") {
-    expiresAt.setMonth(expiresAt.getMonth() + 6);
-    return expiresAt;
-  }
+  if (policy === "BH1M") return addMonthsClamped(startedAt, 1);
+  if (policy === "BH3M") return addMonthsClamped(startedAt, 3);
+  if (policy === "BH6M") return addMonthsClamped(startedAt, 6);
 
   // BH12M (fallback)
-  expiresAt.setMonth(expiresAt.getMonth() + 12);
-  return expiresAt;
+  return addMonthsClamped(startedAt, 12);
+}
+
+/**
+ * Add whole months without the JS `setMonth` overflow bug. Naively, `Jan 31 + 1 month` becomes
+ * "Feb 31", which Date rolls forward to Mar 2/3 — silently over-extending a warranty window by a
+ * few days. Clamp the day to the last valid day of the target month instead (Jan 31 → Feb 28/29).
+ * Time-of-day is preserved.
+ */
+function addMonthsClamped(start: Date, months: number): Date {
+  const d = new Date(start.getTime());
+  const day = d.getDate();
+  d.setDate(1); // park on the 1st so setMonth can't roll into the next month
+  d.setMonth(d.getMonth() + months);
+  const lastDayOfTargetMonth = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
+  d.setDate(Math.min(day, lastDayOfTargetMonth));
+  return d;
 }
 
 export function hasWarrantyWindowExpired(

@@ -93,12 +93,14 @@ import { GramJsService } from "./lib/gramjs.service";
     UpgradeController,
     ProAnalyticsController,
     AffiliateController,
-    DevController,
     AdminController,
     CustomersController,
     CatalogGroupsController,
     IconCatalogController,
     MiniAppController,
+    // #8: DevController exposes mock-payment (can mark orders PAID) + telegram-simulate. Its only
+    // prod guard was a spoofable Host-header check → do NOT mount it at all in production.
+    ...(process.env.NODE_ENV === "production" ? [] : [DevController]),
   ],
   providers: [
     AppConfigService,

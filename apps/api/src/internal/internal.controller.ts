@@ -10,6 +10,7 @@ import {
   Req,
 } from "@nestjs/common";
 import type { Request } from "express";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { decryptSecret, verifyInternalRequestSignature } from "@reseller/shared/server";
 
@@ -260,7 +261,7 @@ export class InternalController {
     timestamp: string,
     signature: string,
   ) {
-    if (token !== this.config.internalApiToken) {
+    if (!this.constantTimeEqual(token, this.config.internalApiToken)) {
       throw new ForbiddenException("Invalid internal token.");
     }
 
@@ -284,5 +285,20 @@ export class InternalController {
     if (!isValidSignature) {
       throw new ForbiddenException("Invalid internal request signature.");
     }
+  }
+
+  /**
+   * Constant-time secret comparison. A plain `a !== b` short-circuits on the first differing
+   * byte, leaking the shared-secret length/prefix via response timing. Hash both sides to a
+   * fixed 32-byte digest first so timingSafeEqual never sees mismatched lengths (it throws on
+   * those) and no length information escapes.
+   */
+  private constantTimeEqual(a: string | undefined | null, b: string | undefined | null): boolean {
+    if (typeof a !== "string" || typeof b !== "string" || a.length === 0 || b.length === 0) {
+      return false;
+    }
+    const ha = createHash("sha256").update(a).digest();
+    const hb = createHash("sha256").update(b).digest();
+    return timingSafeEqual(ha, hb);
   }
 }

@@ -56,6 +56,15 @@ export class PublicWarrantySearchDto {
   @IsString()
   @IsNotEmpty()
   contactInfo!: string;
+
+  // Per-order warranty claim code (ownership proof) shown to the buyer at delivery.
+  // Optional at the DTO layer for legacy-order back-compat; the service requires it only when
+  // the matched order actually stores a code (see WarrantyService.claimCodeMatches).
+  @IsOptional()
+  @Transform(emptyStringToUndefined)
+  @IsString()
+  @MaxLength(64)
+  claimCode?: string;
 }
 
 export class PublicWarrantyClaimDto {
@@ -72,6 +81,14 @@ export class PublicWarrantyClaimDto {
   @MinLength(3)
   @MaxLength(200)
   contactInfo!: string;
+
+  // Per-order warranty claim code (ownership proof). Required only when the order stores one;
+  // verified timing-safe in _publicSubmitClaimImpl.
+  @IsOptional()
+  @Transform(emptyStringToUndefined)
+  @IsString()
+  @MaxLength(64)
+  claimCode?: string;
 
   @IsOptional()
   @Transform(emptyStringToUndefined)

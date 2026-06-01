@@ -1,0 +1,231 @@
+# Production-ready compose for the full reseller stack — Cách 2 architecture:
+#
+#   [web]  ──┐
+#   [api ]  ─┼─→ [postgres] + [redis]
+#   [worker]─┘                  ↑↓
+#                          HTTP /check
+#                               ↑↓
+#                    [grok-pool]  [veo-pool]   ← Chromium-heavy, isolated VPS in real prod
+#
+# Pin every image (no `:latest`) so a stray docker pull doesn't poison the deploy.
+#
+# Bring up with:
+#   docker compose -f docker-compose.production.yml --env-file .env.production up -d --build
+#
+# Scale tool pool horizontally (e.g. 3 grok replicas, 2 veo replicas):
+#   docker compose -f docker-compose.production.yml up -d --scale grok-pool=3 --scale veo-pool=2
+#
+# Volumes:
+#   • postgres_data       — DB rows + indexes. BACKUP THIS (managed RDS replaces it in cloud).
+#   • redis_data          — BullMQ jobs + cache. Loss = jobs requeue + cold cache. Acceptable.
+#   • grok_profiles       — Chrome profile dirs per proxy. Loss = warm pool cold-restart (~30s lag).
+#   • veo_profiles        — Playwright persistent contexts. Same impact as above.
+#
+# Secrets: put real values in .env.production (gitignored). Defaults below are dev-safe only.
+#
+# Internal-only ports: Postgres, Redis, grok-pool, veo-pool. Only api + web are exposed to host.
+# Tool pool talks to api via the internal docker network — no public exposure.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER:     ${POSTGRES_USER:-reseller}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD required}
+      POSTGRES_DB:       ${POSTGRES_DB:-reseller}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks: [reseller-net]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "512mb", "--maxmemory-policy", "allkeys-lru"]
+    volumes:
+      - redis_data:/data
+    networks: [reseller-net]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # ── Tool pool — Cách 2 isolation ────────────────────────────────────────────
+  # Chromium-heavy. Crashes here MUST NOT affect api/worker. Network alias keeps
+  # the URL stable even when scaled (docker round-robins across replicas).
+  grok-pool:
+    build:
+      # Build context is the sibling folder OUTSIDE this repo, so the deploy host
+      # needs both `reseller/` and `CheckGrokJS/` checked out next to each other.
+      # In CI, build the image separately and push to a registry — that's cleaner.
+      context: ../CheckGrokJS
+      dockerfile: Dockerfile
+    image: reseller/grok-pool:latest
+    restart: unless-stopped
+    environment:
+      PORT:           "3000"
+      WARMER:         "1"
+      MAX_CONCURRENCY: ${GROK_MAX_CONCURRENCY:-6}
+      MAX_ACC_PER_JOB: ${GROK_MAX_ACC_PER_JOB:-10}
+      # API_KEY is REQUIRED in production — without it the endpoint is open. Worker must
+      # set CHECK_GROK_API_KEY to the same value (see the worker block below).
+      API_KEY:        ${GROK_API_KEY:?GROK_API_KEY required in production}
+      TRUST_PROXY:    "1"
+      # Sticky email→proxy mapping. Disable with =0 if proxy pool churns rapidly.
+      STICKY_PROXY:   "1"
+    volumes:
+      - grok_profiles:/tmp/cgrok-profiles
+      # Hot-reload proxy list via POST /admin/reload-proxies without rebuilding image.
+      - ${GROK_PROXY_FILE:-../CheckGrokJS/proxy.txt}:/app/proxy.txt:ro
+    networks:
+      reseller-net:
+        aliases: [grok-pool.internal]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:3000/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+        reservations:
+          memory: 1G
+
+  veo-pool:
+    build:
+      context: ../check_veo
+      dockerfile: Dockerfile
+    image: reseller/veo-pool:latest
+    restart: unless-stopped
+    environment:
+      PORT:          "3000"
+      POOL_MAX:      ${VEO_POOL_MAX:-2}
+      MAX_CONCURRENCY: ${VEO_MAX_CONCURRENCY:-2}
+      API_KEY:       ${VEO_API_KEY:?VEO_API_KEY required in production}
+    volumes:
+      - veo_profiles:/home/pwuser/.cache/playwright-profiles
+      - ${VEO_PROXY_FILE:-../check_veo/proxies.txt}:/app/proxies.txt:ro
+    networks:
+      reseller-net:
+        aliases: [veo-pool.internal]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:3000/stats || exit 1"]
+      interval: 30s
+      timeout: 5s
+      start_period: 40s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+        reservations:
+          memory: 1G
+
+  # ── API: NestJS + Prisma. Runs migrations on boot. ─────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    image: reseller/api:latest
+    restart: unless-stopped
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis:    { condition: service_healthy }
+    environment:
+      NODE_ENV: production
+      PORT:     "3000"
+      DATABASE_URL:    postgresql://${POSTGRES_USER:-reseller}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-reseller}?schema=public
+      REDIS_URL:       redis://redis:6379
+      JWT_ACCESS_SECRET:  ${JWT_ACCESS_SECRET:?JWT_ACCESS_SECRET required}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?JWT_REFRESH_SECRET required}
+      JWT_ACCESS_EXPIRES_IN:  15m
+      JWT_REFRESH_EXPIRES_IN: 30d
+      APP_ENCRYPTION_KEY:  ${APP_ENCRYPTION_KEY:?APP_ENCRYPTION_KEY required}
+      INTERNAL_API_TOKEN:  ${INTERNAL_API_TOKEN:?INTERNAL_API_TOKEN required}
+      APP_PUBLIC_URL:      ${APP_PUBLIC_URL:?APP_PUBLIC_URL required}
+      WEB_PUBLIC_URL:      ${WEB_PUBLIC_URL:?WEB_PUBLIC_URL required}
+      CORS_ORIGIN:         ${CORS_ORIGIN:?CORS_ORIGIN required}
+      PAYMENT_MODE:        ${PAYMENT_MODE:-payos}
+      PAYOS_CLIENT_ID:     ${PAYOS_CLIENT_ID:-}
+      PAYOS_API_KEY:       ${PAYOS_API_KEY:-}
+      PAYOS_CHECKSUM_KEY:  ${PAYOS_CHECKSUM_KEY:-}
+    ports:
+      - "${API_PORT:-3000}:3000"
+    networks: [reseller-net]
+    deploy:
+      replicas: ${API_REPLICAS:-2}
+      resources:
+        limits:
+          memory: 1G
+
+  # ── Worker: BullMQ + Telegram polling. HTTP fast-path → grok/veo pools. ───
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    image: reseller/worker:latest
+    restart: unless-stopped
+    depends_on:
+      postgres:  { condition: service_healthy }
+      redis:     { condition: service_healthy }
+      grok-pool: { condition: service_started }
+      veo-pool:  { condition: service_started }
+    environment:
+      NODE_ENV: production
+      DATABASE_URL:    postgresql://${POSTGRES_USER:-reseller}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-reseller}?schema=public
+      REDIS_URL:       redis://redis:6379
+      APP_PUBLIC_URL:      ${APP_PUBLIC_URL}
+      INTERNAL_API_TOKEN:  ${INTERNAL_API_TOKEN}
+      APP_ENCRYPTION_KEY:  ${APP_ENCRYPTION_KEY}
+      # Tool fast-path — talk to internal service names, not 127.0.0.1.
+      # When CHECK_*_URL is empty/unreachable, worker falls back to spawning single-check.js
+      # subprocess in this container — which fails because tools aren't bundled in worker
+      # image. So these MUST be set in production for grok/veo features to work.
+      CHECK_GROK_URL:     http://grok-pool.internal:3000
+      CHECK_GROK_API_KEY: ${GROK_API_KEY}
+      CHECK_VEO_URL:      http://veo-pool.internal:3000
+      CHECK_VEO_API_KEY:  ${VEO_API_KEY}
+      # gpt tool has no HTTP fast-path yet; disable to keep claims out of broken subprocess path.
+      WARRANTY_DISABLED_TOOLS: ${WARRANTY_DISABLED_TOOLS:-gpt}
+      ACCOUNT_CHECK_CONCURRENCY: ${WORKER_CHECK_CONCURRENCY:-3}
+      ACCOUNT_PARALLEL_LIMIT:    ${WORKER_PARALLEL_LIMIT:-3}
+    networks: [reseller-net]
+    deploy:
+      replicas: ${WORKER_REPLICAS:-1}
+      resources:
+        limits:
+          memory: 2G
+
+  # ── Web: Vite-built static, served by Nginx. ───────────────────────────────
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    image: reseller/web:latest
+    restart: unless-stopped
+    ports:
+      - "${WEB_PORT:-5173}:80"
+    networks: [reseller-net]
+    deploy:
+      replicas: ${WEB_REPLICAS:-2}
+      resources:
+        limits:
+          memory: 256M
+
+networks:
+  reseller-net:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
+  grok_profiles:
+  veo_profiles:

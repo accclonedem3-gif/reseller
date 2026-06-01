@@ -17,6 +17,9 @@ const T = {
     labelAccount: "Tài khoản đã mua",
     phAccount: "Nhập tên đăng nhập / email tài khoản đã nhận",
     hintAccount: "Tài khoản bạn đã nhận từ shop, dùng để tìm đơn hàng",
+    labelClaimCode: "Mã bảo hành",
+    phClaimCode: "Nhập mã bảo hành trong tin nhắn nhận tài khoản",
+    hintClaimCode: "Mã bí mật shop gửi kèm khi giao tài khoản (đơn cũ trước đây có thể bỏ trống)",
     errRequired: "Vui lòng điền đầy đủ thông tin.",
     errNotFound: "Không tìm thấy đơn hàng nào phù hợp hoặc đơn hàng đã hết hạn bảo hành.",
     errDefault: "Đã có lỗi xảy ra. Vui lòng thử lại.",
@@ -51,9 +54,12 @@ const T = {
     autoCheckFailedDesc: "Hệ thống chưa kiểm tra được tự động. Shop sẽ xem xét yêu cầu thủ công.",
     autoCheckSoftFailedTitle: "Chưa xác minh được",
     autoCheckSoftFailedRetryHint: "Bấm 🛡 Bảo hành lại để thử thêm. Nếu vẫn không xác minh được, shop sẽ xem xét.",
+    autoCheckSoftFailedWrongPassTitle: "🔑 Mật khẩu không đúng",
+    autoCheckSoftFailedWrongPassHint: "Không đăng nhập được tài khoản (có thể đã đổi mật khẩu). Shop sẽ xem xét và xử lý giúp bạn.",
     autoCheckReason: (errorType: string) => {
       const et = String(errorType || "").toLowerCase();
-      if (et === "wrong_password" || et === "login_stuck") return "Có thể sai mật khẩu hoặc tài khoản đã đổi mật khẩu";
+      if (et === "wrong_password") return "Mật khẩu không đúng";
+      if (et === "login_stuck") return "Mật khẩu không đúng hoặc lỗi đăng nhập";
       if (et === "2fa") return "Tài khoản yêu cầu xác thực 2 bước (OTP)";
       if (et === "proxy_die") return "Lỗi kết nối — vui lòng thử lại";
       if (et === "cf_timeout") return "Cloudflare chặn tạm thời — thử lại sau ít phút";
@@ -74,6 +80,7 @@ const T = {
     pwdHintEnterAccounts: "Nhập tài khoản cụ thể ở ô \"Tài khoản cần bảo hành\" phía trên để hiện ô đổi mật khẩu cho từng tài khoản.",
     pwdToggleShow: "Hiện",
     pwdToggleHide: "Ẩn",
+    wrongPasswordRetryBox: "Hệ thống đăng nhập không được vì sai mật khẩu. Bấm Bảo hành lại, nhập mật khẩu hiện tại của tài khoản rồi gửi để kiểm tra lại.",
   },
   en: {
     invalidLink: "Invalid warranty link.",
@@ -87,6 +94,9 @@ const T = {
     labelAccount: "Purchased account",
     phAccount: "Enter the username / email of the account you received",
     hintAccount: "The account you received from the shop, used to find your order",
+    labelClaimCode: "Warranty code",
+    phClaimCode: "Enter the warranty code from your delivery message",
+    hintClaimCode: "The secret code the shop sent with your account (older orders may leave this blank)",
     errRequired: "Please fill in all required fields.",
     errNotFound: "No matching order found or the warranty has expired.",
     errDefault: "An error occurred. Please try again.",
@@ -121,9 +131,12 @@ const T = {
     autoCheckFailedDesc: "Auto-check could not complete. The seller will review manually.",
     autoCheckSoftFailedTitle: "Couldn't verify",
     autoCheckSoftFailedRetryHint: "Tap 🛡 Submit again to retry. If it keeps failing, the shop will review.",
+    autoCheckSoftFailedWrongPassTitle: "🔑 Wrong password",
+    autoCheckSoftFailedWrongPassHint: "Couldn't sign in to the account (the password may have changed). The shop will review and handle it for you.",
     autoCheckReason: (errorType: string) => {
       const et = String(errorType || "").toLowerCase();
-      if (et === "wrong_password" || et === "login_stuck") return "Password may be wrong or was changed";
+      if (et === "wrong_password") return "Wrong password";
+      if (et === "login_stuck") return "Wrong password or login error";
       if (et === "2fa") return "Account requires 2FA (OTP)";
       if (et === "proxy_die") return "Network error — please retry";
       if (et === "cf_timeout") return "Cloudflare blocked temporarily — retry in a moment";
@@ -144,6 +157,7 @@ const T = {
     pwdHintEnterAccounts: "Enter specific accounts in the \"Accounts to warranty\" field above to show per-account password inputs.",
     pwdToggleShow: "Show",
     pwdToggleHide: "Hide",
+    wrongPasswordRetryBox: "The checker could not log in because the password is wrong. Tap Submit again, enter the account's current password, then submit to check again.",
   },
   th: {
     invalidLink: "ลิงก์การรับประกันไม่ถูกต้อง",
@@ -157,6 +171,9 @@ const T = {
     labelAccount: "บัญชีที่ซื้อ",
     phAccount: "ใส่ชื่อผู้ใช้ / อีเมลของบัญชีที่ได้รับ",
     hintAccount: "บัญชีที่คุณได้รับจากร้านค้า ใช้สำหรับค้นหาคำสั่งซื้อ",
+    labelClaimCode: "รหัสรับประกัน",
+    phClaimCode: "กรอกรหัสรับประกันจากข้อความรับบัญชี",
+    hintClaimCode: "รหัสลับที่ร้านส่งมาพร้อมบัญชี (คำสั่งซื้อเก่าสามารถเว้นว่างได้)",
     errRequired: "กรุณากรอกข้อมูลให้ครบถ้วน",
     errNotFound: "ไม่พบคำสั่งซื้อที่ตรงกันหรือการรับประกันหมดอายุแล้ว",
     errDefault: "เกิดข้อผิดพลาด กรุณาลองใหม่",
@@ -191,9 +208,12 @@ const T = {
     autoCheckFailedDesc: "ระบบตรวจสอบอัตโนมัติไม่สำเร็จ ผู้ขายจะตรวจสอบด้วยตนเอง",
     autoCheckSoftFailedTitle: "ไม่สามารถยืนยันได้",
     autoCheckSoftFailedRetryHint: "กด 🛡 ส่งคำร้องอีกครั้งเพื่อลองใหม่ หากยังไม่ผ่าน ร้านค้าจะตรวจสอบ",
+    autoCheckSoftFailedWrongPassTitle: "🔑 รหัสผ่านไม่ถูกต้อง",
+    autoCheckSoftFailedWrongPassHint: "เข้าสู่ระบบบัญชีไม่ได้ (อาจเปลี่ยนรหัสผ่านแล้ว) ร้านค้าจะตรวจสอบและดำเนินการให้คุณ",
     autoCheckReason: (errorType: string) => {
       const et = String(errorType || "").toLowerCase();
-      if (et === "wrong_password" || et === "login_stuck") return "รหัสผ่านอาจไม่ถูกต้องหรือถูกเปลี่ยน";
+      if (et === "wrong_password") return "รหัสผ่านไม่ถูกต้อง";
+      if (et === "login_stuck") return "รหัสผ่านไม่ถูกต้องหรือข้อผิดพลาดการเข้าสู่ระบบ";
       if (et === "2fa") return "บัญชีต้องการการยืนยัน 2 ขั้นตอน (OTP)";
       if (et === "proxy_die") return "ข้อผิดพลาดเครือข่าย — กรุณาลองใหม่";
       if (et === "cf_timeout") return "Cloudflare บล็อกชั่วคราว — ลองใหม่ภายหลัง";
@@ -214,6 +234,7 @@ const T = {
     pwdHintEnterAccounts: "กรอกบัญชีเฉพาะในช่อง \"บัญชีที่ต้องการรับประกัน\" ด้านบน เพื่อแสดงช่องเปลี่ยนรหัสผ่านของแต่ละบัญชี",
     pwdToggleShow: "แสดง",
     pwdToggleHide: "ซ่อน",
+    wrongPasswordRetryBox: "The checker could not log in because the password is wrong. Submit again with the account's current password.",
   },
 };
 
@@ -253,6 +274,7 @@ type WarrantyInvoice = {
   deliveredAt: string | null;
   orderStatus: string;
   resolvedClaimCount: number;
+  resolvedAccountCount?: number;
 };
 
 type ClaimResponse = {
@@ -295,11 +317,39 @@ type AutoCheckStatusResponse = {
   resolutionNote?: string | null;
   deliveredAccountText?: string | null;
   invoice?: WarrantyInvoice | null;
+  // Public flags the BE sets unconditionally (no token needed) so the claim page can render
+  // the right soft-fail message. See warranty-auto-check.service.ts (getAutoCheckStatus return).
+  softFailed?: boolean | null;
+  publicErrorType?: string | null;
 };
 
 function formatDate(iso: string | null) {
   if (!iso) return "—";
   return new Date(iso).toLocaleDateString("vi-VN", { day: "2-digit", month: "2-digit", year: "numeric" });
+}
+
+function isWrongPasswordResult(value: any) {
+  return String(value?.errorType || value?.error_type || "").toLowerCase() === "wrong_password";
+}
+
+function getWrongPasswordAccounts(
+  auto: AutoCheckStatusResponse | null,
+  selectedOrder: OrderResult | null,
+) {
+  const result = auto?.autoCheckResult || null;
+  if (!result) return [] as string[];
+
+  const accounts = Array.isArray(result.accounts) ? result.accounts : [];
+  const fromAccounts = accounts
+    .filter(isWrongPasswordResult)
+    .map((account: any) => String(account.email || "").trim())
+    .filter(Boolean);
+
+  if (fromAccounts.length > 0) return Array.from(new Set(fromAccounts));
+  if (!isWrongPasswordResult(result)) return [] as string[];
+
+  const known = selectedOrder?.accountUsernames || [];
+  return known.length === 1 ? [known[0]!] : [];
 }
 
 function InputField({
@@ -392,7 +442,9 @@ function WarrantyInvoiceCard({ invoice }: { invoice: WarrantyInvoice }) {
   const expiresLabel = expiresAt ? fmtDate(expiresAt) : "vĩnh viễn";
   const createdLabel = fmtDate(invoice.createdAt);
 
-  const refunded = invoice.resolvedClaimCount;
+  // Count ACCOUNTS resolved (refunded/replaced), not claims — a single claim can cover several
+  // accounts (e.g. 4 of a 5-acc order). Fall back to claim count for older API responses.
+  const refunded = invoice.resolvedAccountCount ?? invoice.resolvedClaimCount;
   const refundIsDone = refunded > 0;
   const pricePerAcc = invoice.quantity > 0 ? Math.round(invoice.totalSaleAmount / invoice.quantity) : invoice.totalSaleAmount;
   const accountLines = parseAccountList(invoice.deliveredAccountText);
@@ -503,6 +555,7 @@ export function WarrantyClaimPage() {
 
   const [contactInfo, setContactInfo] = useState("");
   const [accountText, setAccountText] = useState("");
+  const [claimCode, setClaimCode] = useState("");
   const [message, setMessage] = useState("");
   const [claimAccountsText, setClaimAccountsText] = useState("");
   const [hasNewPassword, setHasNewPassword] = useState(false);
@@ -542,6 +595,26 @@ export function WarrantyClaimPage() {
       .catch(() => setShopName(null));
   }, [shopSlug]);
 
+  const wrongPasswordAccounts = useMemo(
+    () => getWrongPasswordAccounts(autoCheck, selectedOrder),
+    [autoCheck, selectedOrder],
+  );
+  const shouldPromptPasswordRetry =
+    wrongPasswordAccounts.length > 0 || isWrongPasswordResult(autoCheck?.autoCheckResult);
+
+  function handleWarrantyRetry() {
+    if (shouldPromptPasswordRetry) {
+      setHasNewPassword(true);
+      if (wrongPasswordAccounts.length > 0) {
+        setClaimAccountsText((current) => current.trim() ? current : wrongPasswordAccounts.join("\n"));
+      }
+    }
+    setResult(null);
+    setAutoCheck(null);
+    idempotencyKeyRef.current = null;
+    setStep(selectedOrder ? "confirm" : "form");
+  }
+
   // Restore a previously-submitted pending claim from localStorage so the customer can resume polling.
   useEffect(() => {
     if (!shopSlug) return;
@@ -576,6 +649,9 @@ export function WarrantyClaimPage() {
 
   async function handleSearch(e: React.FormEvent) {
     e.preventDefault();
+    // claimCode is NOT hard-required here: legacy orders predating the feature carry no code, and the
+    // backend (claimCodeMatches) allows those through while still enforcing an exact match for any
+    // order that does carry a code. Blocking on empty here would lock legacy buyers out entirely.
     if (!contactInfo.trim() || !accountText.trim()) {
       setError(t.errRequired);
       return;
@@ -587,6 +663,7 @@ export function WarrantyClaimPage() {
         shopSlug,
         accountText: accountText.trim(),
         contactInfo: contactInfo.trim(),
+        claimCode: claimCode.trim(),
       });
       setOrders(res.data.orders);
       if (res.data.orders.length === 0) {
@@ -629,29 +706,14 @@ export function WarrantyClaimPage() {
         const parsedTargetUsernames = claimAccountsText.trim()
         ? claimAccountsText.split(/[\n,;]+/).map((s) => s.trim()).filter(Boolean)
         : undefined;
-      let passwordOverrides: Record<string, string> | undefined;
-      let currentPassword: string | undefined;
-      if (hasNewPassword) {
-        if (accountsForPwdGrid.length > 0) {
-          const overrides: Record<string, string> = {};
-          for (const email of accountsForPwdGrid) {
-            const v = (passwordMap[email] || "").trim();
-            if (v) overrides[email] = v;
-          }
-          if (Object.keys(overrides).length > 0) passwordOverrides = overrides;
-        } else {
-          // Legacy fallback: no parseable account list — send single global pwd.
-          const v = (passwordMap["__legacy"] || "").trim();
-          if (v) currentPassword = v;
-        }
-      }
+      // Password-change override removed from the UI — no longer sent. Auto-check uses the order's
+      // delivered password; a changed password soft-fails → seller review.
       const res = await api.post<ClaimResponse>("/public/warranty/claim", {
         orderId: selectedOrder.orderId,
         shopSlug,
         contactInfo: contactInfo.trim(),
+        claimCode: claimCode.trim(),
         customerMessage: message.trim() || undefined,
-        passwordOverrides,
-        currentPassword,
         targetUsernames: parsedTargetUsernames,
         idempotencyKey: idempotencyKeyRef.current,
       });
@@ -800,6 +862,13 @@ export function WarrantyClaimPage() {
               onChange={setAccountText}
               hint={t.hintAccount}
             />
+            <InputField
+              label={t.labelClaimCode}
+              placeholder={t.phClaimCode}
+              value={claimCode}
+              onChange={setClaimCode}
+              hint={t.hintClaimCode}
+            />
 
             {error && (
               <div
@@ -917,119 +986,9 @@ export function WarrantyClaimPage() {
             </Card>
           )}
 
-          {selectedOrder && (
-            <Card>
-              <button
-                type="button"
-                onClick={() => {
-                  const next = !hasNewPassword;
-                  setHasNewPassword(next);
-                  if (!next) {
-                    setPasswordMap({});
-                    setRevealMap({});
-                  }
-                }}
-                className="flex w-full items-center justify-between text-left"
-              >
-                <div className="min-w-0 flex-1">
-                  <p className="text-sm font-bold" style={{ color: "var(--tx)" }}>
-                    {t.pwdChangedTitle}
-                  </p>
-                  <p className="mt-1 text-xs" style={{ color: "var(--tx-f)" }}>
-                    {t.pwdChangedDesc}
-                  </p>
-                </div>
-                <div
-                  className="ml-3 flex h-6 w-11 shrink-0 items-center rounded-full transition-colors"
-                  style={{ background: hasNewPassword ? "rgb(16,185,129)" : "var(--bd)" }}
-                  aria-pressed={hasNewPassword}
-                >
-                  <span
-                    className="block h-5 w-5 rounded-full bg-white shadow transition-transform"
-                    style={{ transform: hasNewPassword ? "translateX(22px)" : "translateX(2px)" }}
-                  />
-                </div>
-              </button>
-
-              {hasNewPassword && (
-                (selectedOrder?.accountUsernames?.length ?? 0) === 0 ? (
-                  // Truly legacy: order's delivered text isn't parseable into per-account creds.
-                  // Fall back to a single shared password input.
-                  <div className="mt-4 space-y-1.5">
-                    <label className="block text-sm font-semibold" style={{ color: "var(--tx)" }}>
-                      {t.pwdLabel}
-                    </label>
-                    <div className="flex gap-2">
-                      <input
-                        type={revealMap["__legacy"] ? "text" : "password"}
-                        value={passwordMap["__legacy"] || ""}
-                        onChange={(e) =>
-                          setPasswordMap((m) => ({ ...m, __legacy: e.target.value }))
-                        }
-                        placeholder={t.pwdPh}
-                        autoComplete="off"
-                        spellCheck={false}
-                        className="flex-1 rounded-[10px] border px-3.5 py-2.5 text-sm outline-none"
-                        style={{ background: "var(--inp)", borderColor: "var(--bd)", color: "var(--tx)" }}
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setRevealMap((m) => ({ ...m, __legacy: !m["__legacy"] }))}
-                        className="shrink-0 rounded-[10px] border px-3 text-xs font-semibold"
-                        style={{ borderColor: "var(--bd)", color: "var(--tx-m)" }}
-                      >
-                        {revealMap["__legacy"] ? t.pwdToggleHide : t.pwdToggleShow}
-                      </button>
-                    </div>
-                  </div>
-                ) : accountsForPwdGrid.length > 0 ? (
-                  <div className="mt-4 space-y-3">
-                    {accountsForPwdGrid.map((email) => {
-                      const reveal = !!revealMap[email];
-                      return (
-                        <div key={email} className="space-y-1.5">
-                          <label className="block text-sm font-semibold" style={{ color: "var(--tx)" }}>
-                            {t.pwdForAccount(email)}
-                          </label>
-                          <div className="flex gap-2">
-                            <input
-                              type={reveal ? "text" : "password"}
-                              value={passwordMap[email] || ""}
-                              onChange={(e) =>
-                                setPasswordMap((m) => ({ ...m, [email]: e.target.value }))
-                              }
-                              placeholder={t.pwdPhKeep}
-                              autoComplete="off"
-                              spellCheck={false}
-                              className="flex-1 rounded-[10px] border px-3.5 py-2.5 text-sm outline-none"
-                              style={{ background: "var(--inp)", borderColor: "var(--bd)", color: "var(--tx)" }}
-                            />
-                            <button
-                              type="button"
-                              onClick={() => setRevealMap((m) => ({ ...m, [email]: !m[email] }))}
-                              className="shrink-0 rounded-[10px] border px-3 text-xs font-semibold"
-                              style={{ borderColor: "var(--bd)", color: "var(--tx-m)" }}
-                            >
-                              {reveal ? t.pwdToggleHide : t.pwdToggleShow}
-                            </button>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                ) : (
-                  // Order has parseable accounts but customer hasn't listed any specific ones
-                  // above. Nudge them to enter usernames first instead of dumping N inputs.
-                  <p
-                    className="mt-4 rounded-[10px] border px-3.5 py-2.5 text-xs"
-                    style={{ borderColor: "var(--bd)", color: "var(--tx-f)", background: "var(--inp)" }}
-                  >
-                    {t.pwdHintEnterAccounts}
-                  </p>
-                )
-              )}
-            </Card>
-          )}
+          {/* "Đã đổi mật khẩu" toggle removed — the account input already carries the password, so a
+              separate per-account new-password grid was redundant. Auto-check uses the order's
+              delivered password; if it changed, the claim soft-fails and the seller reviews. */}
 
           {error && (
             <div
@@ -1148,49 +1107,61 @@ export function WarrantyClaimPage() {
               Without the second clause, the customer never saw the buttons after an ambiguous
               check completed — the bug from the previous iteration. */}
           {(result.status !== "auto_check_pending" ||
-            (autoCheck && new Set(["completed", "failed", "unsupported", "skipped", "overloaded", "cancelled"]).has(String(autoCheck.autoCheckStatus || "").toLowerCase()))) && (
-            <div className="mt-4 space-y-2 border-t pt-4" style={{ borderColor: "var(--bd)" }}>
-              <button
-                type="button"
-                onClick={() => {
-                  // Keep selectedOrder + form data intact so customer can review the password
-                  // toggle / change anything before re-submitting. Clear only the result and
-                  // idempotency key so the next submit fires a fresh claim.
-                  setResult(null);
-                  setAutoCheck(null);
-                  idempotencyKeyRef.current = null;
-                  setStep("form");
-                }}
-                className="flex w-full items-center justify-center gap-2 rounded-[12px] py-2.5 text-sm font-bold transition hover:opacity-90"
-                style={{ background: "rgb(16,185,129)", color: "white" }}
-              >
-                <ShieldCheck className="h-4 w-4" />
-                Bảo hành lại
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  // Hard reset — different order entirely. Wipe all form state.
-                  setResult(null);
-                  setAutoCheck(null);
-                  setSelectedOrder(null);
-                  setClaimAccountsText("");
-                  setAccountText("");
-                  setMessage("");
-                  setHasNewPassword(false);
-                  setPasswordMap({});
-                  setRevealMap({});
-                  idempotencyKeyRef.current = null;
-                  setStep("form");
-                }}
-                className="flex w-full items-center justify-center gap-2 rounded-[12px] py-2 text-sm transition hover:opacity-70"
-                style={{ color: "var(--tx-m)" }}
-              >
-                <Search className="h-4 w-4" />
-                Tra cứu đơn khác
-              </button>
-            </div>
-          )}
+            (autoCheck && new Set(["completed", "failed", "unsupported", "skipped", "overloaded", "cancelled"]).has(String(autoCheck.autoCheckStatus || "").toLowerCase()))) && (() => {
+            const isEscalated = String(autoCheck?.status || result.status || "").toUpperCase() === "PENDING_REVIEW";
+            const supportHandle = result.supportTelegram;
+            return (
+              <div className="mt-4 space-y-2 border-t pt-4" style={{ borderColor: "var(--bd)" }}>
+                {isEscalated ? (
+                  <div className="rounded-[12px] p-4 text-center space-y-2" style={{ background: "rgba(239,68,68,0.06)", border: "1px solid rgba(239,68,68,0.2)" }}>
+                    <p className="text-sm font-semibold" style={{ color: "#ef4444" }}>Bảo hành không thành công</p>
+                    <p className="text-sm" style={{ color: "var(--tx-m)" }}>
+                      {supportHandle
+                        ? <>Vui lòng liên hệ <span className="font-semibold" style={{ color: "var(--tx)" }}>@{supportHandle.replace(/^@/, "")}</span> để được hỗ trợ.</>
+                        : "Vui lòng liên hệ shop để được hỗ trợ."}
+                    </p>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setResult(null);
+                      setAutoCheck(null);
+                      idempotencyKeyRef.current = null;
+                      setStep("form");
+                    }}
+                    className="flex w-full items-center justify-center gap-2 rounded-[12px] py-2.5 text-sm font-bold transition hover:opacity-90"
+                    style={{ background: "rgb(16,185,129)", color: "white" }}
+                  >
+                    <ShieldCheck className="h-4 w-4" />
+                    Bảo hành lại
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setResult(null);
+                    setAutoCheck(null);
+                    setSelectedOrder(null);
+                    setClaimAccountsText("");
+                    setAccountText("");
+                    setClaimCode("");
+                    setMessage("");
+                    setHasNewPassword(false);
+                    setPasswordMap({});
+                    setRevealMap({});
+                    idempotencyKeyRef.current = null;
+                    setStep("form");
+                  }}
+                  className="flex w-full items-center justify-center gap-2 rounded-[12px] py-2 text-sm transition hover:opacity-70"
+                  style={{ color: "var(--tx-m)" }}
+                >
+                  <Search className="h-4 w-4" />
+                  Tra cứu đơn khác
+                </button>
+              </div>
+            );
+          })()}
         </Card>
       )}
     </PageShell>
@@ -1227,9 +1198,12 @@ function AutoCheckProgress({
   // login_stuck, generic error). The customer still has retry slots left so the claim stays at
   // claim.status=PENDING. Distinguish from isPendingReview (which is "all slots used, seller
   // takes over") so the UI can encourage retry instead of telling the customer to wait.
+  // softFailed is a public flag set by the BE unconditionally (no token needed).
+  // Fallback to result.ok === false for when token IS present (full result available).
   const isSoftFailed =
     isDone && !isReplaced && !isRejected && !isPendingReview &&
-    claimStatus === "PENDING" && result && result.ok === false;
+    claimStatus === "PENDING" &&
+    (auto?.softFailed === true || (result && result.ok === false));
 
   // Count dead/free accounts from the accounts array for the summary line.
   const accountsArr: any[] = Array.isArray(result?.accounts) ? result.accounts : [];
@@ -1261,30 +1235,33 @@ function AutoCheckProgress({
   })();
   const planLabel = specificPlan || TOOL_PLAN_FALLBACK[toolName] || undefined;
 
+  // publicErrorType is always present (no token needed); result?.errorType only when token ok.
+  const errorTypeLower = String(auto?.publicErrorType || result?.errorType || "").toLowerCase();
+  const isWrongPassSoftFail = isSoftFailed && errorTypeLower === "wrong_password";
+
   const resolvedTitle = isReplaced
     ? t.replacedTitle
     : isRejected
       ? t.rejectedTitle
-      : isSoftFailed
-        ? t.autoCheckSoftFailedTitle
-        : t.autoCheckDoneTitle;
+      : isWrongPassSoftFail
+        ? t.autoCheckSoftFailedWrongPassTitle
+        : isSoftFailed
+          ? t.autoCheckSoftFailedTitle
+          : t.autoCheckDoneTitle;
 
-  // Subtitle theo từng terminal state. Trước đây fall-back về claimMessage (= câu submit cũ
-  // "đang kiểm tra... #N") khiến UI hiển thị mâu thuẫn với title "Đã kiểm tra xong".
-  // Soft-fail case: show specific error reason (sai pass / 2FA / network) + retry hint so
-  // the customer knows WHY it failed and that they can try again — instead of the misleading
-  // claimMessage which was the original "đang kiểm tra... vui lòng chờ" submit response.
   const resolvedSubtitle = isReplaced && deadCount > 0
     ? t.replacedDesc(deadCount, planLabel)
     : isRejected
       ? (auto?.resolutionNote || t.rejectedDesc)
       : isPendingReview
         ? t.autoCheckPendingReviewDesc
-        : isSoftFailed
-          ? `${t.autoCheckReason(result?.errorType)}. ${t.autoCheckSoftFailedRetryHint}`
-          : isFailedOrUnsupported
-            ? t.autoCheckFailedDesc
-            : claimMessage;
+        : isWrongPassSoftFail
+          ? t.autoCheckSoftFailedWrongPassHint
+          : isSoftFailed
+            ? `${t.autoCheckReason(auto?.publicErrorType || result?.errorType)}. ${t.autoCheckSoftFailedRetryHint}`
+            : isFailedOrUnsupported
+              ? t.autoCheckFailedDesc
+              : claimMessage;
 
   return (
     <div className="space-y-4">
@@ -1296,15 +1273,19 @@ function AutoCheckProgress({
               ? "rgba(16,185,129,0.12)"
               : isRejected
                 ? "rgba(239,68,68,0.10)"
-                : isDone
-                  ? "rgba(16,185,129,0.12)"
-                  : "rgba(59,130,246,0.12)",
+                : isWrongPassSoftFail
+                  ? "rgba(245,158,11,0.12)"
+                  : isDone
+                    ? "rgba(16,185,129,0.12)"
+                    : "rgba(59,130,246,0.12)",
           }}
         >
           {isRunning ? (
             <Loader2 className="h-7 w-7 animate-spin text-blue-500" />
           ) : isRejected ? (
             <ShieldAlert className="h-7 w-7 text-red-400" />
+          ) : isWrongPassSoftFail ? (
+            <AlertCircle className="h-7 w-7 text-amber-500" />
           ) : (
             <CheckCircle className="h-7 w-7 text-emerald-500" />
           )}

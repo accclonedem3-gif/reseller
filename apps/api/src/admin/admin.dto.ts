@@ -59,3 +59,14 @@ export class BulkUpdateSystemConfigDto {
   @IsOptional()
   configs!: Record<string, string>;
 }
+
+export class TestProxiesDto {
+  // Nội dung ô textarea proxy (mỗi dòng 1 proxy). Test TRƯỚC khi lưu để lọc proxy sống/khỏe.
+  @IsString()
+  proxies!: string;
+
+  // 'full' = TCP + HTTP GET x.ai (chính xác, ~6s/proxy); 'tcp' = chỉ TCP (~3s, nhanh).
+  @IsOptional()
+  @IsString()
+  mode?: "tcp" | "full";
+}

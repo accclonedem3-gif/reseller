@@ -228,6 +228,87 @@ function getApiErrorMessage(error: unknown, fallback: string) {
   return fallback;
 }
 
+// Maps tool errorType → seller-friendly Vietnamese reason. Mirrors
+// WarrantyService.describeAutoCheckErrorReason on the API so the UI surfaces
+// exactly what the tool detected (wrong password vs 2FA vs CF block vs plan
+// drop) instead of leaving the seller to guess from the raw status string.
+function describeAutoCheckErrorType(errorType: string | null | undefined): {
+  label: string;
+  tone: "danger" | "warn" | "info" | "ok";
+} | null {
+  const et = String(errorType || "").toLowerCase();
+  if (!et) return null;
+  if (et === "wrong_password") return { label: "🔑 Sai mật khẩu (khách đã đổi pass hoặc shop nhập sai)", tone: "warn" };
+  if (et === "login_stuck") return { label: "🔑 Đăng nhập kẹt — khả năng cao sai mật khẩu", tone: "warn" };
+  if (et === "2fa") return { label: "🔐 Tài khoản bật xác thực 2 bước (OTP) — tool không qua được", tone: "warn" };
+  if (et === "plan_lost") return { label: "✓ Gói đã rớt về Free — tài khoản cần thay thế", tone: "ok" };
+  if (et === "account_disabled") return { label: "✓ Tài khoản Google đã bị disable — cần thay thế", tone: "ok" };
+  if (et === "flow_blocked") return { label: "✓ Workspace admin chặn Flow service — cần thay thế", tone: "ok" };
+  if (et === "blocked") return { label: "✓ Tài khoản bị khoá — cần thay thế", tone: "ok" };
+  if (et === "domain_mass_die") return { label: "✓ Domain die hàng loạt — auto kết luận chết", tone: "ok" };
+  if (et === "proxy_die") return { label: "⚠ Proxy lỗi khi check — không xác minh được", tone: "info" };
+  if (et === "cf_timeout") return { label: "⚠ Cloudflare chặn — thử kiểm tra lại sau", tone: "info" };
+  if (et === "turnstile_failed") return { label: "⚠ Cloudflare Turnstile không qua — thử lại", tone: "info" };
+  if (et === "timeout") return { label: "⚠ Hết thời gian kiểm tra — thử lại", tone: "info" };
+  return { label: `⚠ ${errorType}`, tone: "info" };
+}
+
+// Clear, specific verdict for ONE account result — replaces the vague "die". Says exactly which
+// state: còn hạn (gói gì) / tụt Free (gốc gì) / bị khoá / sai mật khẩu / lỗi check. Priority order
+// matters: a login FAILURE (wrong_password/proxy/2fa/timeout) means we couldn't verify → it is NOT
+// a death verdict and must read as "chưa kiểm tra được", never "die".
+function describeAccountVerdict(acc: any): { label: string; tone: "danger" | "warn" | "info" | "ok" } | null {
+  if (!acc || typeof acc !== "object") return null;
+  const tier = String(acc.tier || "").toUpperCase();
+  const plan = String(acc.plan || "");
+  const origTier = String(acc.originalTier || "").toUpperCase();
+  const origLabel = String(acc.originalPlan || acc.originalTier || "");
+  const status = String(acc.status || "");
+  const statusL = status.toLowerCase();
+  const et = String(acc.errorType || "").toLowerCase();
+  const paidTiers = ["SUPERGROK", "HEAVY", "ULTRA"];
+
+  // 1) Still paid → NOT eligible. Show the real tier so seller sees "SuperGrok còn hạn".
+  if (acc.stillPaid === true) {
+    const t = plan || tier || "gói trả phí";
+    const days = typeof acc.daysRemaining === "number" && acc.daysRemaining > 0 ? ` (còn ${acc.daysRemaining} ngày)` : "";
+    return { label: `⚠ Còn hạn — ${t}${days} — KHÔNG đủ điều kiện bảo hành`, tone: "danger" };
+  }
+
+  // 2) Login failed / couldn't verify → ambiguous, NOT death. Reads as "chưa kiểm tra được".
+  if (["wrong_password", "login_stuck", "2fa", "proxy_die", "cf_timeout", "turnstile_failed", "timeout"].includes(et)) {
+    return describeAutoCheckErrorType(acc.errorType);
+  }
+
+  // 3) Confirmed dead → say WHY explicitly.
+  if (acc.isDead === true || ["blocked", "account_disabled", "flow_blocked", "plan_lost"].includes(et)) {
+    if (et === "blocked" || /\b(blocked|banned|suspended|disabled|deactivated)\b/i.test(statusL))
+      return { label: "🚫 Bị khoá / block — cần thay", tone: "ok" };
+    if (et === "account_disabled") return { label: "🚫 Google disable acc — cần thay", tone: "ok" };
+    if (et === "flow_blocked") return { label: "🚫 Workspace chặn Flow — cần thay", tone: "ok" };
+    const isFreeNow = tier === "FREE" || /^free$/i.test(plan);
+    if (isFreeNow) {
+      return {
+        label: paidTiers.includes(origTier)
+          ? `⬇ Tụt xuống Free (gốc ${origLabel || origTier}) — cần thay`
+          : "⬇ Gói Free — cần thay",
+        tone: "ok",
+      };
+    }
+    if (paidTiers.includes(tier)) {
+      return { label: `⏳ ${plan || tier} hết hạn${status ? ` (${status})` : ""} — cần thay`, tone: "ok" };
+    }
+    return { label: `✓ Đã chết${status ? ` (${status})` : ""} — cần thay`, tone: "ok" };
+  }
+
+  // 4) Some other errorType the tool reported.
+  if (et) return describeAutoCheckErrorType(acc.errorType);
+
+  // 5) Inconclusive — show raw tier/status rather than guessing.
+  if (acc.ok === false) return { label: "⚠ Chưa kiểm tra được", tone: "info" };
+  return { label: `${plan || tier || "—"}${status ? ` · ${status}` : ""}`, tone: "info" };
+}
+
 function getTone(status: string): "neutral" | "success" | "warning" | "danger" {
   const s = String(status || "").toLowerCase();
   if (["auto_resolved", "resolved_manual"].includes(s)) return "success";
@@ -639,15 +720,71 @@ export function WarrantyClaimsPage() {
                         {claim.autoCheck.result.status && (
                           <p>Trạng thái: <span className="font-mono" style={{ color: "var(--tx)" }}>{String(claim.autoCheck.result.status)}</span></p>
                         )}
-                        {claim.autoCheck.result.stillPaid && (
-                          <p className="font-semibold" style={{ color: "rgb(239,68,68)" }}>
-                            ⚠ Tài khoản vẫn còn hạn — không đủ điều kiện bảo hành.
-                          </p>
-                        )}
-                        {claim.autoCheck.result.isDead && (
-                          <p className="font-semibold" style={{ color: "rgb(16,185,129)" }}>
-                            ✓ Tài khoản đã die/hết hạn — nên cấp bảo hành.
-                          </p>
+                        {(() => {
+                          // CLEAR verdict — replaces the vague "die". For a single account, show its
+                          // exact state (Free / SuperGrok còn hạn / bị khoá / sai mật khẩu). For a
+                          // multi-account claim the top-level result only reflects the PRIMARY account,
+                          // which is misleading (e.g. primary sai-pass while siblings tụt Free), so show
+                          // a counted summary instead and let the per-account breakdown below give detail.
+                          const colorMap = {
+                            danger: "rgb(239,68,68)",
+                            warn: "rgb(234,179,8)",
+                            ok: "rgb(16,185,129)",
+                            info: "rgb(148,163,184)",
+                          } as const;
+                          const accs: any[] = Array.isArray(claim.autoCheck.result?.accounts) ? claim.autoCheck.result.accounts : [];
+                          if (accs.length > 1) {
+                            let needReplace = 0, stillPaid = 0, unverified = 0;
+                            for (const a of accs) {
+                              const v = describeAccountVerdict(a);
+                              if (v?.tone === "ok") needReplace++;
+                              else if (v?.tone === "danger") stillPaid++;
+                              else unverified++;
+                            }
+                            const parts: string[] = [];
+                            if (needReplace) parts.push(`✓ ${needReplace} cần thay (die/Free/khoá)`);
+                            if (stillPaid) parts.push(`⚠ ${stillPaid} còn hạn`);
+                            if (unverified) parts.push(`❔ ${unverified} chưa kiểm tra được`);
+                            return (
+                              <p className="font-semibold" style={{ color: needReplace ? colorMap.ok : stillPaid ? colorMap.danger : colorMap.info }}>
+                                {accs.length} tài khoản — {parts.join(" · ")}
+                              </p>
+                            );
+                          }
+                          const v = describeAccountVerdict(claim.autoCheck.result);
+                          if (!v) return null;
+                          return (
+                            <p className="font-semibold" style={{ color: colorMap[v.tone] }}>{v.label}</p>
+                          );
+                        })()}
+                        {/* Per-account verdict breakdown for multi-account claims. Each account in the
+                            result.accounts[] may have its own errorType — the aggregated top-level
+                            errorType only reflects the primary account. */}
+                        {Array.isArray(claim.autoCheck.result?.accounts) && claim.autoCheck.result.accounts.length > 1 && (
+                          <div className="mt-1 grid gap-0.5 border-t pt-1.5" style={{ borderColor: "var(--bd)" }}>
+                            <p className="text-[10px] font-black uppercase tracking-wider" style={{ color: "var(--tx-f)" }}>
+                              Chi tiết từng tài khoản
+                            </p>
+                            {claim.autoCheck.result.accounts.map((acc: any, idx: number) => {
+                              const v = describeAccountVerdict(acc);
+                              const accLabel = v?.label || "—";
+                              const accColor = !v
+                                ? "rgb(148,163,184)"
+                                : v.tone === "danger"
+                                  ? "rgb(239,68,68)"
+                                  : v.tone === "ok"
+                                    ? "rgb(16,185,129)"
+                                    : v.tone === "warn"
+                                      ? "rgb(234,179,8)"
+                                      : "rgb(148,163,184)";
+                              return (
+                                <p key={idx} className="text-[11px] flex items-baseline gap-1.5">
+                                  <span className="font-mono shrink-0" style={{ color: "var(--tx)" }}>{acc.email || `#${idx + 1}`}</span>
+                                  <span className="truncate" style={{ color: accColor }}>{accLabel}</span>
+                                </p>
+                              );
+                            })}
+                          </div>
                         )}
                       </div>
                     )}

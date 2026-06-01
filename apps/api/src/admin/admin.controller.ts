@@ -5,6 +5,7 @@ import {
   Inject,
   NotFoundException,
   Param,
+  Post,
   Put,
   Query,
   UseGuards,
@@ -19,6 +20,7 @@ import {
   BulkUpdateSystemConfigDto,
   ListAdminOrdersQueryDto,
   ListSellersQueryDto,
+  TestProxiesDto,
   UpdateSellerTierDto,
   UpdateSellerTierDatesDto,
 } from "./admin.dto";
@@ -97,5 +99,11 @@ export class AdminController {
   @Put("system-config")
   bulkUpdateSystemConfig(@Body() body: BulkUpdateSystemConfigDto) {
     return this.adminService.bulkUpsertSystemConfig(body.configs);
+  }
+
+  // Test proxy TRƯỚC khi lưu — admin dán proxy vào ô, bấm "Test" để biết con nào sống/khỏe.
+  @Post("test-proxies")
+  testProxies(@Body() body: TestProxiesDto) {
+    return this.adminService.testProxies(body.proxies, body.mode || "full");
   }
 }

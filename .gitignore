@@ -25,3 +25,7 @@ PHASE_PROMPTS.md
 .claude
 .codex-runtime
 .env.bot-test.example
+# DB backups (contain real order/warranty data — never commit)
+backups/
+*.sql
+!prisma/migrations/**/*.sql

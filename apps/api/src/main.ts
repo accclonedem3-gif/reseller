@@ -55,6 +55,12 @@ async function bootstrap() {
   const config = app.get(AppConfigService);
   const uploadsDir = join(process.cwd(), "uploads");
 
+  // #7: trust the co-located reverse proxy (nginx on loopback) so req.ip = the REAL client IP from
+  // X-Forwarded-For. "loopback" only trusts 127.0.0.1/::1, so an external client can't spoof XFF.
+  // Without this, behind nginx every request's ip is 127.0.0.1 → all users share ONE rate-limit
+  // bucket (a few users throttle everyone) and per-IP abuse limits are meaningless.
+  app.getHttpAdapter().getInstance().set("trust proxy", "loopback");
+
   config.validateForProduction();
 
   if (!existsSync(uploadsDir)) {
@@ -130,6 +136,17 @@ async function bootstrap() {
   await app.listen(config.apiPort);
   console.log(`API is running on http://localhost:${config.apiPort}/${API_PREFIX}`);
 }
+
+// Crash safety net for errors outside Nest's per-request exception filter. Log a stray rejection
+// but stay up; exit on a true uncaughtException so PM2 restarts a clean process rather than serving
+// from an undefined state.
+process.on("unhandledRejection", (reason) => {
+  console.error("[api] UNHANDLED REJECTION:", reason instanceof Error ? (reason.stack || reason.message) : reason);
+});
+process.on("uncaughtException", (err) => {
+  console.error("[api] UNCAUGHT EXCEPTION:", err instanceof Error ? err.stack : err);
+  process.exit(1);
+});
 
 bootstrap().catch((error) => {
   console.error(error);

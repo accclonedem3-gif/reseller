@@ -507,6 +507,17 @@ model SourceProduct {
   stockAlertThreshold  Int       @default(5) @map("stock_alert_threshold")
   stockAlertEnabled    Boolean   @default(true) @map("stock_alert_enabled")
   lastStockAlertAt     DateTime? @map("last_stock_alert_at")
+  // Pre-die date: declared lifetime (in days) of accounts in the current batch.
+  // Counted from `accBatchStartedAt` (when the seller imported the batch to inventory)
+  // — NOT from delivery time, because the upstream acc clock starts ticking when the
+  // batch was created upstream, not when the reseller sells a particular acc.
+  //
+  // When set + (accBatchStartedAt + accLifetimeDays) < now → warranty submissions
+  // short-circuit the auto-check tool and synthesize an isDead verdict, so the customer
+  // gets a replacement instantly instead of waiting 25-60s for the tool to confirm.
+  // Falls back to deliveredAt if accBatchStartedAt is null (legacy behavior).
+  accLifetimeDays      Int?       @map("acc_lifetime_days")
+  accBatchStartedAt    DateTime?  @map("acc_batch_started_at")
   promoType            String?   @map("promo_type") // "BUY_N_GET_M" | "BULK_DISCOUNT"
   promoBuyN            Int?      @map("promo_buy_n")
   promoGetM            Int?      @map("promo_get_m")
@@ -704,6 +715,10 @@ model Order {
   warrantyStartedAt    DateTime?         @map("warranty_started_at")
   warrantyExpiresAt    DateTime?         @map("warranty_expires_at")
   warrantyClaimCount   Int               @default(0) @map("warranty_claim_count")
+  // Per-order secret sent to the buyer in the delivery message; required to open a public
+  // warranty claim (ownership proof). Nullable: legacy orders predate the feature → treated as
+  // "no code required" by claimCodeMatches. Generated once at order creation.
+  warrantyClaimCode    String?           @map("warranty_claim_code")
   productNameSnapshot  String            @map("product_name_snapshot")
   quantity             Int               @default(1)
   salePrice            Decimal           @map("sale_price") @db.Decimal(18, 2)

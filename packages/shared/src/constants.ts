@@ -21,6 +21,9 @@ export const API_PREFIX = "api/v1";
 
 export const SYSTEM_CONFIG_KEYS = {
   warrantyCheckConcurrency: "warranty.check.concurrency",
+  // Số account check song song TRONG 1 job (1 đơn nhiều acc). Worker đọc hot mỗi job — đổi
+  // không cần restart. 4GB nên để 2; cao hơn = nhiều Chrome cùng lúc = tốn RAM/dễ sập.
+  warrantyCheckPerJobParallel: "warranty.check.perJobParallel",
   warrantyCheckJobTimeoutMs: "warranty.check.jobTimeoutMs",
   warrantyCooldownDays: "warranty.cooldownDays",
   // Newline-separated proxy list passed to single-check.js subprocesses via CHECK_PROXY env.

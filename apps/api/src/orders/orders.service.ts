@@ -28,6 +28,7 @@ import {
   decimalToNumber,
   generateExternalPaymentCode,
   generateOrderCode,
+  generateWarrantyClaimCode,
   splitWalletDebit,
   toDecimal,
 } from "../lib/utils";
@@ -128,6 +129,7 @@ export class OrdersService {
   async createTelegramOrder(input: CreateTelegramOrderInput) {
     const prepared = await this.prepareTelegramOrderContext(input);
     const orderCode = generateOrderCode();
+    const warrantyClaimCode = generateWarrantyClaimCode();
     const externalOrderCode = generateExternalPaymentCode();
     const payment = await this.paymentService.createPaymentLink({
       shopId: input.shopId,
@@ -143,6 +145,7 @@ export class OrdersService {
         sellerId: prepared.shop.sellerId,
         customerId: prepared.customer.id,
         orderCode,
+        warrantyClaimCode,
         sourceProductId: prepared.product.id,
         sourceProviderKindSnapshot:
           prepared.shop.providerConfig?.providerKind || ProviderKind.EXTERNAL,
@@ -195,6 +198,7 @@ export class OrdersService {
   async createTelegramOrderWithWallet(input: CreateTelegramOrderInput) {
     const prepared = await this.prepareTelegramOrderContext(input);
     const orderCode = generateOrderCode();
+    const warrantyClaimCode = generateWarrantyClaimCode();
     const externalOrderCode = generateExternalPaymentCode();
     const paidAt = new Date();
 
@@ -242,6 +246,7 @@ export class OrdersService {
           sellerId: prepared.shop.sellerId,
           customerId: prepared.customer.id,
           orderCode,
+          warrantyClaimCode,
           sourceProductId: prepared.product.id,
           sourceProviderKindSnapshot:
             prepared.shop.providerConfig?.providerKind || ProviderKind.EXTERNAL,
@@ -680,14 +685,23 @@ export class OrdersService {
     }
 
     await this.prisma.$transaction(async (tx) => {
-      await tx.order.update({
-        where: { id: order.id },
+      // Atomic, idempotent transition. The status guard at the top of this method runs OUTSIDE the
+      // tx with no row lock, so two concurrent completes (double-click / two tabs / two devices)
+      // both pass it. Guard the write on status here so exactly ONE request wins the row; the loser
+      // claims 0 rows and we abort BEFORE the stock decrement + commission + wallet credits below,
+      // preventing a double stock-decrement / double commission / double revenue.
+      const claimed = await tx.order.updateMany({
+        where: { id: order.id, status: "PAID_WAITING_STOCK" },
         data: {
           status: "DELIVERED",
           deliveredAt: new Date(),
           failureReason: null,
         },
       });
+
+      if (claimed.count === 0) {
+        throw new BadRequestException("Only pending manual orders can be completed here.");
+      }
 
       await tx.orderEvent.create({
         data: {
@@ -925,6 +939,7 @@ export class OrdersService {
     order: {
       orderCode: string;
       productNameSnapshot: string;
+      warrantyClaimCode?: string | null;
       customer: { telegramChatId: string; preferredLanguage?: string | null } | null;
       shop: {
         name: string;
@@ -959,6 +974,9 @@ export class OrdersService {
               ? [
                   `✅ Order ${order.orderCode} has been marked completed by the seller.`,
                   `Product: ${order.productNameSnapshot}`,
+                  order.warrantyClaimCode
+                    ? `🔐 Warranty code: ${order.warrantyClaimCode} (keep private — required to request warranty)`
+                    : null,
                   "",
                   "If you still need setup guidance or warranty support, please contact the support channel below.",
                   supportFooter.trim() ? supportFooter.trim() : null,
@@ -966,6 +984,9 @@ export class OrdersService {
               : [
                   `✅ Đơn hàng ${order.orderCode} đã được seller xác nhận hoàn tất.`,
                   `Sản phẩm: ${order.productNameSnapshot}`,
+                  order.warrantyClaimCode
+                    ? `🔐 Mã bảo hành: ${order.warrantyClaimCode} (giữ kín — cần khi yêu cầu bảo hành)`
+                    : null,
                   "",
                   "Nếu bạn vẫn cần thêm hướng dẫn sử dụng hoặc hỗ trợ bảo hành, vui lòng liên hệ bên dưới.",
                   supportFooter.trim() ? supportFooter.trim() : null,
@@ -1071,9 +1092,12 @@ export class OrdersService {
   private async creditAffiliateCommission(orderId: string) {
     const order = await this.prisma.order.findUnique({
       where: { id: orderId },
-      select: { id: true, shopId: true, customerId: true, totalSaleAmount: true, customer: { select: { referredById: true } } },
+      select: { id: true, shopId: true, customerId: true, totalSaleAmount: true, affiliateCommission: true, customer: { select: { referredById: true } } },
     });
     if (!order?.customer?.referredById) return;
+    // Fast-path idempotency (matches the worker copy): skip if already credited. The authoritative
+    // guard is the FOR UPDATE re-check inside affiliateService.creditCommission.
+    if (order.affiliateCommission != null && Number(order.affiliateCommission) > 0) return;
 
     const config = await this.affiliateService.getConfigByShopId(order.shopId);
     if (!config?.enabled || !config.commissionPct) return;
