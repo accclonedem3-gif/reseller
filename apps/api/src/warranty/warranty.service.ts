@@ -2561,6 +2561,20 @@ export class WarrantyService {
    * handle so the receipt is self-identifying when forwarded (or when the customer cross-
    * references with shop chat history).
    */
+  // Identity lines for bot warranty notices: WHICH account is being warrantied + the contact the
+  // customer entered. Lets a reseller handling several per-account (lẻ) warranties tell them apart.
+  private claimIdentityLines(claim: { targetAccountEmail?: string | null; metadataJson?: Prisma.JsonValue | null }): string[] {
+    const lines: string[] = [];
+    const acc = claim.targetAccountEmail ? String(claim.targetAccountEmail).trim() : "";
+    if (acc) lines.push(`🎯 Tài khoản: <code>${this.escapeHtml(acc)}</code>`);
+    const meta = claim.metadataJson && typeof claim.metadataJson === "object" && !Array.isArray(claim.metadataJson)
+      ? (claim.metadataJson as Record<string, unknown>)
+      : null;
+    const contact = meta && typeof meta.contactInfo === "string" ? meta.contactInfo.trim() : "";
+    if (contact) lines.push(`📞 Liên hệ: ${this.escapeHtml(contact)}`);
+    return lines;
+  }
+
   private async buildClaimInvoiceMessage(orderId: string, accountScoped = false): Promise<string | null> {
     const order = await this.prisma.order.findUnique({
       where: { id: orderId },
@@ -2697,7 +2711,9 @@ export class WarrantyService {
       "✨🎉 <b>BẢO HÀNH</b> ✓ 🎉✨",
       "",
       // Order code hidden on a per-account (retail) warranty — they only need their replacement.
-      ...(accountScoped ? [] : [`📝 Mã đơn: <code>${this.escapeHtml(claim.orderCodeSnapshot)}</code>`, ""]),
+      ...(accountScoped ? [] : [`📝 Mã đơn: <code>${this.escapeHtml(claim.orderCodeSnapshot)}</code>`]),
+      ...this.claimIdentityLines(claim),
+      "",
       "🔑 <b>Tài khoản thay thế</b>",
       `<pre>${this.escapeHtml(deliveredAccountText)}</pre>`,
       "",
@@ -2763,10 +2779,13 @@ export class WarrantyService {
       header = "⚠ <b>Chưa xác minh được</b>";
       actionLine = "Bấm <b>🛡 Bảo hành lại</b> để thử thêm, hoặc shop sẽ xem xét nếu vẫn không xác minh được.";
     }
+    const _idLines = this.claimIdentityLines(claim);
     const text = [
       header,
       "",
-      ...(_acctScoped ? [] : [`📝 Mã đơn: <code>${this.escapeHtml(claim.orderCodeSnapshot)}</code>`, ""]),
+      ...(_acctScoped ? [] : [`📝 Mã đơn: <code>${this.escapeHtml(claim.orderCodeSnapshot)}</code>`]),
+      ..._idLines,
+      "",
       this.escapeHtml(reasonLine) + ".",
       actionLine,
       "",
@@ -4810,6 +4829,7 @@ export class WarrantyService {
       _acctScoped ? null : `📝 Mã đơn: <code>${this.escapeHtml(claim.orderCodeSnapshot)}</code>`,
       `📦 Sản phẩm: ${this.escapeHtml(claim.productNameSnapshot)}`,
       `🔢 Claim #${claim.claimNumber}`,
+      ...this.claimIdentityLines(claim as any),
     ];
     if (claim.deliveredAccountText) {
       parts.push("", `🔑 <b>Tài khoản thay thế:</b>`, `<pre>${this.escapeHtml(claim.deliveredAccountText)}</pre>`);
@@ -4882,6 +4902,7 @@ export class WarrantyService {
       _acctScoped ? null : `📝 Mã đơn: <code>${this.escapeHtml(claim.orderCodeSnapshot)}</code>`,
       `📦 Sản phẩm: ${this.escapeHtml(claim.productNameSnapshot)}`,
       `🔢 Claim #${claim.claimNumber}`,
+      ...this.claimIdentityLines(claim as any),
     ];
     if (reason) {
       parts.push("", `💬 Lý do: ${this.escapeHtml(reason)}`);
