@@ -2452,8 +2452,7 @@ export function ProductsPageStudio({
                                     style={{ background: "var(--surface)", border: "1px solid var(--bd)" }}
                                   >
                                     <OverflowItem icon={<Eye className="h-3.5 w-3.5" />} label={t.aView} onClick={() => { setSelectedId(product.id); setDrawerMode("view"); setOpenMenuId(null); }} />
-                                    {product.isManual && <OverflowItem icon={<PackagePlus className="h-3.5 w-3.5" />} label={t.aStock} onClick={() => { setSelectedId(product.id); setDrawerMode("inventory"); setOpenMenuId(null); }} />}
-                                    {product.isManual && <OverflowItem icon={<Eye className="h-3.5 w-3.5" />} label="Xem kho" onClick={() => { setSelectedId(product.id); setStockStatusFilter("AVAILABLE"); setStockModal("viewStock"); setOpenMenuId(null); }} />}
+                                    {product.isManual && <OverflowItem icon={<PackagePlus className="h-3.5 w-3.5" />} label="Kho tài khoản" onClick={() => { setSelectedId(product.id); setStockStatusFilter("AVAILABLE"); setStockModal("viewStock"); setOpenMenuId(null); }} />}
                                     {product.isManual && <OverflowItem icon={<Copy className="h-3.5 w-3.5" />} label={t.aDuplicate} onClick={() => { duplicateMutation.mutate(product.id); setOpenMenuId(null); }} />}
                                     <OverflowItem icon={<Tag className="h-3.5 w-3.5" />} label={t.aPromo} onClick={() => { setSelectedId(product.id); setDrawerMode("promo"); setOpenMenuId(null); }} />
                                     {product.isManual && (
