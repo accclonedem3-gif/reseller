@@ -7,6 +7,7 @@ import { AdminOverviewPage } from "@/pages/admin-overview-page";
 import { AdminOrdersPage } from "@/pages/admin-orders-page";
 import { AdminSystemConfigPage } from "@/pages/admin-system-config-page";
 import { AdminIconsPage } from "@/pages/admin-icons-page";
+import { AdminWarrantyStatsPage } from "@/pages/admin-warranty-stats-page";
 import { BotConfigPage } from "@/pages/bot-config-page-pro";
 import { BroadcastsPage } from "@/pages/broadcasts-page-pro";
 import { LoginPageStudio } from "@/pages/login-page-studio";
@@ -111,6 +112,7 @@ export function App() {
         </Route>
         <Route element={<AdminOnlyLayout />}>
           <Route path="/admin" element={<AdminOverviewPage />} />
+          <Route path="/admin/warranty-stats" element={<AdminWarrantyStatsPage />} />
           <Route path="/admin/ctv" element={<AdminCtvPage />} />
           <Route path="/admin/orders" element={<AdminOrdersPage />} />
           <Route path="/admin/settings" element={<AdminSystemConfigPage />} />

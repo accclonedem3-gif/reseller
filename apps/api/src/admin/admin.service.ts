@@ -4,8 +4,11 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import axios from "axios";
 
+import { SYSTEM_CONFIG_KEYS } from "@reseller/shared";
+
 import { PrismaService } from "../db/prisma.service";
 import { CacheService } from "../lib/cache.service";
+import { QueueService } from "../lib/queue.service";
 import { decimalToNumber } from "../lib/utils";
 
 @Injectable()
@@ -17,7 +20,77 @@ export class AdminService {
     private readonly prisma: PrismaService,
     @Inject(CacheService)
     private readonly cache: CacheService,
+    @Inject(QueueService)
+    private readonly queue: QueueService,
   ) {}
+
+  // host:port extraction matching the worker's makeProxyHostPort (account-check.ts) so the live-proxy
+  // count keys the SAME Redis dead-markers the worker writes.
+  private proxyHostPort(raw: string): string | null {
+    let s = String(raw || "").trim();
+    if (!s) return null;
+    if (s.includes("://")) {
+      s = s.slice(s.indexOf("://") + 3);
+      if (s.includes("@")) s = s.slice(s.lastIndexOf("@") + 1);
+    }
+    const parts = s.split(":");
+    if (parts.length < 2) return null;
+    return `${parts[0]}:${parts[1]}`;
+  }
+
+  /**
+   * Operational metrics for the warranty pipeline (monitoring): queue depth, live-proxy count,
+   * auto-check tool success rate (24h), Redis circuit state. Consumed by the admin dashboard and
+   * the Prometheus `/metrics` endpoint. Best-effort — every sub-read degrades gracefully.
+   */
+  async getWarrantyMetrics() {
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const [load, proxyRow, statusGroups] = await Promise.all([
+      this.queue.getAccountCheckLoad().catch(() => ({ waiting: 0, active: 0, delayed: 0 })),
+      this.prisma.systemConfig
+        .findUnique({ where: { key: SYSTEM_CONFIG_KEYS.warrantyCheckProxies } })
+        .catch(() => null),
+      this.prisma.warrantyClaim
+        .groupBy({
+          by: ["autoCheckStatus"],
+          where: { autoCheckCompletedAt: { gte: since } },
+          _count: { _all: true },
+        })
+        .catch(() => [] as Array<{ autoCheckStatus: string | null; _count: { _all: number } }>),
+    ]);
+
+    // Live proxies = configured proxies NOT currently dead-marked in Redis by the worker.
+    const proxyLines = String(proxyRow?.value || "")
+      .split(/\r?\n+/)
+      .map((s) => s.trim())
+      .filter((s) => s && !s.startsWith("#"));
+    const hostPorts = [
+      ...new Set(proxyLines.map((l) => this.proxyHostPort(l)).filter((x): x is string => !!x)),
+    ];
+    let proxyLive = 0;
+    for (const hp of hostPorts) {
+      const dead = await this.cache.exists(`account-check:proxy-dead:${hp}`);
+      if (!dead) proxyLive++;
+    }
+    const proxyTotal = hostPorts.length;
+
+    const byStatus: Record<string, number> = {};
+    for (const g of statusGroups) {
+      if (g.autoCheckStatus) byStatus[String(g.autoCheckStatus)] = Number(g._count?._all || 0);
+    }
+    const completed = byStatus["completed"] || 0;
+    const failed = byStatus["failed"] || 0;
+    const toolTotal = completed + failed;
+    // % of conclusive auto-checks that landed a verdict vs errored (null when no data yet).
+    const toolSuccessRate = toolTotal > 0 ? Math.round((completed / toolTotal) * 1000) / 10 : null;
+
+    return {
+      queue: { ...load, total: load.waiting + load.active + load.delayed },
+      proxy: { total: proxyTotal, live: proxyLive, dead: proxyTotal - proxyLive },
+      tool24h: { completed, failed, total: toolTotal, successRate: toolSuccessRate, byStatus },
+      redisCircuitOpen: this.cache.isCircuitOpen(),
+    };
+  }
 
   /**
    * Push the admin's `warranty.check.proxies` value to the CheckGrokJS server so its CF cookie
@@ -218,6 +291,149 @@ export class AdminService {
     }
 
     return Array.from(map.entries()).map(([date, revenue]) => ({ date, revenue }));
+  }
+
+  /**
+   * Thống kê bảo hành cho 1 ngày (theo giờ VN / GMT+7) để admin quản lý số lượng.
+   *
+   * - `buckets`: số claim PHÁT SINH trong ngày, chia theo giờ (24 cột) hoặc phút (1440 điểm),
+   *   kèm phân loại refunded / replaced / rejected / pending từng mốc.
+   * - `summary`: tổng claim + số acc hoàn tiền (accountsRefunded) + số acc thay mới
+   *   (accountsReplaced) + tổng tiền hoàn (refundTotalVnd) trong ngày.
+   * - `rates`: tốc độ phát sinh 1 phút / 1 giờ / 24h GẦN NHẤT (cuộn theo `now`, không phụ
+   *   thuộc TZ) — để phát hiện spike bất thường (farm bảo hành).
+   *
+   * TZ: VN không có DST nên cố định offset +7. `dayStartUtc` đã quy về đúng nửa đêm VN, mọi
+   * phép chia bucket dựa trên `createdAt - dayStartUtc` nên tự khớp giờ địa phương.
+   */
+  async getWarrantyStats(dateStr?: string, granularity: "hour" | "minute" = "hour") {
+    const VN_OFFSET_MS = 7 * 60 * 60 * 1000;
+    const now = new Date();
+
+    const dayKey =
+      dateStr && /^\d{4}-\d{2}-\d{2}$/.test(dateStr)
+        ? dateStr
+        : new Date(now.getTime() + VN_OFFSET_MS).toISOString().slice(0, 10);
+
+    const dayStartUtc = new Date(`${dayKey}T00:00:00.000+07:00`);
+    const dayEndUtc = new Date(dayStartUtc.getTime() + 24 * 60 * 60 * 1000);
+
+    const RESOLVED = new Set(["AUTO_RESOLVED", "RESOLVED_MANUAL"]);
+    const PENDING = new Set([
+      "PENDING",
+      "PENDING_STOCK",
+      "PENDING_REVIEW",
+      "PENDING_MANUAL",
+    ]);
+
+    const [claims, lastMinute, lastHour, last24h] = await Promise.all([
+      this.prisma.warrantyClaim.findMany({
+        where: { createdAt: { gte: dayStartUtc, lt: dayEndUtc } },
+        select: {
+          createdAt: true,
+          status: true,
+          deliveredAccountText: true,
+          replacementCostSnapshot: true,
+          metadataJson: true,
+        },
+      }),
+      this.prisma.warrantyClaim.count({
+        where: { createdAt: { gte: new Date(now.getTime() - 60_000) } },
+      }),
+      this.prisma.warrantyClaim.count({
+        where: { createdAt: { gte: new Date(now.getTime() - 3_600_000) } },
+      }),
+      this.prisma.warrantyClaim.count({
+        where: { createdAt: { gte: new Date(now.getTime() - 86_400_000) } },
+      }),
+    ]);
+
+    const bucketMs = granularity === "minute" ? 60_000 : 3_600_000;
+    const bucketCount = granularity === "minute" ? 1440 : 24;
+    const buckets = Array.from({ length: bucketCount }, (_, i) => {
+      const totalMin = granularity === "minute" ? i : i * 60;
+      const hh = String(Math.floor(totalMin / 60)).padStart(2, "0");
+      const mm = String(totalMin % 60).padStart(2, "0");
+      return { t: `${hh}:${mm}`, total: 0, refunded: 0, replaced: 0, rejected: 0, pending: 0 };
+    });
+
+    let total = 0;
+    let pending = 0;
+    let rejected = 0;
+    let refundClaims = 0;
+    let replaceClaims = 0;
+    let accountsRefunded = 0;
+    let accountsReplaced = 0;
+    let refundTotalVnd = 0;
+
+    for (const c of claims) {
+      total++;
+      const idx = Math.min(
+        bucketCount - 1,
+        Math.max(0, Math.floor((c.createdAt.getTime() - dayStartUtc.getTime()) / bucketMs)),
+      );
+      const b = buckets[idx];
+      if (!b) continue;
+      b.total++;
+
+      const meta = (c.metadataJson ?? {}) as Record<string, unknown>;
+      const refundAmt = decimalToNumber(c.replacementCostSnapshot);
+      const isResolved = RESOLVED.has(c.status);
+      const isRefund = isResolved && refundAmt > 0;
+      // Thay mới = đã resolve, có giao acc mới, và KHÔNG phải refund (tránh đếm trùng
+      // trường hợp partial: refund stamp luôn replacedAccountEmails để cooldown).
+      const isReplace = isResolved && !!c.deliveredAccountText && !isRefund;
+
+      if (c.status === "REJECTED") {
+        rejected++;
+        b.rejected++;
+      } else if (PENDING.has(c.status)) {
+        pending++;
+        b.pending++;
+      }
+
+      if (isRefund) {
+        refundClaims++;
+        b.refunded++;
+        refundTotalVnd += refundAmt;
+        const refundedEmails = Array.isArray(meta.refundedAccountEmails)
+          ? meta.refundedAccountEmails.length
+          : 0;
+        accountsRefunded += Number(meta.refundedAccountsCount) || refundedEmails || 1;
+      }
+      if (isReplace) {
+        replaceClaims++;
+        b.replaced++;
+        const replacedEmails = Array.isArray(meta.replacedAccountEmails)
+          ? meta.replacedAccountEmails.length
+          : 0;
+        accountsReplaced += replacedEmails || 1;
+      }
+    }
+
+    let peak: (typeof buckets)[number] | null = null;
+    for (const b of buckets) {
+      if (!peak || b.total > peak.total) peak = b;
+    }
+
+    return {
+      date: dayKey,
+      granularity,
+      timezone: "GMT+7",
+      rates: { lastMinute, lastHour, last24h },
+      summary: {
+        total,
+        pending,
+        rejected,
+        refundClaims,
+        replaceClaims,
+        accountsRefunded,
+        accountsReplaced,
+        refundTotalVnd,
+        peakBucket: peak && peak.total > 0 ? { t: peak.t, count: peak.total } : null,
+      },
+      buckets,
+    };
   }
 
   async getRecentSellers(limit = 10) {

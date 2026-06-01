@@ -82,6 +82,30 @@ export class CacheService implements OnModuleDestroy {
     }
   }
 
+  /**
+   * Raw key-existence check (no JSON parse) — used by /metrics to count live proxies against the
+   * worker's `account-check:proxy-dead:*` markers (whose values are plain strings, not JSON).
+   * Circuit-open or error → treat as "not present" (false) so a Redis blip doesn't report proxies
+   * as dead (which would falsely show "0 live proxies"). Live-count is best-effort, not authoritative.
+   */
+  async exists(key: string): Promise<boolean> {
+    if (this.circuitOpen()) return false;
+    try {
+      const n = await this.redis.exists(key);
+      this.recordSuccess();
+      return n > 0;
+    } catch (err) {
+      this.recordFailure();
+      this.logger.warn(`exists(${key}) failed: ${(err as Error).message}`);
+      return false;
+    }
+  }
+
+  /** Is the Redis circuit currently open (degraded mode)? Surfaced in /metrics + /health. */
+  isCircuitOpen(): boolean {
+    return this.circuitOpen();
+  }
+
   async del(...keys: string[]): Promise<void> {
     if (keys.length === 0) return;
     if (this.circuitOpen()) return;

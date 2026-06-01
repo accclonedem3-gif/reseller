@@ -23,6 +23,7 @@ import {
   TestProxiesDto,
   UpdateSellerTierDto,
   UpdateSellerTierDatesDto,
+  WarrantyStatsQueryDto,
 } from "./admin.dto";
 import { AdminService } from "./admin.service";
 
@@ -48,6 +49,20 @@ export class AdminController {
   @Get("recent-sellers")
   getRecentSellers() {
     return this.adminService.getRecentSellers(10);
+  }
+
+  // Thống kê bảo hành theo ngày (giờ VN) — chia cột theo giờ/phút để quản lý số lượng,
+  // kèm số acc hoàn tiền / thay mới và tốc độ phát sinh 1 phút / 1 giờ / 24h gần nhất.
+  @Get("warranty-stats")
+  getWarrantyStats(@Query() query: WarrantyStatsQueryDto) {
+    return this.adminService.getWarrantyStats(query.date, query.granularity ?? "hour");
+  }
+
+  // Sức khỏe vận hành pipeline bảo hành: hàng đợi, proxy sống/tổng, tỉ lệ tool thành công 24h,
+  // trạng thái Redis circuit. Hiển thị trên dashboard admin (cảnh báo khi proxy sống = 0).
+  @Get("warranty-metrics")
+  getWarrantyMetrics() {
+    return this.adminService.getWarrantyMetrics();
   }
 
   @Get("sellers")

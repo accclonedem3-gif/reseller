@@ -78,6 +78,13 @@ const T = {
     replacedTitle: "Bảo hành đã được duyệt!",
     replacedDesc: (n: number, planLabel?: string) =>
       `Phát hiện ${n} tài khoản mất gói ${planLabel || "trả phí"}. Đã thay thế ${n} tài khoản mới.`,
+    refundedTitle: "Đã hoàn tiền vào ví",
+    refundedDesc: (amount: number) =>
+      `Tài khoản đã hết hạn và kho thay thế đã hết — đã hoàn ${amount.toLocaleString("vi-VN")}đ vào ví của bạn. Bạn có thể dùng số dư này để mua đơn khác.`,
+    partialRefundExtra: (amount: number) =>
+      `Các tài khoản không còn hàng thay đã được hoàn ${amount.toLocaleString("vi-VN")}đ vào ví của bạn.`,
+    pendingStockTitle: "Đã xác nhận lỗi — đang chờ tài khoản thay",
+    pendingStockDesc: "Tài khoản của bạn đã được xác nhận hỏng. Kho thay thế tạm hết, shop sẽ xử lý và giao tài khoản mới sớm.",
     rejectedTitle: "Tài khoản vẫn còn hạn",
     rejectedDesc: "Tài khoản vẫn đang hoạt động bình thường, chưa đủ điều kiện bảo hành.",
     pwdChangedTitle: "Tài khoản bảo hành đã đổi mật khẩu",
@@ -164,6 +171,13 @@ const T = {
     replacedTitle: "Warranty approved!",
     replacedDesc: (n: number, planLabel?: string) =>
       `${n} account(s) lost their ${planLabel || "paid"} plan. ${n} replacement account(s) issued.`,
+    refundedTitle: "Refunded to your wallet",
+    refundedDesc: (amount: number) =>
+      `The account expired and replacement stock ran out — ${amount.toLocaleString("vi-VN")}đ has been refunded to your wallet. You can use this balance for future orders.`,
+    partialRefundExtra: (amount: number) =>
+      `Accounts with no replacement stock were refunded ${amount.toLocaleString("vi-VN")}đ to your wallet.`,
+    pendingStockTitle: "Confirmed faulty — awaiting replacement",
+    pendingStockDesc: "Your account was confirmed faulty. Replacement stock is temporarily out; the seller will deliver a new account shortly.",
     rejectedTitle: "Account still active",
     rejectedDesc: "The account is still on a paid plan — warranty not applicable.",
     pwdChangedTitle: "I changed the account password",
@@ -250,6 +264,13 @@ const T = {
     replacedTitle: "อนุมัติการรับประกันแล้ว!",
     replacedDesc: (n: number, planLabel?: string) =>
       `พบ ${n} บัญชีที่หมดแพ็คเกจ${planLabel ? ` ${planLabel}` : ""} เปลี่ยนบัญชีใหม่ ${n} บัญชีแล้ว`,
+    refundedTitle: "คืนเงินเข้ากระเป๋าแล้ว",
+    refundedDesc: (amount: number) =>
+      `บัญชีหมดอายุและสต๊อกสำรองหมด — คืนเงิน ${amount.toLocaleString("vi-VN")}đ เข้ากระเป๋าของคุณแล้ว ใช้ยอดนี้สำหรับคำสั่งซื้อครั้งถัดไปได้`,
+    partialRefundExtra: (amount: number) =>
+      `บัญชีที่ไม่มีสต๊อกทดแทนได้รับการคืนเงิน ${amount.toLocaleString("vi-VN")}đ เข้ากระเป๋าของคุณ`,
+    pendingStockTitle: "ยืนยันว่าบัญชีเสีย — กำลังรอบัญชีทดแทน",
+    pendingStockDesc: "บัญชีของคุณได้รับการยืนยันว่าเสีย สต๊อกทดแทนหมดชั่วคราว ผู้ขายจะจัดส่งบัญชีใหม่ให้เร็ว ๆ นี้",
     rejectedTitle: "บัญชียังใช้งานได้",
     rejectedDesc: "บัญชียังอยู่ในแพ็คเกจที่ชำระเงิน — ไม่มีสิทธิ์รับประกัน",
     pwdChangedTitle: "บัญชีรับประกันเปลี่ยนรหัสผ่านแล้ว",
@@ -351,6 +372,9 @@ type AutoCheckStatusResponse = {
   // the right soft-fail message. See warranty-auto-check.service.ts (getAutoCheckStatus return).
   softFailed?: boolean | null;
   publicErrorType?: string | null;
+  // Customer-safe refund summary (their own refund). >0 → a wallet refund happened for this claim.
+  refundAmount?: number | null;
+  refundHeldForReview?: boolean | null;
 };
 
 function formatDate(iso: string | null) {
@@ -569,7 +593,9 @@ function WarrantyInvoiceCard({ invoice }: { invoice: WarrantyInvoice }) {
                 color: refundIsDone ? "var(--ok-fg, #047857)" : "var(--warn-fg, #92400e)",
               }}
             >
-              {refundIsDone ? `Đã refund ${refunded}/${invoice.quantity}` : `Chưa refund 0/${invoice.quantity}`}
+              {/* "resolved" = replaced OR refunded (resolvedAccountCount gộp cả 2) → nhãn trung tính,
+                  KHÔNG ghi "refund" vì acc có thể được THAY MỚI chứ không hoàn tiền (BUG-4). */}
+              {refundIsDone ? `Đã bảo hành ${refunded}/${invoice.quantity}` : `Chưa bảo hành 0/${invoice.quantity}`}
             </span>
             <span style={{ color: "var(--tx-m)" }}>{formatVnd(pricePerAcc)}/acc</span>
           </Row>
@@ -1360,6 +1386,15 @@ function AutoCheckProgress({
   const claimStatus = String(auto?.status || "").toUpperCase();
   const isReplaced = isDone && !!auto?.deliveredAccountText && claimStatus === "AUTO_RESOLVED";
   const isRejected = claimStatus === "REJECTED";
+  // BUG-1: surface refund + out-of-stock states the web previously ignored (customer was left
+  // staring at "đang kiểm tra…" after a refund). refundAmount>0 is the authoritative refund signal.
+  const refundAmount = typeof auto?.refundAmount === "number" ? auto.refundAmount : 0;
+  // Some accounts replaced AND some refunded (partial). Augment the replaced message with refund.
+  const isPartialRefund = isReplaced && refundAmount > 0;
+  // Pure refund (no replacement delivered for this claim) — out-of-stock auto-refund.
+  const isRefunded = isDone && !isReplaced && refundAmount > 0;
+  // Account confirmed dead but replacement stock temporarily out (provider still processing).
+  const isPendingStock = isDone && claimStatus === "PENDING_STOCK";
   // Completed but neither replaced nor rejected → routed to seller for manual review.
   // Common when auto-check returned login_stuck / 2FA / Pro plan / timeout.
   const isPendingReview = isDone && !isReplaced && !isRejected && claimStatus === "PENDING_REVIEW";
@@ -1410,27 +1445,35 @@ function AutoCheckProgress({
 
   const resolvedTitle = isReplaced
     ? t.replacedTitle
-    : isRejected
-      ? t.rejectedTitle
-      : isWrongPassSoftFail
-        ? t.autoCheckSoftFailedWrongPassTitle
-        : isSoftFailed
-          ? t.autoCheckSoftFailedTitle
-          : t.autoCheckDoneTitle;
+    : isRefunded
+      ? t.refundedTitle
+      : isPendingStock
+        ? t.pendingStockTitle
+        : isRejected
+          ? t.rejectedTitle
+          : isWrongPassSoftFail
+            ? t.autoCheckSoftFailedWrongPassTitle
+            : isSoftFailed
+              ? t.autoCheckSoftFailedTitle
+              : t.autoCheckDoneTitle;
 
   const resolvedSubtitle = isReplaced && deadCount > 0
-    ? t.replacedDesc(deadCount, planLabel)
-    : isRejected
-      ? (auto?.resolutionNote || t.rejectedDesc)
-      : isPendingReview
-        ? t.autoCheckPendingReviewDesc
-        : isWrongPassSoftFail
-          ? t.autoCheckSoftFailedWrongPassHint
-          : isSoftFailed
-            ? `${t.autoCheckReason(auto?.publicErrorType || result?.errorType)}. ${t.autoCheckSoftFailedRetryHint}`
-            : isFailedOrUnsupported
-              ? t.autoCheckFailedDesc
-              : claimMessage;
+    ? `${t.replacedDesc(deadCount, planLabel)}${isPartialRefund ? ` ${t.partialRefundExtra(refundAmount)}` : ""}`
+    : isRefunded
+      ? t.refundedDesc(refundAmount)
+      : isPendingStock
+        ? t.pendingStockDesc
+        : isRejected
+          ? (auto?.resolutionNote || t.rejectedDesc)
+          : isPendingReview
+            ? t.autoCheckPendingReviewDesc
+            : isWrongPassSoftFail
+              ? t.autoCheckSoftFailedWrongPassHint
+              : isSoftFailed
+                ? `${t.autoCheckReason(auto?.publicErrorType || result?.errorType)}. ${t.autoCheckSoftFailedRetryHint}`
+                : isFailedOrUnsupported
+                  ? t.autoCheckFailedDesc
+                  : claimMessage;
 
   return (
     <div className="space-y-4">

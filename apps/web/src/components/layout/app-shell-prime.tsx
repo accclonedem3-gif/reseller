@@ -53,6 +53,7 @@ const NAV_LABELS = {
     customers: "Khách hàng",
     broadcasts: "Thông báo bot", profile: "Hồ sơ",
     adminOverview: "Tổng quan", adminAccounts: "Tài khoản CTV",
+    adminWarranty: "Quản lý bảo hành",
     adminOrders: "Đơn hàng HT", adminSettings: "Cài đặt HT",
     adminIcons: "Thư viện icon",
     coreWorkspace: "Vận hành", internalManagement: "Phân tích",
@@ -67,6 +68,7 @@ const NAV_LABELS = {
     customers: "Customers",
     broadcasts: "Broadcasts", profile: "Profile",
     adminOverview: "Overview", adminAccounts: "CTV Accounts",
+    adminWarranty: "Warranty",
     adminOrders: "System Orders", adminSettings: "System Settings",
     adminIcons: "Icon Library",
     coreWorkspace: "Workspace", internalManagement: "Analytics",
@@ -81,6 +83,7 @@ const NAV_LABELS = {
     customers: "ลูกค้า",
     broadcasts: "ประกาศบอท", profile: "โปรไฟล์",
     adminOverview: "ภาพรวม", adminAccounts: "บัญชีผู้ขาย",
+    adminWarranty: "การรับประกัน",
     adminOrders: "คำสั่งซื้อระบบ", adminSettings: "ตั้งค่าระบบ",
     adminIcons: "คลังไอคอน",
     coreWorkspace: "พื้นที่ทำงาน", internalManagement: "วิเคราะห์",
@@ -92,6 +95,7 @@ function buildAdminItems(lang: Lang): readonly NavItem[] {
   const L = NAV_LABELS[lang];
   return [
     { to: "/admin",          label: L.adminOverview,  icon: LayoutDashboard },
+    { to: "/admin/warranty-stats", label: L.adminWarranty, icon: ShieldCheck },
     { to: "/admin/ctv",      label: L.adminAccounts,  icon: ShieldPlus },
     { to: "/admin/orders",   label: L.adminOrders,    icon: ShoppingBag },
     { to: "/admin/settings", label: L.adminSettings,  icon: Settings2 },

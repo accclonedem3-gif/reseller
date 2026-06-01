@@ -1024,6 +1024,7 @@ export class WarrantyService {
           deliveredAccountText,
           resolutionNote,
           resolvedAt: new Date(),
+          resolvedById: user.id, // audit: who manually resolved this claim
           replacementCostSnapshot: sourceProduct?.sourcePrice ?? null,
           // Once seller resolves manually, the auto-check pipeline is moot. Mark CANCELLED so
           // sweeps + status polling reflect reality (vs. leaving QUEUED/RUNNING forever).
@@ -1047,6 +1048,8 @@ export class WarrantyService {
           payloadJson: {
             warrantyClaimId: claim.id,
             claimNumber: claim.claimNumber,
+            resolvedById: user.id,       // audit: acting user
+            resolvedByEmail: user.email, // audit: acting user (human-readable)
           } as Prisma.InputJsonValue,
         },
       });
@@ -1113,6 +1116,7 @@ export class WarrantyService {
           status: WARRANTY_CLAIM_STATUS.REJECTED,
           resolutionNote: reason,
           resolvedAt: new Date(),
+          resolvedById: user.id, // audit: who manually rejected this claim
           // Cancel any pending auto-check pipeline (see resolveClaimManually for rationale).
           autoCheckStatus:
             locked.status === WARRANTY_CLAIM_STATUS.PENDING
@@ -1135,6 +1139,8 @@ export class WarrantyService {
             warrantyClaimId: claim.id,
             claimNumber: claim.claimNumber,
             reason,
+            resolvedById: user.id,       // audit: acting user
+            resolvedByEmail: user.email, // audit: acting user (human-readable)
           } as Prisma.InputJsonValue,
         },
       });
@@ -1514,7 +1520,7 @@ export class WarrantyService {
       // recover without losing an attempt.
       const _infraFail =
         errorTypeLower === "proxy_die" ||
-        /econnreset|econnrefused|etimedout|err_connection|err_timed_out|net::err_|err_tunnel|\bproxy[_ ]?die\b/i.test(
+        /econnreset|econnrefused|etimedout|err_connection|err_timed_out|net::err_|err_tunnel|\bproxy[_ ]?die\b|no_proxy|no[_ ]raw[_ ]fallback/i.test(
           String(claim.autoCheckErrorMessage || result.error || "").toLowerCase(),
         );
       const claimSlotCount = _infraFail
@@ -1874,10 +1880,17 @@ export class WarrantyService {
             claim,
             decision.deliveredAccountText,
             decision.customerMessage,
+            decision.partialRefundCount || 0, // BUG-3: tell the customer which accounts were refunded
           );
           if (decision.partialRefundCount) {
             await this.applyPartialStockRefund(fullOrder, claim.id, decision.partialRefundCount);
           }
+        } else if (decision.nextStatus === WARRANTY_CLAIM_STATUS.PENDING_STOCK) {
+          // BUG-2: account CONFIRMED DEAD but replacement stock is temporarily out (provider still
+          // processing — NOT exhausted, so no refund). Do NOT send the ambiguous "chưa xác minh
+          // được — bấm Bảo hành lại" notice: it's wrong (it WAS verified dead) and makes the
+          // customer waste a warranty slot retrying. Tell them it's confirmed + awaiting replacement.
+          await this.sendConfirmedDeadAwaitingStockNotice(claim, decision.customerMessage);
         } else {
           await this.sendAutoCheckCustomerNotice(claim, resultLine, "pending_review");
         }
@@ -2070,6 +2083,37 @@ export class WarrantyService {
           } as Prisma.InputJsonValue,
         },
       });
+      return;
+    }
+
+    // False-dead guard (configurable): a single auto-check verdict triggers an IRREVERSIBLE wallet
+    // refund with no human in the loop, so a confidently-wrong "dead" reading + out-of-stock pays
+    // the customer cash while they keep a working account. If the operator set a review threshold
+    // (warranty.refund.reviewAboveVnd > 0) and this refund exceeds it, DON'T auto-credit — route to
+    // seller review so a human confirms before money moves. Money-safe: nothing credited, no cascade.
+    const _refundCfg = await this.autoCheckService.getConfig();
+    if (_refundCfg.refundReviewAboveVnd > 0 && refundAmount > _refundCfg.refundReviewAboveVnd) {
+      await this.prisma.warrantyClaim.update({
+        where: { id: claim.id },
+        data: {
+          status: WARRANTY_CLAIM_STATUS.PENDING_REVIEW,
+          resolutionNote: `Tool báo tài khoản chết + hết hàng thay. Tiền hoàn dự kiến ${refundAmount.toLocaleString("vi-VN")}đ vượt ngưỡng auto-hoàn (${_refundCfg.refundReviewAboveVnd.toLocaleString("vi-VN")}đ) → chờ shop duyệt tay trước khi hoàn.`,
+          metadataJson: {
+            ...(claim.metadataJson && typeof claim.metadataJson === "object" && !Array.isArray(claim.metadataJson)
+              ? (claim.metadataJson as Record<string, unknown>)
+              : {}),
+            autoCheckPending: false,
+            ownerAttentionRequired: true,
+            autoApplyInProgress: false,
+            refundHeldForReview: true,
+            refundHeldAmount: refundAmount,
+          } as Prisma.InputJsonValue,
+        },
+      });
+      await this.notifySellerWarrantyResult(claim, "review", claim.customerMessage || undefined).catch(() => undefined);
+      this.logger.warn(
+        `Claim ${claim.id}: out-of-stock refund ${refundAmount}đ > review threshold ${_refundCfg.refundReviewAboveVnd}đ — held for seller review (NOT auto-refunded).`,
+      );
       return;
     }
 
@@ -2360,6 +2404,13 @@ export class WarrantyService {
       return;
     }
     await this.prisma.$transaction(async (tx) => {
+      // Serialize concurrent cascades for the same root claim BEFORE the idempotency check so that
+      // check-then-insert is atomic. InternalSourceLedger has no unique constraint on
+      // (referenceType, referenceId, connectionId), so without this lock two cascades fired
+      // concurrently (retry + sweep + recheck self-heal) could BOTH pass findFirst and double-credit
+      // the upstream seller. Mirrors the customer-refund paths (autoRefund/applyPartialStockRefund),
+      // which lock the claim row first for the same reason.
+      await tx.$queryRaw`SELECT id FROM warranty_claims WHERE id = ${rootClaimId} FOR UPDATE`;
       // Idempotency: cascade can be re-fired by retries or sweep. Refuse to double-credit
       // the same upstream link for the same root claim. We scope by referenceType+referenceId
       // AND connectionId so distinct upstream hops are still independent.
@@ -2679,6 +2730,7 @@ export class WarrantyService {
     claim: Prisma.WarrantyClaimGetPayload<{ include: { customer: true; shop: { include: { botConfig: true } } } }>,
     deliveredAccountText: string,
     _customerMessage: string, // intentionally unused — header + creds convey the outcome
+    partialRefundCount = 0, // BUG-3: when some accounts had no replacement stock, they were refunded
   ) {
     const token = decryptSecret(claim.shop.botConfig?.telegramBotTokenEncrypted, this.config.encryptionKey);
     if (!token || !claim.customer?.telegramChatId || (this.config.mockTelegramEnabled && isMockBotToken(token))) {
@@ -2695,6 +2747,11 @@ export class WarrantyService {
       "",
       "🔑 <b>Tài khoản thay thế</b>",
       `<pre>${this.escapeHtml(deliveredAccountText)}</pre>`,
+      // BUG-3: partial — some accounts had no replacement stock and were refunded to the wallet.
+      // Previously this was silent: the customer only saw the replacement accounts.
+      ...(partialRefundCount > 0
+        ? ["", `💰 ${partialRefundCount} tài khoản không còn hàng thay đã được <b>hoàn tiền vào ví</b> của bạn. Dùng số dư này để mua đơn khác.`]
+        : []),
       "",
       invoice || "",
     ].filter((s, i, arr) => s !== "" || (i > 0 && arr[i - 1] !== "")).join("\n").trimEnd();
@@ -2703,6 +2760,41 @@ export class WarrantyService {
     // Let the seller know a replacement was issued (with which account + the customer's contact) so
     // they can follow up — success had no seller notification before.
     await this.notifySellerWarrantyResult(claim, "resolved");
+  }
+
+  /**
+   * BUG-2: account CONFIRMED DEAD by auto-check but replacement stock is temporarily out (the
+   * provider is still processing — NOT exhausted, so the claim sits at PENDING_STOCK and no refund
+   * is issued yet). The customer must be told it's confirmed and a replacement is on the way —
+   * NOT the ambiguous "chưa xác minh được, bấm Bảo hành lại" message, which is wrong here and
+   * makes them waste a warranty slot retrying a verdict that already succeeded.
+   */
+  private async sendConfirmedDeadAwaitingStockNotice(
+    claim: Prisma.WarrantyClaimGetPayload<{ include: { customer: true; shop: { include: { botConfig: true } } } }>,
+    customerMessage?: string | null,
+  ) {
+    const token = decryptSecret(claim.shop.botConfig?.telegramBotTokenEncrypted, this.config.encryptionKey);
+    if (!token || !claim.customer?.telegramChatId || (this.config.mockTelegramEnabled && isMockBotToken(token))) {
+      return;
+    }
+    const accountScoped = !!(claim as any).targetAccountEmail;
+    const invoice = await this.buildClaimInvoiceMessage(claim.orderId, accountScoped).catch(() => null);
+    const body =
+      customerMessage && customerMessage.trim()
+        ? this.escapeHtml(customerMessage.trim())
+        : "Tài khoản của bạn đã được xác nhận hỏng. Kho thay thế tạm hết — shop sẽ xử lý và giao tài khoản mới sớm.";
+    const text = [
+      "🛠 <b>Đã xác nhận lỗi — đang chờ tài khoản thay</b>",
+      "",
+      ...(accountScoped ? [] : [`📝 Mã đơn: <code>${this.escapeHtml(claim.orderCodeSnapshot)}</code>`]),
+      ...this.claimIdentityLines(claim),
+      "",
+      body,
+      "",
+      invoice || "",
+    ].filter((s, i, arr) => s !== "" || (i > 0 && arr[i - 1] !== "")).join("\n").trimEnd();
+
+    await this.deliverBotMessage(claim, token, text);
   }
 
   /**

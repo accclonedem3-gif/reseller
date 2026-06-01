@@ -1,4 +1,4 @@
-import { IsDateString, IsEnum, IsOptional, IsString, IsInt, Min } from "class-validator";
+import { IsDateString, IsEnum, IsIn, IsOptional, IsString, IsInt, Min } from "class-validator";
 import { Type } from "class-transformer";
 import { SellerTier } from "@prisma/client";
 
@@ -58,6 +58,18 @@ export class UpdateSystemConfigDto {
 export class BulkUpdateSystemConfigDto {
   @IsOptional()
   configs!: Record<string, string>;
+}
+
+export class WarrantyStatsQueryDto {
+  // Ngày (giờ VN, GMT+7) muốn xem, dạng "YYYY-MM-DD". Bỏ trống = hôm nay.
+  @IsOptional()
+  @IsString()
+  date?: string;
+
+  // Chia nhỏ theo "hour" (24 cột) hoặc "minute" (1440 điểm). Mặc định "hour".
+  @IsOptional()
+  @IsIn(["hour", "minute"])
+  granularity?: "hour" | "minute";
 }
 
 export class TestProxiesDto {

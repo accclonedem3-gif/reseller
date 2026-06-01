@@ -899,13 +899,26 @@ async function processJob(prisma: PrismaClient, redis: Redis, job: Job): Promise
     // dead-mark only lands at end-of-job, so without this an account whose sticky proxy is dead
     // would re-hit the same dead proxy on retry. Skipping these steers retries to a LIVE proxy.
     const jobFailedProxies = new Set<string>();
+    // Fail-closed switch (P1): when ON (default), NEVER log in from the worker's raw IP — if no
+    // live proxy is available the whole job is aborted as an infra failure (caught below → claim
+    // stays PENDING, slot NOT consumed, no refund, no raw login = no ban). Set
+    // WARRANTY_REQUIRE_PROXY=0 to restore the old raw-IP fallback.
+    const requireProxy = !/^(0|false|off|no)$/i.test(String(process.env.WARRANTY_REQUIRE_PROXY ?? "").trim());
     const pickHealthyProxy = async (idx: number): Promise<string | null> => {
-      if (adminProxies.length === 0) return proxy || null;
+      if (adminProxies.length === 0) {
+        if (requireProxy && !proxy) {
+          throw new Error("no_proxy_available: no proxy configured and WARRANTY_REQUIRE_PROXY is on — refusing raw IP");
+        }
+        return proxy || null;
+      }
       for (let attempt = 0; attempt < adminProxies.length; attempt++) {
         const cand = adminProxies[(idx + attempt) % adminProxies.length];
         if (!cand) continue;
         if (jobFailedProxies.has(cand)) continue;
         if (!(await isProxyDead(redis, cand))) return cand;
+      }
+      if (requireProxy) {
+        throw new Error("no_proxy_available: all configured proxies are dead and WARRANTY_REQUIRE_PROXY is on — refusing raw IP");
       }
       console.warn(
         `[account-check] claim=${claimId} all ${adminProxies.length} admin proxies dead — falling back to raw IP`,
@@ -916,6 +929,18 @@ async function processJob(prisma: PrismaClient, redis: Redis, job: Job): Promise
       console.warn(
         `[account-check] claim=${claimId} WARNING: no proxies configured (admin "warranty.check.proxies"). ` +
           `Auto-check will run from the worker's raw IP — high risk of Google/X flagging on repeated use.`,
+      );
+    }
+
+    // P1/P2: count LIVE (non-Redis-dead) proxies once. Reused to (P1) fail-closed when none exist
+    // and requireProxy is on, and (P2) clamp concurrent logins ≤ live-proxy count below.
+    let liveProxyCount = 0;
+    for (const cand of adminProxies) {
+      if (cand && !(await isProxyDead(redis, cand))) liveProxyCount++;
+    }
+    if (requireProxy && liveProxyCount === 0 && !proxy) {
+      throw new Error(
+        "no_proxy_available: WARRANTY_REQUIRE_PROXY is on but no live proxy is available — refusing to run auto-check on the worker's raw IP (ban-safe). Add/repair proxies in Admin → warranty.check.proxies.",
       );
     }
 
@@ -1087,7 +1112,19 @@ async function processJob(prisma: PrismaClient, redis: Redis, job: Job): Promise
 
     // Đọc hot từ DB (admin chỉnh /admin không cần restart). Quyết định bao nhiêu acc/job chạy
     // cùng lúc — đây là throttle chống bung 10 Chrome 1 lúc trên VPS RAM thấp.
-    const perJobParallel = await getPerJobParallel(prisma);
+    let perJobParallel = await getPerJobParallel(prisma);
+    // P2: never run more concurrent logins than there are LIVE proxies. With sticky-proxy on,
+    // extra concurrency would pile multiple logins onto the same IP → higher per-proxy rate →
+    // turnstile/ban. Raw-IP fallback (liveProxyCount=0, requireProxy off) collapses to 1.
+    if (adminProxies.length > 0) {
+      const cap = Math.max(1, liveProxyCount);
+      if (perJobParallel > cap) {
+        console.log(
+          `[account-check] claim=${claimId} P2: clamp perJobParallel ${perJobParallel}→${cap} (live proxies=${liveProxyCount})`,
+        );
+        perJobParallel = cap;
+      }
+    }
 
     if (!allResults) {
       allResults = await parallelLimit(
@@ -1186,9 +1223,11 @@ async function processJob(prisma: PrismaClient, redis: Redis, job: Job): Promise
       await writeProgress();
       // attemptOffset = ACCOUNT_RETRY_COUNT + pass + 1 → unique per pass + steps past the
       // proxies used by Pass 1's no-parse retries, so we always try a fresh slot.
+      // Use the P2-clamped perJobParallel (≤ live proxies), NOT the raw env constant, so the
+      // ambiguous-retry pass doesn't spawn more concurrent logins than live proxies (ban-safe).
       const retried = await parallelLimit(
         retryIdx.map((i) => wrapTask(i, ACCOUNT_RETRY_COUNT + pass + 1)),
-        ACCOUNT_PARALLEL_LIMIT,
+        perJobParallel,
       );
       for (let j = 0; j < retryIdx.length; j++) {
         allResults[retryIdx[j]] = retried[j];
@@ -1470,9 +1509,13 @@ export async function setupAccountCheckWorker(prisma: PrismaClient, redis: Redis
     ? `veoHttp=${CHECK_VEO_URL} (browser pool fast-path; subprocess fallback if down)`
     : "veoHttp=off (subprocess only)";
   const stickyProxy = STICKY_PROXY_ENABLED ? "stickyProxy=on (hash email→same proxy)" : "stickyProxy=off (round-robin)";
+  const requireProxyOn = !/^(0|false|off|no)$/i.test(String(process.env.WARRANTY_REQUIRE_PROXY ?? "").trim());
+  const requireProxy = requireProxyOn
+    ? "requireProxy=on (no live proxy → fail to review, never raw IP)"
+    : "requireProxy=off (raw-IP fallback allowed)";
   const ambiguousRetryCount = Math.max(0, Number(process.env.ACCOUNT_CHECK_AMBIGUOUS_RETRY || 2));
   console.log(
-    `[account-check] Worker started. bullmqConcurrency=${concurrency} jobs/parallel, perJobParallel=${ACCOUNT_PARALLEL_LIMIT} chromes, peakChrome=${concurrency * ACCOUNT_PARALLEL_LIMIT}, spawnStagger=${SPAWN_STAGGER_MS}ms, proxies=${proxyCount}${proxyCount === 0 ? " (warning: no proxies configured)" : ""}, jobTimeout=${JOB_TIMEOUT_MS}ms, sweepInterval=${SWEEP_INTERVAL_MS}ms, retries=${ACCOUNT_RETRY_COUNT}+${ambiguousRetryCount}(ambiguous), veoDomainMassDie=${VEO_DOMAIN_DEAD_THRESHOLD}/${VEO_DOMAIN_DEAD_TTL_SEC}s, ${grokHttp}, ${veoHttp}, ${stickyProxy}`,
+    `[account-check] Worker started. bullmqConcurrency=${concurrency} jobs/parallel, perJobParallel=${ACCOUNT_PARALLEL_LIMIT} chromes (clamped ≤ live proxies), peakChrome=${concurrency * ACCOUNT_PARALLEL_LIMIT}, spawnStagger=${SPAWN_STAGGER_MS}ms, proxies=${proxyCount}${proxyCount === 0 ? " (warning: no proxies configured)" : ""}, jobTimeout=${JOB_TIMEOUT_MS}ms, sweepInterval=${SWEEP_INTERVAL_MS}ms, retries=${ACCOUNT_RETRY_COUNT}+${ambiguousRetryCount}(ambiguous), veoDomainMassDie=${VEO_DOMAIN_DEAD_THRESHOLD}/${VEO_DOMAIN_DEAD_TTL_SEC}s, ${grokHttp}, ${veoHttp}, ${stickyProxy}, ${requireProxy}`,
   );
   return { queue, worker, sweepTimer };
 }

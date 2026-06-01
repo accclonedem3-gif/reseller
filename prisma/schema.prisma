@@ -925,6 +925,9 @@ model WarrantyClaim {
   metadataJson          Json?               @map("metadata_json")
   targetAccountEmail    String?             @map("target_account_email")
   resolvedAt            DateTime?           @map("resolved_at")
+  // Audit: which user (seller/admin) manually resolved or rejected this claim. NULL for
+  // auto-resolved/auto-rejected (system) or legacy pre-audit claims. Money-movement attribution.
+  resolvedById          String?             @map("resolved_by_id")
   autoCheckStatus       String?             @map("auto_check_status")
   autoCheckTool         String?             @map("auto_check_tool")
   autoCheckJobId        String?             @map("auto_check_job_id")

@@ -253,6 +253,21 @@ function describeAutoCheckErrorType(errorType: string | null | undefined): {
   return { label: `⚠ ${errorType}`, tone: "info" };
 }
 
+// Maps the auto-check LIFECYCLE status (queued/running/completed/…) to a seller-friendly label so
+// the dashboard pill doesn't leak raw English enum codes like "running"/"overloaded" (BUG-5).
+function describeAutoCheckStatus(status: string | null | undefined): string {
+  const s = String(status || "").toLowerCase();
+  if (s === "queued") return "Đang chờ kiểm tra";
+  if (s === "running") return "Đang kiểm tra";
+  if (s === "completed") return "Đã kiểm tra xong";
+  if (s === "failed") return "Kiểm tra lỗi";
+  if (s === "unsupported") return "Không hỗ trợ tự kiểm";
+  if (s === "overloaded") return "Hệ thống quá tải";
+  if (s === "cancelled") return "Đã huỷ kiểm tra";
+  if (s === "skipped") return "Bỏ qua kiểm tra";
+  return status ? String(status) : "—";
+}
+
 // Clear, specific verdict for ONE account result — replaces the vague "die". Says exactly which
 // state: còn hạn (gói gì) / tụt Free (gốc gì) / bị khoá / sai mật khẩu / lỗi check. Priority order
 // matters: a login FAILURE (wrong_password/proxy/2fa/timeout) means we couldn't verify → it is NOT
@@ -321,7 +336,7 @@ function isClosedClaim(status: string) {
   return ["auto_resolved", "resolved_manual", "rejected"].includes(String(status || "").toLowerCase());
 }
 
-function StatusPill({ status }: { status: string }) {
+function StatusPill({ status, lang = "vi" }: { status: string; lang?: "vi" | "en" | "th" }) {
   const tone = getTone(status);
   const style = {
     success: { dot: "bg-emerald-400", color: "rgb(52,211,153)", bg: "rgba(52,211,153,0.1)", border: "rgba(52,211,153,0.2)" },
@@ -336,7 +351,7 @@ function StatusPill({ status }: { status: string }) {
       style={{ background: style.bg, border: `1px solid ${style.border}`, color: style.color }}
     >
       <span className={`h-1.5 w-1.5 rounded-full ${style.dot}`} />
-      {formatStatusLabel(status)}
+      {formatStatusLabel(status, lang)}
     </span>
   );
 }
@@ -592,10 +607,10 @@ export function WarrantyClaimsPage() {
                         className="rounded-md px-2.5 py-1 text-[11px] font-black uppercase"
                         style={{ background: "var(--inp)", border: "1px solid var(--bd)", color: "var(--tx-m)" }}
                       >
-                        {formatStatusLabel(claim.warrantyPolicy)}
+                        {formatStatusLabel(claim.warrantyPolicy, lang)}
                       </span>
                     )}
-                    <StatusPill status={claim.status} />
+                    <StatusPill status={claim.status} lang={lang} />
                   </div>
                 </div>
 
@@ -616,10 +631,10 @@ export function WarrantyClaimsPage() {
                       {t.colOrder}
                     </p>
                     <p className="text-[13px] font-semibold" style={{ color: "var(--tx)" }}>
-                      {formatStatusLabel(claim.order?.status)}
+                      {formatStatusLabel(claim.order?.status, lang)}
                     </p>
                     <p className="mt-0.5 text-[12px]" style={{ color: "var(--tx-f)" }}>
-                      {t.modeLabel}: {formatStatusLabel(claim.deliveryMode)}
+                      {t.modeLabel}: {formatStatusLabel(claim.deliveryMode, lang)}
                     </p>
                   </div>
 
@@ -685,7 +700,7 @@ export function WarrantyClaimsPage() {
                                   : "rgb(59,130,246)",
                           }}
                         >
-                          {claim.autoCheck.status}
+                          {describeAutoCheckStatus(claim.autoCheck.status)}
                         </span>
                         {!closed
                           && claim.autoCheck.status

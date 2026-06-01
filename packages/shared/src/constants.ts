@@ -30,6 +30,10 @@ export const SYSTEM_CONFIG_KEYS = {
   // Format mỗi dòng: scheme://[user:pass@]host:port  OR  host:port[:user:pass]
   // Worker rotate round-robin theo index account, không proxy thì warranty check chạy raw IP.
   warrantyCheckProxies: "warranty.check.proxies",
+  // Cổng duyệt hoàn tiền: khi tool báo acc CHẾT + hết hàng thay, nếu số tiền hoàn DỰ KIẾN > ngưỡng
+  // này (VNĐ) thì KHÔNG auto-hoàn ví mà chuyển PENDING_REVIEW cho seller duyệt tay — chống
+  // false-dead (tool báo chết nhầm) hoàn nhầm số lớn không thu hồi được. 0 = tắt (auto-hoàn mọi mức).
+  warrantyRefundReviewAboveVnd: "warranty.refund.reviewAboveVnd",
 } as const;
 
 export const WARRANTY_AUTO_CHECK_STATUS = {

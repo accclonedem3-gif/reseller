@@ -36,8 +36,8 @@ export class WarrantyAutoCheckService {
     void this.cache.del(`wac:status:${claimId}`);
   }
 
-  async getConfig(): Promise<{ overloadThreshold: number; cooldownDays: number }> {
-    const cached = this.cache.memoGet<{ overloadThreshold: number; cooldownDays: number }>(
+  async getConfig(): Promise<{ overloadThreshold: number; cooldownDays: number; refundReviewAboveVnd: number }> {
+    const cached = this.cache.memoGet<{ overloadThreshold: number; cooldownDays: number; refundReviewAboveVnd: number }>(
       "wac:config",
     );
     if (cached) return cached;
@@ -47,6 +47,7 @@ export class WarrantyAutoCheckService {
           in: [
             SYSTEM_CONFIG_KEYS.warrantyCheckConcurrency,
             SYSTEM_CONFIG_KEYS.warrantyCooldownDays,
+            SYSTEM_CONFIG_KEYS.warrantyRefundReviewAboveVnd,
           ],
         },
       },
@@ -56,7 +57,10 @@ export class WarrantyAutoCheckService {
     const concurrency = Number.isFinite(concurrencyRaw) && concurrencyRaw > 0 ? Math.floor(concurrencyRaw) : 3;
     const cooldownRaw = Number(map.get(SYSTEM_CONFIG_KEYS.warrantyCooldownDays) ?? 7);
     const cooldownDays = Number.isFinite(cooldownRaw) && cooldownRaw >= 0 ? Math.floor(cooldownRaw) : 7;
-    const result = { overloadThreshold: concurrency * 4, cooldownDays };
+    // 0 (or unset/invalid) = disabled → auto-refund at any amount (current behavior).
+    const refundReviewRaw = Number(map.get(SYSTEM_CONFIG_KEYS.warrantyRefundReviewAboveVnd) ?? 0);
+    const refundReviewAboveVnd = Number.isFinite(refundReviewRaw) && refundReviewRaw > 0 ? Math.floor(refundReviewRaw) : 0;
+    const result = { overloadThreshold: concurrency * 4, cooldownDays, refundReviewAboveVnd };
     this.cache.memoSet("wac:config", result, 30);
     return result;
   }
@@ -598,6 +602,15 @@ export class WarrantyAutoCheckService {
 
     // Verify access token before exposing deliveredAccountText (which contains credentials).
     const metaJson = claim.metadataJson as Record<string, unknown> | null;
+    // Customer-safe refund summary (the customer's OWN refund — not sensitive). Extract from
+    // metadata BEFORE it's stripped below, so the web polling UI can show "Đã hoàn Xđ vào ví"
+    // (BUG-1: web previously showed nothing on refund). refundAmount is the authoritative signal
+    // that a wallet refund happened (replacementCostSnapshot is reused for manual-replacement cost).
+    const publicRefundAmount =
+      typeof metaJson?.refundAmount === "number" && metaJson.refundAmount > 0
+        ? (metaJson.refundAmount as number)
+        : null;
+    const publicRefundHeldForReview = metaJson?.refundHeldForReview === true;
     const storedHash = typeof metaJson?.accessTokenHash === "string" ? metaJson.accessTokenHash : null;
     const tokenOk = !!accessToken && !!storedHash && this.hashToken(accessToken) === storedHash;
     if (!tokenOk) {
@@ -678,7 +691,7 @@ export class WarrantyAutoCheckService {
     }
 
     (claim as any).orderId = undefined;
-    return { ...claim, queuePosition, queueState, queueAheadCount, autoCheckProgress, invoice: invoiceOut, softFailed, publicErrorType };
+    return { ...claim, queuePosition, queueState, queueAheadCount, autoCheckProgress, invoice: invoiceOut, softFailed, publicErrorType, refundAmount: publicRefundAmount, refundHeldForReview: publicRefundHeldForReview };
   }
 
   // Mirror of WarrantyService.buildPublicInvoice — kept here to avoid a cross-service

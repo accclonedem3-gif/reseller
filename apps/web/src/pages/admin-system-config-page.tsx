@@ -179,6 +179,18 @@ export function AdminSystemConfigPage() {
             />
           </Field>
           <Field
+            label="Ngưỡng duyệt tay khi hoàn tiền (VNĐ, 0 = tắt)"
+            description="Khi tool báo acc CHẾT + hết hàng thay, nếu tiền hoàn dự kiến VƯỢT ngưỡng này thì KHÔNG tự hoàn ví mà chuyển cho shop duyệt tay (chống tool báo chết nhầm → hoàn nhầm số lớn). Đặt 0 = tự hoàn mọi mức (như cũ). Gợi ý: đặt ~ giá 1 đơn lớn nhất."
+          >
+            <Input
+              type="number"
+              min={0}
+              step={1000}
+              value={form["warranty.refund.reviewAboveVnd"] ?? "0"}
+              onChange={(e) => handleChange("warranty.refund.reviewAboveVnd", e.target.value)}
+            />
+          </Field>
+          <Field
             label="Số luồng check song song (số đơn cùng lúc)"
             description="Bao nhiêu ĐƠN xử lý song song. Hàng chờ quá ngưỡng × 4 sẽ báo 'hệ thống quá tải' với customer. VPS 4GB nên để 1."
           >
@@ -206,7 +218,8 @@ export function AdminSystemConfigPage() {
             label="Proxy cho tool check (mỗi proxy 1 dòng)"
             description={
               "Worker rotate round-robin theo từng account. Format: scheme://[user:pass@]host:port hoặc host:port[:user:pass]. " +
-              "Để trống = check chạy raw IP server (Google/X dễ ban). Khuyến nghị ≥ 20 proxy residential nếu deploy production."
+              "Mặc định bật chống-ban (WARRANTY_REQUIRE_PROXY): trống / tất cả proxy chết = check KHÔNG chạy IP server nữa mà chuyển claim sang chờ duyệt. " +
+              "Số login đồng thời tự giới hạn ≤ số proxy sống. Khuyến nghị ≥ 20 proxy residential nếu deploy production."
             }
           >
             <textarea
