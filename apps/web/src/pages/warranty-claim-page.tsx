@@ -976,7 +976,6 @@ export function WarrantyClaimPage() {
                 <button
                   key={order.orderId}
                   type="button"
-                  disabled={order.hasActiveClaim}
                   onClick={() => setSelectedOrder(order.orderId === selectedOrder?.orderId ? null : order)}
                   className="w-full rounded-[12px] border p-4 text-left transition-all duration-150 disabled:opacity-50"
                   style={{
@@ -1166,9 +1165,14 @@ export function WarrantyClaimPage() {
             </div>
           )}
 
+          {/* When the order already has an active claim, the customer can still SELECT it to view /
+              re-copy the replacement above, but can't file a new claim — show why, disable submit. */}
+          {selectedOrder?.hasActiveClaim && (
+            <p className="text-center text-xs font-medium text-amber-500">{t.activeClaim}</p>
+          )}
           <button
             type="button"
-            disabled={!selectedOrder || loading}
+            disabled={!selectedOrder || loading || !!selectedOrder?.hasActiveClaim}
             onClick={handleSubmitClaim}
             className="flex w-full items-center justify-center gap-2 rounded-[12px] py-2.5 text-sm font-bold transition hover:opacity-90 disabled:opacity-50"
             style={{ background: "rgb(16,185,129)", color: "white" }}
