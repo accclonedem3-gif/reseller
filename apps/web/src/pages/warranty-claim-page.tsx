@@ -14,9 +14,9 @@ const T = {
     labelContact: "Thông tin liên hệ",
     phContact: "SĐT/Zalo hoặc @username Telegram",
     hintContact: "Để xác định bạn là người mua hàng",
-    labelAccount: "Tài khoản đã mua",
-    phAccount: "Nhập tên đăng nhập / email tài khoản đã nhận",
-    hintAccount: "Tài khoản bạn đã nhận từ shop, dùng để tìm đơn hàng",
+    labelAccount: "Tài khoản đã mua / Mã hóa đơn",
+    phAccount: "Nhập tài khoản đã nhận, hoặc mã hóa đơn (ORD-...)",
+    hintAccount: "Khách lẻ: nhập tài khoản đang dùng → bảo hành đúng tài khoản đó. Nếu có mã hóa đơn (ORD-...): nhập để xem cả hóa đơn và chọn tài khoản.",
     labelClaimCode: "Mã bảo hành",
     phClaimCode: "Nhập mã bảo hành trong tin nhắn nhận tài khoản",
     hintClaimCode: "Mã bí mật shop gửi kèm khi giao tài khoản (đơn cũ trước đây có thể bỏ trống)",
@@ -35,6 +35,12 @@ const T = {
     claimAccountsTitle: "Tài khoản cần bảo hành",
     claimAccountsHint: "Nhập username/email các tài khoản lỗi, cách nhau bởi dấu phẩy hoặc xuống dòng. Để trống = bảo hành toàn bộ hóa đơn.",
     claimAccountsPh: "user1@gmail.com, user2@gmail.com ...",
+    acctModeHint: "Bạn đang yêu cầu bảo hành cho tài khoản này:",
+    orderModeHint: "Chọn (các) tài khoản trong đơn cần bảo hành:",
+    selectAllLabel: "Chọn tất cả",
+    clearAllLabel: "Bỏ chọn tất cả",
+    changedPwToggle: "Tôi đã đổi mật khẩu (nhập mật khẩu mới cho từng tài khoản)",
+    newPwPh: "Mật khẩu mới",
     submitBtn: "Gửi yêu cầu bảo hành",
     successTitle: "Bảo hành đã được duyệt!",
     successOrder: (code: string) => `Đơn #${code}`,
@@ -91,9 +97,9 @@ const T = {
     labelContact: "Contact information",
     phContact: "Phone/Zalo or @username Telegram",
     hintContact: "To verify you are the buyer",
-    labelAccount: "Purchased account",
-    phAccount: "Enter the username / email of the account you received",
-    hintAccount: "The account you received from the shop, used to find your order",
+    labelAccount: "Purchased account / Order code",
+    phAccount: "Enter the account you received, or an order code (ORD-...)",
+    hintAccount: "Retail buyer: enter your account → warranty just that account. Have an order code (ORD-...)? Enter it to see the full invoice and pick accounts.",
     labelClaimCode: "Warranty code",
     phClaimCode: "Enter the warranty code from your delivery message",
     hintClaimCode: "The secret code the shop sent with your account (older orders may leave this blank)",
@@ -112,6 +118,12 @@ const T = {
     claimAccountsTitle: "Accounts to warranty",
     claimAccountsHint: "Enter usernames/emails of broken accounts, separated by commas or newlines. Leave blank = warranty entire order.",
     claimAccountsPh: "user1@gmail.com, user2@gmail.com ...",
+    acctModeHint: "You are requesting warranty for this account:",
+    orderModeHint: "Select the account(s) in this order to warranty:",
+    selectAllLabel: "Select all",
+    clearAllLabel: "Clear all",
+    changedPwToggle: "I changed the password (enter a new password per account)",
+    newPwPh: "New password",
     submitBtn: "Submit warranty claim",
     successTitle: "Warranty approved!",
     successOrder: (code: string) => `Order #${code}`,
@@ -168,9 +180,9 @@ const T = {
     labelContact: "ข้อมูลติดต่อ",
     phContact: "เบอร์โทร/Zalo หรือ @username Telegram",
     hintContact: "เพื่อยืนยันว่าคุณเป็นผู้ซื้อ",
-    labelAccount: "บัญชีที่ซื้อ",
-    phAccount: "ใส่ชื่อผู้ใช้ / อีเมลของบัญชีที่ได้รับ",
-    hintAccount: "บัญชีที่คุณได้รับจากร้านค้า ใช้สำหรับค้นหาคำสั่งซื้อ",
+    labelAccount: "บัญชีที่ซื้อ / รหัสคำสั่งซื้อ",
+    phAccount: "กรอกบัญชีที่ได้รับ หรือรหัสคำสั่งซื้อ (ORD-...)",
+    hintAccount: "ลูกค้าปลีก: กรอกบัญชีของคุณ → รับประกันเฉพาะบัญชีนั้น มีรหัสคำสั่งซื้อ (ORD-...)? กรอกเพื่อดูใบเสร็จและเลือกบัญชี",
     labelClaimCode: "รหัสรับประกัน",
     phClaimCode: "กรอกรหัสรับประกันจากข้อความรับบัญชี",
     hintClaimCode: "รหัสลับที่ร้านส่งมาพร้อมบัญชี (คำสั่งซื้อเก่าสามารถเว้นว่างได้)",
@@ -189,6 +201,12 @@ const T = {
     claimAccountsTitle: "บัญชีที่ต้องการรับประกัน",
     claimAccountsHint: "ใส่ username/email ของบัญชีที่มีปัญหา คั่นด้วยจุลภาคหรือขึ้นบรรทัดใหม่ เว้นว่าง = รับประกันทั้งคำสั่งซื้อ",
     claimAccountsPh: "user1@gmail.com, user2@gmail.com ...",
+    acctModeHint: "คุณกำลังขอรับประกันบัญชีนี้:",
+    orderModeHint: "เลือกบัญชีในคำสั่งซื้อที่ต้องการรับประกัน:",
+    selectAllLabel: "เลือกทั้งหมด",
+    clearAllLabel: "ล้างการเลือก",
+    changedPwToggle: "ฉันเปลี่ยนรหัสผ่านแล้ว (กรอกรหัสผ่านใหม่ของแต่ละบัญชี)",
+    newPwPh: "รหัสผ่านใหม่",
     submitBtn: "ส่งคำร้องขอรับประกัน",
     successTitle: "อนุมัติการรับประกันแล้ว!",
     successOrder: (code: string) => `คำสั่งซื้อ #${code}`,
@@ -242,8 +260,10 @@ type Step = "form" | "confirm" | "result";
 
 type OrderResult = {
   orderId: string;
-  orderCode: string;
+  orderCode: string | null; // null in account-search mode (hidden from retail customers)
+  searchMode?: "account" | "order";
   productName: string;
+  productImageUrl?: string | null;
   deliveredAt: string | null;
   warrantyExpiresAt: string | null;
   warrantyPolicy: string | null;
@@ -555,7 +575,6 @@ export function WarrantyClaimPage() {
 
   const [contactInfo, setContactInfo] = useState("");
   const [accountText, setAccountText] = useState("");
-  const [claimCode, setClaimCode] = useState("");
   const [message, setMessage] = useState("");
   const [claimAccountsText, setClaimAccountsText] = useState("");
   const [hasNewPassword, setHasNewPassword] = useState(false);
@@ -586,6 +605,32 @@ export function WarrantyClaimPage() {
       return targets.some((t) => e === t || e.split("@")[0] === t || e.startsWith(t));
     });
   }, [selectedOrder, claimAccountsText]);
+
+  // Set of currently-selected account emails (claimAccountsText is the source of truth).
+  const selectedAccountSet = useMemo(
+    () => new Set(claimAccountsText.split(/[\n,;]+/).map((s) => s.trim().toLowerCase()).filter(Boolean)),
+    [claimAccountsText],
+  );
+  // Checkbox toggle (order-code mode: customer ticks which accounts of the invoice to warranty).
+  function toggleAccount(email: string) {
+    const all = selectedOrder?.accountUsernames || [];
+    const next = new Set(selectedAccountSet);
+    const e = email.toLowerCase();
+    if (next.has(e)) next.delete(e); else next.add(e);
+    setClaimAccountsText(all.filter((a) => next.has(a.toLowerCase())).join("\n"));
+  }
+  function toggleAllAccounts() {
+    const all = selectedOrder?.accountUsernames || [];
+    setClaimAccountsText(selectedAccountSet.size >= all.length ? "" : all.join("\n"));
+  }
+
+  // Account-search mode → auto-select the single scoped account so the retail customer just submits.
+  useEffect(() => {
+    if (selectedOrder?.searchMode === "account" && selectedOrder.accountUsernames?.length) {
+      setClaimAccountsText(selectedOrder.accountUsernames.join("\n"));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedOrder?.orderId]);
 
   useEffect(() => {
     if (!shopSlug) return;
@@ -649,9 +694,6 @@ export function WarrantyClaimPage() {
 
   async function handleSearch(e: React.FormEvent) {
     e.preventDefault();
-    // claimCode is NOT hard-required here: legacy orders predating the feature carry no code, and the
-    // backend (claimCodeMatches) allows those through while still enforcing an exact match for any
-    // order that does carry a code. Blocking on empty here would lock legacy buyers out entirely.
     if (!contactInfo.trim() || !accountText.trim()) {
       setError(t.errRequired);
       return;
@@ -659,11 +701,12 @@ export function WarrantyClaimPage() {
     setError(null);
     setLoading(true);
     try {
+      // accountText accepts EITHER an account (retail customer → warranties just that account)
+      // OR an order code (reseller → full invoice). The backend detects the mode.
       const res = await api.post<SearchResponse>("/public/warranty/search", {
         shopSlug,
         accountText: accountText.trim(),
         contactInfo: contactInfo.trim(),
-        claimCode: claimCode.trim(),
       });
       setOrders(res.data.orders);
       if (res.data.orders.length === 0) {
@@ -706,15 +749,22 @@ export function WarrantyClaimPage() {
         const parsedTargetUsernames = claimAccountsText.trim()
         ? claimAccountsText.split(/[\n,;]+/).map((s) => s.trim()).filter(Boolean)
         : undefined;
-      // Password-change override removed from the UI — no longer sent. Auto-check uses the order's
-      // delivered password; a changed password soft-fails → seller review.
+      // Per-account new passwords: when the customer toggled "đã đổi mật khẩu" and typed a new pw
+      // for an account, send it so the auto-check tool can log in with the changed password.
+      const passwordOverrides = hasNewPassword
+        ? Object.fromEntries(
+            Object.entries(passwordMap)
+              .map(([k, v]) => [k, String(v || "").trim()] as const)
+              .filter(([, v]) => v.length > 0),
+          )
+        : undefined;
       const res = await api.post<ClaimResponse>("/public/warranty/claim", {
         orderId: selectedOrder.orderId,
         shopSlug,
         contactInfo: contactInfo.trim(),
-        claimCode: claimCode.trim(),
         customerMessage: message.trim() || undefined,
         targetUsernames: parsedTargetUsernames,
+        passwordOverrides: passwordOverrides && Object.keys(passwordOverrides).length > 0 ? passwordOverrides : undefined,
         idempotencyKey: idempotencyKeyRef.current,
       });
       setResult(res.data);
@@ -862,13 +912,6 @@ export function WarrantyClaimPage() {
               onChange={setAccountText}
               hint={t.hintAccount}
             />
-            <InputField
-              label={t.labelClaimCode}
-              placeholder={t.phClaimCode}
-              value={claimCode}
-              onChange={setClaimCode}
-              hint={t.hintClaimCode}
-            />
 
             {error && (
               <div
@@ -923,13 +966,27 @@ export function WarrantyClaimPage() {
                   }}
                 >
                   <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <p className="truncate text-sm font-semibold" style={{ color: "var(--tx)" }}>
-                        {order.productName}
-                      </p>
-                      <p className="mt-0.5 text-xs font-mono" style={{ color: "var(--tx-m)" }}>
-                        #{order.orderCode}
-                      </p>
+                    <div className="flex min-w-0 items-center gap-3">
+                      {order.productImageUrl && (
+                        <img
+                          src={order.productImageUrl}
+                          alt=""
+                          className="h-10 w-10 shrink-0 rounded-[8px] object-cover"
+                          style={{ border: "1px solid var(--bd)" }}
+                          onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}
+                        />
+                      )}
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-semibold" style={{ color: "var(--tx)" }}>
+                          {order.productName}
+                        </p>
+                        {/* Order code shown only in order-code (reseller) mode; hidden from retail account search. */}
+                        {order.orderCode && (
+                          <p className="mt-0.5 text-xs font-mono" style={{ color: "var(--tx-m)" }}>
+                            #{order.orderCode}
+                          </p>
+                        )}
+                      </div>
                     </div>
                     {selectedOrder?.orderId === order.orderId && (
                       <CheckCircle className="mt-0.5 h-4 w-4 shrink-0 text-emerald-500" />
@@ -956,18 +1013,81 @@ export function WarrantyClaimPage() {
             <Card>
               <div className="space-y-4">
                 <div>
-                  <h3 className="mb-1 text-sm font-bold" style={{ color: "var(--tx)" }}>
-                    {t.claimAccountsTitle}
-                  </h3>
-                  <p className="mb-2 text-xs" style={{ color: "var(--tx-f)" }}>{t.claimAccountsHint}</p>
-                  <textarea
-                    value={claimAccountsText}
-                    onChange={(e) => setClaimAccountsText(e.target.value)}
-                    placeholder={t.claimAccountsPh}
-                    rows={3}
-                    className="w-full resize-none rounded-[10px] border px-3.5 py-2.5 text-sm outline-none"
-                    style={{ background: "var(--inp)", borderColor: "var(--bd)", color: "var(--tx)" }}
-                  />
+                  <div className="mb-1 flex items-center justify-between">
+                    <h3 className="text-sm font-bold" style={{ color: "var(--tx)" }}>
+                      {t.claimAccountsTitle}
+                    </h3>
+                    {selectedOrder.searchMode !== "account" && (selectedOrder.accountUsernames?.length || 0) > 1 && (
+                      <button
+                        type="button"
+                        onClick={toggleAllAccounts}
+                        className="text-xs font-medium text-emerald-600 transition hover:opacity-70"
+                      >
+                        {selectedAccountSet.size >= (selectedOrder.accountUsernames?.length || 0) ? t.clearAllLabel : t.selectAllLabel}
+                      </button>
+                    )}
+                  </div>
+                  <p className="mb-2 text-xs" style={{ color: "var(--tx-f)" }}>
+                    {selectedOrder.searchMode === "account" ? t.acctModeHint : t.orderModeHint}
+                  </p>
+                  <div className="space-y-1.5">
+                    {(selectedOrder.accountUsernames || []).map((email) => {
+                      const checked = selectedAccountSet.has(email.toLowerCase());
+                      const isAcctMode = selectedOrder.searchMode === "account";
+                      return (
+                        <label
+                          key={email}
+                          className="flex cursor-pointer items-center gap-2.5 rounded-[10px] border px-3 py-2.5"
+                          style={{
+                            background: checked ? "rgba(16,185,129,0.06)" : "var(--inp)",
+                            borderColor: checked ? "rgb(16,185,129)" : "var(--bd)",
+                          }}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            disabled={isAcctMode}
+                            onChange={() => toggleAccount(email)}
+                            className="h-4 w-4 accent-emerald-500"
+                          />
+                          <span className="truncate font-mono text-sm" style={{ color: "var(--tx)" }}>{email}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+
+                  {/* "Đã đổi mật khẩu" → reveal a NEW-password input per selected account so the
+                      auto-check tool can log in with the changed password. */}
+                  {accountsForPwdGrid.length > 0 && (
+                    <div className="mt-3">
+                      <label className="flex cursor-pointer items-center gap-2 text-sm" style={{ color: "var(--tx-m)" }}>
+                        <input
+                          type="checkbox"
+                          checked={hasNewPassword}
+                          onChange={(e) => setHasNewPassword(e.target.checked)}
+                          className="h-4 w-4 accent-emerald-500"
+                        />
+                        {t.changedPwToggle}
+                      </label>
+                      {hasNewPassword && (
+                        <div className="mt-2 space-y-2">
+                          {accountsForPwdGrid.map((email) => (
+                            <div key={email} className="flex items-center gap-2">
+                              <span className="w-32 shrink-0 truncate font-mono text-xs" style={{ color: "var(--tx-f)" }}>{email}</span>
+                              <input
+                                type="text"
+                                value={passwordMap[email] || ""}
+                                onChange={(e) => setPasswordMap((m) => ({ ...m, [email]: e.target.value }))}
+                                placeholder={t.newPwPh}
+                                className="min-w-0 flex-1 rounded-[8px] border px-2.5 py-1.5 text-sm outline-none"
+                                style={{ background: "var(--inp)", borderColor: "var(--bd)", color: "var(--tx)" }}
+                              />
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
                 <div>
                   <h3 className="mb-1 text-sm font-bold" style={{ color: "var(--tx)" }}>
@@ -1145,7 +1265,6 @@ export function WarrantyClaimPage() {
                     setSelectedOrder(null);
                     setClaimAccountsText("");
                     setAccountText("");
-                    setClaimCode("");
                     setMessage("");
                     setHasNewPassword(false);
                     setPasswordMap({});

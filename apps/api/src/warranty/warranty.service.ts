@@ -3717,26 +3717,37 @@ export class WarrantyService {
     if (!accountText || accountText.length < 3) {
       throw new BadRequestException("Vui lòng nhập ít nhất 3 ký tự để tra cứu.");
     }
-    // BUG-5 fix: also match orders whose latest warranty replacement contains the queried account.
-    // (order.deliveredAccountText stays as original; replacement accounts live on warranty claims.)
+    // Two lookup modes:
+    //  - ORDER-CODE (input starts with the order-code prefix): the reseller who owns the order
+    //    enters its code → return the FULL invoice + every account (they pick which to warranty).
+    //  - ACCOUNT (default): a retail end-customer enters the account they're using → return ONLY
+    //    that account, and DON'T reveal the order code (one order may have been split across
+    //    several different retail customers, so each only sees/warranties their own account).
+    const isOrderCodeSearch = /^ORD-[0-9]/i.test(accountText);
     const orders = await this.prisma.order.findMany({
       where: {
         shopId: shop.id,
         status: OrderStatus.DELIVERED,
-        OR: [
-          { deliveredAccountText: { contains: accountText, mode: "insensitive" } },
-          {
-            warrantyClaims: {
-              some: {
-                status: { in: ["AUTO_RESOLVED", "RESOLVED_MANUAL"] as any },
-                deliveredAccountText: { contains: accountText, mode: "insensitive" },
-              },
-            },
-          },
-        ],
+        ...(isOrderCodeSearch
+          ? { orderCode: { equals: accountText, mode: "insensitive" } }
+          : {
+              // also match orders whose latest replacement contains the queried account
+              OR: [
+                { deliveredAccountText: { contains: accountText, mode: "insensitive" } },
+                {
+                  warrantyClaims: {
+                    some: {
+                      status: { in: ["AUTO_RESOLVED", "RESOLVED_MANUAL"] as any },
+                      deliveredAccountText: { contains: accountText, mode: "insensitive" },
+                    },
+                  },
+                },
+              ],
+            }),
       },
+      include: { sourceProduct: { select: { imageUrl: true, productIcon: true, iconCustomEmojiId: true } } },
       orderBy: { deliveredAt: "desc" },
-      take: 5,
+      take: isOrderCodeSearch ? 1 : 5,
     });
 
     // #21 anti-harvest: the DB query above uses a loose `contains` (good for indexing), but a
@@ -3758,26 +3769,24 @@ export class WarrantyService {
 
     const results = [];
     for (const order of orders) {
-      // Gate: the query must be a full account token in the original delivery OR in a resolved
-      // replacement for this order. Otherwise it's a fragment match → skip (no enumeration).
-      let _orderTokenMatch = _matchesFullAccount(order.deliveredAccountText);
-      if (!_orderTokenMatch) {
-        const _replResolved = await this.prisma.warrantyClaim.findMany({
-          where: {
-            orderId: order.id,
-            status: { in: ["AUTO_RESOLVED", "RESOLVED_MANUAL"] as any },
-            deliveredAccountText: { not: null },
-          },
-          select: { deliveredAccountText: true },
-        });
-        _orderTokenMatch = _replResolved.some((r) => _matchesFullAccount(r.deliveredAccountText));
+      // ORDER-CODE mode: the exact code already proves which order → no per-account token gate.
+      // ACCOUNT mode: the query must be a FULL account token in the original delivery OR in a
+      // resolved replacement for this order — otherwise it's a fragment match → skip (no enumeration).
+      if (!isOrderCodeSearch) {
+        let _orderTokenMatch = _matchesFullAccount(order.deliveredAccountText);
+        if (!_orderTokenMatch) {
+          const _replResolved = await this.prisma.warrantyClaim.findMany({
+            where: {
+              orderId: order.id,
+              status: { in: ["AUTO_RESOLVED", "RESOLVED_MANUAL"] as any },
+              deliveredAccountText: { not: null },
+            },
+            select: { deliveredAccountText: true },
+          });
+          _orderTokenMatch = _replResolved.some((r) => _matchesFullAccount(r.deliveredAccountText));
+        }
+        if (!_orderTokenMatch) continue;
       }
-      if (!_orderTokenMatch) continue;
-
-      // Ownership gate: when the order carries a per-order claim code, the searcher must present
-      // the matching one. Silent skip (not throw) so a wrong/absent code yields "no orders found"
-      // rather than confirming an order exists for that account text (anti-enumeration).
-      if (!this.claimCodeMatches(dto.claimCode, order.warrantyClaimCode)) continue;
 
       const snapshot =
         order.warrantyStartedAt && order.warrantyDeliveryModeSnapshot
@@ -3833,17 +3842,34 @@ export class WarrantyService {
       // by a prior resolved claim — those won't be auto-checked again, so they shouldn't
       // appear as choices in the per-account password grid either.
       const _searchReplacedSet = await this.autoCheckService.getReplacedEmailSet(order.id);
-      const accountUsernames = this.autoCheckService
+      const _allAccountUsernames = this.autoCheckService
         .filterOutReplaced(
           this.autoCheckService.parseAllCredentials(order.deliveredAccountText),
           _searchReplacedSet,
         )
         .map((c) => c.email);
+      // ACCOUNT mode: scope to ONLY the searched account (a retail customer warranties just their
+      // own account, not the whole order). Fall back to the raw query if the account isn't in the
+      // original list (e.g. they're searching a replacement they received).
+      const accountUsernames = isOrderCodeSearch
+        ? _allAccountUsernames
+        : (() => {
+            const m = _allAccountUsernames.filter((e) => {
+              const em = e.toLowerCase();
+              return em === _q || (em.split("@")[0] || em) === _q || _q.includes(em);
+            });
+            return m.length > 0 ? m : [accountText];
+          })();
+
+      const _prodIcon = order.sourceProduct?.imageUrl || order.sourceProduct?.productIcon || null;
 
       results.push({
         orderId: order.id,
-        orderCode: order.orderCode,
+        // Hide the order code from retail (account) searchers — they only know/need their own account.
+        orderCode: isOrderCodeSearch ? order.orderCode : null,
+        searchMode: isOrderCodeSearch ? "order" : "account",
         productName: order.productNameSnapshot,
+        productImageUrl: _prodIcon,
         deliveredAt: order.deliveredAt,
         warrantyExpiresAt: snapshot.warrantyExpiresAt,
         warrantyPolicy: snapshot.warrantyPolicySnapshot?.toLowerCase(),
@@ -3958,14 +3984,6 @@ export class WarrantyService {
 
     if (!order) {
       throw new NotFoundException("Order not found.");
-    }
-
-    // Ownership gate: when the order carries a per-order claim code, the public submitter must
-    // present the matching one. Throw (submit is an explicit action on a known orderId).
-    if (!this.claimCodeMatches(dto.claimCode, order.warrantyClaimCode)) {
-      throw new BadRequestException(
-        "Mã bảo hành không đúng. Vui lòng kiểm tra lại mã trong tin nhắn nhận tài khoản.",
-      );
     }
 
     const isPro = order.seller?.tier === SellerTier.PRO;
@@ -5049,10 +5067,18 @@ export class WarrantyService {
     originalDeliveredAccountText: string | null | undefined,
   ): Promise<Set<string>> {
     const set = new Set<string>();
-    for (const entry of this.parseDeliveredAccounts(originalDeliveredAccountText)) {
-      const u = this.extractUsername(entry);
-      if (u) set.add(u);
-    }
+    // Use the SAME credential parser as publicSearchOrders (parseAllCredentials) so search and
+    // submit agree on which accounts an order contains. The older parseDeliveredAccounts split on
+    // DOUBLE newlines, but accounts are delivered ONE-PER-LINE (single newline) → it collapsed a
+    // multi-account order to just the first account, so warranty-ing account #2+ was wrongly
+    // rejected as "không thuộc đơn hàng này".
+    const addFrom = (text: string | null | undefined) => {
+      for (const c of this.autoCheckService.parseAllCredentials(text)) {
+        const bare = (c.email || "").toLowerCase().trim().split("@")[0];
+        if (bare) set.add(bare);
+      }
+    };
+    addFrom(originalDeliveredAccountText);
     const replacementClaims = await this.prisma.warrantyClaim.findMany({
       where: {
         orderId,
@@ -5061,12 +5087,7 @@ export class WarrantyService {
       },
       select: { deliveredAccountText: true },
     });
-    for (const c of replacementClaims) {
-      for (const entry of this.parseDeliveredAccounts(c.deliveredAccountText)) {
-        const u = this.extractUsername(entry);
-        if (u) set.add(u);
-      }
-    }
+    for (const c of replacementClaims) addFrom(c.deliveredAccountText);
     return set;
   }
 
