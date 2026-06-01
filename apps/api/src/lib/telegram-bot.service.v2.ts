@@ -3837,7 +3837,20 @@ export class TelegramBotService {
       const expiresStr = expiresAt ? fmtDate(expiresAt) : "vĩnh viễn";
       const createdStr = fmtDate(o.createdAt);
       const policyShort = this.formatWarrantyPolicyShort(o.warrantyPolicySnapshot);
-      const accountText = (o.deliveredAccountText || "").trim();
+      // Looked up by ACCOUNT (email) → show ONLY the matched account + hide order-level economics
+      // (order code, qty·total, buyer, refund). One order may be resold to several different
+      // end-customers, so a per-account lookup shows just that one account, not the whole invoice.
+      const isAccountLookup = keyword.includes("@");
+      const _kwLower = keyword.toLowerCase();
+      let accountText = (o.deliveredAccountText || "").trim();
+      if (isAccountLookup && accountText) {
+        const matched = accountText
+          .split(/\r?\n+/)
+          .map((l) => l.trim())
+          .filter(Boolean)
+          .filter((l) => l.toLowerCase().includes(_kwLower));
+        if (matched.length > 0) accountText = matched.join("\n");
+      }
 
       // Buyer label — prefer @username, fall back to first name, then telegram id.
       // Customers verify it's their own order; sellers cross-reference chat history.
@@ -3856,9 +3869,14 @@ export class TelegramBotService {
         lines.push(`📝 <b>Đơn ${i + 1}</b>`);
         lines.push("");
       }
-      lines.push(`📦 <code>${this.escapeHtml(o.orderCode)}</code>`);
-      lines.push(`🏷 ${this.escapeHtml(o.productNameSnapshot)} · ${qty} acc · ${formatCurrency(saleAmount)}`);
-      lines.push(`👤 ${this.escapeHtml(buyerLabel)}`);
+      // Order code + economics + buyer hidden on a per-account lookup (retail customer view).
+      if (!isAccountLookup) lines.push(`📦 <code>${this.escapeHtml(o.orderCode)}</code>`);
+      lines.push(
+        isAccountLookup
+          ? `🏷 ${this.escapeHtml(o.productNameSnapshot)}`
+          : `🏷 ${this.escapeHtml(o.productNameSnapshot)} · ${qty} acc · ${formatCurrency(saleAmount)}`,
+      );
+      if (!isAccountLookup) lines.push(`👤 ${this.escapeHtml(buyerLabel)}`);
 
       // ── Warranty window ──────────────────────────────
       lines.push("");
@@ -3877,7 +3895,8 @@ export class TelegramBotService {
 
       // ── Refund + meta ─────────────────────────────────
       lines.push("");
-      lines.push(`${refundIcon} ${refundLabel} · ${formatCurrency(pricePerAcc)}/acc`);
+      // Refund economics hidden on a per-account lookup (retail customer needn't see order totals).
+      if (!isAccountLookup) lines.push(`${refundIcon} ${refundLabel} · ${formatCurrency(pricePerAcc)}/acc`);
       lines.push(`📅 Tạo ${this.escapeHtml(createdStr)}`);
       lines.push(rule);
     }

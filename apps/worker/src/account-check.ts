@@ -895,11 +895,16 @@ async function processJob(prisma: PrismaClient, redis: Redis, job: Job): Promise
     // pickHealthyProxy: rotate round-robin starting at idx, skip any proxy
     // marked dead in Redis (cross-tool). Walks the entire pool worst-case;
     // if all dead, falls back to null (raw IP) so the job can still attempt.
+    // Proxies that returned a proxy-level failure (proxy_die) earlier IN THIS job. The Redis
+    // dead-mark only lands at end-of-job, so without this an account whose sticky proxy is dead
+    // would re-hit the same dead proxy on retry. Skipping these steers retries to a LIVE proxy.
+    const jobFailedProxies = new Set<string>();
     const pickHealthyProxy = async (idx: number): Promise<string | null> => {
       if (adminProxies.length === 0) return proxy || null;
       for (let attempt = 0; attempt < adminProxies.length; attempt++) {
         const cand = adminProxies[(idx + attempt) % adminProxies.length];
         if (!cand) continue;
+        if (jobFailedProxies.has(cand)) continue;
         if (!(await isProxyDead(redis, cand))) return cand;
       }
       console.warn(
@@ -1092,6 +1097,19 @@ async function processJob(prisma: PrismaClient, redis: Redis, job: Job): Promise
       );
     }
 
+    // Record proxies that hit a proxy-level failure so the retry passes below skip them and pick a
+    // LIVE proxy (e.g. an account whose sticky proxy died still gets verified via a working one).
+    const _recordFailedProxies = () => {
+      for (let i = 0; i < allResults.length; i++) {
+        const et = String((allResults[i]?.parsed as any)?.errorType || "").toLowerCase();
+        if (et === "proxy_die") {
+          const p = lastProxyByIdx.get(i);
+          if (p) jobFailedProxies.add(p);
+        }
+      }
+    };
+    _recordFailedProxies();
+
     // Retry pass: re-run any account where the worker couldn't produce a valid result —
     // covers both subprocess timeouts (slow proxy, captcha) AND parse errors (tool crashed
     // mid-output, partial JSON, etc). Both surface as "Lỗi kiểm tra" in the customer UI,
@@ -1136,7 +1154,9 @@ async function processJob(prisma: PrismaClient, redis: Redis, job: Job): Promise
       "wrong_password",   // Same creds will keep failing; risks Google/x.ai lockout escalation
       "2fa",              // Requires customer's OTP device — tool can never get past this
       "blocked",          // Hard ban, definitive
-      "proxy_die",        // Proxy already marked dead; further retries waste slots
+      // proxy_die is RETRYABLE: the failed proxy is recorded in jobFailedProxies so pickHealthyProxy
+      // skips it and the retry lands on a LIVE proxy. Only when ALL proxies are dead does it
+      // fall back to raw IP / stay unverified → seller review (money-safe).
       "domain_mass_die",  // Synthetic veo result from mass-die threshold — already a verdict
       "flow_blocked",     // Verified Flow service block by Workspace admin (won't change)
       "account_disabled", // Google account suspended — won't recover by retry
@@ -1173,6 +1193,7 @@ async function processJob(prisma: PrismaClient, redis: Redis, job: Job): Promise
       for (let j = 0; j < retryIdx.length; j++) {
         allResults[retryIdx[j]] = retried[j];
       }
+      _recordFailedProxies(); // a retry that hit another dead proxy → skip it on the next pass
     }
 
     // Mark proxies dead in shared cache. Triggers when:
