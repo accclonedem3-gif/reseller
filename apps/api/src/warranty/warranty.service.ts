@@ -2241,16 +2241,18 @@ export class WarrantyService {
     // Notify customer via Telegram bot: refund is already in their wallet.
     const token = decryptSecret(claim.shop.botConfig?.telegramBotTokenEncrypted, this.config.encryptionKey);
     if (token && claim.customer?.telegramChatId && !(this.config.mockTelegramEnabled && isMockBotToken(token))) {
-      const invoice = await this.buildClaimInvoiceMessage(claim.orderId).catch(() => null);
+      const _acctScoped = !!(claim as any).targetAccountEmail;
+      const invoice = await this.buildClaimInvoiceMessage(claim.orderId, _acctScoped).catch(() => null);
       const timeNote = daysUsed !== null
         ? `⏳ Đã sử dụng ${daysUsed}/${durationDays} ngày (còn ${daysRemaining} ngày).`
         : null;
       const parts: (string | null)[] = [
         "💰 <b>Bảo hành — hoàn tiền vào ví</b>",
         "",
-        `📝 Mã đơn: <code>${this.escapeHtml(claim.orderCodeSnapshot)}</code>`,
+        _acctScoped ? null : `📝 Mã đơn: <code>${this.escapeHtml(claim.orderCodeSnapshot)}</code>`,
         `📦 Sản phẩm: ${this.escapeHtml(claim.productNameSnapshot)}`,
         `🔢 Claim #${claim.claimNumber}`,
+        ...this.claimIdentityLines(claim as any),
         "",
         "Hệ thống không còn tài khoản thay thế cho đơn này.",
         timeNote,
