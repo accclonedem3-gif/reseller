@@ -2563,14 +2563,25 @@ export class WarrantyService {
    */
   // Identity lines for bot warranty notices: WHICH account is being warrantied + the contact the
   // customer entered. Lets a reseller handling several per-account (lẻ) warranties tell them apart.
-  private claimIdentityLines(claim: { targetAccountEmail?: string | null; metadataJson?: Prisma.JsonValue | null }): string[] {
+  private claimIdentityLines(claim: {
+    targetAccountEmail?: string | null;
+    metadataJson?: Prisma.JsonValue | null;
+    customer?: { telegramUsername?: string | null; firstName?: string | null; telegramChatId?: string | null } | null;
+  }): string[] {
     const lines: string[] = [];
     const acc = claim.targetAccountEmail ? String(claim.targetAccountEmail).trim() : "";
     if (acc) lines.push(`🎯 Tài khoản: <code>${this.escapeHtml(acc)}</code>`);
     const meta = claim.metadataJson && typeof claim.metadataJson === "object" && !Array.isArray(claim.metadataJson)
       ? (claim.metadataJson as Record<string, unknown>)
       : null;
-    const contact = meta && typeof meta.contactInfo === "string" ? meta.contactInfo.trim() : "";
+    // Prefer the contact the customer typed (web); fall back to their Telegram handle (bot claims
+    // carry no typed contact) so the reseller can always tell who/which a lẻ warranty belongs to.
+    let contact = meta && typeof meta.contactInfo === "string" ? meta.contactInfo.trim() : "";
+    if (!contact && claim.customer) {
+      contact = claim.customer.telegramUsername
+        ? `@${claim.customer.telegramUsername}`
+        : (claim.customer.firstName || (claim.customer.telegramChatId ? `#${claim.customer.telegramChatId}` : ""));
+    }
     if (contact) lines.push(`📞 Liên hệ: ${this.escapeHtml(contact)}`);
     return lines;
   }
