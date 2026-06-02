@@ -2179,12 +2179,14 @@ export function ViewStockModal({
 }) {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [lastClickedIdx, setLastClickedIdx] = useState<number | null>(null);
-  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  // Track EXPANDED group keys (default empty = all batches collapsed on open).
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     if (!open) {
       setSelectedIds(new Set());
       setLastClickedIdx(null);
+      setExpanded(new Set());
     }
   }, [open]);
 
@@ -2255,10 +2257,10 @@ export function ViewStockModal({
   }
 
   function toggleCollapse(key: string) {
-    const next = new Set(collapsed);
+    const next = new Set(expanded);
     if (next.has(key)) next.delete(key);
     else next.add(key);
-    setCollapsed(next);
+    setExpanded(next);
   }
 
   const selectedCount = selectedIds.size;
@@ -2353,7 +2355,7 @@ export function ViewStockModal({
           ) : (
             <div className="space-y-3">
               {grouped.map((group) => {
-                const isCollapsed = collapsed.has(group.key);
+                const isCollapsed = !expanded.has(group.key);
                 const groupStartIdx = data ? data.items.findIndex((it) => it.id === group.items[0]!.id) : 0;
                 const isExpired = group.expiresAt ? new Date(group.expiresAt) < new Date() : false;
                 return (
