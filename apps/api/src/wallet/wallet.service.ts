@@ -691,7 +691,7 @@ export class WalletService {
     const shop = await this.shopsService.getSellerShop(user.id);
     const usdtVndRate = this.config.usdtVndRate;
 
-    const [customers, apiConnections] = await Promise.all([
+    const [customers, apiConnections, spentRows] = await Promise.all([
       this.prisma.customer.findMany({
         where: { shopId: shop.id },
         include: {
@@ -715,11 +715,24 @@ export class WalletService {
         where: { upstreamShopId: shop.id },
         select: { downstreamTelegramChatId: true },
       }),
+      this.prisma.order.groupBy({
+        by: ["customerId"],
+        where: { shopId: shop.id, status: "DELIVERED" },
+        _sum: { totalSaleAmount: true },
+        _count: { _all: true },
+      }),
     ]);
 
     const apiConnectedChatIds = new Set(
       apiConnections.map((c) => c.downstreamTelegramChatId).filter(Boolean),
     );
+    const spentByCustomer = new Map<string, { spent: number; orders: number }>();
+    for (const row of spentRows) {
+      spentByCustomer.set(row.customerId, {
+        spent: decimalToNumber(row._sum.totalSaleAmount || 0),
+        orders: row._count._all,
+      });
+    }
 
     return {
       usdtVndRate,
@@ -728,6 +741,7 @@ export class WalletService {
         const balance = c.wallet ? decimalToNumber(c.wallet.balance) : 0;
         const commissionBalance = c.wallet ? decimalToNumber(c.wallet.commissionBalance) : 0;
         const balanceUsdt = c.wallet ? decimalToNumber(c.wallet.balanceUsdt) : 0;
+        const stats = spentByCustomer.get(c.id);
         return {
           id: c.wallet?.id ?? c.id,
           customerId: c.id,
@@ -746,6 +760,8 @@ export class WalletService {
           isApiConnected: apiConnectedChatIds.has(c.telegramChatId),
           lastTopupAt: c.wallet?.topups[0]?.createdAt ?? null,
           lastTopupAmount: c.wallet?.topups[0] ? decimalToNumber(c.wallet.topups[0].amount) : null,
+          totalSpent: stats?.spent ?? 0,
+          orderCount: stats?.orders ?? 0,
         };
       }),
     };

@@ -24,6 +24,36 @@ type WalletItem = {
   discountPercent: number;
   lastTopupAt: string | null;
   lastTopupAmount: number | null;
+  totalSpent: number;
+  orderCount: number;
+};
+
+type CustomerOrdersResp = {
+  customer: {
+    id: string;
+    telegramUserId: string;
+    telegramUsername: string | null;
+    displayName: string;
+    createdAt: string;
+  };
+  orders: Array<{
+    id: string;
+    orderCode: string;
+    productName: string;
+    quantity: number;
+    salePrice: number;
+    totalSaleAmount: number;
+    totalSourceAmount: number;
+    profit: number;
+    status: string;
+    paymentStatus: string;
+    createdAt: string;
+    paidAt: string | null;
+    deliveredAt: string | null;
+    hasDeliveredText: boolean;
+  }>;
+  total: number;
+  summary: { totalSpent: number; totalCost: number; totalProfit: number };
 };
 
 type LeaderboardRow = {
@@ -245,6 +275,7 @@ export function WalletPage() {
   const [search, setSearch] = useState("");
   const [filterTab, setFilterTab] = useState<FilterTab>("all");
   const [selectedCustomer, setSelectedCustomer] = useState<WalletItem | null>(null);
+  const [historyCustomerId, setHistoryCustomerId] = useState<string | null>(null);
   const [defaultTopup, setDefaultTopup] = useState(false);
   const [showPromoForm, setShowPromoForm] = useState(false);
   const [promoForm, setPromoForm] = useState({ bonusPercent: "", startAt: "", endAt: "" });
@@ -268,6 +299,12 @@ export function WalletPage() {
   const referrersQuery = useQuery({
     queryKey: ["affiliate-leaderboard"],
     queryFn: async () => (await api.get("/affiliate/leaderboard")).data as LeaderboardRow[],
+  });
+
+  const historyQuery = useQuery<CustomerOrdersResp>({
+    queryKey: ["customer-orders", historyCustomerId],
+    enabled: Boolean(historyCustomerId),
+    queryFn: async () => (await api.get(`/customers/${historyCustomerId}/orders`, { params: { limit: 100 } })).data,
   });
 
   const createPromoMutation = useMutation({
@@ -539,7 +576,7 @@ export function WalletPage() {
               <table className="w-full" style={{ minWidth: 700 }}>
                 <thead>
                   <tr style={{ borderBottom: "1px solid var(--bd)" }}>
-                    {["KHÁCH HÀNG", "CHAT ID", "SỐ DƯ VÍ (đ)", "SỐ DƯ USD", "PHÂN LOẠI", "THAO TÁC"].map((col, i) => (
+                    {["KHÁCH HÀNG", "CHAT ID", "SỐ DƯ VÍ (đ)", "SỐ DƯ USD", "ĐƠN", "TỔNG CHI", "PHÂN LOẠI", "THAO TÁC"].map((col, i) => (
                       <th key={col} className={`px-4 py-3 text-[10px] font-black uppercase tracking-widest ${i === 0 ? "text-left" : "text-center"}`}
                         style={{ color: "var(--tx-f)" }}>{col}</th>
                     ))}
@@ -548,10 +585,10 @@ export function WalletPage() {
                 <tbody>
                   {customerWalletsQuery.isLoading ? (
                     Array.from({ length: 5 }).map((_, i) => (
-                      <tr key={i}><td colSpan={6} className="px-4 py-3"><div className="h-8 animate-pulse rounded-lg" style={{ background: "var(--inp)" }} /></td></tr>
+                      <tr key={i}><td colSpan={8} className="px-4 py-3"><div className="h-8 animate-pulse rounded-lg" style={{ background: "var(--inp)" }} /></td></tr>
                     ))
                   ) : filtered.length === 0 ? (
-                    <tr><td colSpan={6} className="px-4 py-12 text-center text-[13px]" style={{ color: "var(--tx-f)" }}>Chưa có khách nào</td></tr>
+                    <tr><td colSpan={8} className="px-4 py-12 text-center text-[13px]" style={{ color: "var(--tx-f)" }}>Chưa có khách nào</td></tr>
                   ) : filtered.map((w) => {
                     const name = displayName(w);
                     return (
@@ -569,6 +606,8 @@ export function WalletPage() {
                         <td className="px-4 py-3 text-center font-mono text-[12px] tabular-nums" style={{ color: "var(--tx-f)" }}>{w.telegramChatId}</td>
                         <td className="px-4 py-3 text-center text-[13px] font-black tabular-nums text-emerald-400">{formatCurrency(w.balance)}</td>
                         <td className="px-4 py-3 text-center text-[12px] tabular-nums text-sky-400">${w.balanceUsdt.toFixed(2)}</td>
+                        <td className="px-4 py-3 text-center text-[12px] tabular-nums" style={{ color: "var(--tx-m)" }}>{w.orderCount ?? 0}</td>
+                        <td className="px-4 py-3 text-center text-[13px] font-black tabular-nums" style={{ color: "var(--tx)" }}>{formatCurrency(w.totalSpent ?? 0)}</td>
                         <td className="px-4 py-3 text-center">
                           <div className="flex items-center justify-center gap-1">
                             {w.isCtv && (
@@ -603,6 +642,12 @@ export function WalletPage() {
                               className="rounded-lg px-2.5 py-1.5 text-[11px] font-black transition hover:opacity-80"
                               style={{ background: "rgba(56,189,248,0.12)", border: "1px solid rgba(56,189,248,0.3)", color: "rgb(56,189,248)" }}>
                               Nạp ví
+                            </button>
+                            <button type="button"
+                              onClick={() => setHistoryCustomerId(w.customerId)}
+                              className="rounded-lg px-2.5 py-1.5 text-[11px] font-black transition hover:opacity-80"
+                              style={{ background: "rgba(168,85,247,0.12)", border: "1px solid rgba(168,85,247,0.3)", color: "rgb(168,85,247)" }}>
+                              🕐 Lịch sử
                             </button>
                           </div>
                         </td>
@@ -798,6 +843,89 @@ export function WalletPage() {
                 </table>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {historyCustomerId && (
+        <div
+          className="fixed inset-0 z-[80] flex items-center justify-center p-4"
+          style={{ backgroundColor: "rgba(0,0,0,0.5)" }}
+          onClick={() => setHistoryCustomerId(null)}
+        >
+          <div
+            className="relative flex w-full flex-col overflow-hidden rounded-2xl"
+            style={{ backgroundColor: "var(--surface)", border: "1px solid var(--bd)", maxWidth: 980, maxHeight: "85vh" }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex shrink-0 items-center justify-between gap-4 px-5 py-4" style={{ borderBottom: "1px solid var(--bd)" }}>
+              <div>
+                <p className="text-[10px] font-black uppercase tracking-widest" style={{ color: "var(--tx-f)" }}>Lịch sử mua hàng</p>
+                <p className="text-sm font-black" style={{ color: "var(--tx)" }}>
+                  {historyQuery.data?.customer.displayName ?? "Đang tải..."}
+                </p>
+              </div>
+              <button type="button" onClick={() => setHistoryCustomerId(null)}
+                className="rounded-xl px-3 py-1.5 text-[11px] font-bold"
+                style={{ background: "var(--inp)", border: "1px solid var(--bd)", color: "var(--tx-m)" }}>
+                Đóng
+              </button>
+            </div>
+            {historyQuery.isLoading ? (
+              <div className="py-10 text-center text-sm" style={{ color: "var(--tx-f)" }}>Đang tải...</div>
+            ) : historyQuery.data ? (
+              <>
+                <div className="grid grid-cols-4 gap-2 border-b p-4" style={{ borderColor: "var(--bd)" }}>
+                  {[
+                    { label: "Tổng đơn", value: String(historyQuery.data.total), color: "var(--tx)" },
+                    { label: "Đã chi", value: formatCurrency(historyQuery.data.summary.totalSpent), color: "rgb(52,211,153)" },
+                    { label: "Vốn", value: formatCurrency(historyQuery.data.summary.totalCost), color: "rgb(249,115,22)" },
+                    { label: "Lãi", value: formatCurrency(historyQuery.data.summary.totalProfit), color: "rgb(168,85,247)" },
+                  ].map((s) => (
+                    <div key={s.label} className="rounded-xl p-2" style={{ background: "var(--inp)", border: "1px solid var(--bd)" }}>
+                      <p className="text-[9px] font-black uppercase tracking-widest" style={{ color: "var(--tx-f)" }}>{s.label}</p>
+                      <p className="mt-0.5 text-[14px] font-black tabular-nums" style={{ color: s.color }}>{s.value}</p>
+                    </div>
+                  ))}
+                </div>
+                <div className="flex-1 overflow-y-auto">
+                  <table className="w-full text-sm">
+                    <thead className="sticky top-0" style={{ background: "var(--surface)" }}>
+                      <tr style={{ borderBottom: "1px solid var(--bd)" }}>
+                        {["Ngày", "Mã đơn", "Sản phẩm", "SL", "Tiền", "Lãi", "Trạng thái"].map((h) => (
+                          <th key={h} className="px-4 py-2 text-left text-[10px] font-black uppercase tracking-widest"
+                              style={{ color: "var(--tx-f)" }}>{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {historyQuery.data.orders.map((o) => (
+                        <tr key={o.id} style={{ borderBottom: "1px solid var(--bd)" }}>
+                          <td className="px-4 py-2 text-[11px]" style={{ color: "var(--tx-m)" }}>{new Date(o.createdAt).toLocaleString("vi-VN")}</td>
+                          <td className="px-4 py-2 font-mono text-[11px]" style={{ color: "var(--tx)" }}>{o.orderCode}</td>
+                          <td className="px-4 py-2 text-[11px]" style={{ color: "var(--tx)" }}>{o.productName}</td>
+                          <td className="px-4 py-2 text-[11px] tabular-nums" style={{ color: "var(--tx-m)" }}>{o.quantity}</td>
+                          <td className="px-4 py-2 font-semibold text-[11px] tabular-nums" style={{ color: "var(--tx)" }}>{formatCurrency(o.totalSaleAmount)}</td>
+                          <td className="px-4 py-2 font-semibold text-[11px] tabular-nums" style={{ color: o.profit > 0 ? "rgb(52,211,153)" : "var(--tx-f)" }}>{formatCurrency(o.profit)}</td>
+                          <td className="px-4 py-2 text-[11px]">
+                            <span className="rounded px-1.5 py-0.5 text-[10px] font-bold"
+                              style={{
+                                background: o.status === "DELIVERED" ? "rgba(52,211,153,0.15)" : "rgba(249,115,22,0.15)",
+                                color: o.status === "DELIVERED" ? "rgb(52,211,153)" : "rgb(249,115,22)",
+                              }}>
+                              {o.status}
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  {historyQuery.data.orders.length === 0 && (
+                    <p className="py-8 text-center text-sm" style={{ color: "var(--tx-f)" }}>Khách chưa có đơn nào.</p>
+                  )}
+                </div>
+              </>
+            ) : null}
           </div>
         </div>
       )}
