@@ -2120,6 +2120,7 @@ export type StockBatchSummary = {
   name: string;
   costPerUnit: number | null;
   expiresAt: string | Date | null;
+  priority: number;
   createdAt: string | Date;
   totalCount: number;
   availableCount: number;
@@ -2160,6 +2161,7 @@ export function ViewStockModal({
   onCreateBatchRequest,
   onShowHistory,
   onDeleteBatch,
+  onSetBatchPriority,
 }: {
   open: boolean;
   onClose: () => void;
@@ -2173,6 +2175,7 @@ export function ViewStockModal({
   onCreateBatchRequest: () => void;
   onShowHistory: () => void;
   onDeleteBatch: (batchId: string) => void;
+  onSetBatchPriority?: (batchId: string, priority: number) => void;
 }) {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [lastClickedIdx, setLastClickedIdx] = useState<number | null>(null);
@@ -2185,24 +2188,37 @@ export function ViewStockModal({
     }
   }, [open]);
 
+  const batchMetaById = useMemo(() => {
+    const m = new Map<string, StockBatchSummary>();
+    for (const b of batches?.batches ?? []) m.set(b.id, b);
+    return m;
+  }, [batches]);
+
   const grouped = useMemo(() => {
-    if (!data) return [] as Array<{ key: string; label: string; cost: number | null; expiresAt: string | Date | null; items: StockEntryItem[] }>;
-    const map = new Map<string, { key: string; label: string; cost: number | null; expiresAt: string | Date | null; items: StockEntryItem[] }>();
+    if (!data) return [] as Array<{ key: string; label: string; cost: number | null; expiresAt: string | Date | null; priority: number; items: StockEntryItem[] }>;
+    const map = new Map<string, { key: string; label: string; cost: number | null; expiresAt: string | Date | null; priority: number; items: StockEntryItem[] }>();
     for (const item of data.items) {
       const key = item.batchId ?? "__legacy__";
       if (!map.has(key)) {
+        const meta = item.batchId ? batchMetaById.get(item.batchId) : null;
         map.set(key, {
           key,
           label: item.batchName ?? "🟢 Kho cũ",
           cost: item.batchCost,
           expiresAt: item.batchExpiresAt,
+          priority: meta?.priority ?? 0,
           items: [],
         });
       }
       map.get(key)!.items.push(item);
     }
-    return Array.from(map.values());
-  }, [data]);
+    return Array.from(map.values()).sort((a, b) => {
+      if (a.key === "__legacy__" && b.key !== "__legacy__") return -1;
+      if (a.key !== "__legacy__" && b.key === "__legacy__") return 1;
+      if (a.priority !== b.priority) return b.priority - a.priority;
+      return 0;
+    });
+  }, [data, batchMetaById]);
 
   function toggleSelect(entryId: string, globalIndex: number, withShift: boolean) {
     if (!data) return;
@@ -2369,6 +2385,15 @@ export function ViewStockModal({
                             {group.cost.toLocaleString("vi-VN")}đ/acc
                           </span>
                         )}
+                        {group.priority > 0 && (
+                          <span
+                            className="rounded-md px-1.5 py-0.5 text-[10px] font-bold"
+                            style={{ background: "rgba(250,204,21,0.15)", color: "rgb(250,204,21)" }}
+                            title={`Ưu tiên bán trước (priority=${group.priority})`}
+                          >
+                            ⭐ Ưu tiên {group.priority}
+                          </span>
+                        )}
                         {isExpired && (
                           <span
                             className="rounded-md px-1.5 py-0.5 text-[10px] font-bold"
@@ -2390,6 +2415,27 @@ export function ViewStockModal({
                         >
                           Chọn cả lô
                         </button>
+                        {group.key !== "__legacy__" && onSetBatchPriority && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const input = window.prompt(
+                                `Đặt ưu tiên bán cho lô này.\nSố càng cao → bán càng trước. Hiện: ${group.priority}.\nVD: 0 = mặc định FIFO, 1-99 = ưu tiên cao.`,
+                                String(group.priority),
+                              );
+                              if (input === null) return;
+                              const num = Number(input.trim());
+                              if (!Number.isFinite(num) || num < 0) {
+                                return;
+                              }
+                              onSetBatchPriority(group.key, Math.floor(num));
+                            }}
+                            className="rounded-md px-2 py-1 text-[10px] font-bold transition-all hover:opacity-80"
+                            style={{ background: "rgba(250,204,21,0.12)", border: "1px solid rgba(250,204,21,0.3)", color: "rgb(250,204,21)" }}
+                          >
+                            ⭐ Ưu tiên
+                          </button>
+                        )}
                         {group.key !== "__legacy__" && group.items.length === 0 && (
                           <button
                             type="button"

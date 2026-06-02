@@ -1576,6 +1576,22 @@ export function ProductsPageStudio({
     onError: (error) => showToast({ tone: "error", message: getErrorMessage(error, "Không xóa được lô.") }),
   });
 
+  const setBatchPriorityMutation = useMutation({
+    mutationFn: async ({ batchId, priority }: { batchId: string; priority: number }) => {
+      if (!selectedProduct) throw new Error("No product");
+      const res = await api.patch(
+        `/products/source-products/${selectedProduct.id}/stock/batches/${batchId}`,
+        { priority },
+      );
+      return res.data;
+    },
+    onSuccess: async () => {
+      showToast({ tone: "success", message: "Đã cập nhật ưu tiên." });
+      await queryClient.invalidateQueries({ queryKey: ["stock-batches", selectedProduct?.id] });
+    },
+    onError: (error) => showToast({ tone: "error", message: getErrorMessage(error, "Không cập nhật được ưu tiên.") }),
+  });
+
   const stockHistoryQuery = useQuery<{ items: StockOperation[]; total: number }>({
     queryKey: ["stock-history", selectedProduct?.id],
     enabled: Boolean(selectedProduct?.id) && stockModal === "history",
@@ -4038,6 +4054,7 @@ export function ProductsPageStudio({
         onDeleteBatch={(batchId) => {
           if (window.confirm("Xóa lô này?")) deleteBatchMutation.mutate(batchId);
         }}
+        onSetBatchPriority={(batchId, priority) => setBatchPriorityMutation.mutate({ batchId, priority })}
       />
     </div>
   );

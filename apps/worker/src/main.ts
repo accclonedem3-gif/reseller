@@ -508,7 +508,11 @@ async function enqueuePaidOrder(queue, orderId, totalSourceAmount) {
 // ============================================================
 async function popManualStockEntries(tx, sourceProductId, quantity, opts) {
     const now = new Date();
-    const entries = await tx.stockEntry.findMany({
+    // We need to sort by: legacy first (batchId=NULL), then by batch.priority DESC
+    // (higher priority = served sooner), then batch.createdAt ASC (FIFO within
+    // same priority), then entry.uploadedAt ASC. Prisma orderBy on related fields
+    // is limited, so fetch enough candidates and sort in-memory.
+    const candidates = await tx.stockEntry.findMany({
         where: {
             sourceProductId,
             status: "AVAILABLE",
@@ -518,14 +522,28 @@ async function popManualStockEntries(tx, sourceProductId, quantity, opts) {
                 { batch: { deletedAt: null, expiresAt: { gt: now } } },
             ],
         },
-        orderBy: [
-            { batchId: { sort: "asc", nulls: "first" } },
-            { uploadedAt: "asc" },
-            { id: "asc" },
-        ],
-        take: quantity,
-        include: { batch: { select: { id: true, costPerUnit: true } } },
+        include: { batch: { select: { id: true, costPerUnit: true, priority: true, createdAt: true } } },
     });
+    candidates.sort((a, b) => {
+        // 1. legacy (no batch) first
+        if (!a.batchId && b.batchId) return -1;
+        if (a.batchId && !b.batchId) return 1;
+        // 2. higher priority first (default 0)
+        const pa = a.batch?.priority ?? 0;
+        const pb = b.batch?.priority ?? 0;
+        if (pa !== pb) return pb - pa;
+        // 3. earlier batch.createdAt first
+        const ca = a.batch?.createdAt?.getTime?.() ?? 0;
+        const cb = b.batch?.createdAt?.getTime?.() ?? 0;
+        if (ca !== cb) return ca - cb;
+        // 4. earlier uploadedAt first
+        const ua = a.uploadedAt.getTime();
+        const ub = b.uploadedAt.getTime();
+        if (ua !== ub) return ua - ub;
+        // 5. stable by id
+        return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+    });
+    const entries = candidates.slice(0, quantity);
     if (entries.length < quantity) {
         return null;
     }

@@ -6,6 +6,7 @@ import {
   Get,
   Inject,
   Param,
+  Patch,
   Post,
   Query,
   UploadedFile,
@@ -66,6 +67,16 @@ export class ProductsStockController {
       throw new BadRequestException("Cần file .txt hoặc trường text.");
     }
     return this.stockService.createBatch(user, id, { ...body, text });
+  }
+
+  @Patch(":id/stock/batches/:batchId")
+  updateBatch(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param("id") id: string,
+    @Param("batchId") batchId: string,
+    @Body() body: { priority?: number | null; name?: string },
+  ) {
+    return this.stockService.updateBatch(user, id, batchId, body);
   }
 
   @Delete(":id/stock/batches/:batchId")

@@ -673,6 +673,7 @@ model StockBatch {
   name            String
   costPerUnit     Decimal?      @map("cost_per_unit") @db.Decimal(18, 2)
   expiresAt       DateTime?     @map("expires_at")
+  priority        Int           @default(0)
   createdAt       DateTime      @default(now()) @map("created_at")
   deletedAt       DateTime?     @map("deleted_at")
   sourceProduct   SourceProduct @relation(fields: [sourceProductId], references: [id], onDelete: Cascade)
@@ -680,6 +681,7 @@ model StockBatch {
 
   @@index([sourceProductId, createdAt])
   @@index([sourceProductId, deletedAt])
+  @@index([sourceProductId, priority, createdAt])
   @@map("stock_batches")
 }
 

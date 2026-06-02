@@ -76,12 +76,47 @@ export class SourceStockService {
         name: b.name,
         costPerUnit: b.costPerUnit ? Number(b.costPerUnit) : null,
         expiresAt: b.expiresAt,
+        priority: b.priority,
         createdAt: b.createdAt,
         totalCount: b._count.entries,
         availableCount: availableByBatch.get(b.id) ?? 0,
         isExpired: !!b.expiresAt && b.expiresAt < new Date(),
       })),
     };
+  }
+
+  async updateBatch(
+    user: AuthenticatedUser,
+    productId: string,
+    batchId: string,
+    dto: { priority?: number | null; name?: string },
+  ) {
+    const product = await this.loadOwnedSourceProduct(user, productId);
+    const batch = await this.prisma.stockBatch.findFirst({
+      where: { id: batchId, sourceProductId: product.id, deletedAt: null },
+    });
+    if (!batch) throw new NotFoundException("Lô không tồn tại.");
+    const data: { priority?: number; name?: string } = {};
+    if (dto.priority !== undefined) {
+      const p = Number(dto.priority);
+      if (!Number.isFinite(p) || p < 0) {
+        throw new BadRequestException("priority phải là số nguyên >= 0.");
+      }
+      data.priority = Math.floor(p);
+    }
+    if (dto.name !== undefined) {
+      const trimmed = String(dto.name).trim();
+      if (!trimmed) throw new BadRequestException("Tên lô không được trống.");
+      data.name = trimmed;
+    }
+    if (Object.keys(data).length === 0) {
+      return { success: true, unchanged: true };
+    }
+    await this.prisma.stockBatch.update({
+      where: { id: batch.id },
+      data,
+    });
+    return { success: true };
   }
 
   async createBatch(user: AuthenticatedUser, productId: string, dto: CreateSourceBatchDto) {
