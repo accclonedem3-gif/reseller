@@ -12,7 +12,7 @@ import {
   Max,
   Min,
 } from "class-validator";
-import { Transform } from "class-transformer";
+import { Transform, Type } from "class-transformer";
 import { StockEntryStatus, StockExtractMethod } from "@prisma/client";
 
 const toNumberOrUndefined = ({ value }: { value: unknown }) => {
@@ -114,12 +114,14 @@ export class ExtractSourceStockDto {
 
 export class SourceStockHistoryQueryDto {
   @IsOptional()
+  @Type(() => Number)
   @IsInt()
   @Min(1)
   @Max(500)
   limit?: number;
 
   @IsOptional()
+  @Type(() => Number)
   @IsInt()
   @Min(0)
   offset?: number;
@@ -127,12 +129,14 @@ export class SourceStockHistoryQueryDto {
 
 export class SourceStockEntriesQueryDto {
   @IsOptional()
+  @Type(() => Number)
   @IsInt()
   @Min(1)
   @Max(2000)
   limit?: number;
 
   @IsOptional()
+  @Type(() => Number)
   @IsInt()
   @Min(0)
   offset?: number;
