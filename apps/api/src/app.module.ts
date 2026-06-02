@@ -30,6 +30,7 @@ import { InternalSourceController } from "./internal-source/internal-source.cont
 import { InternalSourceService } from "./internal-source/internal-source.service";
 import { PaymentService } from "./lib/payment.service";
 import { BinancePayService } from "./lib/binance-pay.service";
+import { OkxPersonalApiService } from "./lib/okx-personal-api.service";
 import { OnchainPaymentService } from "./lib/onchain-payment.service";
 import { SolanaPaymentService } from "./lib/solana-payment.service";
 import { QueueService } from "./lib/queue.service";
@@ -121,6 +122,7 @@ import { MailService } from "./lib/mail.service";
     PrismaService,
     QueueService,
     BinancePayService,
+    OkxPersonalApiService,
     OnchainPaymentService,
     SolanaPaymentService,
     PaymentService,

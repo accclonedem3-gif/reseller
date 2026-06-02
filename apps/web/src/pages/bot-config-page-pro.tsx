@@ -308,6 +308,11 @@ type BotConfigForm = {
   binancePayApiKey: string;
   binancePaySecretKey: string;
   binancePayEnabled: boolean;
+  okxPersonalApiKey: string;
+  okxPersonalSecretKey: string;
+  okxPersonalPassphrase: string;
+  okxPersonalApiEnabled: boolean;
+  usdtBep20Address: string;
 };
 
 function normalizeOptionalValue(value: string) {
@@ -321,7 +326,7 @@ function buildBotConfigPayload(form: BotConfigForm) {
     priceMarkupPercent: form.priceMarkupPercent.trim() === "" ? null : Number(form.priceMarkupPercent),
   };
 
-  const fields: Array<[Exclude<keyof BotConfigForm, "sourceNotificationSyncEnabled" | "binancePayEnabled" | "priceMarkupPercent">, string]> = [
+  const fields: Array<[Exclude<keyof BotConfigForm, "sourceNotificationSyncEnabled" | "binancePayEnabled" | "okxPersonalApiEnabled" | "priceMarkupPercent">, string]> = [
     ["shopName", "shopName"],
     ["shopTagline", "shopTagline"],
     ["botToken", "botToken"],
@@ -353,6 +358,10 @@ function buildBotConfigPayload(form: BotConfigForm) {
     ["binancePersonalSecretKey", "binancePersonalSecretKey"],
     ["binancePayApiKey", "binancePayApiKey"],
     ["binancePaySecretKey", "binancePaySecretKey"],
+    ["okxPersonalApiKey", "okxPersonalApiKey"],
+    ["okxPersonalSecretKey", "okxPersonalSecretKey"],
+    ["okxPersonalPassphrase", "okxPersonalPassphrase"],
+    ["usdtBep20Address", "usdtBep20Address"],
   ];
 
   for (const [formKey, payloadKey] of fields) {
@@ -360,6 +369,7 @@ function buildBotConfigPayload(form: BotConfigForm) {
   }
 
   payload.binancePayEnabled = form.binancePayEnabled;
+  payload.okxPersonalApiEnabled = form.okxPersonalApiEnabled;
   payload.usdtVndRateOverride = form.usdtVndRateOverride.trim();
 
   return payload;
@@ -410,6 +420,11 @@ function getInitialForm(): BotConfigForm {
     binancePayApiKey: "",
     binancePaySecretKey: "",
     binancePayEnabled: false,
+    okxPersonalApiKey: "",
+    okxPersonalSecretKey: "",
+    okxPersonalPassphrase: "",
+    okxPersonalApiEnabled: false,
+    usdtBep20Address: "",
   };
 }
 
@@ -501,6 +516,11 @@ export function BotConfigPage() {
       binancePayApiKey: "",
       binancePaySecretKey: "",
       binancePayEnabled: configQuery.data.binancePayEnabled ?? false,
+      okxPersonalApiKey: "",
+      okxPersonalSecretKey: "",
+      okxPersonalPassphrase: "",
+      okxPersonalApiEnabled: (configQuery.data as any).okxPersonalApiEnabled ?? false,
+      usdtBep20Address: (configQuery.data as any).usdtBep20Address || "",
     });
   }, [configQuery.data]);
 
@@ -1067,30 +1087,72 @@ export function BotConfigPage() {
                 <Input value={form.binancePersonalSecretKey} onChange={(e) => setForm((c) => ({ ...c, binancePersonalSecretKey: e.target.value }))} placeholder={configQuery.data?.binancePersonalSecretKeyMasked || t.phApiKey} />
               </Field>
             </div>
+            {/* Binance Pay Merchant — UI HIDDEN. Field giữ trong form state để không phá payload. */}
+            {false && (
             <div className="mt-6" style={{ borderTop: "1px solid var(--bd)", paddingTop: 24 }}>
-              <p className="mb-3 text-[11px] font-black uppercase tracking-widest" style={{ color: "var(--tx-f)" }}>Binance Pay Merchant</p>
-              <InfoHint content={t.binancePayHint} label={t.binancePayHintLabel} />
-              <div className="mt-4 flex flex-col gap-4 rounded-2xl px-4 py-4 sm:flex-row sm:items-center sm:justify-between" style={{ background: "var(--inp)", border: "1px solid var(--bd)" }}>
+              <p className="mb-3 text-[11px] font-black uppercase tracking-widest" style={{ color: "var(--tx-f)" }}>Binance Pay Merchant (deprecated)</p>
+            </div>
+            )}
+
+            <div className="mt-6" style={{ borderTop: "1px solid var(--bd)", paddingTop: 24 }}>
+              <div className="mb-3 flex items-center gap-2">
+                <p className="text-[11px] font-black uppercase tracking-widest" style={{ color: "var(--tx-f)" }}>OKX Personal API</p>
+                <span className="rounded-md px-1.5 py-0.5 text-[10px] font-bold" style={{ background: "rgba(56,189,248,0.12)", color: "rgb(56,189,248)" }}>Auto-detect USDT</span>
+              </div>
+              <p className="mb-3 text-[12px]" style={{ color: "var(--tx-f)" }}>
+                Cấp Read-only API ở OKX (Funding → API). Bot sẽ tự dò deposit khi khách chuyển USDT (TRC20 / BEP20 / Solana).
+              </p>
+              <div className="mb-4 flex flex-col gap-4 rounded-2xl px-4 py-4 sm:flex-row sm:items-center sm:justify-between" style={{ background: "var(--inp)", border: "1px solid var(--bd)" }}>
                 <div>
-                  <p className="font-semibold" style={{ color: "var(--tx)" }}>{t.binancePayAutoLabel}</p>
-                  <p className="mt-1 text-sm" style={{ color: "var(--tx-f)" }}>{t.binancePayAutoDesc}</p>
+                  <p className="font-semibold" style={{ color: "var(--tx)" }}>Bật auto-detect OKX</p>
+                  <p className="mt-1 text-sm" style={{ color: "var(--tx-f)" }}>Khi bật, khách chọn OKX → bot sẽ check deposit history để verify.</p>
                 </div>
-                <button type="button" role="switch" aria-checked={form.binancePayEnabled}
-                  onClick={() => setForm((c) => ({ ...c, binancePayEnabled: !c.binancePayEnabled }))}
+                <button type="button" role="switch" aria-checked={form.okxPersonalApiEnabled}
+                  onClick={() => setForm((c) => ({ ...c, okxPersonalApiEnabled: !c.okxPersonalApiEnabled }))}
                   className="inline-flex h-12 w-full shrink-0 items-center justify-between gap-3 rounded-2xl border px-3 text-sm font-semibold transition sm:w-[164px]"
-                  style={form.binancePayEnabled ? { borderColor: "rgba(245,158,11,0.3)", background: "rgba(245,158,11,0.08)", color: "var(--tx)" } : { borderColor: "var(--bd)", background: "var(--surface)", color: "var(--tx-m)" }}>
+                  style={form.okxPersonalApiEnabled
+                    ? { borderColor: "rgba(56,189,248,0.3)", background: "rgba(56,189,248,0.08)", color: "var(--tx)" }
+                    : { borderColor: "var(--bd)", background: "var(--surface)", color: "var(--tx-m)" }}>
                   <span className="flex h-8 w-8 items-center justify-center rounded-xl transition"
-                    style={form.binancePayEnabled ? { background: "rgb(245,158,11)", color: "white" } : { background: "var(--inp)", color: "var(--tx-f)" }}>🟡</span>
-                  <span>{form.binancePayEnabled ? t.toggleOn : t.toggleOff}</span>
+                    style={form.okxPersonalApiEnabled ? { background: "rgb(56,189,248)", color: "white" } : { background: "var(--inp)", color: "var(--tx-f)" }}>⚪</span>
+                  <span>{form.okxPersonalApiEnabled ? t.toggleOn : t.toggleOff}</span>
                 </button>
               </div>
-              <div className="mt-4 grid gap-5 sm:grid-cols-2">
-                <Field label="Binance Pay API Key" hint={configQuery.data?.binancePayApiKeyMasked ? "Đã mã hoá" : "Optional"} description={t.binancePayCertDesc}>
-                  <Input value={form.binancePayApiKey} onChange={(e) => setForm((c) => ({ ...c, binancePayApiKey: e.target.value }))} placeholder={configQuery.data?.binancePayApiKeyMasked || t.phApiKey} />
+              <div className="grid gap-5 sm:grid-cols-2">
+                <Field label="OKX UID" hint="Optional">
+                  <Input value={form.okxUid} onChange={(e) => setForm((c) => ({ ...c, okxUid: e.target.value }))} placeholder="VD: 12345678" />
                 </Field>
-                <Field label="Binance Pay Secret Key" hint={configQuery.data?.binancePaySecretKeyMasked ? "Đã mã hoá" : "Optional"} description={t.binancePayEncDesc}>
-                  <Input value={form.binancePaySecretKey} onChange={(e) => setForm((c) => ({ ...c, binancePaySecretKey: e.target.value }))} placeholder={configQuery.data?.binancePaySecretKeyMasked || t.phApiKey} />
+                <Field label="USDT BEP20 Address" hint="Optional">
+                  <Input value={form.usdtBep20Address} onChange={(e) => setForm((c) => ({ ...c, usdtBep20Address: e.target.value }))} placeholder="0x..." />
                 </Field>
+                <Field label="OKX API Key" hint={(configQuery.data as any)?.okxPersonalApiKeyMasked ? "Đã mã hoá" : "Optional"}>
+                  <Input value={form.okxPersonalApiKey} onChange={(e) => setForm((c) => ({ ...c, okxPersonalApiKey: e.target.value }))} placeholder={(configQuery.data as any)?.okxPersonalApiKeyMasked || t.phApiKey} />
+                </Field>
+                <Field label="OKX Secret Key" hint={(configQuery.data as any)?.okxPersonalSecretKeyMasked ? "Đã mã hoá" : "Optional"}>
+                  <Input value={form.okxPersonalSecretKey} onChange={(e) => setForm((c) => ({ ...c, okxPersonalSecretKey: e.target.value }))} placeholder={(configQuery.data as any)?.okxPersonalSecretKeyMasked || t.phApiKey} />
+                </Field>
+                <Field label="OKX Passphrase" hint={(configQuery.data as any)?.okxPersonalPassphraseMasked ? "Đã mã hoá" : "Optional"} description="Passphrase do anh đặt khi tạo OKX API.">
+                  <Input value={form.okxPersonalPassphrase} onChange={(e) => setForm((c) => ({ ...c, okxPersonalPassphrase: e.target.value }))} placeholder={(configQuery.data as any)?.okxPersonalPassphraseMasked || "•••••••"} />
+                </Field>
+                <div className="flex items-end">
+                  <button type="button"
+                    onClick={async () => {
+                      try {
+                        const res = await api.post("/bot-config/verify-okx-personal", {
+                          apiKey: form.okxPersonalApiKey || undefined,
+                          secretKey: form.okxPersonalSecretKey || undefined,
+                          passphrase: form.okxPersonalPassphrase || undefined,
+                        });
+                        showToast({ tone: "success", message: `OKX OK — UID ${res.data?.uid || "(none)"}` });
+                      } catch (e) {
+                        showToast({ tone: "error", message: getApiErrorMessage(e, "Kết nối OKX thất bại.") });
+                      }
+                    }}
+                    className="rounded-xl px-4 py-2.5 text-[12px] font-black transition hover:opacity-90"
+                    style={{ background: "rgb(56,189,248)", color: "#fff" }}>
+                    🧪 Kiểm tra kết nối
+                  </button>
+                </div>
               </div>
             </div>
             <div className="mt-6 flex justify-end">

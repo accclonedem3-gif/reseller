@@ -242,6 +242,30 @@ export class UpdateBotConfigDto {
   binancePayEnabled?: boolean;
 
   @IsOptional()
+  @Transform(emptyStringToUndefined)
+  @IsString()
+  okxPersonalApiKey?: string;
+
+  @IsOptional()
+  @Transform(emptyStringToUndefined)
+  @IsString()
+  okxPersonalSecretKey?: string;
+
+  @IsOptional()
+  @Transform(emptyStringToUndefined)
+  @IsString()
+  okxPersonalPassphrase?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  okxPersonalApiEnabled?: boolean;
+
+  @IsOptional()
+  @Transform(emptyStringToUndefined)
+  @IsString()
+  usdtBep20Address?: string;
+
+  @IsOptional()
   @IsEnum(StorefrontMode)
   storefrontMode?: StorefrontMode;
 

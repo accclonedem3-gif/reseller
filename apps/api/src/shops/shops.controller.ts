@@ -75,4 +75,15 @@ export class ShopsController {
   syncProducts(@CurrentUser() user: AuthenticatedUser) {
     return this.shopsService.syncProducts(user);
   }
+
+  @Post("bot-config/verify-okx-personal")
+  @UseGuards(SellerTierGuard, SellerCapabilitiesGuard)
+  @RequireSellerTier(SellerTier.PRO, SellerTier.ULTRA)
+  @RequireSellerCapabilities("bot_manage")
+  verifyOkxPersonal(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() body: { apiKey?: string; secretKey?: string; passphrase?: string },
+  ) {
+    return this.shopsService.verifyOkxPersonal(user, body);
+  }
 }

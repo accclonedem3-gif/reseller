@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  forwardRef,
   Inject,
   Injectable,
   NotFoundException,
@@ -37,6 +38,7 @@ import type { ProviderBalanceResult, ProviderProduct } from "@reseller/shared/se
 
 import { AppConfigService } from "../config/app-config.service";
 import { PrismaService } from "../db/prisma.service";
+import { OkxPersonalApiService } from "../lib/okx-personal-api.service";
 import { decimalToNumber, slugify, toDecimal } from "../lib/utils";
 
 import type { AuthenticatedUser } from "../types";
@@ -77,7 +79,30 @@ export class ShopsService {
     private readonly prisma: PrismaService,
     @Inject(AppConfigService)
     private readonly config: AppConfigService,
+    @Inject(forwardRef(() => OkxPersonalApiService))
+    private readonly okxApi: OkxPersonalApiService,
   ) {}
+
+  async verifyOkxPersonal(
+    user: AuthenticatedUser,
+    body: { apiKey?: string; secretKey?: string; passphrase?: string },
+  ) {
+    const shop = await this.getSellerShop(user.id);
+    const cfg = shop.paymentConfig;
+    const apiKey = (body.apiKey || "").trim()
+      || this.safeDecryptSecret(cfg?.okxPersonalApiKeyEncrypted).trim();
+    const secret = (body.secretKey || "").trim()
+      || this.safeDecryptSecret(cfg?.okxPersonalSecretKeyEncrypted).trim();
+    const passphrase = (body.passphrase || "").trim()
+      || this.safeDecryptSecret(cfg?.okxPersonalPassphraseEncrypted).trim();
+    if (!apiKey || !secret || !passphrase) {
+      throw new BadRequestException(
+        "Cần đủ 3 thông tin: API Key + Secret Key + Passphrase.",
+      );
+    }
+    const result = await this.okxApi.verifyCredentials(apiKey, secret, passphrase);
+    return { ok: true, uid: result.uid, level: result.level || null };
+  }
 
   private safeDecryptSecret(payload: string | null | undefined) {
     try {
@@ -250,6 +275,7 @@ export class ShopsService {
       binanceUid: paymentConfig?.binanceUid || "",
       okxUid: paymentConfig?.okxUid || "",
       usdtTrc20Address: paymentConfig?.usdtTrc20Address || "",
+      usdtBep20Address: paymentConfig?.usdtBep20Address || "",
       usdtSolanaAddress: paymentConfig?.usdtSolanaAddress || "",
       usdtVndRateOverride: paymentConfig?.usdtVndRateOverride
         ? decimalToNumber(paymentConfig.usdtVndRateOverride)
@@ -268,6 +294,16 @@ export class ShopsService {
         this.safeDecryptSecret(paymentConfig?.binancePaySecretKeyEncrypted),
       ),
       binancePayEnabled: paymentConfig?.binancePayEnabled ?? false,
+      okxPersonalApiKeyMasked: maskSecret(
+        this.safeDecryptSecret(paymentConfig?.okxPersonalApiKeyEncrypted),
+      ),
+      okxPersonalSecretKeyMasked: maskSecret(
+        this.safeDecryptSecret(paymentConfig?.okxPersonalSecretKeyEncrypted),
+      ),
+      okxPersonalPassphraseMasked: maskSecret(
+        this.safeDecryptSecret(paymentConfig?.okxPersonalPassphraseEncrypted),
+      ),
+      okxPersonalApiEnabled: paymentConfig?.okxPersonalApiEnabled ?? false,
       telegramBotId: botConfig?.telegramBotId || null,
       telegramBotUsername: botConfig?.telegramBotUsername || null,
       ownerTelegramUserId: botConfig?.ownerTelegramUserId || null,
@@ -417,6 +453,7 @@ export class ShopsService {
           binanceUid: dto.binanceUid ?? undefined,
           okxUid: dto.okxUid ?? undefined,
           usdtTrc20Address: dto.usdtTrc20Address ?? undefined,
+          usdtBep20Address: dto.usdtBep20Address ?? undefined,
           usdtSolanaAddress: dto.usdtSolanaAddress ?? undefined,
           usdtVndRateOverride,
           binancePersonalApiKeyEncrypted: dto.binancePersonalApiKey
@@ -432,6 +469,16 @@ export class ShopsService {
             ? encryptSecret(dto.binancePaySecretKey, encryptionKey)
             : undefined,
           binancePayEnabled: dto.binancePayEnabled ?? undefined,
+          okxPersonalApiKeyEncrypted: dto.okxPersonalApiKey
+            ? encryptSecret(dto.okxPersonalApiKey, encryptionKey)
+            : undefined,
+          okxPersonalSecretKeyEncrypted: dto.okxPersonalSecretKey
+            ? encryptSecret(dto.okxPersonalSecretKey, encryptionKey)
+            : undefined,
+          okxPersonalPassphraseEncrypted: dto.okxPersonalPassphrase
+            ? encryptSecret(dto.okxPersonalPassphrase, encryptionKey)
+            : undefined,
+          okxPersonalApiEnabled: dto.okxPersonalApiEnabled ?? undefined,
         },
         create: {
           shopId: shop.id,
@@ -476,6 +523,7 @@ export class ShopsService {
           binanceUid: dto.binanceUid ?? null,
           okxUid: dto.okxUid ?? null,
           usdtTrc20Address: dto.usdtTrc20Address ?? null,
+          usdtBep20Address: dto.usdtBep20Address ?? null,
           usdtSolanaAddress: dto.usdtSolanaAddress ?? null,
           usdtVndRateOverride: usdtVndRateOverride ?? null,
           binancePersonalApiKeyEncrypted: dto.binancePersonalApiKey
@@ -491,6 +539,16 @@ export class ShopsService {
             ? encryptSecret(dto.binancePaySecretKey, encryptionKey)
             : null,
           binancePayEnabled: dto.binancePayEnabled ?? false,
+          okxPersonalApiKeyEncrypted: dto.okxPersonalApiKey
+            ? encryptSecret(dto.okxPersonalApiKey, encryptionKey)
+            : null,
+          okxPersonalSecretKeyEncrypted: dto.okxPersonalSecretKey
+            ? encryptSecret(dto.okxPersonalSecretKey, encryptionKey)
+            : null,
+          okxPersonalPassphraseEncrypted: dto.okxPersonalPassphrase
+            ? encryptSecret(dto.okxPersonalPassphrase, encryptionKey)
+            : null,
+          okxPersonalApiEnabled: dto.okxPersonalApiEnabled ?? false,
         },
       });
     });
