@@ -2110,9 +2110,13 @@ export class WarrantyService {
   private computeWarrantyTimeRatio(
     durationType: string | null | undefined,
     deliveredAt: Date | null,
+    durationTypeOther?: string | null,
   ): { timeRatio: number; daysUsed: number | null; daysRemaining: number | null; durationDays: number | null } {
-    const durationDays = this.durationTypeToDays(durationType);
-    if (durationDays === null || !deliveredAt) {
+    // resolveBatchLifetimeDays parses BOTH the fixed enums AND free-text OTHER ("10 ngày", "2 tháng",
+    // "24h"), so an OTHER-term order now prorates by unused days like enum terms instead of refunding
+    // the full price. LIFETIME / unparseable / non-positive → null → timeRatio 1 (no proration).
+    const durationDays = this.resolveBatchLifetimeDays(durationType, durationTypeOther);
+    if (durationDays === null || durationDays <= 0 || !deliveredAt) {
       return { timeRatio: 1, daysUsed: null, daysRemaining: null, durationDays };
     }
     const daysUsed = Math.floor((Date.now() - deliveredAt.getTime()) / 86400000);
@@ -2199,6 +2203,7 @@ export class WarrantyService {
     const { timeRatio, daysUsed, daysRemaining, durationDays } = this.computeWarrantyTimeRatio(
       fullOrder.sourceProduct.durationType,
       fullOrder.deliveredAt,
+      fullOrder.sourceProduct.durationTypeOther,
     );
 
     const refundAmount = Math.round(baseRefundByQty * timeRatio);
@@ -2439,7 +2444,7 @@ export class WarrantyService {
   }
 
   private async applyPartialStockRefund(
-    order: { id: string; quantity: number; totalSaleAmount: Prisma.Decimal | number; orderCode: string; customerId: string; deliveredAt: Date | null; sourceProduct: { durationType: string | null } },
+    order: { id: string; quantity: number; totalSaleAmount: Prisma.Decimal | number; orderCode: string; customerId: string; deliveredAt: Date | null; sourceProduct: { durationType: string | null; durationTypeOther: string | null } },
     claimId: string,
     partialRefundCount: number,
   ): Promise<void> {
@@ -2453,7 +2458,7 @@ export class WarrantyService {
     // (an un-replaceable account), so the amount must match. Without this the partial path refunded
     // the full per-account price even near expiry → over-refund vs the out-of-stock path. Shared
     // helper includes the [0,1] clamp so a future deliveredAt can't push the refund over 100%.
-    const { timeRatio } = this.computeWarrantyTimeRatio(order.sourceProduct.durationType, order.deliveredAt);
+    const { timeRatio } = this.computeWarrantyTimeRatio(order.sourceProduct.durationType, order.deliveredAt, order.sourceProduct.durationTypeOther);
     const refundAmount = Math.round(baseRefund * timeRatio);
     if (refundAmount <= 0) return;
 

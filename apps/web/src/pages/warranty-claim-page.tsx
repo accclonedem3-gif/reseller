@@ -82,9 +82,11 @@ const T = {
       `Phát hiện ${n} tài khoản mất gói ${planLabel || "trả phí"}. Đã thay thế ${n} tài khoản mới.`,
     refundedTitle: "Đã hoàn tiền vào ví",
     refundedDesc: (amount: number) =>
-      `Tài khoản đã hết hạn và kho thay thế đã hết — đã hoàn ${amount.toLocaleString("vi-VN")}đ vào ví của bạn. Bạn có thể dùng số dư này để mua đơn khác.`,
+      `Hết hàng thay thế — đã hoàn ${amount.toLocaleString("vi-VN")}đ vào ví của bạn.`,
     partialRefundExtra: (amount: number) =>
-      `Các tài khoản không còn hàng thay đã được hoàn ${amount.toLocaleString("vi-VN")}đ vào ví của bạn.`,
+      `Phần hết hàng thay đã hoàn ${amount.toLocaleString("vi-VN")}đ vào ví.`,
+    refundNoWalletHint: (contact?: string | null) =>
+      `Không có ví trên bot? Liên hệ người bán${contact ? ` ${contact}` : ""} để nhận tiền.`,
     pendingStockTitle: "Đã xác nhận lỗi — đang chờ tài khoản thay",
     pendingStockDesc: "Tài khoản của bạn đã được xác nhận hỏng. Kho thay thế tạm hết, shop sẽ xử lý và giao tài khoản mới sớm.",
     deadFoundProcessing: (n: number) =>
@@ -179,9 +181,11 @@ const T = {
       `${n} account(s) lost their ${planLabel || "paid"} plan. ${n} replacement account(s) issued.`,
     refundedTitle: "Refunded to your wallet",
     refundedDesc: (amount: number) =>
-      `The account expired and replacement stock ran out — ${amount.toLocaleString("vi-VN")}đ has been refunded to your wallet. You can use this balance for future orders.`,
+      `Out of replacement stock — ${amount.toLocaleString("vi-VN")}đ refunded to your wallet.`,
     partialRefundExtra: (amount: number) =>
-      `Accounts with no replacement stock were refunded ${amount.toLocaleString("vi-VN")}đ to your wallet.`,
+      `Out-of-stock accounts refunded ${amount.toLocaleString("vi-VN")}đ to your wallet.`,
+    refundNoWalletHint: (contact?: string | null) =>
+      `No wallet on the bot? Contact the seller${contact ? ` ${contact}` : ""} to get your refund.`,
     pendingStockTitle: "Confirmed faulty — awaiting replacement",
     pendingStockDesc: "Your account was confirmed faulty. Replacement stock is temporarily out; the seller will deliver a new account shortly.",
     deadFoundProcessing: (n: number) =>
@@ -276,9 +280,11 @@ const T = {
       `พบ ${n} บัญชีที่หมดแพ็คเกจ${planLabel ? ` ${planLabel}` : ""} เปลี่ยนบัญชีใหม่ ${n} บัญชีแล้ว`,
     refundedTitle: "คืนเงินเข้ากระเป๋าแล้ว",
     refundedDesc: (amount: number) =>
-      `บัญชีหมดอายุและสต๊อกสำรองหมด — คืนเงิน ${amount.toLocaleString("vi-VN")}đ เข้ากระเป๋าของคุณแล้ว ใช้ยอดนี้สำหรับคำสั่งซื้อครั้งถัดไปได้`,
+      `สต๊อกทดแทนหมด — คืนเงิน ${amount.toLocaleString("vi-VN")}đ เข้ากระเป๋าของคุณแล้ว`,
     partialRefundExtra: (amount: number) =>
-      `บัญชีที่ไม่มีสต๊อกทดแทนได้รับการคืนเงิน ${amount.toLocaleString("vi-VN")}đ เข้ากระเป๋าของคุณ`,
+      `บัญชีที่ไม่มีสต๊อกทดแทน คืนเงิน ${amount.toLocaleString("vi-VN")}đ เข้ากระเป๋า`,
+    refundNoWalletHint: (contact?: string | null) =>
+      `ไม่มีกระเป๋าบนบอท? ติดต่อผู้ขาย${contact ? ` ${contact}` : ""} เพื่อรับเงินคืน`,
     pendingStockTitle: "ยืนยันว่าบัญชีเสีย — กำลังรอบัญชีทดแทน",
     pendingStockDesc: "บัญชีของคุณได้รับการยืนยันว่าเสีย สต๊อกทดแทนหมดชั่วคราว ผู้ขายจะจัดส่งบัญชีใหม่ให้เร็ว ๆ นี้",
     deadFoundProcessing: (n: number) =>
@@ -1454,6 +1460,9 @@ function AutoCheckProgress({
   const isPartialRefund = isReplaced && refundAmount > 0;
   // Pure refund (no replacement delivered for this claim) — out-of-stock auto-refund.
   const isRefunded = isDone && !isReplaced && refundAmount > 0;
+  // Seller contact (from the sanitized invoice) for the always-shown "contact the seller if you have
+  // no bot wallet" reminder appended to every refund message — covers buyers who bought via a CTV.
+  const refundSellerContact = auto?.invoice?.sellerContact || null;
   // Account confirmed dead but replacement stock temporarily out (provider still processing).
   const isPendingStock = isDone && claimStatus === "PENDING_STOCK";
   // Completed but neither replaced nor rejected → routed to seller for manual review.
@@ -1519,9 +1528,9 @@ function AutoCheckProgress({
               : t.autoCheckDoneTitle;
 
   const resolvedSubtitle = isReplaced && deadCount > 0
-    ? `${t.replacedDesc(deadCount, planLabel)}${isPartialRefund ? ` ${t.partialRefundExtra(refundAmount)}` : ""}`
+    ? `${t.replacedDesc(deadCount, planLabel)}${isPartialRefund ? `\n${t.partialRefundExtra(refundAmount)}\n${t.refundNoWalletHint(refundSellerContact)}` : ""}`
     : isRefunded
-      ? t.refundedDesc(refundAmount)
+      ? `${t.refundedDesc(refundAmount)}\n${t.refundNoWalletHint(refundSellerContact)}`
       : isPendingStock
         ? t.pendingStockDesc
         : isRejected
@@ -1569,7 +1578,7 @@ function AutoCheckProgress({
           <p className="text-base font-bold" style={{ color: "var(--tx)" }}>
             {isDone ? resolvedTitle : t.autoCheckTitle}
           </p>
-          <p className="mt-1 text-sm" style={{ color: "var(--tx-m)" }}>
+          <p className="mt-1 text-sm whitespace-pre-line" style={{ color: "var(--tx-m)" }}>
             {isDone ? resolvedSubtitle : claimMessage}
           </p>
         </div>
