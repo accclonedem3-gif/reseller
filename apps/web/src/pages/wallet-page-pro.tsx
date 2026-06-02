@@ -576,7 +576,7 @@ export function WalletPage() {
               <table className="w-full" style={{ minWidth: 700 }}>
                 <thead>
                   <tr style={{ borderBottom: "1px solid var(--bd)" }}>
-                    {["KHÁCH HÀNG", "CHAT ID", "SỐ DƯ VÍ (đ)", "SỐ DƯ USD", "ĐƠN", "TỔNG CHI", "PHÂN LOẠI", "THAO TÁC"].map((col, i) => (
+                    {["KHÁCH HÀNG", "CHAT ID", "SỐ DƯ VÍ (đ)", "SỐ DƯ USD", "TỔNG ĐƠN", "TỔNG CHI", "PHÂN LOẠI", "THAO TÁC"].map((col, i) => (
                       <th key={col} className={`px-4 py-3 text-[10px] font-black uppercase tracking-widest ${i === 0 ? "text-left" : "text-center"}`}
                         style={{ color: "var(--tx-f)" }}>{col}</th>
                     ))}
