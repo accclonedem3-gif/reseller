@@ -1,0 +1,19 @@
+{
+  "name": "checkgrok",
+  "version": "1.0.0",
+  "description": "Grok account checker",
+  "main": "toolgrok.js",
+  "scripts": {
+    "start": "node toolgrok.js",
+    "server": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.22.2",
+    "express-rate-limit": "^7.5.1",
+    "p-limit": "^3.1.0",
+    "puppeteer-core": "^21.11.0",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
+    "undici": "^7.25.0"
+  }
+}

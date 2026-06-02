@@ -1,0 +1,15 @@
+# Tool runtime data — NEVER commit (chứa credential / session / proxy / kết quả)
+node_modules/
+accounts.txt
+proxies.txt
+proxy.txt
+*.log
+*.csv
+*_unknown.txt
+timeout.txt
+wrong.txt
+debug_*.png
+sessions/
+cookies/
+cache/
+.claude/

@@ -1,0 +1,15 @@
+{
+  "name": "check-gpt",
+  "version": "1.0.0",
+  "description": "ChatGPT Account Checker — Plus / Pro / Free",
+  "main": "check_gpt.js",
+  "scripts": {
+    "start": "node check_gpt.js",
+    "install-browsers": "npx playwright install chromium"
+  },
+  "dependencies": {
+    "chalk": "4.1.2",
+    "figlet": "^1.7.0",
+    "playwright": "^1.44.0"
+  }
+}
