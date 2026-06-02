@@ -24,6 +24,7 @@ import { AffiliateService } from "../affiliate/affiliate.service";
 import { InternalSourceApiKeyService } from "../source/internal-source-api-key.service";
 import { SellerSourceConnectionService } from "../seller/seller-source-connection.service";
 import { BinancePayService } from "./binance-pay.service";
+import { OkxPersonalApiService } from "./okx-personal-api.service";
 import { OnchainPaymentService } from "./onchain-payment.service";
 import { SolanaPaymentService } from "./solana-payment.service";
 import { PaymentService } from "./payment.service";
@@ -277,6 +278,8 @@ export class TelegramBotService {
     private readonly config: AppConfigService,
     @Inject(BinancePayService)
     private readonly binancePayService: BinancePayService,
+    @Inject(OkxPersonalApiService)
+    private readonly okxPersonalApiService: OkxPersonalApiService,
     @Inject(OnchainPaymentService)
     private readonly onchainPaymentService: OnchainPaymentService,
     @Inject(SolanaPaymentService)
@@ -570,6 +573,18 @@ export class TelegramBotService {
       );
 
       if (handledBinanceOrderId) {
+        return { ok: true, actions };
+      }
+
+      const handledOkxTxHash = await this.handlePendingOkxTxHashMessage(
+        shopId,
+        outboundToken,
+        message,
+        actions,
+        messageLanguage,
+      );
+
+      if (handledOkxTxHash) {
         return { ok: true, actions };
       }
     }
@@ -942,6 +957,17 @@ export class TelegramBotService {
           chatId,
           telegramUserId,
           data.slice("binance:orderid:prompt:".length),
+          actions,
+          callbackLanguage,
+          messageId,
+        );
+      } else if (data.startsWith("okx:tx:prompt:")) {
+        await this.handleOkxTxHashPrompt(
+          shopId,
+          outboundToken,
+          chatId,
+          telegramUserId,
+          data.slice("okx:tx:prompt:".length),
           actions,
           callbackLanguage,
           messageId,
@@ -2224,6 +2250,17 @@ export class TelegramBotService {
       inlineKeyboard.push([btn]);
     }
 
+    if (created.manualCrypto?.provider === "OKX" && created.manualCrypto?.hasPersonalApi) {
+      const text = language === "en"
+        ? "✅ I've paid — Send TX hash"
+        : language === "th"
+          ? "✅ ชำระแล้ว — ส่ง TX hash"
+          : "✅ Đã chuyển — Gửi TX hash";
+      const btn: Record<string, string> = { text, callback_data: `okx:tx:prompt:${created.manualCrypto.note}` };
+      if (custEmojiIds["paid"]) btn.icon_custom_emoji_id = custEmojiIds["paid"];
+      inlineKeyboard.push([btn]);
+    }
+
     inlineKeyboard.push([
       this.buildNavTextBtn(custData, "orders", "history", "home:history", language),
       this.buildNavTextBtn(custData, "wallet", "wallet", "home:wallet", language),
@@ -2696,8 +2733,18 @@ export class TelegramBotService {
               ? "คำสั่งซื้อนี้ใช้จำนวน USDT เฉพาะ หลังโอนแล้วกด 'ฉันชำระแล้ว' เพื่อให้บอทตรวจสอบประวัติ Binance Pay อัตโนมัติ"
               : "Đơn này được gán số USDT riêng. Sau khi chuyển xong, bấm 'Tôi đã thanh toán' để bot tự kiểm tra lịch sử Binance Pay."
           : null;
+      const okxAutoLine =
+        created.manualCrypto.provider === "OKX" && created.manualCrypto.hasPersonalApi
+          ? language === "en"
+            ? "Send the exact USDT amount shown — the bot auto-verifies your OKX deposit within 30-60s. You can also tap 'I've paid' below and paste the tx hash for instant verify."
+            : language === "th"
+              ? "ส่งจำนวน USDT ตรงตามที่แสดง — บอทจะตรวจสอบ OKX อัตโนมัติภายใน 30-60 วินาที หรือกด 'ฉันชำระแล้ว' แล้ววาง tx hash เพื่อยืนยันทันที"
+              : "Chuyển đúng số USDT bên dưới — bot tự dò OKX trong 30-60s. Hoặc bấm 'Đã chuyển' rồi paste tx hash để xác nhận ngay."
+          : null;
       const binanceExactAmountLine =
-        ((created.manualCrypto.provider === "BINANCE" && created.manualCrypto.hasPersonalApi) || isSol)
+        ((created.manualCrypto.provider === "BINANCE" && created.manualCrypto.hasPersonalApi)
+          || (created.manualCrypto.provider === "OKX" && created.manualCrypto.hasPersonalApi)
+          || isSol)
           ? language === "en"
             ? "Send the exact amount shown below so the system can match your payment safely."
             : language === "th"
@@ -2761,6 +2808,7 @@ export class TelegramBotService {
         "",
         safetyLine,
         ...(binanceAutoLine ? [binanceAutoLine] : []),
+        ...(okxAutoLine ? [okxAutoLine] : []),
         ...(binanceExactAmountLine ? [binanceExactAmountLine] : []),
         ...(helperLine ? [helperLine] : []),
         ...(feeLine ? [feeLine] : []),
@@ -5983,6 +6031,253 @@ export class TelegramBotService {
     await this.clearPendingBinanceOrderIdSubmission(shopId, telegramUserId);
     await this.handleBinanceVerifyByOrderId(shopId, token, message.chat.id, telegramUserId, pending.externalOrderCode, msgText, actions, language);
     return true;
+  }
+
+  // ────────────────────────────────────────────────────────────────────
+  // OKX Personal API — paste tx-hash flow
+  // ────────────────────────────────────────────────────────────────────
+
+  private readonly pendingOkxTxHashTtlMs = 12 * 60 * 60 * 1000;
+
+  private async getPendingOkxTxHashSubmission(shopId: string, telegramUserId: string) {
+    const key = this.getPendingQuantityKey(shopId, telegramUserId);
+    const pending = await this.getPendingSession<{ externalOrderCode: string; orderCode: string; expiresAt: number }>(
+      "pendingOkxTxHashSubmissions",
+      key,
+    );
+    if (!pending) return null;
+    if (pending.expiresAt <= Date.now()) {
+      await this.delPendingSession("pendingOkxTxHashSubmissions", key);
+      return null;
+    }
+    return pending;
+  }
+
+  private async clearPendingOkxTxHashSubmission(shopId: string, telegramUserId: string) {
+    if (!telegramUserId) return;
+    await this.delPendingSession("pendingOkxTxHashSubmissions", this.getPendingQuantityKey(shopId, telegramUserId));
+  }
+
+  private async handleOkxTxHashPrompt(
+    shopId: string,
+    token: string,
+    chatId: number,
+    telegramUserId: string,
+    externalOrderCode: string,
+    actions: unknown[],
+    language: BotLanguage,
+    _messageId?: number,
+  ) {
+    const transaction = await this.prisma.paymentTransaction.findUnique({
+      where: { externalOrderCode },
+      include: { order: true },
+    });
+    if (
+      !transaction ||
+      transaction.status !== "PENDING" ||
+      transaction.provider !== "OKX" ||
+      transaction.order.shopId !== shopId
+    ) {
+      await this.sendText(
+        token,
+        chatId,
+        language === "en"
+          ? "This payment is no longer pending or is invalid."
+          : language === "th"
+            ? "คำสั่งซื้อนี้ไม่ได้อยู่ในสถานะรอชำระเงินแล้ว"
+            : "Đơn hàng không còn ở trạng thái chờ thanh toán.",
+        actions,
+      );
+      return;
+    }
+    await this.setPendingSession(
+      "pendingOkxTxHashSubmissions",
+      this.getPendingQuantityKey(shopId, telegramUserId),
+      {
+        externalOrderCode,
+        orderCode: transaction.order.orderCode,
+        expiresAt: Date.now() + this.pendingOkxTxHashTtlMs,
+      },
+      this.pendingOkxTxHashTtlMs,
+    );
+    await this.sendText(
+      token,
+      chatId,
+      language === "en"
+        ? `📋 Please paste the <b>TX hash</b> of your OKX USDT transfer for order <b>${transaction.order.orderCode}</b>.\n\nFind it in OKX → Funding → Withdrawals → tap the transaction → "Txid" (64 chars for TRC20, 0x-prefixed 66 chars for BEP20, 88 chars base58 for Solana).`
+        : language === "th"
+          ? `📋 กรุณาวาง <b>TX hash</b> ของการโอน USDT จาก OKX สำหรับคำสั่งซื้อ <b>${transaction.order.orderCode}</b>\n\nหาได้ที่ OKX → Funding → ประวัติการถอน → แตะรายการ → "Txid"`
+          : `📋 Vui lòng dán <b>TX hash</b> của lệnh chuyển USDT từ OKX cho đơn <b>${transaction.order.orderCode}</b>.\n\nLấy ở OKX → Funding → Lịch sử rút → bấm vào lệnh → "Txid" (TRC20 dài 64 ký tự, BEP20 bắt đầu 0x dài 66, Solana base58 dài ~88).`,
+      actions,
+      { parse_mode: "HTML" as const },
+    );
+  }
+
+  private async handlePendingOkxTxHashMessage(
+    shopId: string,
+    token: string,
+    message: any,
+    actions: unknown[],
+    language: BotLanguage,
+  ): Promise<boolean> {
+    const telegramUserId = String(message.from?.id || "");
+    const pending = await this.getPendingOkxTxHashSubmission(shopId, telegramUserId);
+    if (!pending) return false;
+    const msgText = String(message.text || "").trim();
+    // Accept TRC20 (64 hex), BEP20/ETH (0x + 64 hex = 66), Solana (base58 ~ 80-90)
+    const looksLikeHash =
+      /^[A-Fa-f0-9]{64}$/.test(msgText) ||
+      /^0x[A-Fa-f0-9]{64}$/.test(msgText) ||
+      /^[1-9A-HJ-NP-Za-km-z]{80,100}$/.test(msgText);
+    if (!looksLikeHash) return false;
+    await this.clearPendingOkxTxHashSubmission(shopId, telegramUserId);
+    await this.handleOkxVerifyByTxHash(
+      shopId,
+      token,
+      message.chat.id,
+      telegramUserId,
+      pending.externalOrderCode,
+      msgText,
+      actions,
+      language,
+    );
+    return true;
+  }
+
+  private async handleOkxVerifyByTxHash(
+    shopId: string,
+    token: string,
+    chatId: number,
+    telegramUserId: string,
+    externalOrderCode: string,
+    txHash: string,
+    actions: unknown[],
+    language: BotLanguage,
+  ) {
+    const transaction = await this.prisma.paymentTransaction.findUnique({
+      where: { externalOrderCode },
+      include: { order: { include: { customer: true } } },
+    });
+    if (
+      !transaction ||
+      transaction.status !== "PENDING" ||
+      transaction.provider !== "OKX" ||
+      transaction.order.shopId !== shopId ||
+      transaction.order.customer?.telegramUserId !== telegramUserId
+    ) {
+      await this.sendText(
+        token,
+        chatId,
+        language === "en"
+          ? "This payment is no longer pending or is invalid."
+          : language === "th"
+            ? "คำสั่งซื้อนี้ไม่ได้อยู่ในสถานะรอชำระเงินหรือไม่ถูกต้อง"
+            : "Đơn hàng không còn ở trạng thái chờ thanh toán hoặc không hợp lệ.",
+        actions,
+      );
+      return;
+    }
+    const config = await this.prisma.paymentConfig.findUnique({
+      where: { shopId },
+      select: {
+        okxPersonalApiKeyEncrypted: true,
+        okxPersonalSecretKeyEncrypted: true,
+        okxPersonalPassphraseEncrypted: true,
+        okxPersonalApiEnabled: true,
+      },
+    });
+    if (
+      !config?.okxPersonalApiEnabled ||
+      !config.okxPersonalApiKeyEncrypted ||
+      !config.okxPersonalSecretKeyEncrypted ||
+      !config.okxPersonalPassphraseEncrypted
+    ) {
+      await this.sendText(
+        token,
+        chatId,
+        language === "en"
+          ? "OKX auto-verify is not configured for this shop."
+          : language === "th"
+            ? "ร้านค้ายังไม่ได้ตั้งค่า OKX auto-verify"
+            : "Shop chưa bật OKX auto-verify.",
+        actions,
+      );
+      return;
+    }
+    try {
+      const apiKey = decryptSecret(config.okxPersonalApiKeyEncrypted, this.config.encryptionKey)?.trim() ?? "";
+      const secret = decryptSecret(config.okxPersonalSecretKeyEncrypted, this.config.encryptionKey)?.trim() ?? "";
+      const passphrase = decryptSecret(config.okxPersonalPassphraseEncrypted, this.config.encryptionKey)?.trim() ?? "";
+      const manualCrypto = (transaction.rawPayloadJson as any)?.manualCrypto || {};
+      const requiredUsdt = Number(manualCrypto.usdtAmount || 0);
+
+      const sinceMs = Math.max(0, transaction.createdAt.getTime() - 10 * 60 * 1000);
+      const deposit = await this.okxPersonalApiService.findDepositByTxHash(
+        apiKey,
+        secret,
+        passphrase,
+        txHash,
+        sinceMs,
+      );
+      if (!deposit) {
+        await this.sendText(
+          token,
+          chatId,
+          language === "en"
+            ? "TX hash not found in recent OKX deposit history. Make sure the deposit is fully credited (state = on-chain confirmed) and try again."
+            : language === "th"
+              ? "ไม่พบ TX hash นี้ในประวัติเงินฝาก OKX ล่าสุด กรุณาตรวจสอบให้แน่ใจว่าเงินฝากได้รับการยืนยันบนเครือข่ายแล้วลองอีกครั้ง"
+              : "Không tìm thấy TX hash này trong lịch sử deposit OKX gần đây. Kiểm tra xem giao dịch đã credited (on-chain confirmed) chưa rồi thử lại.",
+          actions,
+        );
+        return;
+      }
+      const matchAmount = Number(deposit.amt || 0);
+      if (requiredUsdt > 0 && Math.abs(matchAmount - requiredUsdt) > 0.01) {
+        await this.sendText(
+          token,
+          chatId,
+          language === "en"
+            ? `Payment amount mismatch. Expected ${requiredUsdt} USDT, got ${matchAmount} USDT.`
+            : language === "th"
+              ? `จำนวนเงินไม่ตรงกัน คาดหวัง ${requiredUsdt} USDT ได้รับ ${matchAmount} USDT`
+              : `Số tiền không khớp. Cần ${requiredUsdt} USDT, deposit có ${matchAmount} USDT.`,
+          actions,
+        );
+        return;
+      }
+      await this.ordersService.markPaymentCompleted(
+        externalOrderCode,
+        {
+          provider: "OKX",
+          autoVerified: true,
+          verificationMode: "okx_tx_hash",
+          txHash: deposit.txId,
+          chain: deposit.chain,
+          amount: deposit.amt,
+          depositId: deposit.depId,
+        },
+        { cryptoTxHash: deposit.txId },
+      );
+      await this.sendText(
+        token,
+        chatId,
+        language === "en" ? "✅ OKX payment verified successfully!" : language === "th" ? "✅ ยืนยันการชำระเงิน OKX สำเร็จ!" : "✅ Xác minh thanh toán OKX thành công!",
+        actions,
+      );
+    } catch (e) {
+      this.logger.error(`Error verifying OKX tx hash for shop ${shopId}:`, e instanceof Error ? e.stack : String(e));
+      await this.sendText(
+        token,
+        chatId,
+        language === "en"
+          ? "Unable to check OKX deposit right now. Please try again shortly."
+          : language === "th"
+            ? "ไม่สามารถตรวจสอบเงินฝาก OKX ได้ในขณะนี้ กรุณาลองใหม่อีกครั้ง"
+            : "Tạm thời chưa kiểm tra được OKX. Vui lòng thử lại sau.",
+        actions,
+      );
+    }
   }
 
   private async handleBinanceVerifyByOrderId(
