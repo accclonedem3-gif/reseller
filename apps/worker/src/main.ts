@@ -26,6 +26,7 @@ const DATA_CLEANUP_INTERVAL_MS = Number(process.env.DATA_CLEANUP_INTERVAL_MS || 
 let globalSyncQueue = null;
 let globalRedis = null;
 const PAYOS_ORDER_SWEEP_INTERVAL_MS = Number(process.env.PAYOS_ORDER_SWEEP_INTERVAL_MS || 10000);
+const OKX_DEPOSIT_POLL_INTERVAL_MS = Number(process.env.OKX_DEPOSIT_POLL_INTERVAL_MS || 30000);
 const INTERNAL_SOURCE_ORDER_SWEEP_INTERVAL_MS = Number(process.env.INTERNAL_SOURCE_ORDER_SWEEP_INTERVAL_MS || 15000);
 function validateProductionConfig() {
     if (process.env.NODE_ENV !== "production") {
@@ -2475,6 +2476,133 @@ async function reconcilePendingPayOSOrders(purchaseQueue) {
         }
     }
 }
+// ─────────────────────────────────────────────────────────────────
+// OKX Personal API — poll deposit history every 30s and match
+// pending OKX payment transactions by USDT amount (set at order
+// creation time with the same anti-collision offset trick we use
+// for Binance, so two simultaneous pending orders for 5 USDT each
+// don't both grab the same on-chain deposit).
+// ─────────────────────────────────────────────────────────────────
+async function pollOkxDeposits(purchaseQueue) {
+    const cutoff = new Date(Date.now() - 60 * 60 * 1000);
+    const pendingOrders = await prisma.order.findMany({
+        where: {
+            status: "AWAITING_PAYMENT",
+            paymentStatus: "UNPAID",
+            paymentTransaction: {
+                is: {
+                    provider: "OKX",
+                    status: "PENDING",
+                    createdAt: { gte: cutoff },
+                },
+            },
+        },
+        include: {
+            paymentTransaction: true,
+            shop: { include: { paymentConfig: true } },
+        },
+        take: 50,
+    });
+    if (pendingOrders.length === 0) return;
+    const shopMap = new Map();
+    for (const order of pendingOrders) {
+        const config = order.shop.paymentConfig;
+        if (!config?.okxPersonalApiEnabled) continue;
+        if (!config.okxPersonalApiKeyEncrypted || !config.okxPersonalSecretKeyEncrypted || !config.okxPersonalPassphraseEncrypted) continue;
+        if (!shopMap.has(order.shopId)) {
+            shopMap.set(order.shopId, { config, pending: [] });
+        }
+        shopMap.get(order.shopId).pending.push(order);
+    }
+    for (const [shopId, { config, pending }] of shopMap.entries()) {
+        try {
+            const apiKey = safeDecryptSecret(config.okxPersonalApiKeyEncrypted);
+            const secret = safeDecryptSecret(config.okxPersonalSecretKeyEncrypted);
+            const passphrase = safeDecryptSecret(config.okxPersonalPassphraseEncrypted);
+            if (!apiKey || !secret || !passphrase) continue;
+            const timestamp = new Date().toISOString();
+            const path = "/api/v5/asset/deposit-history?ccy=USDT&limit=100";
+            const prehash = timestamp + "GET" + path;
+            const cryptoMod = require("crypto");
+            const signature = cryptoMod.createHmac("sha256", secret).update(prehash).digest("base64");
+            const res = await fetch("https://www.okx.com" + path, {
+                method: "GET",
+                headers: {
+                    "OK-ACCESS-KEY": apiKey,
+                    "OK-ACCESS-SIGN": signature,
+                    "OK-ACCESS-TIMESTAMP": timestamp,
+                    "OK-ACCESS-PASSPHRASE": passphrase,
+                    "Content-Type": "application/json",
+                },
+            });
+            const json = await res.json();
+            if (!res.ok || json.code !== "0") {
+                console.error(`[okx-poll] shop=${shopId} api error: code=${json.code} msg=${json.msg || res.status}`);
+                continue;
+            }
+            const deposits = (json.data || []).filter((d) => d.state === "2");
+            if (deposits.length === 0) continue;
+            for (const order of pending) {
+                const tx = order.paymentTransaction;
+                const usdtAmount = Number((tx.rawPayloadJson || {}).manualCrypto?.usdtAmount || 0);
+                if (!usdtAmount) continue;
+                const matched = deposits.find((d) => Math.abs(Number(d.amt) - usdtAmount) < 0.001);
+                if (!matched) continue;
+                const paidOrder = await prisma.$transaction(async (tx2) => {
+                    const current = await tx2.order.findUnique({
+                        where: { id: order.id },
+                        include: { paymentTransaction: true },
+                    });
+                    if (!current?.paymentTransaction
+                        || current.status !== "AWAITING_PAYMENT"
+                        || current.paymentStatus !== "UNPAID"
+                        || current.paymentTransaction.status !== "PENDING") {
+                        return null;
+                    }
+                    const paidAt = new Date();
+                    await tx2.paymentTransaction.update({
+                        where: { id: current.paymentTransaction.id },
+                        data: {
+                            status: "PAID",
+                            paidAt,
+                            cryptoTxHash: matched.txId,
+                            rawPayloadJson: {
+                                ...(current.paymentTransaction.rawPayloadJson || {}),
+                                sweptBy: "worker_okx_personal_poll",
+                                okxDepositId: matched.depId,
+                                okxChain: matched.chain,
+                                matchAmount: matched.amt,
+                            },
+                        },
+                    });
+                    await tx2.order.update({
+                        where: { id: current.id },
+                        data: { paymentStatus: "PAID", status: "PAID", paidAt },
+                    });
+                    await tx2.orderEvent.create({
+                        data: {
+                            orderId: current.id,
+                            eventType: "payment_completed",
+                            payloadJson: {
+                                sweptBy: "worker_okx_personal_poll",
+                                txHash: matched.txId,
+                                chain: matched.chain,
+                                amount: matched.amt,
+                            },
+                        },
+                    });
+                    return { id: current.id, totalSourceAmount: current.totalSourceAmount };
+                });
+                if (!paidOrder) continue;
+                await enqueuePaidOrder(purchaseQueue, paidOrder.id, decimalToNumber(paidOrder.totalSourceAmount));
+                console.log(`[worker] OKX matched deposit ${matched.txId} (${matched.amt} USDT) for order ${order.orderCode}.`);
+            }
+        }
+        catch (e) {
+            console.error(`[worker] OKX poll failed for shop ${shopId}:`, formatError(e));
+        }
+    }
+}
 async function expireCustomerWalletTopups() {
     const expiredTopups = await prisma.customerWalletTopup.findMany({
         where: {
@@ -3381,6 +3509,11 @@ async function bootstrap() {
             console.error("[worker] PayOS order sweep failed:", formatError(error));
         });
     }, PAYOS_ORDER_SWEEP_INTERVAL_MS);
+    setInterval(() => {
+        void pollOkxDeposits(purchaseQueue).catch((error) => {
+            console.error("[worker] OKX deposit poll failed:", formatError(error));
+        });
+    }, OKX_DEPOSIT_POLL_INTERVAL_MS);
     setInterval(() => {
         void reconcilePendingInternalSourceOrders().catch((error) => {
             console.error("[worker] Internal source order sweep failed:", formatError(error));

@@ -233,6 +233,11 @@ export class PaymentService {
       usdtVndRateOverride?: unknown;
       binancePersonalApiKeyEncrypted?: string | null;
       binancePersonalSecretKeyEncrypted?: string | null;
+      okxPersonalApiKeyEncrypted?: string | null;
+      okxPersonalSecretKeyEncrypted?: string | null;
+      okxPersonalPassphraseEncrypted?: string | null;
+      okxPersonalApiEnabled?: boolean;
+      usdtBep20Address?: string | null;
     } | null,
     input: {
       shopId: string;
@@ -308,6 +313,43 @@ export class PaymentService {
         })
       );
 
+      let offset = 0;
+      let targetUsdt = usdtAmount;
+      while (usedUsdtAmounts.has(targetUsdt) && offset < 99) {
+        offset += 0.01;
+        targetUsdt = this.ceilToDecimals(usdtAmount + offset, 2);
+      }
+      usdtAmount = targetUsdt;
+    }
+
+    // OKX Personal API — auto-detect via amount matching, same anti-collision
+    // trick as Binance: bump USDT amount by 0.01 if there is another pending
+    // OKX order with the same amount in the last hour. The worker poller
+    // matches incoming deposits by exact amount, so amounts must be unique.
+    if (
+      cryptoProvider === "OKX" &&
+      paymentConfig?.okxPersonalApiEnabled &&
+      paymentConfig?.okxPersonalApiKeyEncrypted &&
+      paymentConfig?.okxPersonalSecretKeyEncrypted &&
+      paymentConfig?.okxPersonalPassphraseEncrypted
+    ) {
+      hasPersonalApi = true;
+
+      const recentPending = await this.prisma.paymentTransaction.findMany({
+        where: {
+          provider: PaymentProvider.OKX,
+          status: "PENDING",
+          createdAt: { gte: new Date(Date.now() - 60 * 60 * 1000) },
+          order: { shopId: input.shopId },
+        },
+        select: { rawPayloadJson: true },
+      });
+      const usedUsdtAmounts = new Set(
+        recentPending.map((t) => {
+          const payload = t.rawPayloadJson as any;
+          return Number(payload?.manualCrypto?.usdtAmount || 0);
+        }),
+      );
       let offset = 0;
       let targetUsdt = usdtAmount;
       while (usedUsdtAmounts.has(targetUsdt) && offset < 99) {
