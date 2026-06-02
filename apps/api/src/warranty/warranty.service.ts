@@ -62,6 +62,11 @@ type ClaimDecision =
       // same lot double-spend the same inventory entry.
       manualStockUpdate?: { remainingEntries: string[]; expectedAvailableBefore: number };
       internalSourceStockUpdate?: { sourceProductId: string; remainingEntries: string[]; expectedAvailableBefore: number };
+      // NEW stock system (StockBatch/StockEntry): replacement acc rút FIFO theo lô (lô cũ trước).
+      // `totalCost` = Σ batch.costPerUnit CỦA ĐÚNG các acc lấy ra → giá vốn THẬT theo từng lô
+      // (cùng 1 SP nhập nhiều lô giá vốn khác nhau). `entryIds` được re-validate AVAILABLE dưới
+      // lock trước khi mark SOLD → không double-spend giữa các claim/đơn đồng thời.
+      stockEntryReplacement?: { entryIds: string[]; totalCost: number; sourceProductId: string; expectedAvailableBefore: number };
       partialRefundCount?: number;
     }
   | {
@@ -76,6 +81,7 @@ type ClaimDecision =
       customerMessage: string;
       manualStockUpdate?: never;
       internalSourceStockUpdate?: never;
+      stockEntryReplacement?: never;
       // Only true when stock is genuinely exhausted (safe to auto-refund).
       // false/undefined = provider pending approval → do NOT auto-refund yet.
       isOutOfStock?: boolean;
@@ -248,6 +254,83 @@ export class WarrantyService {
       expiredOn,
       days,
     };
+  }
+
+  /**
+   * NEW batch-expiry bypass driven by main's StockBatch system. The seller sets an absolute
+   * `StockBatch.expiresAt` per lot in the stock UI; an account sold from a lot whose expiresAt is
+   * in the past is treated as expired → auto-resolve WITHOUT a real tool check (instant replace).
+   *
+   * Matches the claimed account email(s) to the StockEntry sold for THIS order, reads that entry's
+   * batch.expiresAt. Money-safe: only bypasses when EVERY matched lot is actually expired (never
+   * auto-kills a still-valid lot). When no expiring StockBatch matches (legacy products with no
+   * stock batches), falls back to the legacy durationType + accBatchStartedAt path.
+   */
+  private async computeBatchExpiryBypass(
+    order: { id: string; deliveredAt: Date | null },
+    sourceProduct: {
+      accBatchStartedAt?: Date | null | undefined;
+      durationType?: string | null | undefined;
+      durationTypeOther?: string | null | undefined;
+      productFamily: SourceProductFamily | null;
+      metadataJson?: Prisma.JsonValue | null | undefined;
+    } | null | undefined,
+    autoCheckTool: "veo" | "grok" | "gpt",
+    accountText?: string | null,
+  ): Promise<{ errorType: string; note: string; expiredOn: Date; days: number } | null> {
+    try {
+      const entries = await this.prisma.stockEntry.findMany({
+        where: { soldToOrderId: order.id, batch: { is: { expiresAt: { not: null } } } },
+        select: { text: true, batch: { select: { expiresAt: true, createdAt: true } } },
+      });
+      if (entries.length > 0) {
+        const now = Date.now();
+        const emails = extractAccountEmails(accountText ?? null);
+        // Entries whose batch applies to the claimed account(s) (or all sold entries for a
+        // whole-order claim with no specific target).
+        const relevant = entries.filter((e) => {
+          if (!e.batch?.expiresAt) return false;
+          if (emails.length === 0) return true;
+          const t = (e.text || "").toLowerCase();
+          return emails.some((em) => t.includes(em));
+        });
+        if (relevant.length > 0) {
+          const expired = relevant.filter((e) => {
+            const d = e.batch?.expiresAt;
+            return !!d && d.getTime() < now;
+          });
+          // Bypass ONLY if every matched lot is past its expiresAt (don't kill a still-valid one).
+          if (expired.length === relevant.length) {
+            // earliest-expiring matched lot (for the customer-facing message)
+            let earliestEntry = expired[0];
+            for (const e of expired) {
+              if (e.batch?.expiresAt && earliestEntry?.batch?.expiresAt && e.batch.expiresAt < earliestEntry.batch.expiresAt) {
+                earliestEntry = e;
+              }
+            }
+            const earliest = earliestEntry?.batch?.expiresAt;
+            if (!earliest) return null;
+            const created = earliestEntry?.batch?.createdAt ?? null;
+            const days = created
+              ? Math.max(1, Math.round((earliest.getTime() - created.getTime()) / 86400_000))
+              : 0;
+            return {
+              errorType: "batch_lifetime_expired",
+              note: `StockBatch expiresAt ${earliest.toISOString()} is in the past → lot reached seller-declared end-of-life. Auto-resolved without tool check (${Math.round((now - earliest.getTime()) / 86400_000)} day(s) past expiry).`,
+              expiredOn: earliest,
+              days,
+            };
+          }
+          // Matched lot(s) still valid → do NOT bypass via the new path (and skip legacy too: the
+          // authoritative per-lot date says the account is in-window). Return null → real check.
+          return null;
+        }
+      }
+    } catch (e: any) {
+      this.logger.warn(`computeBatchExpiryBypass (StockBatch) failed, using legacy: ${e?.message ?? e}`);
+    }
+    // No StockBatch info for this order → legacy durationType + accBatchStartedAt path.
+    return this.computeBatchLifetimeBypass(order, sourceProduct, autoCheckTool, accountText);
   }
 
   private async createAutoCheckClaim(input: {
@@ -706,7 +789,7 @@ export class WarrantyService {
     // already knows the batch is dead. createAutoCheckClaim creates the claim with a synthetic
     // isDead verdict and applyAutoCheckResult fires inline → customer sees replacement instantly.
     const _openClaimBatchBypass = _autoCheckTool
-      ? this.computeBatchLifetimeBypass(order, _autoCheckSourceProduct, _autoCheckTool, _autoCheckActiveAccText)
+      ? await this.computeBatchExpiryBypass(order, _autoCheckSourceProduct, _autoCheckTool, _autoCheckActiveAccText)
       : null;
 
     if (!cooldownBlocker && _autoCheckIsSupported && _autoCheckCreds && _autoCheckTool) {
@@ -806,6 +889,12 @@ export class WarrantyService {
           throw new BadRequestException("Tài khoản này đang có yêu cầu bảo hành đang xử lý. Vui lòng chờ kết quả trước khi gửi yêu cầu mới.");
         }
       }
+      if (decision.stockEntryReplacement) {
+        const okSE = await this.commitStockEntryReplacement(tx, decision.stockEntryReplacement, order.id, order.customerId);
+        if (!okSE) {
+          throw new BadRequestException("Kho vừa thay đổi trong lúc xử lý — vui lòng gửi lại yêu cầu bảo hành.");
+        }
+      }
       if (decision.manualStockUpdate) {
         // CROSS-CLAIM STOCK RACE: remainingEntries was sliced from a snapshot read OUTSIDE this tx.
         // Lock the product row + re-validate `available` against the snapshot; if a concurrent claim
@@ -875,7 +964,7 @@ export class WarrantyService {
           targetAccountEmail: _openClaimTargetEmail ? _openClaimTargetEmail.toLowerCase() : null,
           resolvedAt: decision.nextStatus === WARRANTY_CLAIM_STATUS.AUTO_RESOLVED ? new Date() : null,
           replacementCostSnapshot: decision.nextStatus === WARRANTY_CLAIM_STATUS.AUTO_RESOLVED
-            ? replacementCostSource
+            ? (decision.stockEntryReplacement ? decision.stockEntryReplacement.totalCost : replacementCostSource)
             : null,
           metadataJson: {
             ownerAttentionRequired: decision.ownerAttentionRequired,
@@ -996,6 +1085,20 @@ export class WarrantyService {
       select: { sourcePrice: true },
     });
 
+    // Giá vốn acc thay khi seller resolve TAY = đơn giá vốn (ưu tiên snapshot lúc bán) × SỐ acc
+    // thực giao trong text này (KHÔNG còn cứng ×1 → trước đây under-count cost đơn nhiều acc).
+    // Seller dán acc tự do (không cắt StockEntry) nên dùng đơn giá làm proxy, nhân số dòng acc.
+    const _manualUnitCost =
+      decimalToNumber(claim.order.sourcePriceSnapshot) || decimalToNumber(sourceProduct?.sourcePrice) || 0;
+    const _manualReplCount = Math.max(
+      1,
+      Math.min(
+        claim.order.quantity || 1,
+        deliveredAccountText.split(/\n{2,}/).map((s) => s.trim()).filter(Boolean).length || 1,
+      ),
+    );
+    const _manualReplCost = _manualUnitCost > 0 ? _manualUnitCost * _manualReplCount : null;
+
     const updated = await this.prisma.$transaction(async (tx) => {
       // Race guard vs applyAutoCheckResult: lock row + recheck.
       await tx.$queryRaw`SELECT id FROM warranty_claims WHERE id = ${claim.id} FOR UPDATE`;
@@ -1017,6 +1120,16 @@ export class WarrantyService {
           "Hệ thống đang tự động xử lý kết quả kiểm tra cho claim này. Vui lòng thử lại sau vài giây.",
         );
       }
+      // Best-effort: cắt kho StockEntry nếu acc seller dán trùng tồn kho (chống bán trùng) + lấy
+      // giá vốn lô thật. Acc khớp dùng giá vốn lô; phần dán ngoài hệ thống dùng proxy đơn giá.
+      const consumed = await this.consumeMatchingStockEntries(
+        tx, claim.order.sourceProductId, deliveredAccountText, claim.orderId, claim.customerId,
+      );
+      let finalReplCost = _manualReplCost;
+      if (consumed) {
+        const unmatched = Math.max(0, _manualReplCount - consumed.matchedCount);
+        finalReplCost = consumed.totalCost + unmatched * _manualUnitCost;
+      }
       await tx.warrantyClaim.update({
         where: { id: claim.id },
         data: {
@@ -1025,7 +1138,7 @@ export class WarrantyService {
           resolutionNote,
           resolvedAt: new Date(),
           resolvedById: user.id, // audit: who manually resolved this claim
-          replacementCostSnapshot: sourceProduct?.sourcePrice ?? null,
+          replacementCostSnapshot: finalReplCost,
           // Once seller resolves manually, the auto-check pipeline is moot. Mark CANCELLED so
           // sweeps + status polling reflect reality (vs. leaving QUEUED/RUNNING forever).
           autoCheckStatus:
@@ -1764,6 +1877,31 @@ export class WarrantyService {
               },
             });
           }
+          if (decision.stockEntryReplacement) {
+            const okSE = await this.commitStockEntryReplacement(
+              tx, decision.stockEntryReplacement, fullOrder.id, fullOrder.customerId,
+            );
+            if (!okSE) {
+              await tx.warrantyClaim.update({
+                where: { id: claim.id },
+                data: {
+                  status: WARRANTY_CLAIM_STATUS.PENDING_REVIEW,
+                  resolutionNote: "Auto-check confirmed dead, nhưng kho thay đổi trong lúc xử lý đồng thời — chuyển shop duyệt tay để tránh cấp trùng tài khoản.",
+                  metadataJson: {
+                    ...(claim.metadataJson && typeof claim.metadataJson === "object" && !Array.isArray(claim.metadataJson)
+                      ? (claim.metadataJson as Record<string, unknown>)
+                      : {}),
+                    autoCheckPending: false,
+                    ownerAttentionRequired: true,
+                    autoCheckResultSummary: resultLine,
+                    autoApplyInProgress: false,
+                  } as Prisma.InputJsonValue,
+                },
+              });
+              _stockRaceReview = true;
+              return;
+            }
+          }
           if (decision.internalSourceStockUpdate) {
             const { sourceProductId, remainingEntries, expectedAvailableBefore } = decision.internalSourceStockUpdate;
             // Mirror the manual-stock guard for the PRO source product: the cut was decided OUTSIDE
@@ -1819,7 +1957,7 @@ export class WarrantyService {
                 decision.nextStatus === WARRANTY_CLAIM_STATUS.AUTO_RESOLVED ? new Date() : null,
               replacementCostSnapshot:
                 decision.nextStatus === WARRANTY_CLAIM_STATUS.AUTO_RESOLVED
-                  ? replacementCostSource
+                  ? (decision.stockEntryReplacement ? decision.stockEntryReplacement.totalCost : replacementCostSource)
                   : null,
               metadataJson: {
                 ...(claim.metadataJson && typeof claim.metadataJson === "object" && !Array.isArray(claim.metadataJson)
@@ -2874,59 +3012,130 @@ export class WarrantyService {
     telegramUserId: string;
     orderCode: string;
     language?: "vi" | "en" | "th";
-  }): Promise<{ eligible: true; orderCode: string; accounts: string[]; wrongPasswordRetry?: boolean } | { eligible: false; status: string; message: string }> {
-    const normalizedOrderCode = String(input.orderCode || "").trim().toUpperCase();
+  }): Promise<{ eligible: true; orderCode: string; accounts: string[]; issuedReplacements?: string[]; replacedAccounts?: string[]; wrongPasswordRetry?: boolean } | { eligible: false; status: string; message: string }> {
+    const rawQuery = String(input.orderCode || "").trim();
     const language = input.language || "vi";
 
-    if (!normalizedOrderCode) {
+    if (!rawQuery || rawQuery.length < 3) {
       return {
         eligible: false,
         status: "invalid",
         message: language === "en"
-          ? "Please enter a valid order code."
-          : language === "th" ? "กรุณาระบุรหัสคำสั่งซื้อที่ถูกต้อง"
-          : "Vui lòng nhập mã đơn hàng hợp lệ.",
+          ? "Please enter a valid order code or account email."
+          : language === "th" ? "กรุณาระบุรหัสคำสั่งซื้อหรืออีเมลบัญชีที่ถูกต้อง"
+          : "Vui lòng nhập mã đơn hàng hoặc email tài khoản hợp lệ.",
       };
     }
 
-    const order = await this.prisma.order.findFirst({
-      where: {
-        shopId: input.shopId,
-        orderCode: normalizedOrderCode,
-        customer: { telegramUserId: input.telegramUserId },
-      },
-      include: {
-        seller: { select: { tier: true } },
-        warrantyClaims: {
+    // Accept EITHER an order code (ORD-…) OR the account the customer is using — same UX as the web
+    // search. Account lookup is scoped to THIS customer's Telegram identity (ownership) and matched
+    // as a FULL account token (mirror of publicSearchOrders) so a fragment can't pull a wrong order.
+    const isOrderCode = /^ORD-[0-9]/i.test(rawQuery);
+    const normalizedOrderCode = rawQuery.toUpperCase();
+
+    let order = isOrderCode
+      ? await this.prisma.order.findFirst({
           where: {
-            status: {
-              in: [
-                WARRANTY_CLAIM_STATUS.PENDING,
-                WARRANTY_CLAIM_STATUS.PENDING_MANUAL,
-                WARRANTY_CLAIM_STATUS.PENDING_REVIEW,
-                WARRANTY_CLAIM_STATUS.PENDING_STOCK,
-              ],
+            shopId: input.shopId,
+            orderCode: normalizedOrderCode,
+            customer: { telegramUserId: input.telegramUserId },
+          },
+          include: {
+            seller: { select: { tier: true } },
+            warrantyClaims: {
+              where: {
+                status: {
+                  in: [
+                    WARRANTY_CLAIM_STATUS.PENDING,
+                    WARRANTY_CLAIM_STATUS.PENDING_MANUAL,
+                    WARRANTY_CLAIM_STATUS.PENDING_REVIEW,
+                    WARRANTY_CLAIM_STATUS.PENDING_STOCK,
+                  ],
+                },
+              },
+              orderBy: { createdAt: "desc" },
+              take: 1,
             },
           },
-          orderBy: { createdAt: "desc" },
-          take: 1,
+        })
+      : null;
+
+    if (!isOrderCode) {
+      const candidates = await this.prisma.order.findMany({
+        where: {
+          shopId: input.shopId,
+          customer: { telegramUserId: input.telegramUserId },
+          status: OrderStatus.DELIVERED,
+          OR: [
+            { deliveredAccountText: { contains: rawQuery, mode: "insensitive" } },
+            {
+              warrantyClaims: {
+                some: {
+                  status: { in: ["AUTO_RESOLVED", "RESOLVED_MANUAL"] as any },
+                  deliveredAccountText: { contains: rawQuery, mode: "insensitive" },
+                },
+              },
+            },
+          ],
         },
-      },
-    });
+        include: {
+          seller: { select: { tier: true } },
+          warrantyClaims: {
+            where: {
+              status: {
+                in: [
+                  WARRANTY_CLAIM_STATUS.PENDING,
+                  WARRANTY_CLAIM_STATUS.PENDING_MANUAL,
+                  WARRANTY_CLAIM_STATUS.PENDING_REVIEW,
+                  WARRANTY_CLAIM_STATUS.PENDING_STOCK,
+                ],
+              },
+            },
+            orderBy: { createdAt: "desc" },
+            take: 1,
+          },
+        },
+        orderBy: { deliveredAt: "desc" },
+        take: 5,
+      });
+      const _q = rawQuery.toLowerCase();
+      const _matchesFullAccount = (text: string | null | undefined): boolean => {
+        if (!text) return false;
+        for (const c of this.autoCheckService.parseAllCredentials(text)) {
+          const email = c.email.toLowerCase().trim();
+          if (!email) continue;
+          const prefix = email.split("@")[0] || email;
+          if (_q === email || _q === prefix || _q.includes(email)) return true;
+        }
+        return false;
+      };
+      for (const o of candidates) {
+        if (_matchesFullAccount(o.deliveredAccountText)) { order = o; break; }
+        const repl = await this.prisma.warrantyClaim.findMany({
+          where: {
+            orderId: o.id,
+            status: { in: ["AUTO_RESOLVED", "RESOLVED_MANUAL"] as any },
+            deliveredAccountText: { not: null },
+          },
+          select: { deliveredAccountText: true },
+        });
+        if (repl.some((r) => _matchesFullAccount(r.deliveredAccountText))) { order = o; break; }
+      }
+    }
 
     if (!order) {
       return {
         eligible: false,
         status: "not_found",
         message: language === "en"
-          ? "We could not find a delivered order with this code in your account."
-          : language === "th" ? "ไม่พบคำสั่งซื้อที่จัดส่งแล้วด้วยรหัสนี้ในบัญชีของคุณ"
-          : "Không tìm thấy đơn đã giao nào với mã này trong tài khoản của bạn.",
+          ? "We could not find a delivered order matching this order code / account in your account."
+          : language === "th" ? "ไม่พบคำสั่งซื้อที่จัดส่งแล้วซึ่งตรงกับรหัสคำสั่งซื้อ/บัญชีนี้ในบัญชีของคุณ"
+          : "Không tìm thấy đơn đã giao nào khớp mã đơn / email tài khoản này trong tài khoản của bạn.",
       };
     }
 
     if (order.seller?.tier === SellerTier.PRO) {
-      const linked = await this.findLinkedInternalSourceOrder(normalizedOrderCode, input.shopId);
+      const linked = await this.findLinkedInternalSourceOrder(order.orderCode, input.shopId);
       if (!linked) {
         return {
           eligible: false,
@@ -2981,10 +3190,13 @@ export class WarrantyService {
         ? (activeClaim.autoCheckResult as Record<string, unknown>)
         : null;
       const softFailErrorType = autoResult ? String(autoResult.errorType || "") : "";
+      const _accView = await this.buildCurrentAccountView(order.id, order.deliveredAccountText);
       return {
         eligible: true,
-        orderCode: normalizedOrderCode,
-        accounts: this.parseDeliveredAccounts(order.deliveredAccountText),
+        orderCode: order.orderCode, // resolved real code (input may have been an account, not a code)
+        accounts: _accView.active, // current accounts (replacements swapped in, dead originals dropped)
+        issuedReplacements: _accView.issuedReplacements,
+        replacedAccounts: _accView.replacedOriginals,
         wrongPasswordRetry: softFailErrorType === "wrong_password",
       };
     }
@@ -3036,10 +3248,13 @@ export class WarrantyService {
       };
     }
 
+    const _accView = await this.buildCurrentAccountView(order.id, order.deliveredAccountText);
     return {
       eligible: true,
-      orderCode: normalizedOrderCode,
-      accounts: this.parseDeliveredAccounts(order.deliveredAccountText),
+      orderCode: order.orderCode, // resolved real code (input may have been an account, not a code)
+      accounts: _accView.active, // current accounts (replacements swapped in, dead originals dropped)
+      issuedReplacements: _accView.issuedReplacements,
+      replacedAccounts: _accView.replacedOriginals,
     };
   }
 
@@ -3447,7 +3662,7 @@ export class WarrantyService {
     // applyAutoCheckResult fires inline so the customer gets the replacement instantly
     // instead of waiting 25-60s for the tool to confirm what the seller already knows.
     const _telegramBatchBypass = autoCheckTool
-      ? this.computeBatchLifetimeBypass(order, sourceProductForAutoCheck, autoCheckTool, activeAccountText)
+      ? await this.computeBatchExpiryBypass(order, sourceProductForAutoCheck, autoCheckTool, activeAccountText)
       : null;
 
     if (isSupportedFamily && creds && autoCheckTool) {
@@ -3650,6 +3865,12 @@ export class WarrantyService {
           throw new BadRequestException("Tài khoản này đang có yêu cầu bảo hành đang xử lý. Vui lòng chờ kết quả trước khi gửi yêu cầu mới.");
         }
       }
+      if (decision.stockEntryReplacement) {
+        const okSE = await this.commitStockEntryReplacement(tx, decision.stockEntryReplacement, order.id, order.customerId);
+        if (!okSE) {
+          throw new BadRequestException("Kho vừa thay đổi trong lúc xử lý — vui lòng gửi lại yêu cầu bảo hành.");
+        }
+      }
       if (decision.manualStockUpdate) {
         // CROSS-CLAIM STOCK RACE: remainingEntries was sliced from a snapshot read OUTSIDE this tx.
         // Lock the product row + re-validate `available` against the snapshot; if a concurrent claim
@@ -3718,7 +3939,7 @@ export class WarrantyService {
           resolutionNote: decision.resolutionNote,
           resolvedAt: decision.nextStatus === WARRANTY_CLAIM_STATUS.AUTO_RESOLVED ? new Date() : null,
           replacementCostSnapshot: decision.nextStatus === WARRANTY_CLAIM_STATUS.AUTO_RESOLVED
-            ? replacementCostSource
+            ? (decision.stockEntryReplacement ? decision.stockEntryReplacement.totalCost : replacementCostSource)
             : null,
           targetAccountEmail: _blockTargetEmail ? _blockTargetEmail.toLowerCase() : null,
           metadataJson: {
@@ -3953,19 +4174,26 @@ export class WarrantyService {
       // by a prior resolved claim — those won't be auto-checked again, so they shouldn't
       // appear as choices in the per-account password grid either.
       const _searchReplacedSet = await this.autoCheckService.getReplacedEmailSet(order.id);
-      const _allAccountUsernames = this.autoCheckService
-        .filterOutReplaced(
-          this.autoCheckService.parseAllCredentials(order.deliveredAccountText),
-          _searchReplacedSet,
-        )
-        .map((c) => c.email);
-      // ACCOUNT mode: scope to ONLY the searched account (a retail customer warranties just their
-      // own account, not the whole order). Fall back to the raw query if the account isn't in the
-      // original list (e.g. they're searching a replacement they received).
+      const _allOriginalCreds = this.autoCheckService.parseAllCredentials(order.deliveredAccountText);
+      const _allOriginalUsernames = _allOriginalCreds.map((c) => c.email).filter(Boolean);
+      const _stillValidUsernames = this.autoCheckService
+        .filterOutReplaced(_allOriginalCreds, _searchReplacedSet)
+        .map((c) => c.email)
+        .filter(Boolean);
+      // Original accounts already replaced by a prior warranty → returned so the UI can SHOW them
+      // greyed-out/disabled (instead of hiding them), so the customer sees the full history.
+      const _isReplacedUsername = (e: string) => {
+        const em = e.toLowerCase().trim();
+        const local = em.split("@")[0];
+        return _searchReplacedSet.has(em) || (!!local && _searchReplacedSet.has(local));
+      };
+      const replacedUsernames = _allOriginalUsernames.filter(_isReplacedUsername);
+      // ORDER-CODE mode: show ALL original accounts (replaced ones greyed via replacedUsernames).
+      // ACCOUNT mode: scope to ONLY the searched account (retail customer warranties just their own).
       const accountUsernames = isOrderCodeSearch
-        ? _allAccountUsernames
+        ? _allOriginalUsernames
         : (() => {
-            const m = _allAccountUsernames.filter((e) => {
+            const m = _stillValidUsernames.filter((e) => {
               const em = e.toLowerCase();
               return em === _q || (em.split("@")[0] || em) === _q || _q.includes(em);
             });
@@ -4018,6 +4246,8 @@ export class WarrantyService {
         hasActiveClaim,
         previousReplacement,
         accountUsernames,
+        // Original accounts already warrantied (replaced) → UI shows them greyed/disabled.
+        replacedUsernames: isOrderCodeSearch ? replacedUsernames : [],
         // Full replacement credentials already issued (for re-copy). May be empty.
         resolvedAccounts,
       });
@@ -4338,7 +4568,7 @@ export class WarrantyService {
     // Batch-lifetime bypass — see computeBatchLifetimeBypass for rationale. Same pattern as
     // the seller-admin and Telegram bot paths so the 3 entry points behave consistently.
     const _publicBatchBypass = _autoCheckTool
-      ? this.computeBatchLifetimeBypass(order, _autoCheckSourceProduct, _autoCheckTool, _autoCheckActiveAccText)
+      ? await this.computeBatchExpiryBypass(order, _autoCheckSourceProduct, _autoCheckTool, _autoCheckActiveAccText)
       : null;
 
     if (!cooldownBlocker && _autoCheckIsSupported && _autoCheckCreds && _autoCheckTool) {
@@ -4351,6 +4581,11 @@ export class WarrantyService {
           allCreds: _autoCheckAllCreds,
           customerMessage: (dto as any).customerMessage,
           extraMetadata: {
+            // Lưu SĐT/contact khách tự nhập từ web vào metadata → claimIdentityLines hiện
+            // "📞 Liên hệ: <contact>" trong thông báo bot cho seller. THIẾU dòng này nên web
+            // auto-check (grok/veo) trước đây rơi về telegram handle, không thấy SĐT web.
+            contactInfo: dto.contactInfo,
+            source: "web",
             ...(_autoCheckOverridePwd ? { customerProvidedNewPassword: true } : {}),
             ...(dto.targetUsernames?.length ? { targetUsernames: dto.targetUsernames } : {}),
           },
@@ -4453,6 +4688,12 @@ export class WarrantyService {
           throw new BadRequestException("Tài khoản này đang có yêu cầu bảo hành đang xử lý. Vui lòng chờ kết quả trước khi gửi yêu cầu mới.");
         }
       }
+      if (decision.stockEntryReplacement) {
+        const okSE = await this.commitStockEntryReplacement(tx, decision.stockEntryReplacement, order.id, order.customerId);
+        if (!okSE) {
+          throw new BadRequestException("Kho vừa thay đổi trong lúc xử lý — vui lòng gửi lại yêu cầu bảo hành.");
+        }
+      }
       if (decision.manualStockUpdate) {
         // CROSS-CLAIM STOCK RACE: lock + re-validate available before cutting (see openClaim path).
         await tx.$queryRaw`SELECT id FROM source_products WHERE id = ${order.sourceProductId} FOR UPDATE`;
@@ -4517,7 +4758,7 @@ export class WarrantyService {
           resolutionNote: decision.resolutionNote,
           resolvedAt: decision.nextStatus === WARRANTY_CLAIM_STATUS.AUTO_RESOLVED ? new Date() : null,
           replacementCostSnapshot: decision.nextStatus === WARRANTY_CLAIM_STATUS.AUTO_RESOLVED
-            ? replacementCostSource
+            ? (decision.stockEntryReplacement ? decision.stockEntryReplacement.totalCost : replacementCostSource)
             : null,
           targetAccountEmail: _blockTargetEmail ? _blockTargetEmail.toLowerCase() : null,
           metadataJson: {
@@ -4554,17 +4795,19 @@ export class WarrantyService {
       return claim;
     });
 
-    if (decision.ownerAttentionRequired) {
-      await this.notifyOwnerAboutClaim({
-        shopId: order.shopId,
-        orderCode: order.orderCode,
-        productName: order.productNameSnapshot,
-        claimNumber,
-        status: decision.nextStatus,
-        customerLabel: dto.contactInfo,
-        customerMessage: dto.customerMessage,
-      });
-    }
+    // Always tell the seller a NEW WEB warranty came in, WITH the buyer's typed contact — not only
+    // when ownerAttentionRequired. A web claim carries NO Telegram identity, so this typed contact
+    // is the ONLY way the seller knows who is claiming; without this, auto-checked / auto-resolved
+    // web claims reached the seller with no contact (or no notification at all).
+    await this.notifyOwnerAboutClaim({
+      shopId: order.shopId,
+      orderCode: order.orderCode,
+      productName: order.productNameSnapshot,
+      claimNumber,
+      status: decision.nextStatus,
+      customerLabel: dto.contactInfo,
+      customerMessage: dto.customerMessage,
+    });
 
     if (decision.nextStatus === WARRANTY_CLAIM_STATUS.AUTO_RESOLVED && decision.partialRefundCount) {
       await this.applyPartialStockRefund(order, createdClaim.id, decision.partialRefundCount);
@@ -4630,6 +4873,31 @@ export class WarrantyService {
     // does not equal "slots used").
 
     if (deliveryMode === SourceDeliveryMode.AUTO_STOCK) {
+      // HỆ KHO MỚI (StockBatch/StockEntry): ưu tiên cấp acc thay từ đây để lấy ĐÚNG giá vốn
+      // theo từng lô (cùng 1 SP nhiều lô giá vốn khác nhau). Chỉ fallback xuống kho text cũ
+      // khi SP chưa có StockEntry nào (hàng nhập kiểu cũ). Chỉ xử lý đủ-hàng (>= qty) ở đây;
+      // thiếu hàng để fallback/hoàn tiền theo logic text bên dưới.
+      const seReplacement = await this.pickReplacementStockEntries(order.sourceProductId, qty);
+      if (seReplacement) {
+        return {
+          nextStatus: WARRANTY_CLAIM_STATUS.AUTO_RESOLVED,
+          deliveredAccountText: seReplacement.entries.join("\n\n"),
+          resolutionNote: "Replacement stock delivered automatically from batch inventory.",
+          ownerAttentionRequired: false,
+          customerMessage:
+            language === "en"
+              ? "Warranty approved. The replacement account is ready below."
+              : language === "th" ? "อนุมัติการรับประกันแล้ว บัญชีทดแทนพร้อมด้านล่าง"
+              : "Bảo hành đã được duyệt. Tài khoản thay thế đã sẵn sàng ở bên dưới.",
+          stockEntryReplacement: {
+            entryIds: seReplacement.entryIds,
+            totalCost: seReplacement.totalCost,
+            sourceProductId: order.sourceProductId,
+            expectedAvailableBefore: seReplacement.availableBefore,
+          },
+        };
+      }
+
       const sourceMetadata = this.asRecord(order.sourceProduct.metadataJson);
       const deliveryEntries = this.readManualDeliveryEntries(sourceMetadata);
 
@@ -4865,7 +5133,7 @@ export class WarrantyService {
         `Đơn: ${input.orderCode}`,
         `Sản phẩm: ${input.productName}`,
         `Claim #${input.claimNumber} — ${input.status}`,
-        `Khách: ${input.customerLabel}`,
+        `📞 Liên hệ khách: ${input.customerLabel}`,
         input.customerMessage ? `Vấn đề: ${input.customerMessage}` : null,
       ]
         .filter(Boolean)
@@ -5127,6 +5395,31 @@ export class WarrantyService {
     }
 
     if (deliveryMode === SourceDeliveryMode.AUTO_STOCK) {
+      // HỆ KHO MỚI của ULTRA upstream (StockBatch/StockEntry): ưu tiên rút acc thay từ đây để tìm
+      // được hàng khi ULTRA nhập kho kiểu lô. Giá ghi vào claim của PRO = GIÁ SỈ PRO trả upstream
+      // (sourceOrder.unitPrice), KHÔNG phải giá vốn lô của ULTRA. Fallback kho text cũ nếu chưa có lô.
+      const seReplacement = await this.pickReplacementStockEntries(sourceOrder.sourceProductId, qty);
+      if (seReplacement) {
+        const proUnitCost =
+          decimalToNumber(sourceOrder.unitPrice) || decimalToNumber(sourceOrder.sourcePriceSnapshot) || 0;
+        return {
+          nextStatus: WARRANTY_CLAIM_STATUS.AUTO_RESOLVED,
+          deliveredAccountText: seReplacement.entries.join("\n\n"),
+          resolutionNote: "Replacement from PRO source batch stock delivered automatically.",
+          ownerAttentionRequired: false,
+          customerMessage: language === "en"
+            ? "Warranty approved. Your replacement account is ready."
+            : language === "th" ? "อนุมัติการรับประกันแล้ว บัญชีทดแทนของคุณพร้อมแล้ว"
+            : "Bảo hành đã được duyệt. Tài khoản thay thế đã sẵn sàng.",
+          stockEntryReplacement: {
+            entryIds: seReplacement.entryIds,
+            totalCost: proUnitCost * seReplacement.entries.length,
+            sourceProductId: sourceOrder.sourceProductId,
+            expectedAvailableBefore: seReplacement.availableBefore,
+          },
+        };
+      }
+
       const sourceMetadata = this.asRecord(sourceOrder.sourceProduct.metadataJson);
       const deliveryEntries = this.readManualDeliveryEntries(sourceMetadata);
 
@@ -5259,6 +5552,65 @@ export class WarrantyService {
   }
 
   /**
+   * Current accounts the customer ACTUALLY holds for an order = original delivered accounts MINUS
+   * the ones already replaced via a prior warranty, PLUS the replacement accounts that were issued.
+   * So a re-warranty on a multi-account order shows the up-to-date set (the new replacement appears,
+   * the dead original drops) instead of the stale original list. Also returns which originals were
+   * replaced + the issued replacement accounts so the UI can show "đã bảo hành — TK mới: …".
+   * Display string per account = its email (username) — matches the bot's `split("|")[0]` display.
+   */
+  private async buildCurrentAccountView(
+    orderId: string,
+    originalText: string | null | undefined,
+  ): Promise<{ active: string[]; replacedOriginals: string[]; issuedReplacements: string[] }> {
+    const replacedSet = await this.autoCheckService.getReplacedEmailSet(orderId);
+    const originals = this.autoCheckService.parseAllCredentials(originalText ?? null);
+    const stillValid = this.autoCheckService
+      .filterOutReplaced(originals, replacedSet)
+      .map((c) => c.email)
+      .filter(Boolean);
+
+    // Replacement accounts issued by prior resolved claims (oldest→newest).
+    const resolved = await this.prisma.warrantyClaim.findMany({
+      where: {
+        orderId,
+        status: { in: ["AUTO_RESOLVED", "RESOLVED_MANUAL"] as any },
+        deliveredAccountText: { not: null },
+      },
+      orderBy: { resolvedAt: "asc" },
+      select: { deliveredAccountText: true },
+    });
+    const issuedReplacements: string[] = [];
+    for (const c of resolved) {
+      for (const cred of this.autoCheckService.parseAllCredentials(c.deliveredAccountText)) {
+        if (cred.email && !issuedReplacements.includes(cred.email)) issuedReplacements.push(cred.email);
+      }
+    }
+
+    // Active = still-valid originals + issued replacements, deduped (keep order).
+    const seen = new Set<string>();
+    const active: string[] = [];
+    for (const e of [...stillValid, ...issuedReplacements]) {
+      const k = e.toLowerCase().trim();
+      if (!k || seen.has(k)) continue;
+      seen.add(k);
+      active.push(e);
+    }
+    // Replaced originals (those filtered out) — for the "đã bảo hành acc nào" note.
+    const stillValidSet = new Set(stillValid.map((e) => e.toLowerCase().trim()));
+    const replacedOriginals = originals
+      .map((c) => c.email)
+      .filter((e) => e && !stillValidSet.has(e.toLowerCase().trim()));
+
+    // Fallback: if parsing yielded nothing (legacy format), keep the original display lines.
+    return {
+      active: active.length > 0 ? active : this.parseDeliveredAccounts(originalText),
+      replacedOriginals,
+      issuedReplacements,
+    };
+  }
+
+  /**
    * Build the set of usernames valid for warranty submission on a given order. Includes:
    *   - Usernames from the order's original delivery (`order.deliveredAccountText`)
    *   - Usernames from every replacement issued via prior resolved claims
@@ -5386,6 +5738,141 @@ export class WarrantyService {
     }
 
     return null;
+  }
+
+  // Đọc tồn kho theo HỆ MỚI (StockBatch/StockEntry) để cấp acc thay bảo hành.
+  // FIFO: lô NULL (kho cũ) trước, rồi theo uploadedAt — KHỚP popManualStockEntries của worker.
+  // Bỏ qua lô hết hạn / đã xoá mềm. Trả snapshot (entryIds + text + Σ giá vốn lô) cho decision;
+  // apply sẽ re-validate các entryIds còn AVAILABLE dưới lock rồi mới mark SOLD.
+  private async pickReplacementStockEntries(
+    sourceProductId: string,
+    qty: number,
+  ): Promise<{ entryIds: string[]; entries: string[]; totalCost: number; availableBefore: number } | null> {
+    const now = new Date();
+    const where: Prisma.StockEntryWhereInput = {
+      sourceProductId,
+      status: "AVAILABLE",
+      OR: [
+        { batchId: null },
+        { batch: { deletedAt: null, expiresAt: null } },
+        { batch: { deletedAt: null, expiresAt: { gt: now } } },
+      ],
+    };
+    const availableBefore = await this.prisma.stockEntry.count({ where });
+    if (availableBefore < qty) return null;
+    const picked = await this.prisma.stockEntry.findMany({
+      where,
+      orderBy: [
+        { batchId: { sort: "asc", nulls: "first" } },
+        { uploadedAt: "asc" },
+        { id: "asc" },
+      ],
+      take: qty,
+      include: { batch: { select: { costPerUnit: true } } },
+    });
+    if (picked.length < qty) return null;
+    const totalCost = picked.reduce(
+      (sum, e) => sum + (e.batch?.costPerUnit ? Number(e.batch.costPerUnit) : 0),
+      0,
+    );
+    return {
+      entryIds: picked.map((e) => e.id),
+      entries: picked.map((e) => e.text),
+      totalCost,
+      availableBefore,
+    };
+  }
+
+  // Cắt kho StockEntry trong transaction (mark SOLD đúng entryIds + soft-delete lô rỗng +
+  // recompute SourceProduct.available). Trả true nếu thành công; false nếu kho đã đổi (race)
+  // → caller tự route sang review / báo lỗi tuỳ entry point.
+  private async commitStockEntryReplacement(
+    tx: Prisma.TransactionClient,
+    repl: { entryIds: string[]; sourceProductId: string },
+    orderId: string,
+    customerId: string,
+  ): Promise<boolean> {
+    const { entryIds, sourceProductId } = repl;
+    await tx.$queryRaw`SELECT id FROM source_products WHERE id = ${sourceProductId} FOR UPDATE`;
+    const stillAvail = await tx.stockEntry.findMany({
+      where: { id: { in: entryIds }, status: "AVAILABLE" },
+      select: { id: true, batchId: true },
+    });
+    if (stillAvail.length !== entryIds.length) return false;
+    const now = new Date();
+    await tx.stockEntry.updateMany({
+      where: { id: { in: entryIds } },
+      data: { status: "SOLD", soldAt: now, soldToOrderId: orderId, soldToCustomerId: customerId },
+    });
+    const batchIds = Array.from(new Set(stillAvail.map((e) => e.batchId).filter((b): b is string => Boolean(b))));
+    for (const bId of batchIds) {
+      const rem = await tx.stockEntry.count({ where: { batchId: bId, status: "AVAILABLE" } });
+      if (rem === 0) await tx.stockBatch.update({ where: { id: bId }, data: { deletedAt: new Date() } });
+    }
+    const remainingAvail = await tx.stockEntry.count({
+      where: {
+        sourceProductId,
+        status: "AVAILABLE",
+        OR: [
+          { batchId: null },
+          { batch: { deletedAt: null, expiresAt: null } },
+          { batch: { deletedAt: null, expiresAt: { gt: now } } },
+        ],
+      },
+    });
+    await tx.sourceProduct.update({ where: { id: sourceProductId }, data: { available: remainingAvail } });
+    return true;
+  }
+
+  // Khi seller resolve TAY và dán acc thay: nếu acc đó TRÙNG StockEntry còn AVAILABLE của SP này →
+  // cắt kho (mark SOLD) để tránh bán trùng (oversell), và trả {Σ giá vốn lô khớp, số acc khớp}.
+  // null nếu không khớp cái nào (seller dán acc ngoài hệ thống → giữ nguyên kho, dùng proxy đơn giá).
+  private async consumeMatchingStockEntries(
+    tx: Prisma.TransactionClient,
+    sourceProductId: string,
+    deliveredAccountText: string,
+    orderId: string,
+    customerId: string,
+  ): Promise<{ totalCost: number; matchedCount: number } | null> {
+    const blocks = deliveredAccountText
+      .split(/\n{2,}/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (blocks.length === 0) return null;
+    await tx.$queryRaw`SELECT id FROM source_products WHERE id = ${sourceProductId} FOR UPDATE`;
+    const matched = await tx.stockEntry.findMany({
+      where: { sourceProductId, status: "AVAILABLE", text: { in: blocks } },
+      include: { batch: { select: { costPerUnit: true } } },
+    });
+    if (matched.length === 0) return null;
+    const ids = matched.map((e) => e.id);
+    const now = new Date();
+    await tx.stockEntry.updateMany({
+      where: { id: { in: ids } },
+      data: { status: "SOLD", soldAt: now, soldToOrderId: orderId, soldToCustomerId: customerId },
+    });
+    const totalCost = matched.reduce(
+      (sum, e) => sum + (e.batch?.costPerUnit ? Number(e.batch.costPerUnit) : 0),
+      0,
+    );
+    const batchIds = Array.from(new Set(matched.map((e) => e.batchId).filter((b): b is string => Boolean(b))));
+    for (const bId of batchIds) {
+      const rem = await tx.stockEntry.count({ where: { batchId: bId, status: "AVAILABLE" } });
+      if (rem === 0) await tx.stockBatch.update({ where: { id: bId }, data: { deletedAt: new Date() } });
+    }
+    const remainingAvail = await tx.stockEntry.count({
+      where: {
+        sourceProductId,
+        status: "AVAILABLE",
+        OR: [
+          { batchId: null },
+          { batch: { deletedAt: null, expiresAt: null } },
+          { batch: { deletedAt: null, expiresAt: { gt: now } } },
+        ],
+      },
+    });
+    await tx.sourceProduct.update({ where: { id: sourceProductId }, data: { available: remainingAvail } });
+    return { totalCost, matchedCount: matched.length };
   }
 
   private readManualDeliveryEntries(metadata: Record<string, unknown>) {

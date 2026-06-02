@@ -1133,6 +1133,68 @@ export class InternalSourceService {
     const isManualProduct = this.isManualProduct(order.sourceProduct);
 
     if (isManualProduct) {
+      // HỆ KHO MỚI (StockBatch/StockEntry): ưu tiên giao từ lô (FIFO, bỏ lô hết hạn/đã xoá) để
+      // tìm được hàng khi ULTRA nhập kho kiểu lô mới. Fallback kho text cũ nếu SP chưa có StockEntry.
+      const seNow = new Date();
+      const seWhere: Prisma.StockEntryWhereInput = {
+        sourceProductId: order.sourceProductId,
+        status: "AVAILABLE",
+        OR: [
+          { batchId: null },
+          { batch: { deletedAt: null, expiresAt: null } },
+          { batch: { deletedAt: null, expiresAt: { gt: seNow } } },
+        ],
+      };
+      const seAvailable = await this.prisma.stockEntry.count({ where: seWhere });
+      if (seAvailable >= order.quantity) {
+        const seDeliveredText = await this.prisma.$transaction(async (tx) => {
+          await tx.$queryRaw`SELECT id FROM source_products WHERE id = ${order.sourceProductId} FOR UPDATE`;
+          const picked = await tx.stockEntry.findMany({
+            where: seWhere,
+            orderBy: [{ batchId: { sort: "asc", nulls: "first" } }, { uploadedAt: "asc" }, { id: "asc" }],
+            take: order.quantity,
+            include: { batch: { select: { costPerUnit: true } } },
+          });
+          if (picked.length < order.quantity) return null; // race → fallback kho text
+          const ids = picked.map((e) => e.id);
+          // internal fulfillment: không gắn soldToOrderId (FK→Order chính, ở đây chỉ có internal order)
+          await tx.stockEntry.updateMany({ where: { id: { in: ids } }, data: { status: "SOLD", soldAt: seNow } });
+          const deliveredText = picked.map((e) => e.text).join("\n\n");
+          const totalCost = picked.reduce((s, e) => s + (e.batch?.costPerUnit ? Number(e.batch.costPerUnit) : 0), 0);
+          await tx.internalSourceOrder.update({
+            where: { id: order.id },
+            data: { status: InternalSourceOrderStatus.DELIVERED, deliveredAccountText: deliveredText, deliveredAt: seNow },
+          });
+          await tx.internalSourceOrderEvent.create({
+            data: {
+              orderId: order.id,
+              eventType: "batch_stock_delivered",
+              payloadJson: { deliveredCount: picked.length, entryIds: ids, totalCost } as Prisma.InputJsonValue,
+            },
+          });
+          const batchIds = Array.from(new Set(picked.map((e) => e.batchId).filter((b): b is string => Boolean(b))));
+          for (const bId of batchIds) {
+            const rem = await tx.stockEntry.count({ where: { batchId: bId, status: "AVAILABLE" } });
+            if (rem === 0) await tx.stockBatch.update({ where: { id: bId }, data: { deletedAt: new Date() } });
+          }
+          const remainingAvail = await tx.stockEntry.count({ where: seWhere });
+          await tx.sourceProduct.update({
+            where: { id: order.sourceProductId },
+            data: { soldCount: { increment: order.quantity }, available: remainingAvail },
+          });
+          return deliveredText;
+        });
+        if (seDeliveredText !== null) {
+          void this.stockAlertService.checkAndAlert(order.sourceProductId);
+          return {
+            success: true,
+            outOfStock: false,
+            pending: false,
+            rawResponse: { success: true, orderId: order.id, orderCode: order.sourceOrderCode, deliveredText: seDeliveredText },
+          };
+        }
+      }
+
       if (deliveryEntries.length >= order.quantity) {
         const deliveredEntries = deliveryEntries.slice(0, order.quantity);
         const remainingEntries = deliveryEntries.slice(order.quantity);

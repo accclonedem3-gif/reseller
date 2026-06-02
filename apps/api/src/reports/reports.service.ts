@@ -90,7 +90,18 @@ export class ReportsService {
     const day30Start = new Date(todayStart); day30Start.setDate(todayStart.getDate() - 29);
     const day90Start = new Date(todayStart); day90Start.setDate(todayStart.getDate() - 89);
 
-    const [rangeOrders, allOrders] = await Promise.all([
+    // Warranty cost = money the shop actually gave back / spent on warranty, keyed by resolvedAt:
+    //   - REFUND claim (no replacement delivered) → replacementCostSnapshot = số tiền đã hoàn.
+    //   - REPLACEMENT claim (delivered a new account) → replacementCostSnapshot = giá vốn acc thay.
+    // Refund reduces BOTH gross revenue (tiền trả lại khách) and profit; a replacement reduces
+    // only profit (extra cost, no money returned). Both pull from replacementCostSnapshot.
+    const _warrantyResolved = { in: ["AUTO_RESOLVED", "RESOLVED_MANUAL"] } as const;
+    // Tiền hoàn PARTIAL (đơn nhiều acc: thay được vài cái, hoàn tiền số còn thiếu) trả vào ví khách
+    // qua ledger `warranty_partial_refund` — KHÔNG nằm trong replacementCostSnapshot (chỗ đó là giá
+    // vốn acc thay). Phải đọc riêng để trừ doanh thu/lợi nhuận. (Hoàn TOÀN PHẦN đã nằm ở
+    // replacementCostSnapshot của claim deliveredAccountText=null nên không đọc lại để khỏi trùng.)
+    const _partialRefundWhere = { referenceType: "warranty_partial_refund", customer: { shopId: shop.id } } as const;
+    const [rangeOrders, allOrders, rangeClaims, allClaims, rangePartialRefunds, allPartialRefunds] = await Promise.all([
       this.prisma.order.findMany({
         where: { shopId: shop.id, paymentStatus: "PAID", createdAt: { gte: rangeStart, lte: rangeEnd } },
         orderBy: { createdAt: "asc" },
@@ -98,6 +109,27 @@ export class ReportsService {
       this.prisma.order.findMany({
         where: { shopId: shop.id, paymentStatus: "PAID" },
         select: { createdAt: true, totalSaleAmount: true, totalSourceAmount: true },
+      }),
+      this.prisma.warrantyClaim.findMany({
+        where: {
+          shopId: shop.id,
+          status: _warrantyResolved as any,
+          replacementCostSnapshot: { not: null },
+          resolvedAt: { gte: rangeStart, lte: rangeEnd },
+        },
+        select: { resolvedAt: true, replacementCostSnapshot: true, deliveredAccountText: true },
+      }),
+      this.prisma.warrantyClaim.findMany({
+        where: { shopId: shop.id, status: _warrantyResolved as any, replacementCostSnapshot: { not: null } },
+        select: { resolvedAt: true, replacementCostSnapshot: true, deliveredAccountText: true },
+      }),
+      this.prisma.customerWalletLedger.findMany({
+        where: { ..._partialRefundWhere, createdAt: { gte: rangeStart, lte: rangeEnd } },
+        select: { createdAt: true, amount: true },
+      }),
+      this.prisma.customerWalletLedger.findMany({
+        where: _partialRefundWhere,
+        select: { createdAt: true, amount: true },
       }),
     ]);
 
@@ -130,7 +162,34 @@ export class ReportsService {
       points.set(label, current);
     }
 
-    const series = Array.from(points.values());
+    // Subtract warranty cost on the day each claim RESOLVED (not the order's purchase day).
+    let rangeWarrantyCost = 0;
+    for (const c of rangeClaims) {
+      if (!c.resolvedAt) continue;
+      const amount = decimalToNumber(c.replacementCostSnapshot);
+      if (amount <= 0) continue;
+      rangeWarrantyCost += amount;
+      const label = c.resolvedAt.toISOString().slice(0, 10);
+      const current = points.get(label) || { label, grossRevenue: 0, estimatedProfit: 0, deliveredOrders: 0 };
+      const isRefund = !c.deliveredAccountText; // no replacement delivered → it was a money refund
+      if (isRefund) current.grossRevenue -= amount; // tiền hoàn lại khách → giảm doanh thu
+      current.estimatedProfit -= amount; // hoàn tiền HOẶC giá vốn acc thay → giảm lợi nhuận
+      points.set(label, current);
+    }
+
+    // Tiền hoàn PARTIAL (cash trả lại khách cho phần thiếu hàng) → giảm cả doanh thu + lợi nhuận.
+    for (const r of rangePartialRefunds) {
+      const amount = decimalToNumber(r.amount);
+      if (amount <= 0) continue;
+      rangeWarrantyCost += amount;
+      const label = r.createdAt.toISOString().slice(0, 10);
+      const current = points.get(label) || { label, grossRevenue: 0, estimatedProfit: 0, deliveredOrders: 0 };
+      current.grossRevenue -= amount;
+      current.estimatedProfit -= amount;
+      points.set(label, current);
+    }
+
+    const series = Array.from(points.values()).sort((a, b) => a.label.localeCompare(b.label));
     const totals = series.reduce(
       (accumulator, item) => ({
         grossRevenue: accumulator.grossRevenue + item.grossRevenue,
@@ -149,7 +208,28 @@ export class ReportsService {
       if (o.createdAt >= day7Start) profitSummary.last7d += profit;
       if (o.createdAt >= todayStart) profitSummary.today += profit;
     }
+    // Subtract warranty cost (refund + replacement giá vốn) by the day the claim resolved.
+    for (const c of allClaims) {
+      if (!c.resolvedAt) continue;
+      const amount = decimalToNumber(c.replacementCostSnapshot);
+      if (amount <= 0) continue;
+      profitSummary.allTime -= amount;
+      if (c.resolvedAt >= day90Start) profitSummary.last90d -= amount;
+      if (c.resolvedAt >= day30Start) profitSummary.last30d -= amount;
+      if (c.resolvedAt >= day7Start) profitSummary.last7d -= amount;
+      if (c.resolvedAt >= todayStart) profitSummary.today -= amount;
+    }
+    // Tiền hoàn PARTIAL → giảm lợi nhuận theo ngày hoàn (cash đã ra khỏi shop).
+    for (const r of allPartialRefunds) {
+      const amount = decimalToNumber(r.amount);
+      if (amount <= 0) continue;
+      profitSummary.allTime -= amount;
+      if (r.createdAt >= day90Start) profitSummary.last90d -= amount;
+      if (r.createdAt >= day30Start) profitSummary.last30d -= amount;
+      if (r.createdAt >= day7Start) profitSummary.last7d -= amount;
+      if (r.createdAt >= todayStart) profitSummary.today -= amount;
+    }
 
-    return { summary: totals, series, profitSummary };
+    return { summary: { ...totals, warrantyCost: rangeWarrantyCost }, series, profitSummary };
   }
 }

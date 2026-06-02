@@ -784,6 +784,7 @@ export class TelegramBotService {
             check.accounts,
             actions,
             callbackLanguage,
+            check.issuedReplacements ?? [],
           );
         }
       } else if (data.startsWith("prokey:reissue:")) {
@@ -3213,10 +3214,10 @@ export class TelegramBotService {
             : "🛡️ Yêu cầu bảo hành",
         "",
         language === "en"
-          ? "Please reply with your order code in the next message."
+          ? "Reply with your order code (ORD-…) OR the account email you received, in the next message."
           : language === "th"
-            ? "กรุณาตอบกลับด้วยรหัสคำสั่งซื้อในข้อความถัดไป"
-            : "Vui lòng trả lời bằng mã đơn hàng ở tin nhắn tiếp theo.",
+            ? "ตอบกลับด้วยรหัสคำสั่งซื้อ (ORD-…) หรืออีเมลบัญชีที่คุณได้รับ ในข้อความถัดไป"
+            : "Trả lời bằng MÃ ĐƠN (ORD-…) HOẶC email tài khoản bạn đã nhận, ở tin nhắn tiếp theo.",
         language === "en"
           ? "We will validate the warranty window and process the claim automatically when possible."
           : language === "th"
@@ -3298,6 +3299,7 @@ export class TelegramBotService {
       check.accounts,
       actions,
       language,
+      check.issuedReplacements ?? [],
     );
 
     return true;
@@ -3313,6 +3315,7 @@ export class TelegramBotService {
     accounts: string[],
     actions: unknown[],
     language: BotLanguage = "vi",
+    issuedReplacements: string[] = [],
   ) {
     if (accounts.length <= 1) {
       const claim = await this.warrantyService.submitTelegramWarrantyClaim({
@@ -3334,6 +3337,7 @@ export class TelegramBotService {
         accounts,
         actions,
         language,
+        issuedReplacements,
       );
     }
   }
@@ -3348,6 +3352,7 @@ export class TelegramBotService {
     accounts: string[],
     actions: unknown[],
     language: BotLanguage = "vi",
+    issuedReplacements: string[] = [],
   ) {
     await this.setPendingSession(
       "pendingWarrantyAccountSelections",
@@ -3358,6 +3363,17 @@ export class TelegramBotService {
 
     const usernames = accounts.map((a) => (a.split("|")[0] || a).trim());
     const accountList = usernames.map((u, i) => `${i + 1}. ${u}`).join("\n");
+    // Show accounts already replaced in a prior warranty (the new account is in the list above) so
+    // the customer knows what was done and only re-warranties the one(s) still failing.
+    const replacedUsernames = issuedReplacements.map((a) => (a.split("|")[0] || a).trim()).filter(Boolean);
+    const issuedNote =
+      replacedUsernames.length > 0
+        ? (language === "en"
+            ? `✅ Already warrantied — new account(s) issued: ${replacedUsernames.join(", ")}`
+            : language === "th"
+              ? `✅ รับประกันแล้ว — บัญชีใหม่ที่ออกให้: ${replacedUsernames.join(", ")}`
+              : `✅ Đã bảo hành trước đó — TK mới đã cấp: ${replacedUsernames.join(", ")}`)
+        : "";
 
     await this.editOrSend(
       token,
@@ -3381,6 +3397,7 @@ export class TelegramBotService {
             ? `คำสั่งซื้อนี้มี ${accounts.length} บัญชี:`
             : `Đơn này có ${accounts.length} tài khoản:`,
         accountList,
+        ...(issuedNote ? ["", issuedNote] : []),
         "",
         language === "en"
           ? "Enter the username(s) you want to replace, separated by semicolons (;)."

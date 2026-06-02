@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import { useSearchParams } from "react-router-dom";
-import { ShieldCheck, ShieldAlert, Search, CheckCircle, Loader2, AlertCircle, Clock, ArrowLeft } from "lucide-react";
+import { ShieldCheck, ShieldAlert, Search, CheckCircle, Loader2, AlertCircle, Clock, ArrowLeft, Copy } from "lucide-react";
 import { api } from "@/lib/api";
 import { useLang } from "@/lib/lang";
 
@@ -39,11 +39,13 @@ const T = {
     orderModeHint: "Chọn (các) tài khoản trong đơn cần bảo hành:",
     selectAllLabel: "Chọn tất cả",
     clearAllLabel: "Bỏ chọn tất cả",
+    warrantiedTag: "đã bảo hành",
     changedPwToggle: "Tôi đã đổi mật khẩu (nhập mật khẩu mới cho từng tài khoản)",
     newPwPh: "Mật khẩu mới",
     resolvedTitle: "Tài khoản thay thế đã cấp",
     resolvedHint: "Bạn đã được bảo hành — bấm để copy lại tài khoản thay thế",
     copiedToast: "Đã copy!",
+    tapToCopy: "Bấm để copy",
     submitBtn: "Gửi yêu cầu bảo hành",
     successTitle: "Bảo hành đã được duyệt!",
     successOrder: (code: string) => `Đơn #${code}`,
@@ -85,6 +87,8 @@ const T = {
       `Các tài khoản không còn hàng thay đã được hoàn ${amount.toLocaleString("vi-VN")}đ vào ví của bạn.`,
     pendingStockTitle: "Đã xác nhận lỗi — đang chờ tài khoản thay",
     pendingStockDesc: "Tài khoản của bạn đã được xác nhận hỏng. Kho thay thế tạm hết, shop sẽ xử lý và giao tài khoản mới sớm.",
+    deadFoundProcessing: (n: number) =>
+      `Phát hiện ${n} tài khoản hỏng. Hệ thống đang xử lý — thay tài khoản mới hoặc hoàn tiền vào ví. Kiểm tra bot Telegram hoặc liên hệ shop nếu cần.`,
     rejectedTitle: "Tài khoản vẫn còn hạn",
     rejectedDesc: "Tài khoản vẫn đang hoạt động bình thường, chưa đủ điều kiện bảo hành.",
     pwdChangedTitle: "Tài khoản bảo hành đã đổi mật khẩu",
@@ -132,11 +136,13 @@ const T = {
     orderModeHint: "Select the account(s) in this order to warranty:",
     selectAllLabel: "Select all",
     clearAllLabel: "Clear all",
+    warrantiedTag: "warrantied",
     changedPwToggle: "I changed the password (enter a new password per account)",
     newPwPh: "New password",
     resolvedTitle: "Replacement account(s) issued",
     resolvedHint: "You were already issued these — tap to copy again",
     copiedToast: "Copied!",
+    tapToCopy: "Tap to copy",
     submitBtn: "Submit warranty claim",
     successTitle: "Warranty approved!",
     successOrder: (code: string) => `Order #${code}`,
@@ -178,6 +184,8 @@ const T = {
       `Accounts with no replacement stock were refunded ${amount.toLocaleString("vi-VN")}đ to your wallet.`,
     pendingStockTitle: "Confirmed faulty — awaiting replacement",
     pendingStockDesc: "Your account was confirmed faulty. Replacement stock is temporarily out; the seller will deliver a new account shortly.",
+    deadFoundProcessing: (n: number) =>
+      `${n} faulty account(s) detected. Being processed — a replacement account or a wallet refund. Check the Telegram bot or contact the seller if needed.`,
     rejectedTitle: "Account still active",
     rejectedDesc: "The account is still on a paid plan — warranty not applicable.",
     pwdChangedTitle: "I changed the account password",
@@ -225,11 +233,13 @@ const T = {
     orderModeHint: "เลือกบัญชีในคำสั่งซื้อที่ต้องการรับประกัน:",
     selectAllLabel: "เลือกทั้งหมด",
     clearAllLabel: "ล้างการเลือก",
+    warrantiedTag: "รับประกันแล้ว",
     changedPwToggle: "ฉันเปลี่ยนรหัสผ่านแล้ว (กรอกรหัสผ่านใหม่ของแต่ละบัญชี)",
     newPwPh: "รหัสผ่านใหม่",
     resolvedTitle: "บัญชีทดแทนที่ออกให้แล้ว",
     resolvedHint: "คุณได้รับการรับประกันแล้ว — แตะเพื่อคัดลอกอีกครั้ง",
     copiedToast: "คัดลอกแล้ว!",
+    tapToCopy: "แตะเพื่อคัดลอก",
     submitBtn: "ส่งคำร้องขอรับประกัน",
     successTitle: "อนุมัติการรับประกันแล้ว!",
     successOrder: (code: string) => `คำสั่งซื้อ #${code}`,
@@ -271,6 +281,8 @@ const T = {
       `บัญชีที่ไม่มีสต๊อกทดแทนได้รับการคืนเงิน ${amount.toLocaleString("vi-VN")}đ เข้ากระเป๋าของคุณ`,
     pendingStockTitle: "ยืนยันว่าบัญชีเสีย — กำลังรอบัญชีทดแทน",
     pendingStockDesc: "บัญชีของคุณได้รับการยืนยันว่าเสีย สต๊อกทดแทนหมดชั่วคราว ผู้ขายจะจัดส่งบัญชีใหม่ให้เร็ว ๆ นี้",
+    deadFoundProcessing: (n: number) =>
+      `พบบัญชีเสีย ${n} บัญชี กำลังดำเนินการ — เปลี่ยนบัญชีใหม่หรือคืนเงินเข้ากระเป๋า ตรวจสอบบอท Telegram หรือติดต่อผู้ขายหากจำเป็น`,
     rejectedTitle: "บัญชียังใช้งานได้",
     rejectedDesc: "บัญชียังอยู่ในแพ็คเกจที่ชำระเงิน — ไม่มีสิทธิ์รับประกัน",
     pwdChangedTitle: "บัญชีรับประกันเปลี่ยนรหัสผ่านแล้ว",
@@ -299,6 +311,7 @@ type OrderResult = {
   warrantyPolicy: string | null;
   hasActiveClaim: boolean;
   accountUsernames?: string[];
+  replacedUsernames?: string[]; // original accounts already warrantied → show greyed/disabled
   resolvedAccounts?: string[]; // replacement creds already issued (for re-copy)
 };
 
@@ -665,8 +678,10 @@ export function WarrantyClaimPage() {
     setClaimAccountsText(all.filter((a) => next.has(a.toLowerCase())).join("\n"));
   }
   function toggleAllAccounts() {
-    const all = selectedOrder?.accountUsernames || [];
-    setClaimAccountsText(selectedAccountSet.size >= all.length ? "" : all.join("\n"));
+    // "Chọn tất cả" chỉ chọn các acc CÒN bảo hành được (bỏ qua acc đã thay/đã bảo hành).
+    const replaced = new Set((selectedOrder?.replacedUsernames || []).map((e) => e.toLowerCase()));
+    const selectable = (selectedOrder?.accountUsernames || []).filter((a) => !replaced.has(a.toLowerCase()));
+    setClaimAccountsText(selectedAccountSet.size >= selectable.length ? "" : selectable.join("\n"));
   }
 
   // Account-search mode → auto-select the single scoped account so the retail customer just submits.
@@ -764,6 +779,25 @@ export function WarrantyClaimPage() {
       setError(msg || t.errDefault);
     } finally {
       setLoading(false);
+    }
+  }
+
+  // Re-fetch the currently-selected order after a warranty resolves, so "TK thay thế đã cấp" +
+  // the greyed "đã bảo hành" accounts reflect the just-issued replacement (count goes up) instead
+  // of showing the stale pre-warranty list when the customer taps "Bảo hành lại".
+  async function refreshSelectedOrder() {
+    if (!selectedOrder || !accountText.trim() || !contactInfo.trim()) return;
+    try {
+      const res = await api.post<SearchResponse>("/public/warranty/search", {
+        shopSlug,
+        accountText: accountText.trim(),
+        contactInfo: contactInfo.trim(),
+      });
+      setOrders(res.data.orders);
+      const same = res.data.orders.find((o) => o.orderId === selectedOrder.orderId);
+      if (same) setSelectedOrder(same);
+    } catch {
+      /* keep the existing order on a transient refresh error */
     }
   }
 
@@ -1094,7 +1128,7 @@ export function WarrantyClaimPage() {
                         onClick={toggleAllAccounts}
                         className="text-xs font-medium text-emerald-600 transition hover:opacity-70"
                       >
-                        {selectedAccountSet.size >= (selectedOrder.accountUsernames?.length || 0) ? t.clearAllLabel : t.selectAllLabel}
+                        {selectedAccountSet.size >= ((selectedOrder.accountUsernames || []).filter((a) => !(selectedOrder.replacedUsernames || []).some((r) => r.toLowerCase() === a.toLowerCase())).length || 0) ? t.clearAllLabel : t.selectAllLabel}
                       </button>
                     )}
                   </div>
@@ -1103,25 +1137,44 @@ export function WarrantyClaimPage() {
                   </p>
                   <div className="space-y-1.5">
                     {(selectedOrder.accountUsernames || []).map((email) => {
-                      const checked = selectedAccountSet.has(email.toLowerCase());
+                      // Acc đã bảo hành (thay) rồi → vẫn HIỆN nhưng xám + gạch + không chọn được.
+                      const isReplaced = (selectedOrder.replacedUsernames || []).some(
+                        (e) => e.toLowerCase() === email.toLowerCase(),
+                      );
+                      const checked = !isReplaced && selectedAccountSet.has(email.toLowerCase());
                       const isAcctMode = selectedOrder.searchMode === "account";
                       return (
                         <label
                           key={email}
-                          className="flex cursor-pointer items-center gap-2.5 rounded-[10px] border px-3 py-2.5"
+                          className={`flex items-center gap-2.5 rounded-[10px] border px-3 py-2.5 ${isReplaced ? "cursor-not-allowed" : "cursor-pointer"}`}
                           style={{
                             background: checked ? "rgba(16,185,129,0.06)" : "var(--inp)",
                             borderColor: checked ? "rgb(16,185,129)" : "var(--bd)",
+                            opacity: isReplaced ? 0.55 : 1,
                           }}
+                          title={isReplaced ? t.warrantiedTag : undefined}
                         >
                           <input
                             type="checkbox"
                             checked={checked}
-                            disabled={isAcctMode}
-                            onChange={() => toggleAccount(email)}
+                            disabled={isAcctMode || isReplaced}
+                            onChange={() => { if (!isReplaced) toggleAccount(email); }}
                             className="h-4 w-4 accent-emerald-500"
                           />
-                          <span className="truncate font-mono text-sm" style={{ color: "var(--tx)" }}>{email}</span>
+                          <span
+                            className={`truncate font-mono text-sm ${isReplaced ? "line-through" : ""}`}
+                            style={{ color: "var(--tx)" }}
+                          >
+                            {email}
+                          </span>
+                          {isReplaced && (
+                            <span
+                              className="ml-auto shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold"
+                              style={{ background: "rgba(16,185,129,0.12)", color: "rgb(16,185,129)" }}
+                            >
+                              ✓ {t.warrantiedTag}
+                            </span>
+                          )}
                         </label>
                       );
                     })}
@@ -1324,6 +1377,7 @@ export function WarrantyClaimPage() {
                       setResult(null);
                       setAutoCheck(null);
                       idempotencyKeyRef.current = null;
+                      void refreshSelectedOrder(); // cập nhật TK đã cấp + acc đã bảo hành (xám)
                       setStep("form");
                     }}
                     className="flex w-full items-center justify-center gap-2 rounded-[12px] py-2.5 text-sm font-bold transition hover:opacity-90"
@@ -1374,6 +1428,13 @@ function AutoCheckProgress({
   auto: AutoCheckStatusResponse | null;
   t: typeof T["vi"];
 }) {
+  const [copied, setCopied] = useState(false);
+  const copyReplacement = (txt: string) => {
+    navigator.clipboard?.writeText(txt).then(
+      () => { setCopied(true); window.setTimeout(() => setCopied(false), 2500); },
+      () => {},
+    );
+  };
   const status = String(auto?.autoCheckStatus || "queued").toLowerCase();
   const isRunning = status === "running" || status === "queued";
   const isDone = status === "completed" || status === "failed" || status === "unsupported";
@@ -1471,6 +1532,8 @@ function AutoCheckProgress({
               ? t.autoCheckSoftFailedWrongPassHint
               : isSoftFailed
                 ? `${t.autoCheckReason(auto?.publicErrorType || result?.errorType)}. ${t.autoCheckSoftFailedRetryHint}`
+                : isDone && deadCount > 0
+                  ? t.deadFoundProcessing(deadCount)
                 : isFailedOrUnsupported
                   ? t.autoCheckFailedDesc
                   : claimMessage;
@@ -1569,7 +1632,12 @@ function AutoCheckProgress({
                 isHeavy ? "#8b5cf6" :
                 tier === "FREE" ? "#6b7280" :
                 "#f59e0b";
-              const planLabel = isDead
+              // Lỗi đăng nhập (sai pass / login kẹt / 2FA) → không đọc được gói → ẩn pill "Unknown"
+              // gây hiểu nhầm, hiện "—"; nhãn trạng thái bên phải sẽ nói rõ "Sai mật khẩu".
+              const _authErr = ["wrong_password", "login_stuck", "2fa"].includes(
+                String(acc.errorType || "").toLowerCase(),
+              );
+              const planLabel = (isDead || _authErr)
                 ? "—"
                 : assumeVeoUltra
                   ? `Ultra · ${creditOnly}`
@@ -1585,12 +1653,18 @@ function AutoCheckProgress({
                             ? "Unknown"
                             : (plan || tier);
               const statusLabel = (() => {
+                const et = String(acc.errorType || "").toLowerCase();
+                // SAI MẬT KHẨU (cả grok & veo) — hiện rõ NGAY, dù acc chưa "dead" (login fail ≠ chết),
+                // thay vì rơi ra "Unknown"/"Lỗi kiểm tra" mơ hồ.
+                if (et === "wrong_password" || et === "login_stuck") return "Sai mật khẩu";
+                if (et === "2fa") return "Cần mã 2FA";
                 if (isDead) {
-                  const et = String(acc.errorType || "").toLowerCase();
-                  if (et === "wrong_password" || et === "login_stuck") return "Sai mật khẩu";
-                  if (et === "blocked") return "Bị chặn";
+                  if (et === "blocked") return "Bị khoá";
                   if (et === "expired") return "Hết hạn";
-                  return "Die";
+                  // Tài khoản tụt về Free / mất gói trả phí → nói rõ thay vì "Die" mơ hồ.
+                  if (tier === "FREE" || String(acc.plan || "").toLowerCase() === "free") return "Mất gói";
+                  // Còn lại: chết không rõ lý do cụ thể → "Cần thay" (rõ ràng, không khẳng định sai).
+                  return "Cần thay";
                 }
                 if (isFreeDropped) return "Mất gói";
                 if (hasError) return "Lỗi kiểm tra";
@@ -1651,8 +1725,22 @@ function AutoCheckProgress({
 
       {auto?.deliveredAccountText && (
         <div className="rounded-[12px] p-4" style={{ background: "rgba(16,185,129,0.06)", border: "1px solid rgba(16,185,129,0.2)" }}>
-          <p className="mb-2 text-xs font-semibold text-emerald-600 dark:text-emerald-400">{t.replacementLabel}</p>
-          <pre className="whitespace-pre-wrap break-all text-sm font-mono" style={{ color: "var(--tx)" }}>
+          <div className="mb-2 flex items-center justify-between">
+            <p className="text-xs font-semibold text-emerald-600 dark:text-emerald-400">{t.replacementLabel}</p>
+            {copied
+              ? <span className="text-xs font-medium text-emerald-600">✓ {t.copiedToast}</span>
+              : <span className="flex items-center gap-1 text-xs" style={{ color: "var(--tx-f)" }}><Copy className="h-3 w-3" />{t.tapToCopy}</span>}
+          </div>
+          {/* Bấm bất kỳ đâu trong ô là copy luôn — khỏi phải bôi đen kéo chọn. */}
+          <pre
+            role="button"
+            tabIndex={0}
+            onClick={() => copyReplacement(auto.deliveredAccountText || "")}
+            onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") copyReplacement(auto.deliveredAccountText || ""); }}
+            title={t.tapToCopy}
+            className="w-full cursor-pointer select-all whitespace-pre-wrap break-all rounded-[8px] px-2 py-1.5 text-sm font-mono transition hover:brightness-95 active:scale-[0.99]"
+            style={{ color: "var(--tx)", background: "rgba(16,185,129,0.08)" }}
+          >
             {auto.deliveredAccountText}
           </pre>
         </div>
