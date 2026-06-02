@@ -51,6 +51,11 @@ const GROK_HTTP_TIMEOUT_MS = Math.max(30_000, Number(process.env.CHECK_GROK_HTTP
 const CHECK_VEO_URL = (process.env.CHECK_VEO_URL || "http://127.0.0.1:4002").replace(/\/+$/, "");
 const CHECK_VEO_API_KEY = process.env.CHECK_VEO_API_KEY || "";
 const VEO_HTTP_TIMEOUT_MS = Math.max(30_000, Number(process.env.CHECK_VEO_HTTP_TIMEOUT_MS || 180_000));
+// GPT HTTP API: gpt mặc định subprocess-only. Nếu set CHECK_GPT_URL (vd tool ở VPS riêng),
+// worker POST /check (đồng bộ, 1 acc/req) → fallback subprocess nếu fail. Trống = subprocess-only (giữ hành vi cũ).
+const CHECK_GPT_URL = (process.env.CHECK_GPT_URL || "").replace(/\/+$/, "");
+const CHECK_GPT_API_KEY = process.env.CHECK_GPT_API_KEY || "";
+const GPT_HTTP_TIMEOUT_MS = Math.max(30_000, Number(process.env.CHECK_GPT_HTTP_TIMEOUT_MS || 120_000));
 const CONCURRENCY = Math.max(1, Number(process.env.ACCOUNT_CHECK_CONCURRENCY || 3));
 // Per-claim parallelism: keep up to 3 Chrome slots filled continuously. parallelLimit's
 // drain loop already does the right thing for N accounts: N=1 spawns 1, N=2 spawns 2,
@@ -202,6 +207,49 @@ function spawnSingleCheck(
       resolve({ raw: stdoutBuf + (stderrBuf ? "\n--STDERR--\n" + stderrBuf : ""), parsed, exitCode: code, timedOut: false });
     });
   });
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// GPT HTTP API client (single-account, sync) — for tool on a separate VPS.
+// Returns the SAME {raw, parsed, exitCode, timedOut} shape as spawnSingleCheck so the
+// downstream parser is identical. Throws on transport error → caller falls back to subprocess.
+// ──────────────────────────────────────────────────────────────────────────
+async function gptCheckViaHttp(
+  args: { email: string; password: string; extra?: string | null; proxy?: string | null },
+): Promise<{ raw: string; parsed: any | null; exitCode: number | null; timedOut: boolean }> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (CHECK_GPT_API_KEY) headers["X-API-Key"] = CHECK_GPT_API_KEY;
+  const resp = await axios.post(
+    `${CHECK_GPT_URL}/check`,
+    {
+      email: args.email,
+      password: args.password,
+      ...(args.extra ? { extra: args.extra } : {}),
+      ...(args.proxy ? { proxy: args.proxy } : {}),
+    },
+    { headers, timeout: GPT_HTTP_TIMEOUT_MS },
+  );
+  const parsed = resp.data && typeof resp.data === "object" ? resp.data : null;
+  return { raw: `HTTP gpt status=${parsed?.status || "?"}`, parsed, exitCode: 0, timedOut: false };
+}
+
+// Per-account dispatcher: prefer HTTP for gpt when CHECK_GPT_URL is set (tool on a separate
+// VPS), else subprocess. veo/grok keep their batch HTTP fast-path upstream — this wrapper only
+// adds gpt's HTTP path while preserving subprocess fallback for every tool.
+async function runSingleCheck(
+  tool: "veo" | "grok" | "gpt",
+  args: { email: string; password: string; extra?: string | null; proxy?: string | null },
+): Promise<{ raw: string; parsed: any | null; exitCode: number | null; timedOut: boolean }> {
+  if (tool === "gpt" && CHECK_GPT_URL) {
+    try {
+      const r = await gptCheckViaHttp(args);
+      if (r.parsed && r.parsed.status) return r;
+      console.warn(`[account-check] gpt HTTP returned no usable result → fallback subprocess`);
+    } catch (err: any) {
+      console.warn(`[account-check] gpt HTTP failed (${err?.message || err}) → fallback subprocess`);
+    }
+  }
+  return spawnSingleCheck(tool, args);
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -1000,7 +1048,7 @@ async function processJob(prisma: PrismaClient, redis: Redis, job: Job): Promise
       }
       const p = await pickHealthyProxy(proxyStartIdx(i, attemptOffset));
       lastProxyByIdx.set(i, p);
-      const r = await spawnSingleCheck(tool, {
+      const r = await runSingleCheck(tool, {
         email: allAccounts[i].email,
         password: allAccounts[i].password,
         extra: allAccounts[i].extra,
