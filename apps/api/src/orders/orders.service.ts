@@ -531,15 +531,23 @@ export class OrdersService {
     const ctvBlocked = customer.isCtv === false;
     const isCtvCustomer = !ctvBlocked && ((customer.isCtv ?? false) || ctvApiKey != null || downstreamConn != null);
     const discountPercent = Number(customer.discountPercent ?? 0);
-    const ctvPrice =
-      isCtvCustomer && product.internalSourceEnabled && product.internalSourcePrice != null
+
+    // Compound CTV pricing: pick the CTV base (internalSourcePrice if the
+    // product is published as an internal source SP, else the regular sale
+    // price), THEN apply the customer's discount% on top.
+    // VD: retail 120k → CTV base 100k → discount 10% → CTV trả 90k.
+    // Mirrors getEffectivePrice() / sendQuantityReplyPrompt() in the bot
+    // service so the price the user sees in the catalog matches the price
+    // they actually pay at order creation.
+    let salePrice = baseSalePrice;
+    if (isCtvCustomer) {
+      const ctvBase = product.internalSourceEnabled && product.internalSourcePrice != null
         ? decimalToNumber(product.internalSourcePrice)
-        : null;
-    const discountedPrice =
-      isCtvCustomer && discountPercent > 0
-        ? Math.round(baseSalePrice * (1 - discountPercent / 100))
-        : null;
-    const salePrice = ctvPrice ?? discountedPrice ?? baseSalePrice;
+        : baseSalePrice;
+      salePrice = discountPercent > 0
+        ? Math.round(ctvBase * (1 - discountPercent / 100))
+        : ctvBase;
+    }
     const sourcePrice = decimalToNumber(product.sourcePrice);
 
     // Promo logic — check active window first
