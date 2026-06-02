@@ -2273,9 +2273,9 @@ export function ViewStockModal({
       accentColor="rgb(56,189,248)"
       accentBg="rgba(56,189,248,0.1)"
       accentBorder="rgba(56,189,248,0.3)"
-      maxWidth={900}
+      maxWidth={1280}
     >
-      <div className="flex flex-col overflow-hidden" style={{ maxHeight: "70vh" }}>
+      <div className="flex flex-col overflow-hidden" style={{ maxHeight: "85vh" }}>
         {/* Stats */}
         {data && (
           <div className="grid shrink-0 grid-cols-4 gap-2 border-b p-4" style={{ borderColor: "var(--bd)" }}>
@@ -2457,7 +2457,7 @@ export function ViewStockModal({
                           return (
                             <div
                               key={item.id}
-                              className="flex items-start gap-3 p-2.5 hover:bg-black/5 cursor-pointer"
+                              className="flex items-center gap-2 px-2 py-1 hover:bg-black/5 cursor-pointer"
                               onClick={(e) => {
                                 if (!isAvailable) return;
                                 toggleSelect(item.id, globalIdx, e.shiftKey);
@@ -2468,27 +2468,26 @@ export function ViewStockModal({
                                 checked={isSelected}
                                 disabled={!isAvailable}
                                 onChange={() => undefined}
-                                className="mt-0.5"
+                                className="shrink-0"
                               />
-                              <div className="min-w-0 flex-1">
-                                <p
-                                  className="break-all font-mono text-[11.5px]"
-                                  style={{ color: item.status === "AVAILABLE" ? "var(--tx)" : "var(--tx-f)" }}
-                                >
-                                  {item.text}
-                                </p>
-                                <p className="mt-0.5 text-[10px]" style={{ color: "var(--tx-f)" }}>
-                                  {item.status === "AVAILABLE" && <>🟢 Nhập {formatDateTime(item.uploadedAt)}</>}
-                                  {item.status === "SOLD" && item.soldToOrder && (
-                                    <>
-                                      🔴 Bán {formatDateTime(item.soldToOrder.deliveredAt || item.soldAt!)}{" "}
-                                      cho <b>@{item.soldToCustomer?.telegramUsername ?? item.soldToCustomer?.telegramUserId ?? "?"}</b>{" "}
-                                      ({item.soldToOrder.code})
-                                    </>
-                                  )}
-                                  {item.status === "EXTRACTED" && <>🟣 Đã bóc {item.extractedAt ? formatDateTime(item.extractedAt) : ""}</>}
-                                </p>
-                              </div>
+                              <span
+                                className="min-w-0 flex-1 truncate font-mono text-[11.5px]"
+                                style={{ color: item.status === "AVAILABLE" ? "var(--tx)" : "var(--tx-f)" }}
+                                title={item.text}
+                              >
+                                {item.text}
+                              </span>
+                              <span className="shrink-0 whitespace-nowrap text-[10px]" style={{ color: "var(--tx-f)" }}>
+                                {item.status === "AVAILABLE" && <>🟢 {formatDateTime(item.uploadedAt)}</>}
+                                {item.status === "SOLD" && item.soldToOrder && (
+                                  <>
+                                    🔴 {formatDateTime(item.soldToOrder.deliveredAt || item.soldAt!)}{" "}
+                                    @{item.soldToCustomer?.telegramUsername ?? item.soldToCustomer?.telegramUserId ?? "?"}{" "}
+                                    <span className="opacity-60">({item.soldToOrder.code})</span>
+                                  </>
+                                )}
+                                {item.status === "EXTRACTED" && <>🟣 {item.extractedAt ? formatDateTime(item.extractedAt) : ""}</>}
+                              </span>
                             </div>
                           );
                         })}
