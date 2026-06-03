@@ -1200,7 +1200,11 @@ export class OrdersService {
             checkoutUrl: order.paymentTransaction.checkoutUrl,
             qrCode: order.paymentTransaction.qrCode,
             cryptoTxHash: order.paymentTransaction.cryptoTxHash,
-            provider: String(order.paymentTransaction.provider).toLowerCase(),
+            provider:
+              String(order.paymentTransaction.provider).toUpperCase() === "MOCK" &&
+              String(order.paymentTransaction.checkoutUrl || "").startsWith("wallet://")
+                ? "wallet"
+                : String(order.paymentTransaction.provider).toLowerCase(),
             status: order.paymentTransaction.status.toLowerCase(),
           }
         : null,

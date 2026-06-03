@@ -374,7 +374,7 @@ export function PendingOrdersPageStudio() {
                         </span>
                         {order.paymentTransaction?.provider && (
                           <p className="mt-0.5 text-[10px] uppercase" style={{ color: "var(--tx-f)" }}>
-                            {order.paymentTransaction.provider}
+                            {String(order.paymentTransaction.provider).toLowerCase() === "wallet" ? "VÍ" : order.paymentTransaction.provider}
                           </p>
                         )}
                       </td>
@@ -468,7 +468,7 @@ export function PendingOrdersPageStudio() {
                         <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px]" style={{ color: "var(--tx-f)" }}>
                           <span>{t.qty}: <b>{order.quantity}</b></span>
                           {customerName && <span>· {customerName}</span>}
-                          {order.paymentTransaction?.provider && <span>· {order.paymentTransaction.provider}</span>}
+                          {order.paymentTransaction?.provider && <span>· {String(order.paymentTransaction.provider).toLowerCase() === "wallet" ? "VÍ" : order.paymentTransaction.provider}</span>}
                         </div>
                         <p className="mt-1.5 text-base font-black text-amber-500">{formatCurrency(order.totalSaleAmount)}</p>
                         {order.failureReason && (

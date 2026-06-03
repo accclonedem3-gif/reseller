@@ -276,7 +276,21 @@ function translateWarrantyPhrase(value, language = "vi") {
     }
     return extractTextValue(normalized) || (language === "en" ? "According to product policy" : "Theo chính sách sản phẩm");
 }
+const WARRANTY_POLICY_LABELS = {
+    KBH: { vi: "Không bảo hành", en: "No warranty" },
+    BH24H: { vi: "Bảo hành 24 giờ", en: "24-hour warranty" },
+    BH1M: { vi: "Bảo hành 1 tháng", en: "1-month warranty" },
+    BH3M: { vi: "Bảo hành 3 tháng", en: "3-month warranty" },
+    BH6M: { vi: "Bảo hành 6 tháng", en: "6-month warranty" },
+    BH12M: { vi: "Bảo hành 12 tháng", en: "12-month warranty" },
+    BHF: { vi: "Bảo hành Full (BHF)", en: "Full warranty" },
+};
 function resolveWarrantyText(input) {
+    const warrantyPolicyKey = String(input.warrantyPolicy || "").toUpperCase();
+    if (warrantyPolicyKey && WARRANTY_POLICY_LABELS[warrantyPolicyKey]) {
+        const lang = input.language === "en" ? "en" : "vi";
+        return WARRANTY_POLICY_LABELS[warrantyPolicyKey][lang];
+    }
     const metadata = input.metadata && typeof input.metadata === "object" && !Array.isArray(input.metadata)
         ? input.metadata
         : {};
@@ -640,6 +654,7 @@ async function sendDeliveredOrderMessages(input) {
         productName: input.productName,
         sourceDescription: input.sourceDescription,
         metadata: input.metadata,
+        warrantyPolicy: input.warrantyPolicy,
         language: input.language,
     });
     const dateTimeText = `${formatLocalizedDateTime(input.deliveredAt, input.language)} (GMT+7)`;
@@ -1410,6 +1425,7 @@ async function processPurchase(job) {
                     language: normalizeLanguage(order.customer?.preferredLanguage),
                     sourceDescription: order.sourceProduct?.sourceDescription,
                     metadata: sourceMetadata,
+                    warrantyPolicy: order.warrantyPolicySnapshot || order.sourceProduct?.warrantyPolicy,
                     shop: { supportTelegram: order.shop.supportTelegram, supportZalo: order.shop.supportZalo },
                 });
             }
@@ -1512,6 +1528,7 @@ async function processPurchase(job) {
                     language: customerLanguage,
                     sourceDescription: order.sourceProduct?.sourceDescription,
                     metadata: sourceMetadata,
+                    warrantyPolicy: order.warrantyPolicySnapshot || order.sourceProduct?.warrantyPolicy,
                     shop: {
                         supportTelegram: order.shop.supportTelegram,
                         supportZalo: order.shop.supportZalo,
@@ -1723,6 +1740,7 @@ async function processPurchase(job) {
                     language: customerLanguage,
                     sourceDescription: order.sourceProduct?.sourceDescription,
                     metadata: sourceMetadata,
+                    warrantyPolicy: order.warrantyPolicySnapshot || order.sourceProduct?.warrantyPolicy,
                     shop: { supportTelegram: order.shop.supportTelegram, supportZalo: order.shop.supportZalo },
                 });
             }
@@ -1801,6 +1819,7 @@ async function processPurchase(job) {
                         language: customerLanguage,
                         sourceDescription: order.sourceProduct?.sourceDescription,
                         metadata: sourceMetadata,
+                        warrantyPolicy: order.warrantyPolicySnapshot || order.sourceProduct?.warrantyPolicy,
                         shop: { supportTelegram: order.shop.supportTelegram, supportZalo: order.shop.supportZalo },
                     });
                 }
@@ -1965,6 +1984,7 @@ async function processPurchase(job) {
                 language: customerLanguage,
                 sourceDescription: order.sourceProduct?.sourceDescription,
                 metadata: sourceMetadata,
+                warrantyPolicy: order.warrantyPolicySnapshot || order.sourceProduct?.warrantyPolicy,
                 shop: {
                     supportTelegram: order.shop.supportTelegram,
                     supportZalo: order.shop.supportZalo,
@@ -2118,6 +2138,7 @@ async function reconcilePendingInternalSourceOrders() {
                         language: customerLanguage,
                         sourceDescription: order.sourceProduct?.sourceDescription,
                         metadata: sourceMetadata,
+                        warrantyPolicy: order.warrantyPolicySnapshot || order.sourceProduct?.warrantyPolicy,
                         shop: {
                             supportTelegram: order.shop.supportTelegram,
                             supportZalo: order.shop.supportZalo,
