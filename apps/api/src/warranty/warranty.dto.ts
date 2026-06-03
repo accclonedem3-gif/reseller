@@ -1,5 +1,17 @@
 import { Transform } from "class-transformer";
-import { IsNotEmpty, IsOptional, IsString, MinLength } from "class-validator";
+import {
+  ArrayMaxSize,
+  IsArray,
+  IsNotEmpty,
+  IsObject,
+  IsOptional,
+  IsString,
+  MaxLength,
+  MinLength,
+  Validate,
+  ValidatorConstraint,
+  ValidatorConstraintInterface,
+} from "class-validator";
 
 function emptyStringToUndefined({ value }: { value: unknown }) {
   if (typeof value !== "string") {
@@ -8,6 +20,26 @@ function emptyStringToUndefined({ value }: { value: unknown }) {
 
   const trimmed = value.trim();
   return trimmed === "" ? undefined : trimmed;
+}
+
+// Cap the per-account password-override map so a malicious public submit can't push thousands of
+// huge strings into the BullMQ job payload (memory pressure on a low-RAM VPS + oversized Redis).
+@ValidatorConstraint({ name: "passwordOverridesMap", async: false })
+class PasswordOverridesMapConstraint implements ValidatorConstraintInterface {
+  validate(value: unknown): boolean {
+    if (value === null || value === undefined) return true; // optional
+    if (typeof value !== "object" || Array.isArray(value)) return false;
+    const entries = Object.entries(value as Record<string, unknown>);
+    if (entries.length > 20) return false;
+    for (const [k, v] of entries) {
+      if (typeof k !== "string" || k.length > 200) return false;
+      if (typeof v !== "string" || v.length > 200) return false;
+    }
+    return true;
+  }
+  defaultMessage(): string {
+    return "passwordOverrides must have at most 20 entries, each key and value a string ≤200 chars.";
+  }
 }
 
 export class ResolveWarrantyClaimDto {
@@ -19,6 +51,7 @@ export class ResolveWarrantyClaimDto {
   @IsOptional()
   @Transform(emptyStringToUndefined)
   @IsString()
+  @MaxLength(2000)
   resolutionNote?: string;
 }
 
@@ -26,6 +59,7 @@ export class RejectWarrantyClaimDto {
   @Transform(emptyStringToUndefined)
   @IsString()
   @MinLength(3)
+  @MaxLength(2000)
   reason!: string;
 }
 
@@ -37,6 +71,7 @@ export class OpenWarrantyClaimDto {
   @IsOptional()
   @Transform(emptyStringToUndefined)
   @IsString()
+  @MaxLength(2000)
   customerMessage?: string;
 }
 
@@ -48,11 +83,22 @@ export class PublicWarrantySearchDto {
   @IsString()
   @IsNotEmpty()
   @MinLength(3)
+  @MaxLength(500)
   accountText!: string;
 
   @IsString()
   @IsNotEmpty()
+  @MaxLength(200)
   contactInfo!: string;
+
+  // Per-order warranty claim code (ownership proof) shown to the buyer at delivery.
+  // Optional at the DTO layer for legacy-order back-compat; the service requires it only when
+  // the matched order actually stores a code (see WarrantyService.claimCodeMatches).
+  @IsOptional()
+  @Transform(emptyStringToUndefined)
+  @IsString()
+  @MaxLength(64)
+  claimCode?: string;
 }
 
 export class PublicWarrantyClaimDto {
@@ -66,10 +112,54 @@ export class PublicWarrantyClaimDto {
 
   @IsString()
   @IsNotEmpty()
+  @MinLength(3)
+  @MaxLength(200)
   contactInfo!: string;
+
+  // Per-order warranty claim code (ownership proof). Required only when the order stores one;
+  // verified timing-safe in _publicSubmitClaimImpl.
+  @IsOptional()
+  @Transform(emptyStringToUndefined)
+  @IsString()
+  @MaxLength(64)
+  claimCode?: string;
 
   @IsOptional()
   @Transform(emptyStringToUndefined)
   @IsString()
+  @MaxLength(2000)
   customerMessage?: string;
+
+  // If customer changed the account password after delivery, they pass the new one here
+  // so the auto-check tool can log in successfully. Stored only in the job payload, not in DB.
+  @IsOptional()
+  @Transform(emptyStringToUndefined)
+  @IsString()
+  @MaxLength(200)
+  currentPassword?: string;
+
+  // Specific usernames to warranty (subset of delivered accounts). Used for prorated refund/replacement.
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(20)
+  @IsString({ each: true })
+  @MaxLength(200, { each: true })
+  targetUsernames?: string[];
+
+  // Per-account password override map. Key = username (email full hoặc local-part trước @).
+  // Value = mật khẩu mới khách đã đổi cho riêng account đó. Account không có key → giữ pwd gốc.
+  // Ưu tiên hơn `currentPassword` (single global). Chỉ stored trong BullMQ job payload, không vô DB.
+  @IsOptional()
+  @IsObject()
+  @Validate(PasswordOverridesMapConstraint)
+  passwordOverrides?: Record<string, string>;
+
+  // Client-generated UUID (sinh ra khi user vào step "confirm", giữ stable qua retry).
+  // Server cache response 10 phút → submit lần 2 với cùng key → trả lại response cũ thay
+  // vì tạo claim mới. Chống double-click / network retry / browser back+resubmit.
+  // Bỏ qua → không có protection (backward-compat cho client cũ).
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  idempotencyKey?: string;
 }

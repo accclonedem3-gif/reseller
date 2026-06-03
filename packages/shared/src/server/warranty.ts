@@ -1,4 +1,4 @@
-export type WarrantyPolicyCode = "KBH" | "BH24H" | "BH1M" | "BH6M" | "BH12M";
+export type WarrantyPolicyCode = "KBH" | "BH24H" | "BH1M" | "BH3M" | "BH6M" | "BH12M" | "BHF";
 export type DeliveryModeCode = "AUTO_API" | "AUTO_STOCK" | "MANUAL";
 
 type WarrantySnapshotInput = {
@@ -42,8 +42,10 @@ function normalizeWarrantyPolicy(value: unknown): WarrantyPolicyCode | null {
   if (normalized === "KBH") return "KBH";
   if (normalized === "BH24H") return "BH24H";
   if (normalized === "BH1M") return "BH1M";
+  if (normalized === "BH3M") return "BH3M";
   if (normalized === "BH6M") return "BH6M";
   if (normalized === "BH12M") return "BH12M";
+  if (normalized === "BHF") return "BHF";
 
   return null;
 }
@@ -100,12 +102,20 @@ export function inferWarrantyPolicy(
     return "KBH";
   }
 
+  if (/\bbhf\b|full\s*warranty|bảo\s*hành\s*full|bao\s*hanh\s*full|bảo\s*hành\s*đầy\s*đủ|bao\s*hanh\s*day\s*du|bảo\s*hành\s*vĩnh\s*viễn|bao\s*hanh\s*vinh\s*vien|forever\s*warranty|lifetime\s*warranty/i.test(searchText)) {
+    return "BHF";
+  }
+
   if (/\b24\s*h\b|\b24\s*gio\b|\b24\s*giờ\b|\b1\s*day\b|\b1\s*ngay\b|\b1\s*ngày\b/i.test(searchText)) {
     return "BH24H";
   }
 
   if (/\b1\s*m\b|\b1\s*month\b|\b1\s*thang\b|\b1\s*tháng\b|\b30\s*day/i.test(searchText)) {
     return "BH1M";
+  }
+
+  if (/\b3\s*m\b|\b3\s*month\b|\b3\s*thang\b|\b3\s*tháng\b|\b90\s*day/i.test(searchText)) {
+    return "BH3M";
   }
 
   if (/\b6\s*m\b|\b6\s*month\b|\b6\s*thang\b|\b6\s*tháng\b/i.test(searchText)) {
@@ -150,6 +160,12 @@ export function calculateWarrantyExpiry(
     return null;
   }
 
+  // BHF = bảo hành full / vĩnh viễn — return null means "no expiry";
+  // hasWarrantyWindowExpired(null) returns false → never expires.
+  if (policy === "BHF") {
+    return null;
+  }
+
   const expiresAt = new Date(startedAt.getTime());
 
   if (policy === "BH24H") {
@@ -157,18 +173,28 @@ export function calculateWarrantyExpiry(
     return expiresAt;
   }
 
-  if (policy === "BH1M") {
-    expiresAt.setMonth(expiresAt.getMonth() + 1);
-    return expiresAt;
-  }
+  if (policy === "BH1M") return addMonthsClamped(startedAt, 1);
+  if (policy === "BH3M") return addMonthsClamped(startedAt, 3);
+  if (policy === "BH6M") return addMonthsClamped(startedAt, 6);
 
-  if (policy === "BH6M") {
-    expiresAt.setMonth(expiresAt.getMonth() + 6);
-    return expiresAt;
-  }
+  // BH12M (fallback)
+  return addMonthsClamped(startedAt, 12);
+}
 
-  expiresAt.setMonth(expiresAt.getMonth() + 12);
-  return expiresAt;
+/**
+ * Add whole months without the JS `setMonth` overflow bug. Naively, `Jan 31 + 1 month` becomes
+ * "Feb 31", which Date rolls forward to Mar 2/3 — silently over-extending a warranty window by a
+ * few days. Clamp the day to the last valid day of the target month instead (Jan 31 → Feb 28/29).
+ * Time-of-day is preserved.
+ */
+function addMonthsClamped(start: Date, months: number): Date {
+  const d = new Date(start.getTime());
+  const day = d.getDate();
+  d.setDate(1); // park on the 1st so setMonth can't roll into the next month
+  d.setMonth(d.getMonth() + months);
+  const lastDayOfTargetMonth = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
+  d.setDate(Math.min(day, lastDayOfTargetMonth));
+  return d;
 }
 
 export function hasWarrantyWindowExpired(
