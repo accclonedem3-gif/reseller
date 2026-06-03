@@ -105,6 +105,10 @@ export class UpdateProductDto {
   productFamilyOther?: string;
 
   @IsOptional()
+  @IsString()
+  productPackage?: string;
+
+  @IsOptional()
   @IsEnum(SourceAccountType)
   accountType?: SourceAccountType;
 

@@ -179,46 +179,71 @@ export class ProductsService {
       || (adminDefaults?.media?.type === "photo" ? (adminDefaults.media.url ?? null) : null);
     const inheritedDescription = dto.sourceDescription?.trim() || adminDefaults?.description || null;
 
-    const created = await this.prisma.sourceProduct.create({
-      data: {
-        shopId: shop.id,
-        externalProductId: `manual_${randomBytes(8).toString("hex")}`,
-        providerName: "manual",
-        sourceName: dto.sourceName?.trim() || displayName,
-        sourceRawName: dto.sourceName?.trim() || displayName,
-        sourceDescription: inheritedDescription,
-        sourcePrice: toDecimal(dto.sourcePrice ?? 0),
-        available,
-        totalCount: available ?? 0,
-        imageUrl: inheritedImageUrl,
-        productIcon: inheritedIcon,
-        iconCustomEmojiId: inheritedEmojiId,
-        ...businessFields,
-        metadataJson: {
-          manual: true,
-          shared: isShared,
-          sharedContent: isShared ? dto.sharedContent!.trim() : undefined,
-          deliveryText: normalizedDeliveryText,
-          deliveryEntries,
-          deliveryFormatHint: dto.deliveryFormatHint?.trim() || null,
-          hiddenDeliveredKeys: [],
-          sourceDescription: dto.sourceDescription?.trim() || null,
-          usageInstructions: dto.usageInstructions?.trim() || null,
-        } as Prisma.InputJsonValue,
-      },
-    });
+    const created = await this.prisma.$transaction(async (tx) => {
+      const product = await tx.sourceProduct.create({
+        data: {
+          shopId: shop.id,
+          externalProductId: `manual_${randomBytes(8).toString("hex")}`,
+          providerName: "manual",
+          sourceName: dto.sourceName?.trim() || displayName,
+          sourceRawName: dto.sourceName?.trim() || displayName,
+          sourceDescription: inheritedDescription,
+          sourcePrice: toDecimal(dto.sourcePrice ?? 0),
+          available,
+          totalCount: available ?? 0,
+          imageUrl: inheritedImageUrl,
+          productIcon: inheritedIcon,
+          iconCustomEmojiId: inheritedEmojiId,
+          ...businessFields,
+          metadataJson: {
+            manual: true,
+            shared: isShared,
+            sharedContent: isShared ? dto.sharedContent!.trim() : undefined,
+            deliveryText: normalizedDeliveryText,
+            deliveryEntries,
+            deliveryFormatHint: dto.deliveryFormatHint?.trim() || null,
+            hiddenDeliveredKeys: [],
+            sourceDescription: dto.sourceDescription?.trim() || null,
+            usageInstructions: dto.usageInstructions?.trim() || null,
+          } as Prisma.InputJsonValue,
+        },
+      });
 
-    await this.prisma.sellerProductOverride.create({
-      data: {
-        sellerId: shop.sellerId,
-        shopId: shop.id,
-        sourceProductId: created.id,
-        displayName,
-        salePrice: toDecimal(dto.salePrice),
-        hidden: dto.hidden ?? false,
-        enabled: dto.enabled ?? true,
-        promoText: dto.promoText?.trim() || null,
-      },
+      if (!isShared && deliveryEntries.length > 0) {
+        const batch = await tx.stockBatch.create({
+          data: {
+            sourceProductId: product.id,
+            name: `Lô khởi tạo ${this.formatDateForBatchName(new Date())}`,
+            costPerUnit: toDecimal(dto.sourcePrice ?? 0),
+            expiresAt: null,
+          },
+        });
+        const uploadedAt = new Date();
+        await tx.stockEntry.createMany({
+          data: deliveryEntries.map((text) => ({
+            sourceProductId: product.id,
+            batchId: batch.id,
+            text,
+            status: "AVAILABLE",
+            uploadedAt,
+          })),
+        });
+      }
+
+      await tx.sellerProductOverride.create({
+        data: {
+          sellerId: shop.sellerId,
+          shopId: shop.id,
+          sourceProductId: product.id,
+          displayName,
+          salePrice: toDecimal(dto.salePrice),
+          hidden: dto.hidden ?? false,
+          enabled: dto.enabled ?? true,
+          promoText: dto.promoText?.trim() || null,
+        },
+      });
+
+      return product;
     });
 
     if (user.sellerTier === SellerTier.ULTRA) {
@@ -352,41 +377,69 @@ export class ProductsService {
             : undefined;
       newAvailable = available;
 
-      await this.prisma.sourceProduct.update({
-        where: { id: product.id },
-        data: {
-          sourceName: dto.sourceName?.trim() || undefined,
-          sourceRawName: dto.sourceName?.trim() || undefined,
-          sourceDescription: dto.sourceDescription?.trim() || undefined,
-          sourcePrice:
-            dto.sourcePrice !== undefined ? toDecimal(dto.sourcePrice) : undefined,
-          available,
-          totalCount:
-            available != null
-              ? Math.max(product.soldCount + available, product.totalCount)
-              : undefined,
-          ...businessFields,
-          metadataJson: {
-            ...currentMetadata,
-            manual: true,
-            shared: false,
-            sharedContent: undefined,
-            deliveryText: normalizedDeliveryText,
-            deliveryEntries,
-            deliveryFormatHint:
-              dto.deliveryFormatHint !== undefined
-                ? (dto.deliveryFormatHint?.trim() || null)
-                : (currentMetadata.deliveryFormatHint as string | null | undefined) ?? null,
-            sourceDescription:
-              dto.sourceDescription !== undefined
-                ? (dto.sourceDescription?.trim() || null)
-                : currentMetadata.sourceDescription ?? product.sourceDescription ?? null,
-            usageInstructions:
-              dto.usageInstructions !== undefined
-                ? (dto.usageInstructions?.trim() || null)
-                : (currentMetadata.usageInstructions as string | null | undefined) ?? null,
-          } as Prisma.InputJsonValue,
-        },
+      await this.prisma.$transaction(async (tx) => {
+        await tx.sourceProduct.update({
+          where: { id: product.id },
+          data: {
+            sourceName: dto.sourceName?.trim() || undefined,
+            sourceRawName: dto.sourceName?.trim() || undefined,
+            sourceDescription: dto.sourceDescription?.trim() || undefined,
+            sourcePrice:
+              dto.sourcePrice !== undefined ? toDecimal(dto.sourcePrice) : undefined,
+            available,
+            totalCount:
+              available != null
+                ? Math.max(product.soldCount + available, product.totalCount)
+                : undefined,
+            ...businessFields,
+            metadataJson: {
+              ...currentMetadata,
+              manual: true,
+              shared: false,
+              sharedContent: undefined,
+              deliveryText: normalizedDeliveryText,
+              deliveryEntries,
+              deliveryFormatHint:
+                dto.deliveryFormatHint !== undefined
+                  ? (dto.deliveryFormatHint?.trim() || null)
+                  : (currentMetadata.deliveryFormatHint as string | null | undefined) ?? null,
+              sourceDescription:
+                dto.sourceDescription !== undefined
+                  ? (dto.sourceDescription?.trim() || null)
+                  : currentMetadata.sourceDescription ?? product.sourceDescription ?? null,
+              usageInstructions:
+                dto.usageInstructions !== undefined
+                  ? (dto.usageInstructions?.trim() || null)
+                  : (currentMetadata.usageInstructions as string | null | undefined) ?? null,
+            } as Prisma.InputJsonValue,
+          },
+        });
+
+        if (deliveryEntries.length > 0) {
+          const existingAvailable = await tx.stockEntry.count({
+            where: { sourceProductId: product.id, status: "AVAILABLE" },
+          });
+          if (existingAvailable === 0) {
+            const batch = await tx.stockBatch.create({
+              data: {
+                sourceProductId: product.id,
+                name: `Lô đồng bộ ${this.formatDateForBatchName(new Date())}`,
+                costPerUnit: dto.sourcePrice !== undefined ? toDecimal(dto.sourcePrice) : product.sourcePrice,
+                expiresAt: null,
+              },
+            });
+            const uploadedAt = new Date();
+            await tx.stockEntry.createMany({
+              data: deliveryEntries.map((text) => ({
+                sourceProductId: product.id,
+                batchId: batch.id,
+                text,
+                status: "AVAILABLE",
+                uploadedAt,
+              })),
+            });
+          }
+        }
       });
       }
     } else if (dto.resetToSource === true) {
@@ -864,6 +917,14 @@ export class ProductsService {
 
   private buildManualInventoryKey(prefix: string, seed: string) {
     return `${prefix}_${createHash("sha1").update(seed).digest("hex").slice(0, 16)}`;
+  }
+
+  private formatDateForBatchName(d: Date): string {
+    const dd = String(d.getDate()).padStart(2, "0");
+    const mm = String(d.getMonth() + 1).padStart(2, "0");
+    const hh = String(d.getHours()).padStart(2, "0");
+    const mi = String(d.getMinutes()).padStart(2, "0");
+    return `${dd}/${mm} ${hh}:${mi}`;
   }
 
   private buildClassificationFields(
