@@ -413,6 +413,11 @@ type Product = {
   promoStartAt: string | null;
   promoEndAt: string | null;
   promoBannerUrl: string | null;
+  productFamily?: string | null;
+  productPackage?: string | null;
+  accountType?: string | null;
+  durationType?: string | null;
+  warrantyPolicy?: string | null;
 };
 
 type ProductInventoryItem = {
@@ -465,11 +470,17 @@ type ProductEditorForm = {
   promoStartAt: string;
   promoEndAt: string;
   promoBannerUrl: string;
+  productFamily: string;
+  productPackage: string;
+  accountType: string;
+  durationType: string;
+  warrantyPolicy: string;
 };
 
 type ManualProductForm = {
   displayName: string;
   salePrice: string;
+  salePriceUsd: string;
   sourceName: string;
   sourceDescription: string;
   sourcePrice: string;
@@ -481,6 +492,8 @@ type ManualProductForm = {
   deliveryText: string;
   deliveryFormatHint: string;
   hidden: boolean;
+  hiddenVi: boolean;
+  hiddenEn: boolean;
   enabled: boolean;
   internalSourceEnabled: boolean;
   internalSourcePrice: string;
@@ -529,11 +542,17 @@ const emptyEditorForm: ProductEditorForm = {
   promoStartAt: "",
   promoEndAt: "",
   promoBannerUrl: "",
+  productFamily: "",
+  productPackage: "",
+  accountType: "",
+  durationType: "",
+  warrantyPolicy: "KBH",
 };
 
 const emptyManualForm: ManualProductForm = {
   displayName: "",
   salePrice: "",
+  salePriceUsd: "",
   sourceName: "",
   sourceDescription: "",
   sourcePrice: "0",
@@ -545,6 +564,8 @@ const emptyManualForm: ManualProductForm = {
   deliveryText: "",
   deliveryFormatHint: "",
   hidden: false,
+  hiddenVi: false,
+  hiddenEn: false,
   enabled: true,
   internalSourceEnabled: true,
   internalSourcePrice: "",
@@ -731,6 +752,11 @@ function createEditorForm(product: Product): ProductEditorForm {
     promoStartAt: product.promoStartAt ? new Date(product.promoStartAt).toISOString().slice(0, 16) : "",
     promoEndAt: product.promoEndAt ? new Date(product.promoEndAt).toISOString().slice(0, 16) : "",
     promoBannerUrl: product.promoBannerUrl || "",
+    productFamily: (product.productFamily || "").toString().toUpperCase(),
+    productPackage: product.productPackage || "",
+    accountType: (product.accountType || "").toString().toUpperCase(),
+    durationType: (product.durationType || "").toString().toUpperCase(),
+    warrantyPolicy: (product.warrantyPolicy || "KBH").toString().toUpperCase(),
   };
 }
 
@@ -1176,6 +1202,12 @@ export function ProductsPageStudio({
           : null;
       }
 
+      if (editorForm.productFamily) payload.productFamily = editorForm.productFamily;
+      if (editorForm.productPackage) payload.productPackage = editorForm.productPackage;
+      if (editorForm.accountType) payload.accountType = editorForm.accountType;
+      if (editorForm.durationType) payload.durationType = editorForm.durationType;
+      if (editorForm.warrantyPolicy) payload.warrantyPolicy = editorForm.warrantyPolicy;
+
       return api.put(`/products/${selectedProduct.id}`, payload);
     },
     onSuccess: async () => {
@@ -1216,11 +1248,16 @@ export function ProductsPageStudio({
         sourceName: createForm.sourceName.trim() || displayName,
         sourceDescription: createForm.sourceDescription.trim(),
         salePrice: parseRequiredNumber(createForm.salePrice, t.errRequired(t.efSalePrice), t.errInvalidNum(t.efSalePrice)),
+        salePriceUsd: createForm.salePriceUsd.trim()
+          ? parseRequiredNumber(createForm.salePriceUsd, t.errRequired(t.efUsd), t.errInvalidNum(t.efUsd))
+          : 0,
         sourcePrice: parseRequiredNumber(createForm.sourcePrice, t.errRequired(t.efIntCost), t.errInvalidNum(t.efIntCost)),
         promoText: createForm.promoText.trim(),
         usageInstructions: createForm.usageInstructions.trim() || "",
         isShared: createForm.isShared,
         hidden: createForm.hidden,
+        hiddenVi: createForm.hiddenVi,
+        hiddenEn: createForm.hiddenEn,
         enabled: createForm.enabled,
       };
 
@@ -1867,6 +1904,13 @@ export function ProductsPageStudio({
               </Field>
             ) : (
               <>
+                <Field label={t.fDeliveryFormat} hint={t.hOptional} description={t.dDeliveryFormat}>
+                  <StudioInput
+                    placeholder={t.phDeliveryFormat}
+                    value={editorForm.deliveryFormatHint}
+                    onChange={(e) => setEditorForm((c) => ({ ...c, deliveryFormatHint: e.target.value }))}
+                  />
+                </Field>
                 <Field label={t.fDelivery} hint={t.hManualDelivery} description={t.dDelivery}>
                   {/* Manual stock actions — upload .txt / extract / history */}
                   <div className="mb-2 flex flex-wrap items-center gap-2">
@@ -1917,18 +1961,100 @@ export function ProductsPageStudio({
                     onChange={(val) => setEditorForm((c) => ({ ...c, deliveryText: val }))}
                   />
                 </Field>
-                <Field label={t.fDeliveryFormat} hint={t.hOptional} description={t.dDeliveryFormat}>
-                  <StudioInput
-                    placeholder={t.phDeliveryFormat}
-                    value={editorForm.deliveryFormatHint}
-                    onChange={(e) => setEditorForm((c) => ({ ...c, deliveryFormatHint: e.target.value }))}
-                  />
-                </Field>
               </>
             )}
 
           </>
         )}
+
+        <div className="space-y-4 rounded-2xl border p-4" style={{ borderColor: "var(--bd)", background: "var(--inp)" }}>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.24em]" style={{ color: "var(--tx-f)" }}>
+            Phân loại sản phẩm
+          </p>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label="Dòng sản phẩm" hint={t.hOptional}>
+              <select
+                value={editorForm.productFamily}
+                onChange={(e) => {
+                  const newFamily = e.target.value;
+                  setEditorForm((c) => ({
+                    ...c,
+                    productFamily: newFamily,
+                    productPackage: c.productFamily === newFamily ? c.productPackage : "",
+                  }));
+                }}
+                className="h-11 w-full rounded-[14px] border px-3 text-sm"
+                style={{ borderColor: "var(--bd)", background: "var(--inp)", color: "var(--tx)" }}
+              >
+                <option value="">— Chọn —</option>
+                {sourceProductFamilyOptions.map((opt) => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
+              </select>
+            </Field>
+
+            <Field label="Gói sản phẩm" hint={t.hOptional}>
+              <select
+                value={editorForm.productPackage}
+                disabled={!editorForm.productFamily || editorForm.productFamily === "OTHER"}
+                onChange={(e) => setEditorForm((c) => ({ ...c, productPackage: e.target.value }))}
+                className="h-11 w-full rounded-[14px] border px-3 text-sm disabled:opacity-50"
+                style={{ borderColor: "var(--bd)", background: "var(--inp)", color: "var(--tx)" }}
+              >
+                <option value="">— Chọn —</option>
+                {(sourceProductPackageOptions[editorForm.productFamily] || []).map((opt) => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
+              </select>
+            </Field>
+
+            <Field label="Loại tài khoản" hint={t.hOptional}>
+              <select
+                value={editorForm.accountType}
+                onChange={(e) => setEditorForm((c) => ({ ...c, accountType: e.target.value }))}
+                className="h-11 w-full rounded-[14px] border px-3 text-sm"
+                style={{ borderColor: "var(--bd)", background: "var(--inp)", color: "var(--tx)" }}
+              >
+                <option value="">— Chọn —</option>
+                {sourceAccountTypeOptions.map((opt) => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
+              </select>
+            </Field>
+
+            <Field label="Thời hạn" hint={t.hOptional}>
+              <select
+                value={editorForm.durationType}
+                onChange={(e) => setEditorForm((c) => ({ ...c, durationType: e.target.value }))}
+                className="h-11 w-full rounded-[14px] border px-3 text-sm"
+                style={{ borderColor: "var(--bd)", background: "var(--inp)", color: "var(--tx)" }}
+              >
+                <option value="">— Chọn —</option>
+                {sourceDurationTypeOptions.map((opt) => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
+              </select>
+            </Field>
+          </div>
+        </div>
+
+        <div className="space-y-4 rounded-2xl border p-4" style={{ borderColor: "var(--bd)", background: "var(--inp)" }}>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.24em]" style={{ color: "var(--tx-f)" }}>
+            Bảo hành
+          </p>
+          <Field label="Chính sách bảo hành" hint={t.hOptional}>
+            <select
+              value={editorForm.warrantyPolicy}
+              onChange={(e) => setEditorForm((c) => ({ ...c, warrantyPolicy: e.target.value }))}
+              className="h-11 w-full rounded-[14px] border px-3 text-sm"
+              style={{ borderColor: "var(--bd)", background: "var(--inp)", color: "var(--tx)" }}
+            >
+              {sourceWarrantyPolicyOptions.map((opt) => (
+                <option key={opt.value} value={opt.value}>{opt.label}</option>
+              ))}
+            </select>
+          </Field>
+        </div>
 
         {!selectedProduct.isManual && (
           <Field
@@ -1955,20 +2081,6 @@ export function ProductsPageStudio({
             placeholder={t.phUsageInstructions}
             value={editorForm.usageInstructions}
             onChange={(e) => setEditorForm((c) => ({ ...c, usageInstructions: e.target.value }))}
-          />
-        </Field>
-
-        <Field
-          label={t.fPromo}
-          hint={t.hOptional}
-          description={t.dPromo}
-        >
-          <StudioTextArea
-            placeholder={t.phPromo}
-            value={editorForm.promoText}
-            onChange={(event) =>
-              setEditorForm((current) => ({ ...current, promoText: event.target.value }))
-            }
           />
         </Field>
 
@@ -3297,15 +3409,7 @@ export function ProductsPageStudio({
           )}
 
           {drawerMode === "create" && (
-            <div className="space-y-6 px-5 py-5">
-              <div>
-                <p className="text-[11px] font-semibold uppercase tracking-[0.24em]" style={{ color: "var(--tx-f)" }}>
-                  {t.createEyebrow}
-                </p>
-                <h2 className="mt-3 text-2xl font-semibold" style={{ color: "var(--tx)" }}>{t.createHeading}</h2>
-                <p className="mt-2 text-sm leading-7" style={{ color: "var(--tx-m)" }}>{t.createSubhead}</p>
-              </div>
-
+            <div className="space-y-5 px-5 py-5">
               <Field label={t.fDisplayName} hint={t.hRequired}>
                 <StudioInput
                   placeholder={t.phCreateName}
@@ -3328,6 +3432,52 @@ export function ProductsPageStudio({
                 </Field>
 
                 <Field
+                  label={t.fUsd}
+                  hint={t.hOptional}
+                  description={
+                    createForm.salePriceUsd.trim()
+                      ? t.dUsdActive(createForm.salePriceUsd)
+                      : t.dUsdEmpty
+                  }
+                >
+                  <StudioInput
+                    placeholder={t.phUsd}
+                    value={createForm.salePriceUsd}
+                    onChange={(e) => setCreateForm((c) => ({ ...c, salePriceUsd: e.target.value }))}
+                  />
+                </Field>
+              </div>
+
+              {isUltra && (
+                <div className="rounded-[14px] px-3 py-2.5 space-y-2" style={{ background: "rgba(139,92,246,0.06)", border: "1px solid rgba(139,92,246,0.2)" }}>
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-[11px] font-bold uppercase tracking-wide flex items-center gap-1.5" style={{ color: "rgb(167,139,250)" }}>
+                      <Crown className="h-3 w-3" /> {t.wholesaleTitle}
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => setCreateForm((c) => ({ ...c, internalSourceEnabled: !c.internalSourceEnabled }))}
+                      className="rounded-lg px-2.5 py-1 text-[11px] font-bold transition"
+                      style={{
+                        borderColor: createForm.internalSourceEnabled ? "rgba(139,92,246,0.3)" : "var(--bd)",
+                        background: createForm.internalSourceEnabled ? "rgba(139,92,246,0.15)" : "var(--inp)",
+                        color: createForm.internalSourceEnabled ? "rgb(167,139,250)" : "var(--tx-f)",
+                        border: "1px solid",
+                      }}
+                    >
+                      {t.allowProBuy}: {createForm.internalSourceEnabled ? t.bOn : t.bOff}
+                    </button>
+                  </div>
+                  <StudioInput
+                    placeholder={t.phWholesale}
+                    value={createForm.internalSourcePrice}
+                    onChange={(e) => setCreateForm((c) => ({ ...c, internalSourcePrice: e.target.value }))}
+                  />
+                </div>
+              )}
+
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Field
                   label={t.fIntCost}
                   hint={t.hOptional}
                   description={t.dIntCost}
@@ -3337,22 +3487,6 @@ export function ProductsPageStudio({
                     value={createForm.sourcePrice}
                     onChange={(event) =>
                       setCreateForm((current) => ({ ...current, sourcePrice: event.target.value }))
-                    }
-                  />
-                </Field>
-              </div>
-
-              <div className="grid gap-4 sm:grid-cols-2">
-                <Field
-                  label={t.fIntName}
-                  hint={t.hOptional}
-                  description={t.dCreateIntName}
-                >
-                  <StudioInput
-                    placeholder={t.phCreateIntName}
-                    value={createForm.sourceName}
-                    onChange={(event) =>
-                      setCreateForm((current) => ({ ...current, sourceName: event.target.value }))
                     }
                   />
                 </Field>
@@ -3537,20 +3671,6 @@ export function ProductsPageStudio({
               </div>
 
               <Field
-                label={t.fPromo}
-                hint={t.hOptional}
-                description={t.dCreatePromo}
-              >
-                <StudioTextArea
-                  placeholder={t.phCreatePromo}
-                  value={createForm.promoText}
-                  onChange={(event) =>
-                    setCreateForm((current) => ({ ...current, promoText: event.target.value }))
-                  }
-                />
-              </Field>
-
-              <Field
                 label={t.fUsageInstructions}
                 hint={t.hOptional}
                 description={t.dUsageInstructions}
@@ -3689,12 +3809,6 @@ export function ProductsPageStudio({
                   </Field>
                 ) : (
                   <>
-                    <Field label={t.fDelivery} hint={t.hManualDelivery} description={t.dDelivery}>
-                      <DeliveryTextArea
-                        value={createForm.deliveryText}
-                        onChange={(val) => setCreateForm((c) => ({ ...c, deliveryText: val }))}
-                      />
-                    </Field>
                     <Field label={t.fDeliveryFormat} hint={t.hOptional} description={t.dDeliveryFormat}>
                       <StudioInput
                         placeholder={t.phDeliveryFormat}
@@ -3702,97 +3816,65 @@ export function ProductsPageStudio({
                         onChange={(e) => setCreateForm((c) => ({ ...c, deliveryFormatHint: e.target.value }))}
                       />
                     </Field>
+                    <Field label={t.fDelivery} hint={t.hManualDelivery} description={t.dDelivery}>
+                      <DeliveryTextArea
+                        value={createForm.deliveryText}
+                        onChange={(val) => setCreateForm((c) => ({ ...c, deliveryText: val }))}
+                      />
+                    </Field>
                   </>
                 )}
 
-              {isUltra && (
-                <div className="rounded-[18px] p-4 space-y-4" style={{ background: "rgba(139,92,246,0.06)", border: "1px solid rgba(139,92,246,0.2)" }}>
-                  <div className="flex items-center gap-2.5">
-                    <div className="flex h-7 w-7 items-center justify-center rounded-xl" style={{ background: "rgba(139,92,246,0.15)", color: "rgb(167,139,250)" }}>
-                      <Crown className="h-3.5 w-3.5" />
-                    </div>
-                    <div>
-                      <p className="text-sm font-bold" style={{ color: "rgb(167,139,250)" }}>{t.wholesaleTitle}</p>
-                      <p className="text-[11px]" style={{ color: "var(--tx-f)" }}>{t.wholesaleDesc}</p>
-                    </div>
-                  </div>
-
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    <Field label={t.fWholesale} hint={t.hRequiredIfOn}>
-                      <StudioInput
-                        placeholder={t.phWholesale}
-                        value={createForm.internalSourcePrice}
-                        onChange={(e) => setCreateForm((c) => ({ ...c, internalSourcePrice: e.target.value }))}
-                      />
-                    </Field>
-
-                    <div className="flex flex-col justify-end">
-                      <button
-                        type="button"
-                        className="rounded-[18px] border p-3.5 text-left transition"
-                        style={{
-                          borderColor: createForm.internalSourceEnabled ? "rgba(139,92,246,0.3)" : "var(--bd)",
-                          background: createForm.internalSourceEnabled ? "rgba(139,92,246,0.1)" : "var(--inp)",
-                        }}
-                        onClick={() => setCreateForm((c) => ({ ...c, internalSourceEnabled: !c.internalSourceEnabled }))}
-                      >
-                        <div className="flex items-center justify-between gap-2">
-                          <p className="text-sm font-semibold" style={{ color: "var(--tx)" }}>{t.allowProBuy}</p>
-                          <StudioBadge tone={createForm.internalSourceEnabled ? "success" : "neutral"}>
-                            {createForm.internalSourceEnabled ? t.bOn : t.bOff}
-                          </StudioBadge>
-                        </div>
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              <div className="grid gap-3 sm:grid-cols-2">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-[11px] font-bold uppercase tracking-wide" style={{ color: "var(--tx-f)" }}>Hiển thị:</span>
                 <button
-                  className="rounded-[22px] border p-4 text-left transition"
-                  style={{
-                    borderColor: createForm.enabled ? "rgba(52,211,153,0.18)" : "var(--bd)",
-                    background: createForm.enabled ? "rgba(16,185,129,0.10)" : "var(--inp)",
-                  }}
-                  onClick={() =>
-                    setCreateForm((current) => ({ ...current, enabled: !current.enabled }))
-                  }
                   type="button"
+                  onClick={() => setCreateForm((c) => ({ ...c, hiddenVi: !c.hiddenVi }))}
+                  className="rounded-md px-2 py-0.5 text-[11px] font-bold transition"
+                  style={{
+                    background: createForm.hiddenVi ? "rgba(100,116,139,0.15)" : "rgba(52,211,153,0.15)",
+                    color: createForm.hiddenVi ? "var(--tx-f)" : "rgb(52,211,153)",
+                    border: `1px solid ${createForm.hiddenVi ? "var(--bd)" : "rgba(52,211,153,0.3)"}`,
+                  }}
+                  title={createForm.hiddenVi ? t.hiddenViOn : t.hiddenViOff}
                 >
-                  <div className="flex items-center justify-between gap-3">
-                    <div>
-                      <p className="text-sm font-semibold" style={{ color: "var(--tx)" }}>{t.allowSale}</p>
-                      <p className="mt-1 text-sm leading-6" style={{ color: "var(--tx-m)" }}>{t.allowSaleCreateDesc}</p>
-                    </div>
-                    <StudioBadge tone={createForm.enabled ? "success" : "neutral"}>
-                      {createForm.enabled ? t.bOn : t.bOff}
-                    </StudioBadge>
-                  </div>
+                  🇻🇳 {createForm.hiddenVi ? "ẩn" : "✓"}
                 </button>
-
                 <button
-                  className="rounded-[22px] border p-4 text-left transition"
-                  style={{
-                    borderColor: createForm.hidden ? "rgba(52,211,153,0.18)" : "var(--bd)",
-                    background: createForm.hidden ? "rgba(16,185,129,0.10)" : "var(--inp)",
-                  }}
-                  onClick={() =>
-                    setCreateForm((current) => ({ ...current, hidden: !current.hidden }))
-                  }
                   type="button"
+                  onClick={() => setCreateForm((c) => ({ ...c, hiddenEn: !c.hiddenEn }))}
+                  className="rounded-md px-2 py-0.5 text-[11px] font-bold transition"
+                  style={{
+                    background: createForm.hiddenEn ? "rgba(100,116,139,0.15)" : "rgba(52,211,153,0.15)",
+                    color: createForm.hiddenEn ? "var(--tx-f)" : "rgb(52,211,153)",
+                    border: `1px solid ${createForm.hiddenEn ? "var(--bd)" : "rgba(52,211,153,0.3)"}`,
+                  }}
+                  title={createForm.hiddenEn ? t.hiddenEnOn : t.hiddenEnOff}
                 >
-                  <div className="flex items-center justify-between gap-3">
-                    <div>
-                      <p className="text-sm font-semibold" style={{ color: "var(--tx)" }}>{t.hideOnBot}</p>
-                      <p className="mt-1 text-sm leading-6" style={{ color: "var(--tx-m)" }}>{t.hideOnBotCreateDesc}</p>
-                    </div>
-                    <StudioBadge tone={createForm.hidden ? "warning" : "neutral"}>
-                      {createForm.hidden ? t.bHidden : t.bShown}
-                    </StudioBadge>
-                  </div>
+                  🌍 {createForm.hiddenEn ? "ẩn" : "✓"}
                 </button>
               </div>
+
+              <button
+                className="w-full rounded-xl border px-3 py-2.5 text-left transition"
+                style={{
+                  borderColor: (createForm.enabled && !createForm.hidden) ? "rgba(52,211,153,0.25)" : "var(--bd)",
+                  background: (createForm.enabled && !createForm.hidden) ? "rgba(16,185,129,0.08)" : "var(--inp)",
+                }}
+                onClick={() => {
+                  const willShow = !(createForm.enabled && !createForm.hidden);
+                  setCreateForm((current) => ({ ...current, enabled: willShow, hidden: !willShow }));
+                }}
+                type="button"
+                title="Bật/tắt sản phẩm trên bot"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-[13px] font-semibold" style={{ color: "var(--tx)" }}>Hiển thị trên bot</p>
+                  <StudioBadge tone={(createForm.enabled && !createForm.hidden) ? "success" : "neutral"}>
+                    {(createForm.enabled && !createForm.hidden) ? t.bOn : t.bOff}
+                  </StudioBadge>
+                </div>
+              </button>
 
               {groups.length > 0 && (
                 <Field label={t.fGroup} hint={t.hOptional}>
@@ -3813,11 +3895,12 @@ export function ProductsPageStudio({
               <Notice tone="warning">{t.createNotice}</Notice>
 
               <StudioButton
-                className="min-h-[56px] w-full"
+                size="sm"
+                className="h-10 w-full text-[11px]"
                 disabled={createMutation.isPending}
                 onClick={() => createMutation.mutate()}
               >
-                <PackagePlus className="h-4.5 w-4.5" />
+                <PackagePlus className="h-3.5 w-3.5" />
                 {createMutation.isPending ? t.creating : t.createBtn}
               </StudioButton>
             </div>
