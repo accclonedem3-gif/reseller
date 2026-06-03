@@ -18,27 +18,51 @@ async function callTelegramApi<T>(
   body?: Record<string, unknown>,
   config?: AxiosRequestConfig,
 ) {
-  let response: Awaited<ReturnType<typeof axios.post<{ ok: boolean; result: T; description?: string }>>>;
-  try {
-    response = await axios.post<{ ok: boolean; result: T; description?: string }>(
-      `https://api.telegram.org/bot${token}/${method}`,
-      body,
-      {
+  // Bounded retry for TRANSIENT failures only: HTTP 429 (honour Telegram's retry_after, so a
+  // burst of warranty credential-delivery sends isn't silently dropped), 5xx, and network
+  // timeouts. Deterministic errors (4xx bad-request / blocked bot / ok:false) are NOT retried.
+  const url = `https://api.telegram.org/bot${token}/${method}`;
+  const maxAttempts = 3;
+  let response: Awaited<ReturnType<typeof axios.post<{ ok: boolean; result: T; description?: string }>>> | null = null;
+  let lastDesc = "unknown";
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      response = await axios.post<{ ok: boolean; result: T; description?: string }>(url, body, {
         timeout: 10000,
         ...config,
         headers: {
           "Content-Type": "application/json",
           ...(config?.headers || {}),
         },
-      },
-    );
-  } catch (err: any) {
-    const desc = err?.response?.data?.description || err?.message || String(err);
-    throw new Error(`Telegram API method ${method} failed: ${desc}`);
+      });
+      break;
+    } catch (err: any) {
+      lastDesc = err?.response?.data?.description || err?.message || String(err);
+      const status = err?.response?.status;
+      const retryAfter = Number(err?.response?.data?.parameters?.retry_after);
+      const isRateLimited = status === 429;
+      const isServer5xx = typeof status === "number" && status >= 500;
+      // Ambiguous: request may have been DELIVERED but the response was lost (timeout / socket reset).
+      const isAmbiguousNetwork = err?.code === "ECONNABORTED" || !err?.response;
+      // Non-idempotent send methods: retrying an ambiguous-network failure could DUPLICATE the message
+      // (e.g. send the warranty replacement credentials / an order twice). Only retry those on a
+      // DEFINITE rejection (429/5xx = Telegram did not deliver). Reads/edits are idempotent → safe to
+      // retry on network errors too, EXCEPT getUpdates (long-poll no-response is normal, not an error).
+      const isSendMethod = /^(sendMessage|sendPhoto|sendDocument|copyMessage|sendMediaGroup)$/.test(method);
+      const networkRetryable = isAmbiguousNetwork && !isSendMethod && method !== "getUpdates";
+      const isTransient = isRateLimited || isServer5xx || networkRetryable;
+      if (attempt >= maxAttempts || !isTransient) {
+        throw new Error(`Telegram API method ${method} failed: ${lastDesc}`);
+      }
+      const waitMs = isRateLimited && Number.isFinite(retryAfter) && retryAfter > 0
+        ? Math.min(retryAfter * 1000, 15000)
+        : Math.min(500 * 2 ** (attempt - 1), 4000);
+      await new Promise((r) => setTimeout(r, waitMs));
+    }
   }
 
-  if (!response.data?.ok) {
-    throw new Error(`Telegram API method ${method} failed: ${response.data?.description || "unknown"}`);
+  if (!response || !response.data?.ok) {
+    throw new Error(`Telegram API method ${method} failed: ${response?.data?.description || lastDesc}`);
   }
 
   return response.data.result;

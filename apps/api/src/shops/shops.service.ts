@@ -1710,6 +1710,10 @@ export class ShopsService {
         durationTypeOther: product.durationTypeOther || null,
         sourceDeliveryMode: product.sourceDeliveryMode?.toLowerCase() || null,
         warrantyPolicy: product.warrantyPolicy?.toLowerCase() || null,
+        // Batch lifetime (see SourceProduct.accLifetimeDays comment). Surface to the seller
+        // UI so the product edit form can prefill the value and show when the clock started.
+        accLifetimeDays: (product as any).accLifetimeDays ?? null,
+        accBatchStartedAt: (product as any).accBatchStartedAt ?? null,
         productIcon: product.productIcon || null,
         iconCustomEmojiId: product.iconCustomEmojiId || null,
         iconOutOfStockEmojiId: product.iconOutOfStockEmojiId || null,
