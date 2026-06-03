@@ -403,6 +403,12 @@ type InternalSourceOrder = {
   downstreamSeller: { id: string; displayName: string };
   downstreamShop: { id: string; name: string; slug: string };
   connection: { id: string; balance: number; currency: string };
+  endCustomer: {
+    telegramUsername: string | null;
+    telegramUserId: string | null;
+    firstName: string | null;
+    lastName: string | null;
+  } | null;
 };
 
 function getApiErrorMessage(error: unknown, fallback: string) {
@@ -808,10 +814,10 @@ export function SourceNetworkPage() {
                       <table className="w-full text-sm">
                         <thead style={{ background: "var(--inp)", position: "sticky", top: 0, zIndex: 1 }}>
                           <tr style={{ borderBottom: "1px solid var(--bd)" }}>
-                            {["MÃ ĐƠN", "SẢN PHẨM", "SỐ TIỀN", "TRẠNG THÁI", "THỜI GIAN"].map((h, i) => (
+                            {["MÃ ĐƠN", "SẢN PHẨM", "KHÁCH CUỐI", "ACC ĐÃ GIAO", "SỐ TIỀN", "TRẠNG THÁI", "THỜI GIAN"].map((h, i) => (
                               <th
                                 key={h}
-                                className={`px-4 py-3 text-[10px] font-black uppercase tracking-widest ${i === 2 ? "text-right" : "text-left"}`}
+                                className={`px-4 py-3 text-[10px] font-black uppercase tracking-widest ${i === 4 ? "text-right" : "text-left"}`}
                                 style={{ color: "var(--tx-f)" }}
                               >
                                 {h}
@@ -820,25 +826,45 @@ export function SourceNetworkPage() {
                           </tr>
                         </thead>
                         <tbody>
-                          {connOrders.map((order) => (
-                            <tr key={order.id} style={{ borderBottom: "1px solid var(--bd)" }}>
-                              <td className="px-4 py-3 font-mono text-xs" style={{ color: "var(--tx-m)" }}>
-                                {order.orderCode}
-                              </td>
-                              <td className="px-4 py-3" style={{ color: "var(--tx-m)" }}>
-                                {order.product.sourceName}
-                              </td>
-                              <td className="px-4 py-3 text-right font-semibold text-emerald-400">
-                                {formatCurrency(order.totalAmount)}
-                              </td>
-                              <td className="px-4 py-3">
-                                <Badge tone={getTone(order.status)}>{formatStatusLabel(order.status)}</Badge>
-                              </td>
-                              <td className="px-4 py-3 text-xs" style={{ color: "var(--tx-f)" }}>
-                                {formatDate(order.createdAt)}
-                              </td>
-                            </tr>
-                          ))}
+                          {connOrders.map((order) => {
+                            const ec = order.endCustomer;
+                            const ecLabel = ec
+                              ? ec.telegramUsername
+                                ? `@${ec.telegramUsername}`
+                                : [ec.firstName, ec.lastName].filter(Boolean).join(" ").trim() ||
+                                  (ec.telegramUserId ? `ID ${ec.telegramUserId}` : "—")
+                              : "—";
+                            const acc = order.deliveredAccountText?.trim() || "";
+                            return (
+                              <tr key={order.id} style={{ borderBottom: "1px solid var(--bd)" }}>
+                                <td className="px-4 py-3 font-mono text-xs" style={{ color: "var(--tx-m)" }}>
+                                  {order.orderCode}
+                                </td>
+                                <td className="px-4 py-3" style={{ color: "var(--tx-m)" }}>
+                                  {order.product.sourceName}
+                                </td>
+                                <td className="px-4 py-3 text-xs" style={{ color: "var(--tx-m)" }}>
+                                  {ecLabel}
+                                </td>
+                                <td
+                                  className="px-4 py-3 font-mono text-[11px]"
+                                  style={{ color: "var(--tx-m)", maxWidth: 280, whiteSpace: "pre-wrap", wordBreak: "break-all" }}
+                                  title={acc}
+                                >
+                                  {acc ? (acc.length > 120 ? `${acc.slice(0, 120)}…` : acc) : "—"}
+                                </td>
+                                <td className="px-4 py-3 text-right font-semibold text-emerald-400">
+                                  {formatCurrency(order.totalAmount)}
+                                </td>
+                                <td className="px-4 py-3">
+                                  <Badge tone={getTone(order.status)}>{formatStatusLabel(order.status)}</Badge>
+                                </td>
+                                <td className="px-4 py-3 text-xs" style={{ color: "var(--tx-f)" }}>
+                                  {formatDate(order.createdAt)}
+                                </td>
+                              </tr>
+                            );
+                          })}
                         </tbody>
                       </table>
                     )}

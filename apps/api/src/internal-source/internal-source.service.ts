@@ -466,6 +466,9 @@ export class InternalSourceService {
         downstreamSeller: true,
         downstreamShop: true,
         sourceProduct: true,
+        downstreamOrder: {
+          include: { customer: true },
+        },
       },
       orderBy: {
         createdAt: "desc",
@@ -1550,6 +1553,9 @@ export class InternalSourceService {
         downstreamSeller: true,
         downstreamShop: true,
         sourceProduct: true,
+        downstreamOrder: {
+          include: { customer: true },
+        },
       },
     });
 
@@ -1567,9 +1573,18 @@ export class InternalSourceService {
         downstreamSeller: true;
         downstreamShop: true;
         sourceProduct: true;
+        downstreamOrder: { include: { customer: true } };
       };
     }>,
   ) {
+    const endCustomer = order.downstreamOrder?.customer
+      ? {
+          telegramUsername: order.downstreamOrder.customer.telegramUsername,
+          telegramUserId: order.downstreamOrder.customer.telegramUserId,
+          firstName: order.downstreamOrder.customer.firstName,
+          lastName: order.downstreamOrder.customer.lastName,
+        }
+      : null;
     return {
       id: order.id,
       orderCode: order.sourceOrderCode,
@@ -1600,6 +1615,7 @@ export class InternalSourceService {
         id: order.connection.id,
         currency: order.connection.currency,
       },
+      endCustomer,
     };
   }
 
