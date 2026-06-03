@@ -37,7 +37,7 @@ const T = {
     statWarrantyCount: "Yêu cầu bảo hành",
     statWarrantyCost: "Chi phí bảo hành",
     chartRevenue: "Doanh thu theo ngày",
-    chartProfit: "Lãi gộp / sản phẩm",
+    chartProfit: "Lãi gộp sỉ / sản phẩm",
     topProductsTitle: "Thống kê lãi theo sản phẩm",
     topProductsEmpty: "Chưa có sản phẩm nguồn nào.",
     colProduct: "Sản phẩm",
@@ -112,7 +112,7 @@ const T = {
     statWarrantyCount: "Warranty requests",
     statWarrantyCost: "Warranty cost",
     chartRevenue: "Daily revenue",
-    chartProfit: "Gross profit / product",
+    chartProfit: "Wholesale gross profit / product",
     topProductsTitle: "Profit by product",
     topProductsEmpty: "No source products yet.",
     colProduct: "Product",
@@ -187,7 +187,7 @@ const T = {
     statWarrantyCount: "คำขอรับประกัน",
     statWarrantyCost: "ค่าใช้จ่ายรับประกัน",
     chartRevenue: "รายได้รายวัน",
-    chartProfit: "กำไรขั้นต้น / สินค้า",
+    chartProfit: "กำไรขายส่ง / สินค้า",
     topProductsTitle: "กำไรตามสินค้า",
     topProductsEmpty: "ยังไม่มีสินค้าแหล่ง",
     colProduct: "สินค้า",
@@ -393,12 +393,35 @@ function SCard({
 }) {
   return (
     <div
-      className="rounded-2xl p-5"
+      className="rounded-2xl px-4 py-3"
       style={{ background: "var(--surface)", border: "1px solid var(--bd)", borderLeft: `3px solid ${borderColor}` }}
     >
       <p className="text-[10px] font-black uppercase tracking-widest" style={{ color: "var(--tx-f)" }}>{label}</p>
-      <p className="mt-2 text-2xl font-black tabular-nums truncate" style={{ color: valueColor }}>{value}</p>
-      <p className="mt-1 text-[11px]" style={{ color: "var(--tx-f)" }}>{sub}</p>
+      <p className="mt-1.5 text-xl font-black tabular-nums truncate" style={{ color: valueColor }}>{value}</p>
+      <p className="mt-0.5 text-[10px]" style={{ color: "var(--tx-f)" }}>{sub}</p>
+    </div>
+  );
+}
+
+function SPill({
+  label,
+  value,
+  tone = "neutral",
+}: {
+  label: string;
+  value: string | number;
+  tone?: "neutral" | "warning" | "danger" | "info";
+}) {
+  const toneColor = {
+    neutral: "var(--tx-m)",
+    warning: "rgb(245,158,11)",
+    danger: "rgb(248,113,113)",
+    info: "rgb(56,189,248)",
+  }[tone];
+  return (
+    <div className="flex items-center justify-between gap-3 rounded-xl px-3 py-2" style={{ background: "var(--surface)", border: "1px solid var(--bd)" }}>
+      <span className="text-[10px] font-black uppercase tracking-widest truncate" style={{ color: "var(--tx-f)" }}>{label}</span>
+      <span className="text-sm font-black tabular-nums shrink-0" style={{ color: toneColor }}>{value}</span>
     </div>
   );
 }
@@ -431,6 +454,7 @@ export function ProAnalyticsPage() {
   const [warrantyPage, setWarrantyPage] = useState(1);
   const [warrantyProductId, setWarrantyProductId] = useState("");
   const [confirmRevoke, setConfirmRevoke] = useState<string | null>(null);
+  const [hideZeroSold, setHideZeroSold] = useState(true);
 
   const PERIOD_LABELS: Record<Period, string> = {
     today: t.periodToday,
@@ -514,6 +538,7 @@ export function ProAnalyticsPage() {
   const chartTotal = chartData.reduce((s, d) => s + d.revenue, 0);
 
   const productChartData = (topProductsQuery.data ?? [])
+    .filter((p) => p.revenue > 0)
     .slice(0, 8)
     .map((p) => ({ name: p.productIcon ? `${p.productIcon} ${p.name}` : p.name, grossProfit: p.grossProfit }))
     .sort((a, b) => b.grossProfit - a.grossProfit);
@@ -558,26 +583,26 @@ export function ProAnalyticsPage() {
         </div>
       </div>
 
-      {/* Stat cards row 1 */}
+      {/* Primary KPIs */}
       <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
         <SCard label={t.statRevenue} value={ov ? formatCurrency(ov.revenue) : "—"} sub={periodLabel} valueColor="rgb(52,211,153)" borderColor="rgb(52,211,153)" />
-        <SCard label={t.statCost} value={ov ? formatCurrency(ov.cost) : "—"} sub={t.totalLabel} valueColor="var(--tx-f)" borderColor="var(--bd)" />
         <SCard label={t.statGross} value={ov ? formatCurrency(ov.grossProfit) : "—"} sub={`${t.statRevenue} − ${t.statCost}`} valueColor="rgb(52,211,153)" borderColor="rgb(52,211,153)" />
         <SCard label={t.statOrders} value={ov ? ov.totalOrders : "—"} sub={t.totalLabel} valueColor="rgb(99,102,241)" borderColor="rgb(99,102,241)" />
+        <SCard label={t.statPRO} value={ov ? ov.activeConnections : "—"} sub="Đại lý kết nối" valueColor="rgb(56,189,248)" borderColor="rgb(56,189,248)" />
       </div>
 
-      {/* Stat cards row 2 */}
-      <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
-        <SCard label={t.statPRO} value={ov ? ov.activeConnections : "—"} sub="Đại lý kết nối" valueColor="rgb(56,189,248)" borderColor="rgb(56,189,248)" />
-        <SCard label={t.statStock} value={ov ? ov.totalAvailableStock.toLocaleString() : "—"} sub="Tổng tất cả sản phẩm" valueColor="rgb(245,158,11)" borderColor="rgb(245,158,11)" />
-        <SCard label={t.statWarrantyCount} value={ov ? ov.warrantyTotal : "—"} sub={periodLabel} valueColor={ov && ov.warrantyTotal > 0 ? "rgb(248,113,113)" : "var(--tx-f)"} borderColor={ov && ov.warrantyTotal > 0 ? "rgb(248,113,113)" : "var(--bd)"} />
-        <SCard label={t.statWarrantyCost} value={ov ? formatCurrency(ov.warrantyCost) : "—"} sub={`${ov?.warrantyAutoResolved ?? 0} auto`} valueColor={ov && ov.warrantyCost > 0 ? "rgb(248,113,113)" : "var(--tx-f)"} borderColor={ov && ov.warrantyCost > 0 ? "rgb(248,113,113)" : "var(--bd)"} />
+      {/* Secondary metrics — inline pills */}
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+        <SPill label={t.statCost} value={ov ? formatCurrency(ov.cost) : "—"} />
+        <SPill label={t.statStock} value={ov ? ov.totalAvailableStock.toLocaleString() : "—"} tone="warning" />
+        <SPill label={t.statWarrantyCount} value={ov ? ov.warrantyTotal : "—"} tone={ov && ov.warrantyTotal > 0 ? "danger" : "neutral"} />
+        <SPill label={t.statWarrantyCost} value={ov ? formatCurrency(ov.warrantyCost) : "—"} tone={ov && ov.warrantyCost > 0 ? "danger" : "neutral"} />
       </div>
 
       {/* Charts */}
       <div className="grid gap-4 xl:grid-cols-2">
         {/* Daily revenue area chart */}
-        <div className="rounded-2xl p-5" style={{ background: "var(--surface)", border: "1px solid var(--bd)" }}>
+        <div className="rounded-2xl p-4" style={{ background: "var(--surface)", border: "1px solid var(--bd)" }}>
           <div className="flex items-center justify-between gap-2">
             <h2 className="text-base font-black" style={{ color: "var(--tx)" }}>{t.chartRevenue}</h2>
             <span className="text-[13px] font-black tabular-nums" style={{ color: "var(--tx-f)" }}>
@@ -612,9 +637,9 @@ export function ProAnalyticsPage() {
         </div>
 
         {/* Product gross profit horizontal bar chart */}
-        <div className="rounded-2xl p-5" style={{ background: "var(--surface)", border: "1px solid var(--bd)" }}>
+        <div className="rounded-2xl p-4" style={{ background: "var(--surface)", border: "1px solid var(--bd)" }}>
           <h2 className="text-base font-black" style={{ color: "var(--tx)" }}>{t.chartProfit}</h2>
-          <p className="mt-0.5 text-[11px]" style={{ color: "var(--tx-f)" }}>{(topProductsQuery.data?.length ?? 0)} sản phẩm</p>
+          <p className="mt-0.5 text-[11px]" style={{ color: "var(--tx-f)" }}>{productChartData.length} sản phẩm có doanh thu sỉ</p>
           <div className="mt-4" style={{ height: 180 }}>
             {topProductsQuery.isLoading ? (
               <div className="h-full animate-pulse rounded-xl" style={{ background: "var(--inp)" }} />
@@ -642,12 +667,32 @@ export function ProAnalyticsPage() {
       </div>
 
       {/* Product stats table */}
-      <TableWrap title={t.topProductsTitle}>
+      <TableWrap
+        title={t.topProductsTitle}
+        right={
+          <label className="flex items-center gap-1.5 text-[11px] font-semibold cursor-pointer select-none" style={{ color: "var(--tx-f)" }}>
+            <input
+              type="checkbox"
+              checked={hideZeroSold}
+              onChange={(e) => setHideZeroSold(e.target.checked)}
+              className="h-3.5 w-3.5 rounded accent-orange-500"
+            />
+            Chỉ hiện đã bán
+          </label>
+        }
+      >
         {topProductsQuery.isLoading ? (
           <p className="px-5 py-4 text-sm" style={{ color: "var(--tx-f)" }}>{t.loading}</p>
         ) : !topProductsQuery.data?.length ? (
           <p className="px-5 py-4 text-sm" style={{ color: "var(--tx-f)" }}>{t.topProductsEmpty}</p>
-        ) : (
+        ) : (() => {
+          const filtered = hideZeroSold
+            ? topProductsQuery.data.filter((p) => p.soldCount > 0)
+            : topProductsQuery.data;
+          if (filtered.length === 0) {
+            return <p className="px-5 py-4 text-sm" style={{ color: "var(--tx-f)" }}>Chưa có sản phẩm nào bán được trong kỳ.</p>;
+          }
+          return (
           <table className="w-full text-sm">
             <thead>
               <tr style={{ borderBottom: "1px solid var(--bd)" }}>
@@ -657,7 +702,7 @@ export function ProAnalyticsPage() {
               </tr>
             </thead>
             <tbody>
-              {topProductsQuery.data.map((p) => (
+              {filtered.map((p) => (
                 <tr key={p.id} style={{ borderBottom: "1px solid var(--bd)" }}>
                   <td className="px-4 py-3 font-medium" style={{ color: "var(--tx)" }}>
                     {p.productIcon ? `${p.productIcon} ` : ""}{p.name}
@@ -680,7 +725,8 @@ export function ProAnalyticsPage() {
               ))}
             </tbody>
           </table>
-        )}
+          );
+        })()}
       </TableWrap>
 
       {/* Warranty history */}

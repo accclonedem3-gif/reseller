@@ -2298,6 +2298,7 @@ export class TelegramBotService {
     const providerToKey = (p: TelegramPaymentOption): string => {
       if (p === "WALLET") return "payWallet";
       if (p === PaymentProvider.BINANCE_PAY || p === PaymentProvider.BINANCE) return "payBinance";
+      if (p === PaymentProvider.OKX) return "payOkx";
       if (p === PaymentProvider.USDT_TRC20) return "payUsdt";
       if (p === PaymentProvider.USDT_SOL) return "paySol";
       return "payQR";
@@ -2469,6 +2470,10 @@ export class TelegramBotService {
       }
     } else if (String(paymentConfig?.binanceUid || "").trim()) {
       providers.push(PaymentProvider.BINANCE);
+    }
+
+    if (String(paymentConfig?.okxUid || "").trim()) {
+      providers.push(PaymentProvider.OKX);
     }
 
     if (String(paymentConfig?.usdtTrc20Address || "").trim()) {
