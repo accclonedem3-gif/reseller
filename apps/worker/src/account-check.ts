@@ -389,6 +389,9 @@ async function runGrokBatchViaHttp(
       if (settled) return;
       settled = true;
       cleanupStream();
+      // Tell the server to stop dispatching not-yet-started accounts: we're about to fall back to
+      // subprocess, and checking the same account twice (server + subprocess) = double login = ban risk.
+      void axios.post(`${CHECK_GROK_URL}/check/${jobId}/cancel`, {}, { headers, timeout: 3000 }).catch(() => undefined);
       // Missing entries marked timedOut=true → retry pass / allTimed fallback
       resolve(accounts.map((_, i) => buildEntry(i, true)));
     }, GROK_HTTP_TIMEOUT_MS);
@@ -558,6 +561,9 @@ async function runVeoBatchViaHttp(
       if (settled) return;
       settled = true;
       cleanupStream();
+      // Stop the server dispatching not-yet-started accounts before we subprocess-fallback (else the
+      // same account logs in twice = ban risk).
+      void axios.post(`${CHECK_VEO_URL}/check/${jobId}/cancel`, {}, { headers, timeout: 3000 }).catch(() => undefined);
       resolve(accounts.map((_, i) => buildEntry(i, true)));
     }, VEO_HTTP_TIMEOUT_MS);
 
@@ -844,13 +850,29 @@ async function getCheckConcurrency(prisma: PrismaClient): Promise<number> {
 
 // Số account check song song trong 1 job. Đọc hot từ DB (admin chỉnh không cần restart),
 // fallback env ACCOUNT_PARALLEL_LIMIT. Clamp 1..10 — chặn nhập số to gây OOM/sập.
+// Short in-process memo for the hot SystemConfig reads. The API caches these; the worker did not,
+// so every job did 2-3 extra findUnique round-trips on tiny rows. 15s keeps the admin knobs
+// effectively "hot" (changes apply within ~15s, no restart) while removing per-job DB chatter.
+const _cfgMemo = new Map<string, { v: unknown; at: number }>();
+const CFG_MEMO_MS = 15000;
+async function memoConfig<T>(key: string, loader: () => Promise<T>): Promise<T> {
+  const hit = _cfgMemo.get(key);
+  const now = Date.now();
+  if (hit && now - hit.at < CFG_MEMO_MS) return hit.v as T;
+  const v = await loader();
+  _cfgMemo.set(key, { v, at: now });
+  return v;
+}
+
 async function getPerJobParallel(prisma: PrismaClient): Promise<number> {
-  const row = await prisma.systemConfig
-    .findUnique({ where: { key: SYSTEM_CONFIG_KEYS.warrantyCheckPerJobParallel } })
-    .catch(() => null);
-  const parsed = row?.value ? Number(row.value) : NaN;
-  if (Number.isFinite(parsed) && parsed > 0) return Math.min(10, Math.floor(parsed));
-  return ACCOUNT_PARALLEL_LIMIT;
+  return memoConfig("perJobParallel", async () => {
+    const row = await prisma.systemConfig
+      .findUnique({ where: { key: SYSTEM_CONFIG_KEYS.warrantyCheckPerJobParallel } })
+      .catch(() => null);
+    const parsed = row?.value ? Number(row.value) : NaN;
+    if (Number.isFinite(parsed) && parsed > 0) return Math.min(10, Math.floor(parsed));
+    return ACCOUNT_PARALLEL_LIMIT;
+  });
 }
 
 /**
@@ -859,14 +881,16 @@ async function getPerJobParallel(prisma: PrismaClient): Promise<number> {
  * (scheme://[user:pass@]host:port OR host:port[:user:pass]).
  */
 async function getCheckProxies(prisma: PrismaClient): Promise<string[]> {
-  const row = await prisma.systemConfig
-    .findUnique({ where: { key: SYSTEM_CONFIG_KEYS.warrantyCheckProxies } })
-    .catch(() => null);
-  if (!row?.value) return [];
-  return String(row.value)
-    .split(/\r?\n+/)
-    .map((s) => s.trim())
-    .filter((s) => s && !s.startsWith("#"));
+  return memoConfig("checkProxies", async () => {
+    const row = await prisma.systemConfig
+      .findUnique({ where: { key: SYSTEM_CONFIG_KEYS.warrantyCheckProxies } })
+      .catch(() => null);
+    if (!row?.value) return [];
+    return String(row.value)
+      .split(/\r?\n+/)
+      .map((s) => s.trim())
+      .filter((s) => s && !s.startsWith("#"));
+  });
 }
 
 export async function isAutoCheckEnabled(prisma: PrismaClient): Promise<boolean> {
@@ -947,6 +971,24 @@ async function processJob(prisma: PrismaClient, redis: Redis, job: Job): Promise
     // dead-mark only lands at end-of-job, so without this an account whose sticky proxy is dead
     // would re-hit the same dead proxy on retry. Skipping these steers retries to a LIVE proxy.
     const jobFailedProxies = new Set<string>();
+    // Snapshot the cross-tool dead-proxy set ONCE per job (single MGET) instead of a Redis GET per
+    // proxy per account per retry (was O(accounts × proxies) sequential round-trips). Proxies that
+    // die MID-job are tracked separately in jobFailedProxies, so retries still avoid them.
+    const _deadSnapshot = new Set<string>();
+    if (adminProxies.length > 0) {
+      try {
+        const _hps = adminProxies.map((p) => makeProxyHostPort(p)).filter((x): x is string => !!x);
+        if (_hps.length > 0) {
+          const _vals = await redis.mget(..._hps.map((hp) => deadKey(hp)));
+          _hps.forEach((hp, i) => { if (_vals[i]) _deadSnapshot.add(hp); });
+        }
+      } catch { /* fail open — treat all as live rather than block the job */ }
+    }
+    const isDeadSnapshot = (cand: string | null): boolean => {
+      if (!cand) return false;
+      const hp = makeProxyHostPort(cand);
+      return hp ? _deadSnapshot.has(hp) : false;
+    };
     // Fail-closed switch (P1): when ON (default), NEVER log in from the worker's raw IP — if no
     // live proxy is available the whole job is aborted as an infra failure (caught below → claim
     // stays PENDING, slot NOT consumed, no refund, no raw login = no ban). Set
@@ -963,7 +1005,7 @@ async function processJob(prisma: PrismaClient, redis: Redis, job: Job): Promise
         const cand = adminProxies[(idx + attempt) % adminProxies.length];
         if (!cand) continue;
         if (jobFailedProxies.has(cand)) continue;
-        if (!(await isProxyDead(redis, cand))) return cand;
+        if (!isDeadSnapshot(cand)) return cand;
       }
       if (requireProxy) {
         throw new Error("no_proxy_available: all configured proxies are dead and WARRANTY_REQUIRE_PROXY is on — refusing raw IP");
@@ -984,7 +1026,7 @@ async function processJob(prisma: PrismaClient, redis: Redis, job: Job): Promise
     // and requireProxy is on, and (P2) clamp concurrent logins ≤ live-proxy count below.
     let liveProxyCount = 0;
     for (const cand of adminProxies) {
-      if (cand && !(await isProxyDead(redis, cand))) liveProxyCount++;
+      if (cand && !isDeadSnapshot(cand)) liveProxyCount++;
     }
     if (requireProxy && liveProxyCount === 0 && !proxy) {
       throw new Error(

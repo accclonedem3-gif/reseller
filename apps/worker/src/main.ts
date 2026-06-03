@@ -464,6 +464,26 @@ function resolvePayOSCredentials(paymentConfig) {
         checksumKey,
     };
 }
+// Multi-instance guard for setInterval sweeps. A bare sweep runs on EVERY worker instance, so the
+// moment this is scaled past `instances: 1` the money sweeps (PayOS / topup / deposit / Solana /
+// TRC20 / tier renew) double-process. Gate each tick on a Redis NX lock so exactly ONE instance
+// runs a given sweep at a time. Fail-OPEN if Redis is unreachable (the single-instance default
+// stays correct — better to run a money sweep than silently skip it). Crash-safe via the PX TTL.
+async function runWithInstanceLock(redis, name, ttlMs, fn) {
+    const key = `sweeplock:${name}`;
+    let acquired = false;
+    try {
+        acquired = (await redis.set(key, String(process.pid), "PX", Math.max(1000, ttlMs), "NX")) === "OK";
+    } catch {
+        return fn(); // Redis hiccup → don't skip money work
+    }
+    if (!acquired) return undefined; // another instance owns this tick
+    try {
+        return await fn();
+    } finally {
+        try { await redis.del(key); } catch { /* PX TTL will reap it */ }
+    }
+}
 async function enqueuePaidOrder(queue, orderId, totalSourceAmount) {
     try {
         await prisma.$transaction(async (tx) => {
@@ -3390,12 +3410,12 @@ async function bootstrap() {
         });
     }, TELEGRAM_POLL_INTERVAL_MS);
     setInterval(() => {
-        void reconcilePendingPayOSOrders(purchaseQueue).catch((error) => {
+        void runWithInstanceLock(redis, "payos", PAYOS_ORDER_SWEEP_INTERVAL_MS, () => reconcilePendingPayOSOrders(purchaseQueue)).catch((error) => {
             console.error("[worker] PayOS order sweep failed:", formatError(error));
         });
     }, PAYOS_ORDER_SWEEP_INTERVAL_MS);
     setInterval(() => {
-        void reconcilePendingInternalSourceOrders().catch((error) => {
+        void runWithInstanceLock(redis, "internal-source-orders", INTERNAL_SOURCE_ORDER_SWEEP_INTERVAL_MS, () => reconcilePendingInternalSourceOrders()).catch((error) => {
             console.error("[worker] Internal source order sweep failed:", formatError(error));
         });
     }, INTERNAL_SOURCE_ORDER_SWEEP_INTERVAL_MS);
@@ -3405,57 +3425,57 @@ async function bootstrap() {
         });
     }, CATALOG_SCHEDULER_TICK_MS);
     setInterval(() => {
-        void expireCustomerWalletTopups().catch((error) => {
+        void runWithInstanceLock(redis, "customer-topup", CUSTOMER_TOPUP_SWEEP_INTERVAL_MS, () => expireCustomerWalletTopups()).catch((error) => {
             console.error("[worker] Customer wallet topup sweep failed:", formatError(error));
         });
     }, CUSTOMER_TOPUP_SWEEP_INTERVAL_MS);
     setInterval(() => {
-        void expireSellerDepositRequests().catch((error) => {
+        void runWithInstanceLock(redis, "seller-deposit", CUSTOMER_TOPUP_SWEEP_INTERVAL_MS, () => expireSellerDepositRequests()).catch((error) => {
             console.error("[worker] Seller deposit sweep failed:", formatError(error));
         });
     }, CUSTOMER_TOPUP_SWEEP_INTERVAL_MS);
     setInterval(() => {
-        void cleanupStaleData().catch((error) => {
+        void runWithInstanceLock(redis, "data-cleanup", DATA_CLEANUP_INTERVAL_MS, () => cleanupStaleData()).catch((error) => {
             console.error("[worker] Data cleanup failed:", formatError(error));
         });
     }, DATA_CLEANUP_INTERVAL_MS);
-    void cleanupStaleData().catch(() => undefined);
+    void runWithInstanceLock(redis, "data-cleanup", DATA_CLEANUP_INTERVAL_MS, () => cleanupStaleData()).catch(() => undefined);
     setInterval(() => {
-        void expireSellerTiers().catch((error) => {
+        void runWithInstanceLock(redis, "tier-expiry", 15 * 60 * 1000, () => expireSellerTiers()).catch((error) => {
             console.error("[worker] Seller tier expiry failed:", formatError(error));
         });
     }, 15 * 60 * 1000);
-    void expireSellerTiers().catch(() => undefined);
+    void runWithInstanceLock(redis, "tier-expiry", 15 * 60 * 1000, () => expireSellerTiers()).catch(() => undefined);
     setInterval(() => {
-        void runTierAutoRenewals().catch((error) => {
+        void runWithInstanceLock(redis, "tier-autorenew", 6 * 60 * 60 * 1000, () => runTierAutoRenewals()).catch((error) => {
             console.error("[worker] Tier auto-renew failed:", formatError(error));
         });
     }, 6 * 60 * 60 * 1000); // mỗi 6 giờ
-    void runTierAutoRenewals().catch(() => undefined);
+    void runWithInstanceLock(redis, "tier-autorenew", 6 * 60 * 60 * 1000, () => runTierAutoRenewals()).catch(() => undefined);
     setInterval(() => {
-        void sweepScheduledBroadcasts(broadcastQueue).catch((error) => {
+        void runWithInstanceLock(redis, "broadcast-sweep", 60 * 1000, () => sweepScheduledBroadcasts(broadcastQueue)).catch((error) => {
             console.error("[worker] Broadcast schedule sweep failed:", formatError(error));
         });
     }, 60 * 1000);
-    void sweepScheduledBroadcasts(broadcastQueue).catch(() => undefined);
+    void runWithInstanceLock(redis, "broadcast-sweep", 60 * 1000, () => sweepScheduledBroadcasts(broadcastQueue)).catch(() => undefined);
     setInterval(() => {
-        void expireAwaitingPaymentOrders().catch((error) => {
+        void runWithInstanceLock(redis, "awaiting-payment", 30 * 1000, () => expireAwaitingPaymentOrders()).catch((error) => {
             console.error("[worker] Awaiting payment expiry sweep failed:", formatError(error));
         });
     }, 30 * 1000);
-    void expireAwaitingPaymentOrders().catch(() => undefined);
+    void runWithInstanceLock(redis, "awaiting-payment", 30 * 1000, () => expireAwaitingPaymentOrders()).catch(() => undefined);
     setInterval(() => {
-        void scanSolanaUsdtPayments().catch((error) => {
+        void runWithInstanceLock(redis, "solana-scan", 30 * 1000, () => scanSolanaUsdtPayments()).catch((error) => {
             console.error("[worker] Solana auto-detect sweep failed:", formatError(error));
         });
     }, 30 * 1000);
-    void scanSolanaUsdtPayments().catch(() => undefined);
+    void runWithInstanceLock(redis, "solana-scan", 30 * 1000, () => scanSolanaUsdtPayments()).catch(() => undefined);
     setInterval(() => {
-        void scanTrc20UsdtPayments().catch((error) => {
+        void runWithInstanceLock(redis, "trc20-scan", 30 * 1000, () => scanTrc20UsdtPayments()).catch((error) => {
             console.error("[worker] TRC20 auto-detect sweep failed:", formatError(error));
         });
     }, 30 * 1000);
-    void scanTrc20UsdtPayments().catch(() => undefined);
+    void runWithInstanceLock(redis, "trc20-scan", 30 * 1000, () => scanTrc20UsdtPayments()).catch(() => undefined);
     // Web2m polling removed — replaced by webhook /api/v1/webhooks/web2m
     let accountCheckHandles = null;
     try {

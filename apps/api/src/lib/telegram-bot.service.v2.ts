@@ -447,7 +447,12 @@ export class TelegramBotService {
       }
 
       if (allWarrantyLabels.includes(msgText as any)) {
-        if (shop.seller.tier !== SellerTier.ULTRA) {
+        // Must match the button-visibility rule (ULTRA OR INTERNAL-source PRO, see renderHome /
+        // hasWarrantyFeature). Gating on ULTRA-only made the persistent "Bảo hành" reply button a
+        // silent no-op for PRO shops with an internal source — eligibility is then enforced per-order.
+        const hasWarrantyFeature =
+          shop.seller.tier === SellerTier.ULTRA || shop.providerConfig?.providerKind === "INTERNAL";
+        if (!hasWarrantyFeature) {
           return { ok: true, actions };
         }
         await this.clearPendingQuantitySelection(shopId, String(message.from?.id || ""));
@@ -3305,6 +3310,25 @@ export class TelegramBotService {
     return true;
   }
 
+  /**
+   * Map a warranty-submit failure to a customer-facing line so the bot NEVER goes silent on a
+   * throw (concurrent double-tap, stock race, per-order cap, etc.). Service errors that are already
+   * localized (contain non-ASCII vi/th text) are surfaced as-is; raw English/internal errors fall
+   * back to a generic localized retry line so we don't leak internals.
+   */
+  private warrantySubmitErrorText(error: unknown, language: BotLanguage): string {
+    const raw = String(
+      (error as any)?.response?.message ?? (error instanceof Error ? error.message : "") ?? "",
+    ).trim();
+    const localized = raw && /[^\x00-\x7F]/.test(raw); // has vi/th diacritics → already user-facing
+    if (localized) return `⚠️ ${raw}`;
+    return language === "en"
+      ? "⚠️ Could not create the warranty request right now. Please wait a moment and tap again, or contact the shop."
+      : language === "th"
+        ? "⚠️ ไม่สามารถสร้างคำขอรับประกันได้ในขณะนี้ กรุณารอสักครู่แล้วลองอีกครั้ง หรือติดต่อร้านค้า"
+        : "⚠️ Chưa tạo được yêu cầu bảo hành lúc này. Vui lòng đợi giây lát rồi bấm lại, hoặc liên hệ shop.";
+  }
+
   private async routeWarrantyByAccountCount(
     token: string,
     chatId: number,
@@ -3318,14 +3342,27 @@ export class TelegramBotService {
     issuedReplacements: string[] = [],
   ) {
     if (accounts.length <= 1) {
-      const claim = await this.warrantyService.submitTelegramWarrantyClaim({
-        shopId,
-        telegramUserId,
-        telegramChatId: String(chatId),
-        orderCode,
-        language,
-      });
-      await this.sendWarrantyClaimResult(token, chatId, claim, actions, language);
+      let claim: Awaited<ReturnType<WarrantyService["submitTelegramWarrantyClaim"]>>;
+      try {
+        claim = await this.warrantyService.submitTelegramWarrantyClaim({
+          shopId,
+          telegramUserId,
+          telegramChatId: String(chatId),
+          orderCode,
+          language,
+        });
+      } catch (error) {
+        await this.editOrSend(
+          token,
+          chatId,
+          messageId,
+          this.warrantySubmitErrorText(error, language),
+          { inline_keyboard: [[{ text: this.buttonLabel("home", language), callback_data: "home:menu" }]] },
+          actions,
+        );
+        return;
+      }
+      await this.sendWarrantyClaimResult(token, chatId, claim, actions, language, shopId);
     } else {
       await this.promptWarrantyAccountSelection(
         token,
@@ -3459,16 +3496,29 @@ export class TelegramBotService {
 
     const targetUsernames = input.split(";").map((s) => s.trim()).filter(Boolean);
 
-    const claim = await this.warrantyService.submitTelegramWarrantyClaim({
-      shopId,
-      telegramUserId,
-      telegramChatId: String(message.chat?.id || telegramUserId),
-      orderCode: pending.orderCode,
-      targetUsernames,
-      language,
-    });
+    let claim: Awaited<ReturnType<WarrantyService["submitTelegramWarrantyClaim"]>>;
+    try {
+      claim = await this.warrantyService.submitTelegramWarrantyClaim({
+        shopId,
+        telegramUserId,
+        telegramChatId: String(message.chat?.id || telegramUserId),
+        orderCode: pending.orderCode,
+        targetUsernames,
+        language,
+      });
+    } catch (error) {
+      await this.editOrSend(
+        token,
+        Number(message.chat?.id || 0),
+        undefined,
+        this.warrantySubmitErrorText(error, language),
+        { inline_keyboard: [[{ text: this.buttonLabel("home", language), callback_data: "home:menu" }]] },
+        actions,
+      );
+      return true;
+    }
 
-    await this.sendWarrantyClaimResult(token, message.chat.id, claim, actions, language);
+    await this.sendWarrantyClaimResult(token, message.chat.id, claim, actions, language, shopId);
     return true;
   }
 
@@ -3478,6 +3528,7 @@ export class TelegramBotService {
     claim: Awaited<ReturnType<WarrantyService["submitTelegramWarrantyClaim"]>>,
     actions: unknown[],
     language: BotLanguage = "vi",
+    shopId?: string,
   ) {
     let replyText: string;
 
@@ -3501,6 +3552,16 @@ export class TelegramBotService {
       ];
       if (claim.supportTelegram) lines.push(`Telegram: ${claim.supportTelegram}`);
       if (claim.supportZalo) lines.push(`Zalo: ${claim.supportZalo}`);
+      // No contact configured → don't leave a dead-end "contact the shop" with nobody to contact.
+      if (!claim.supportTelegram && !claim.supportZalo) {
+        lines.push(
+          language === "en"
+            ? "Please reply right here in this chat — the shop will assist you."
+            : language === "th"
+              ? "กรุณาตอบกลับในแชทนี้ ทางร้านจะช่วยเหลือคุณ"
+              : "Bạn cứ nhắn ngay trong khung chat này — shop sẽ hỗ trợ bạn.",
+        );
+      }
       replyText = lines.join("\n");
     } else if (
       claim.status === "pending_stock" ||
@@ -3519,7 +3580,7 @@ export class TelegramBotService {
         (language === "en" ? "An error occurred." : language === "th" ? "เกิดข้อผิดพลาด" : "Đã xảy ra lỗi.");
     }
 
-    await this.sendText(
+    const sent = await this.sendText(
       token,
       chatId,
       replyText,
@@ -3532,6 +3593,25 @@ export class TelegramBotService {
         ],
       },
     );
+
+    // Edit-in-place: for the async auto-check path the worker later EDITS this "đang kiểm tra…"
+    // message into the verdict/replacement (instead of sending a disconnected 2nd message). Anchor
+    // its (chatId, messageId) onto the claim so deliverBotMessage can find + edit it.
+    const claimId = (claim as { claimId?: string }).claimId;
+    const messageId = Number((sent as { message_id?: number })?.message_id);
+    const isMockToken = this.isSimulationToken(token) || (this.config.mockTelegramEnabled && isMockBotToken(token));
+    if (
+      !isMockToken && // mock/sim sendText returns a fake message_id — don't persist a junk anchor
+      shopId &&
+      claimId &&
+      Number.isFinite(messageId) &&
+      messageId > 0 &&
+      (claim.status === "auto_check_pending" || claim.status === "auto_resolved_pending")
+    ) {
+      await this.warrantyService
+        .updateBotProgressContext(claimId, { shopId, chatId, messageId })
+        .catch(() => undefined);
+    }
   }
 
   private async handlePendingTxHashMessage(
@@ -6569,6 +6649,7 @@ export class TelegramBotService {
         "",
         supportTelegram ? `Telegram: ${supportTelegram}` : null,
         supportZalo ? `Zalo: ${supportZalo}` : null,
+        !supportTelegram && !supportZalo ? "Please reply right here in this chat — the shop will assist you." : null,
         "",
         "When you need help, please include your order code so support can check faster.",
       ]
@@ -6582,6 +6663,7 @@ export class TelegramBotService {
         "",
         supportTelegram ? `Telegram: ${supportTelegram}` : null,
         supportZalo ? `Zalo: ${supportZalo}` : null,
+        !supportTelegram && !supportZalo ? "กรุณาตอบกลับในแชทนี้ ทางร้านจะช่วยเหลือคุณ" : null,
         "",
         "เมื่อต้องการความช่วยเหลือ กรุณาแนบรหัสคำสั่งซื้อเพื่อให้ทีมงานตรวจสอบได้รวดเร็วขึ้น",
       ]
@@ -6594,6 +6676,7 @@ export class TelegramBotService {
       "",
       supportTelegram ? `Telegram: ${supportTelegram}` : null,
       supportZalo ? `Zalo: ${supportZalo}` : null,
+      !supportTelegram && !supportZalo ? "Bạn cứ nhắn ngay trong khung chat này — shop sẽ hỗ trợ bạn." : null,
       "",
       "Khi cần hỗ trợ, vui lòng gửi kèm mã đơn hàng để được xử lý nhanh hơn.",
     ]

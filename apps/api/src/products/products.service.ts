@@ -2,7 +2,7 @@ import { BadRequestException, Inject, Injectable, NotFoundException } from "@nes
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { extname, join } from "node:path";
-import { Prisma, SellerTier } from "@prisma/client";
+import { Prisma, SellerTier, StockEntryStatus } from "@prisma/client";
 
 import { AppConfigService } from "../config/app-config.service";
 import { PrismaService } from "../db/prisma.service";
@@ -219,6 +219,13 @@ export class ProductsService {
       },
     });
 
+    // Mirror the manual delivery list into the stock_entries pool the worker delivers from.
+    // (The metadata.deliveryEntries write above only feeds the display counter; the fulfillment
+    // path reads stock_entries exclusively — see apps/worker manual delivery branch.)
+    if (!isShared && deliveryEntries.length > 0) {
+      await this.syncManualStockEntries(created.id, deliveryEntries);
+    }
+
     await this.prisma.sellerProductOverride.create({
       data: {
         sellerId: shop.sellerId,
@@ -298,6 +305,8 @@ export class ProductsService {
     }
 
     let newAvailable: number | null | undefined = undefined;
+    // Manual non-shared delivery list to mirror into stock_entries after the metadata write.
+    let syncDeliveryEntries: string[] | null = null;
 
     if (isManual) {
       const currentMetadata = this.asRecord(product.metadataJson);
@@ -362,6 +371,7 @@ export class ProductsService {
             ? null
             : undefined;
       newAvailable = available;
+      syncDeliveryEntries = deliveryEntries;
 
       await this.prisma.sourceProduct.update({
         where: { id: product.id },
@@ -567,7 +577,65 @@ export class ProductsService {
       }
     }
 
+    // Reconcile the stock_entries pool the worker delivers from to match the manual delivery list.
+    if (syncDeliveryEntries != null) {
+      await this.syncManualStockEntries(product.id, syncDeliveryEntries);
+    }
+
     return this.getProduct(user, id);
+  }
+
+  /**
+   * Mirror a manual product's delivery list (metadata.deliveryEntries) into the stock_entries
+   * pool that the worker actually delivers from. Reconciles by account text:
+   *  - inserts entries for texts that have no stock_entry yet (any status),
+   *  - removes AVAILABLE entries whose text was dropped from the list,
+   *  - never touches SOLD entries (no double-sell, no re-adding an already-delivered account),
+   * then resets sourceProduct.available to the real AVAILABLE count.
+   * Dedupes by text — identical account lines collapse to one (account emails are unique).
+   */
+  private async syncManualStockEntries(productId: string, deliveryEntries: string[]) {
+    const desired = Array.from(
+      new Set(deliveryEntries.map((t) => String(t || "").trim()).filter(Boolean)),
+    );
+    await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM source_products WHERE id = ${productId} FOR UPDATE`;
+      const existing = await tx.stockEntry.findMany({
+        where: { sourceProductId: productId },
+        select: { id: true, text: true, status: true },
+      });
+      const knownTexts = new Set(existing.map((e) => e.text));
+      const desiredSet = new Set(desired);
+
+      const toInsert = desired.filter((t) => !knownTexts.has(t));
+      if (toInsert.length > 0) {
+        const uploadedAt = new Date();
+        await tx.stockEntry.createMany({
+          data: toInsert.map((text) => ({
+            sourceProductId: productId,
+            batchId: null,
+            text,
+            status: StockEntryStatus.AVAILABLE,
+            uploadedAt,
+          })),
+        });
+      }
+
+      const toDeleteIds = existing
+        .filter((e) => e.status === StockEntryStatus.AVAILABLE && !desiredSet.has(e.text))
+        .map((e) => e.id);
+      if (toDeleteIds.length > 0) {
+        await tx.stockEntry.deleteMany({ where: { id: { in: toDeleteIds } } });
+      }
+
+      const availableTotal = await tx.stockEntry.count({
+        where: { sourceProductId: productId, status: StockEntryStatus.AVAILABLE },
+      });
+      await tx.sourceProduct.update({
+        where: { id: productId },
+        data: { available: availableTotal },
+      });
+    });
   }
 
   async duplicateProduct(user: AuthenticatedUser, id: string) {

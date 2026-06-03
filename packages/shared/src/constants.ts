@@ -55,8 +55,11 @@ export const ACCOUNT_CHECK_TOOLS = {
   GPT: "gpt",
 } as const;
 
+// Maps a product family → its auto-check tool. CHATGPT is intentionally NOT listed: the GPT
+// checker isn't built yet, so ChatGPT warranties resolve to UNSUPPORTED → seller handles manually
+// (resolveToolForFamily returns null for unmapped families). Add CHATGPT: "gpt" back once the
+// check_gpt tool is implemented + hardened.
 export const PRODUCT_FAMILY_TO_TOOL: Record<string, "veo" | "grok" | "gpt"> = {
   VEO3: "veo",
   GROK: "grok",
-  CHATGPT: "gpt",
 };

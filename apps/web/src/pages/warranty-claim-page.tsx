@@ -574,7 +574,7 @@ function WarrantyInvoiceCard({ invoice }: { invoice: WarrantyInvoice }) {
       {/* ── Warranty window ────────────────────────── */}
       <div className="space-y-1.5 pt-1">
         {warrantyShort && <Row icon="🛡"><span className="font-medium">{warrantyShort}</span></Row>}
-        <Row icon="⏰">Hạn <span className="font-medium">{expiresLabel}</span></Row>
+        <Row icon="⏰">Hạn bảo hành <span className="font-medium">{expiresLabel}</span></Row>
         {daysUsed !== null && daysLeft !== null && (
           <Row icon="📊">
             Đã dùng <span className="font-medium">{daysUsed}</span>

@@ -37,6 +37,7 @@ import { ShopsService } from "../shops/shops.service";
 import type { AuthenticatedUser } from "../types";
 
 import { WarrantyAutoCheckService } from "./warranty-auto-check.service";
+import { WarrantyAbuseService } from "./warranty-abuse.service";
 import type { OpenWarrantyClaimDto, PublicWarrantyClaimDto, PublicWarrantySearchDto, RejectWarrantyClaimDto, ResolveWarrantyClaimDto } from "./warranty.dto";
 
 const WARRANTY_CLAIM_STATUS = {
@@ -102,6 +103,8 @@ export class WarrantyService {
     private readonly autoCheckService: WarrantyAutoCheckService,
     @Inject(IdempotencyService)
     private readonly idempotency: IdempotencyService,
+    @Inject(WarrantyAbuseService)
+    private readonly abuse: WarrantyAbuseService,
   ) {}
 
   /**
@@ -919,6 +922,10 @@ export class WarrantyService {
             } as Prisma.InputJsonValue,
           },
         });
+        // #3: retire the issued accounts from the stock_entries pool too, so a legacy-metadata
+        // fallback replacement can't stay AVAILABLE and be re-sold to a later buyer (no-op when the
+        // product has no matching stock_entries — pure-legacy products keep the available above).
+        await this.consumeMatchingStockEntries(tx, order.sourceProductId, decision.deliveredAccountText, order.id, order.customerId);
       }
 
       if (decision.internalSourceStockUpdate) {
@@ -944,6 +951,9 @@ export class WarrantyService {
             } as Prisma.InputJsonValue,
           },
         });
+        // Finding G: retire the issued accounts from the UPSTREAM product's stock_entries too, so a
+        // legacy-metadata fallback on the ULTRA source can't leave them AVAILABLE and re-sellable.
+        await this.consumeMatchingStockEntries(tx, sourceProductId, decision.deliveredAccountText, order.id, order.customerId);
       }
 
       const claim = await tx.warrantyClaim.create({
@@ -1529,7 +1539,10 @@ export class WarrantyService {
     // they should bail (we also add that guard in those methods below).
     try {
     const result: any = claim.autoCheckResult || {};
-    const lang: string = "vi";
+    // Localize the async result to the customer's saved language (was hard-coded "vi" — en/th
+    // customers got the verdict + replacement credentials entirely in Vietnamese).
+    const _cl = String(claim.customer?.preferredLanguage || "").toLowerCase();
+    const lang: "vi" | "en" | "th" = _cl === "en" ? "en" : _cl === "th" ? "th" : "vi";
 
     const resultLine = this.autoCheckService.buildResultMessage(result, lang as "vi" | "en" | "th");
 
@@ -1697,7 +1710,7 @@ export class WarrantyService {
           `Claim ${claim.id}: auto-check soft-failed (slot ${claimSlotCount}/${MAX_CLAIMS_PER_ORDER_APPLY}). Customer may retry — not escalating to seller yet.`,
         );
       }
-      await this.sendAutoCheckCustomerNotice(claim, resultLine, "pending_review", isLastSlot);
+      await this.sendAutoCheckCustomerNotice(claim, resultLine, "pending_review", isLastSlot, lang);
       return;
     }
 
@@ -1876,6 +1889,9 @@ export class WarrantyService {
                 } as Prisma.InputJsonValue,
               },
             });
+            // #3: retire the issued accounts from the stock_entries pool too (no-op if none match)
+            // so a legacy-metadata fallback replacement can't stay AVAILABLE and be re-sold.
+            await this.consumeMatchingStockEntries(tx, fullOrder.sourceProductId, decision.deliveredAccountText, fullOrder.id, fullOrder.customerId);
           }
           if (decision.stockEntryReplacement) {
             const okSE = await this.commitStockEntryReplacement(
@@ -1946,6 +1962,8 @@ export class WarrantyService {
                 } as Prisma.InputJsonValue,
               },
             });
+            // Finding G: retire the issued accounts from the UPSTREAM product's stock_entries too.
+            await this.consumeMatchingStockEntries(tx, sourceProductId, decision.deliveredAccountText, fullOrder.id, fullOrder.customerId);
           }
           await tx.warrantyClaim.update({
             where: { id: claim.id },
@@ -1994,7 +2012,7 @@ export class WarrantyService {
         if (_stockRaceReview) {
           this.logger.warn(`Claim ${claim.id}: kho đổi giữa lúc xử lý đồng thời — chuyển PENDING_REVIEW (chống cấp trùng acc).`);
           await this.notifySellerWarrantyResult(claim, "review", claim.customerMessage || undefined);
-          await this.sendAutoCheckCustomerNotice(claim, resultLine, "pending_review").catch(() => undefined);
+          await this.sendAutoCheckCustomerNotice(claim, resultLine, "pending_review", false, lang).catch(() => undefined);
           return;
         }
 
@@ -2019,6 +2037,7 @@ export class WarrantyService {
             decision.deliveredAccountText,
             decision.customerMessage,
             decision.partialRefundCount || 0, // BUG-3: tell the customer which accounts were refunded
+            lang,
           );
           if (decision.partialRefundCount) {
             await this.applyPartialStockRefund(fullOrder, claim.id, decision.partialRefundCount);
@@ -2028,9 +2047,9 @@ export class WarrantyService {
           // processing — NOT exhausted, so no refund). Do NOT send the ambiguous "chưa xác minh
           // được — bấm Bảo hành lại" notice: it's wrong (it WAS verified dead) and makes the
           // customer waste a warranty slot retrying. Tell them it's confirmed + awaiting replacement.
-          await this.sendConfirmedDeadAwaitingStockNotice(claim, decision.customerMessage);
+          await this.sendConfirmedDeadAwaitingStockNotice(claim, decision.customerMessage, lang);
         } else {
-          await this.sendAutoCheckCustomerNotice(claim, resultLine, "pending_review");
+          await this.sendAutoCheckCustomerNotice(claim, resultLine, "pending_review", false, lang);
         }
         return;
       }
@@ -2054,7 +2073,7 @@ export class WarrantyService {
       },
     });
     await this.notifySellerWarrantyResult(claim, "review", claim.customerMessage || undefined);
-    await this.sendAutoCheckCustomerNotice(claim, resultLine, "pending_review");
+    await this.sendAutoCheckCustomerNotice(claim, resultLine, "pending_review", false, lang);
     } finally {
       // Failsafe for crash mid-flight: if `autoApplyInProgress` sentinel is STILL set, clear
       // it + mark autoApplyFailed. Without this, the seller's manual resolve/reject would be
@@ -2398,21 +2417,31 @@ export class WarrantyService {
     const token = decryptSecret(claim.shop.botConfig?.telegramBotTokenEncrypted, this.config.encryptionKey);
     if (token && claim.customer?.telegramChatId && !(this.config.mockTelegramEnabled && isMockBotToken(token))) {
       const _acctScoped = !!(claim as any).targetAccountEmail;
+      const _rl = String(claim.customer?.preferredLanguage || "").toLowerCase();
+      const rLang: "vi" | "en" | "th" = _rl === "en" ? "en" : _rl === "th" ? "th" : "vi";
       const invoice = await this.buildClaimInvoiceMessage(claim.orderId, _acctScoped).catch(() => null);
       const timeNote = daysUsed !== null
-        ? `⏳ Đã sử dụng ${daysUsed}/${durationDays} ngày (còn ${daysRemaining} ngày).`
+        ? (rLang === "en" ? `⏳ Used ${daysUsed}/${durationDays} days (${daysRemaining} left).`
+          : rLang === "th" ? `⏳ ใช้ไปแล้ว ${daysUsed}/${durationDays} วัน (เหลือ ${daysRemaining} วัน)`
+          : `⏳ Đã sử dụng ${daysUsed}/${durationDays} ngày (còn ${daysRemaining} ngày).`)
         : null;
+      const orderLabel = rLang === "en" ? "Order" : rLang === "th" ? "รหัสคำสั่งซื้อ" : "Mã đơn";
+      const productLabel = rLang === "en" ? "Product" : rLang === "th" ? "สินค้า" : "Sản phẩm";
       const parts: (string | null)[] = [
-        "💰 <b>Bảo hành — hoàn tiền vào ví</b>",
+        rLang === "en" ? "💰 <b>Warranty — refunded to wallet</b>" : rLang === "th" ? "💰 <b>การรับประกัน — คืนเงินเข้ากระเป๋า</b>" : "💰 <b>Bảo hành — hoàn tiền vào ví</b>",
         "",
-        _acctScoped ? null : `📝 Mã đơn: <code>${this.escapeHtml(claim.orderCodeSnapshot)}</code>`,
-        `📦 Sản phẩm: ${this.escapeHtml(claim.productNameSnapshot)}`,
+        _acctScoped ? null : `📝 ${orderLabel}: <code>${this.escapeHtml(claim.orderCodeSnapshot)}</code>`,
+        `📦 ${productLabel}: ${this.escapeHtml(claim.productNameSnapshot)}`,
         `🔢 Claim #${claim.claimNumber}`,
         ...this.claimIdentityLines(claim as any),
         "",
-        "Hệ thống không còn tài khoản thay thế cho đơn này.",
+        rLang === "en" ? "There is no replacement account left for this order." : rLang === "th" ? "ไม่มีบัญชีทดแทนสำหรับคำสั่งซื้อนี้แล้ว" : "Hệ thống không còn tài khoản thay thế cho đơn này.",
         timeNote,
-        `💵 Đã hoàn <b>${refundAmount.toLocaleString("vi-VN")}đ</b> vào ví của bạn. Bạn có thể dùng số dư này để mua đơn khác.`,
+        rLang === "en"
+          ? `💵 Refunded <b>${refundAmount.toLocaleString("vi-VN")}đ</b> to your wallet. You can use this balance for another order.`
+          : rLang === "th"
+            ? `💵 คืนเงิน <b>${refundAmount.toLocaleString("vi-VN")}đ</b> เข้ากระเป๋าของคุณแล้ว ใช้ยอดนี้สั่งซื้อรายการอื่นได้`
+            : `💵 Đã hoàn <b>${refundAmount.toLocaleString("vi-VN")}đ</b> vào ví của bạn. Bạn có thể dùng số dư này để mua đơn khác.`,
       ];
       if (invoice) parts.push("", invoice);
       const text = parts.filter((s) => s !== null).join("\n").trimEnd();
@@ -2783,7 +2812,7 @@ export class WarrantyService {
       rule,
       accountScoped ? `📦 ${product}` : `📦 ${product} · ${qty} acc · ${total}đ`,
       (!accountScoped && buyerLabel) ? `👤 ${this.escapeHtml(buyerLabel)}` : null,
-      `⏰ Hạn ${this.escapeHtml(expiresLine)}`,
+      `⏰ Hạn bảo hành ${this.escapeHtml(expiresLine)}`,
       supportLine,
       rule,
     ].filter(Boolean).join("\n");
@@ -2812,7 +2841,8 @@ export class WarrantyService {
    * Inline keyboard for the result message — gives the customer a one-tap path back into the
    * warranty flow for THE SAME ORDER, skipping the orderCode lookup step. The "Bảo hành lại"
    * button fires callback `warranty_claim:<orderCode>` (handled by telegram-bot.service.v2),
-   * which jumps straight to the password Y/N prompt. Useful when:
+   * which re-runs the eligibility check + re-submits using the password ON FILE (the bot has no
+   * password-input step). Useful when:
    *   - 3-pass ambiguous check ran out and customer thinks they typed the wrong password
    *   - Auto-resolved acc is also bad (customer wants to try again on the replacement)
    *   - Customer disagrees with the verdict and wants a re-check
@@ -2865,7 +2895,7 @@ export class WarrantyService {
    *   <pre>creds here</pre>
    *   ━━━━━━━━━━━━━━━━━
    *   📦 Product · N acc · price
-   *   ⏰ Hạn dd/mm/yyyy
+   *   ⏰ Hạn bảo hành dd/mm/yyyy
    *   💬 @support
    *   ━━━━━━━━━━━━━━━━━
    */
@@ -2874,6 +2904,7 @@ export class WarrantyService {
     deliveredAccountText: string,
     _customerMessage: string, // intentionally unused — header + creds convey the outcome
     partialRefundCount = 0, // BUG-3: when some accounts had no replacement stock, they were refunded
+    lang: "vi" | "en" | "th" = "vi",
   ) {
     const token = decryptSecret(claim.shop.botConfig?.telegramBotTokenEncrypted, this.config.encryptionKey);
     if (!token || !claim.customer?.telegramChatId || (this.config.mockTelegramEnabled && isMockBotToken(token))) {
@@ -2881,20 +2912,33 @@ export class WarrantyService {
     }
     const accountScoped = !!(claim as any).targetAccountEmail;
     const invoice = await this.buildClaimInvoiceMessage(claim.orderId, accountScoped).catch(() => null);
+    const orderLabel = lang === "en" ? "Order" : lang === "th" ? "รหัสคำสั่งซื้อ" : "Mã đơn";
+    const replacementHeader =
+      lang === "en" ? "🔑 <b>Replacement account</b>"
+      : lang === "th" ? "🔑 <b>บัญชีทดแทน</b>"
+      : "🔑 <b>Tài khoản thay thế</b>";
+    const refundNote = (n: number) =>
+      lang === "en"
+        ? `💰 ${n} account(s) were out of replacement stock and have been <b>refunded to your wallet</b>. Use the balance for another order.`
+        : lang === "th"
+          ? `💰 ${n} บัญชีไม่มีสต๊อกทดแทนและได้ <b>คืนเงินเข้ากระเป๋า</b>ของคุณแล้ว ใช้ยอดนี้สั่งซื้อรายการอื่นได้`
+          : `💰 ${n} tài khoản không còn hàng thay đã được <b>hoàn tiền vào ví</b> của bạn. Dùng số dư này để mua đơn khác.`;
+    const header =
+      lang === "en" ? "✨🎉 <b>WARRANTY</b> ✓ 🎉✨"
+      : lang === "th" ? "✨🎉 <b>การรับประกัน</b> ✓ 🎉✨"
+      : "✨🎉 <b>BẢO HÀNH</b> ✓ 🎉✨";
     const text = [
-      "✨🎉 <b>BẢO HÀNH</b> ✓ 🎉✨",
+      header,
       "",
       // Order code hidden on a per-account (retail) warranty — they only need their replacement.
-      ...(accountScoped ? [] : [`📝 Mã đơn: <code>${this.escapeHtml(claim.orderCodeSnapshot)}</code>`]),
+      ...(accountScoped ? [] : [`📝 ${orderLabel}: <code>${this.escapeHtml(claim.orderCodeSnapshot)}</code>`]),
       ...this.claimIdentityLines(claim),
       "",
-      "🔑 <b>Tài khoản thay thế</b>",
+      replacementHeader,
       `<pre>${this.escapeHtml(deliveredAccountText)}</pre>`,
       // BUG-3: partial — some accounts had no replacement stock and were refunded to the wallet.
       // Previously this was silent: the customer only saw the replacement accounts.
-      ...(partialRefundCount > 0
-        ? ["", `💰 ${partialRefundCount} tài khoản không còn hàng thay đã được <b>hoàn tiền vào ví</b> của bạn. Dùng số dư này để mua đơn khác.`]
-        : []),
+      ...(partialRefundCount > 0 ? ["", refundNote(partialRefundCount)] : []),
       "",
       invoice || "",
     ].filter((s, i, arr) => s !== "" || (i > 0 && arr[i - 1] !== "")).join("\n").trimEnd();
@@ -2915,6 +2959,7 @@ export class WarrantyService {
   private async sendConfirmedDeadAwaitingStockNotice(
     claim: Prisma.WarrantyClaimGetPayload<{ include: { customer: true; shop: { include: { botConfig: true } } } }>,
     customerMessage?: string | null,
+    lang: "vi" | "en" | "th" = "vi",
   ) {
     const token = decryptSecret(claim.shop.botConfig?.telegramBotTokenEncrypted, this.config.encryptionKey);
     if (!token || !claim.customer?.telegramChatId || (this.config.mockTelegramEnabled && isMockBotToken(token))) {
@@ -2922,14 +2967,25 @@ export class WarrantyService {
     }
     const accountScoped = !!(claim as any).targetAccountEmail;
     const invoice = await this.buildClaimInvoiceMessage(claim.orderId, accountScoped).catch(() => null);
+    const orderLabel = lang === "en" ? "Order" : lang === "th" ? "รหัสคำสั่งซื้อ" : "Mã đơn";
+    const defaultBody =
+      lang === "en"
+        ? "Your account was confirmed faulty. Replacement stock is momentarily out — the shop will process it and deliver a new account soon."
+        : lang === "th"
+          ? "ยืนยันแล้วว่าบัญชีของคุณใช้งานไม่ได้ สต๊อกทดแทนหมดชั่วคราว ทางร้านจะดำเนินการและส่งบัญชีใหม่ให้เร็ว ๆ นี้"
+          : "Tài khoản của bạn đã được xác nhận hỏng. Kho thay thế tạm hết — shop sẽ xử lý và giao tài khoản mới sớm.";
+    const header =
+      lang === "en" ? "🛠 <b>Confirmed faulty — awaiting replacement</b>"
+      : lang === "th" ? "🛠 <b>ยืนยันว่าใช้งานไม่ได้ — กำลังรอบัญชีทดแทน</b>"
+      : "🛠 <b>Đã xác nhận lỗi — đang chờ tài khoản thay</b>";
     const body =
       customerMessage && customerMessage.trim()
         ? this.escapeHtml(customerMessage.trim())
-        : "Tài khoản của bạn đã được xác nhận hỏng. Kho thay thế tạm hết — shop sẽ xử lý và giao tài khoản mới sớm.";
+        : defaultBody;
     const text = [
-      "🛠 <b>Đã xác nhận lỗi — đang chờ tài khoản thay</b>",
+      header,
       "",
-      ...(accountScoped ? [] : [`📝 Mã đơn: <code>${this.escapeHtml(claim.orderCodeSnapshot)}</code>`]),
+      ...(accountScoped ? [] : [`📝 ${orderLabel}: <code>${this.escapeHtml(claim.orderCodeSnapshot)}</code>`]),
       ...this.claimIdentityLines(claim),
       "",
       body,
@@ -2945,15 +3001,18 @@ export class WarrantyService {
    * went wrong so they can decide whether retrying makes sense (e.g. wrong_password → check
    * the password they typed, 2fa → can't fix from bot side, cf_timeout → just retry).
    */
-  private describeAutoCheckErrorReason(errorType: string | null | undefined): string {
+  private describeAutoCheckErrorReason(errorType: string | null | undefined, lang: "vi" | "en" | "th" = "vi"): string {
     const et = String(errorType || "").toLowerCase();
-    if (et === "wrong_password") return "Mật khẩu không đúng";
-    if (et === "login_stuck") return "Mật khẩu không đúng hoặc lỗi đăng nhập";
-    if (et === "2fa") return "Tài khoản yêu cầu xác thực 2 bước (OTP)";
-    if (et === "proxy_die") return "Lỗi kết nối — vui lòng thử lại";
-    if (et === "cf_timeout") return "Cloudflare chặn tạm thời — thử lại sau ít phút";
-    if (et === "blocked") return "Tài khoản bị khoá";
-    return "Hệ thống chưa kiểm chính xác — có thể do mạng chậm";
+    const T: Record<string, { vi: string; en: string; th: string }> = {
+      wrong_password: { vi: "Mật khẩu không đúng", en: "Wrong password", th: "รหัสผ่านไม่ถูกต้อง" },
+      login_stuck: { vi: "Mật khẩu không đúng hoặc lỗi đăng nhập", en: "Wrong password or login error", th: "รหัสผ่านไม่ถูกต้องหรือเข้าสู่ระบบผิดพลาด" },
+      "2fa": { vi: "Tài khoản yêu cầu xác thực 2 bước (OTP)", en: "Account requires two-factor (OTP)", th: "บัญชีต้องยืนยันตัวตนสองชั้น (OTP)" },
+      proxy_die: { vi: "Lỗi kết nối — vui lòng thử lại", en: "Connection error — please retry", th: "การเชื่อมต่อผิดพลาด กรุณาลองใหม่" },
+      cf_timeout: { vi: "Cloudflare chặn tạm thời — thử lại sau ít phút", en: "Cloudflare temporarily blocked — retry in a few minutes", th: "Cloudflare บล็อกชั่วคราว ลองใหม่ในอีกสักครู่" },
+      blocked: { vi: "Tài khoản bị khoá", en: "Account is locked", th: "บัญชีถูกล็อก" },
+    };
+    const fallback = { vi: "Hệ thống chưa kiểm chính xác — có thể do mạng chậm", en: "Could not verify accurately — possibly a slow network", th: "ระบบยังตรวจสอบไม่ได้แน่ชัด อาจเป็นเพราะเครือข่ายช้า" };
+    return (T[et] || fallback)[lang];
   }
 
   /**
@@ -2968,6 +3027,7 @@ export class WarrantyService {
     _resultLine: string, // intentionally unused — header note above
     _nextStatus: string,
     isLastSlot = false,
+    lang: "vi" | "en" | "th" = "vi",
   ) {
     const token = decryptSecret(claim.shop.botConfig?.telegramBotTokenEncrypted, this.config.encryptionKey);
     if (!token || !claim.customer?.telegramChatId || (this.config.mockTelegramEnabled && isMockBotToken(token))) {
@@ -2980,27 +3040,36 @@ export class WarrantyService {
       : null;
     const errorType = autoResult ? String(autoResult.errorType || "") : "";
     const isWrongPassword = errorType === "wrong_password";
-    const reasonLine = this.describeAutoCheckErrorReason(errorType);
+    const reasonLine = this.describeAutoCheckErrorReason(errorType, lang);
+    const orderLabel = lang === "en" ? "Order" : lang === "th" ? "รหัสคำสั่งซื้อ" : "Mã đơn";
     const supportHandle = claim.shop.supportTelegram ? `@${claim.shop.supportTelegram.replace(/^@/, "")}` : null;
     let header: string;
     let actionLine: string;
     if (isLastSlot) {
-      header = "❌ <b>Bảo hành không thành công</b>";
+      header = lang === "en" ? "❌ <b>Warranty unsuccessful</b>" : lang === "th" ? "❌ <b>การรับประกันไม่สำเร็จ</b>" : "❌ <b>Bảo hành không thành công</b>";
       actionLine = supportHandle
-        ? `Vui lòng liên hệ ${supportHandle} để được hỗ trợ.`
-        : "Vui lòng liên hệ shop để được hỗ trợ.";
+        ? (lang === "en" ? `Please contact ${supportHandle} for assistance.` : lang === "th" ? `กรุณาติดต่อ ${supportHandle} เพื่อขอความช่วยเหลือ` : `Vui lòng liên hệ ${supportHandle} để được hỗ trợ.`)
+        : (lang === "en" ? "Please contact the shop for assistance." : lang === "th" ? "กรุณาติดต่อร้านเพื่อขอความช่วยเหลือ" : "Vui lòng liên hệ shop để được hỗ trợ.");
     } else if (isWrongPassword) {
-      header = "🔑 <b>Mật khẩu không đúng</b>";
-      actionLine = "Bấm <b>🛡 Bảo hành lại</b> để nhập mật khẩu mới và kiểm tra lại.";
+      header = lang === "en" ? "🔑 <b>Wrong password</b>" : lang === "th" ? "🔑 <b>รหัสผ่านไม่ถูกต้อง</b>" : "🔑 <b>Mật khẩu không đúng</b>";
+      // The bot re-checks with the password ON FILE — it cannot accept a new password typed in chat.
+      // So the honest guidance is: retry (in case it was transient), else contact the shop to update.
+      actionLine = lang === "en"
+        ? "Tap <b>🛡 Warranty again</b> to recheck. If you changed the account password, please contact the shop to update it."
+        : lang === "th" ? "กด <b>🛡 รับประกันอีกครั้ง</b> เพื่อตรวจสอบใหม่ หากคุณเปลี่ยนรหัสผ่านบัญชี กรุณาติดต่อร้านเพื่ออัปเดต"
+        : "Bấm <b>🛡 Bảo hành lại</b> để kiểm tra lại. Nếu bạn đã đổi mật khẩu tài khoản, vui lòng liên hệ shop để cập nhật.";
     } else {
-      header = "⚠ <b>Chưa xác minh được</b>";
-      actionLine = "Bấm <b>🛡 Bảo hành lại</b> để thử thêm, hoặc shop sẽ xem xét nếu vẫn không xác minh được.";
+      header = lang === "en" ? "⚠ <b>Could not verify</b>" : lang === "th" ? "⚠ <b>ตรวจสอบไม่ได้</b>" : "⚠ <b>Chưa xác minh được</b>";
+      actionLine = lang === "en"
+        ? "Tap <b>🛡 Warranty again</b> to retry, or the shop will review if it still can't be verified."
+        : lang === "th" ? "กด <b>🛡 รับประกันอีกครั้ง</b> เพื่อลองใหม่ หรือทางร้านจะตรวจสอบหากยังยืนยันไม่ได้"
+        : "Bấm <b>🛡 Bảo hành lại</b> để thử thêm, hoặc shop sẽ xem xét nếu vẫn không xác minh được.";
     }
     const _idLines = this.claimIdentityLines(claim);
     const text = [
       header,
       "",
-      ...(_acctScoped ? [] : [`📝 Mã đơn: <code>${this.escapeHtml(claim.orderCodeSnapshot)}</code>`]),
+      ...(_acctScoped ? [] : [`📝 ${orderLabel}: <code>${this.escapeHtml(claim.orderCodeSnapshot)}</code>`]),
       ..._idLines,
       "",
       this.escapeHtml(reasonLine) + ".",
@@ -3900,6 +3969,10 @@ export class WarrantyService {
             } as Prisma.InputJsonValue,
           },
         });
+        // #3: retire the issued accounts from the stock_entries pool too, so a legacy-metadata
+        // fallback replacement can't stay AVAILABLE and be re-sold to a later buyer (no-op when the
+        // product has no matching stock_entries — pure-legacy products keep the available above).
+        await this.consumeMatchingStockEntries(tx, order.sourceProductId, decision.deliveredAccountText, order.id, order.customerId);
       }
 
       if (decision.internalSourceStockUpdate) {
@@ -3925,6 +3998,9 @@ export class WarrantyService {
             } as Prisma.InputJsonValue,
           },
         });
+        // Finding G: retire the issued accounts from the UPSTREAM product's stock_entries too, so a
+        // legacy-metadata fallback on the ULTRA source can't leave them AVAILABLE and re-sellable.
+        await this.consumeMatchingStockEntries(tx, sourceProductId, decision.deliveredAccountText, order.id, order.customerId);
       }
 
       const claim = await tx.warrantyClaim.create({
@@ -4035,7 +4111,11 @@ export class WarrantyService {
     return timingSafeEqual(a, b);
   }
 
-  async publicSearchOrders(dto: PublicWarrantySearchDto) {
+  async publicSearchOrders(dto: PublicWarrantySearchDto, clientIp?: string | null) {
+    // Anti-enumeration: a scanner guessing order codes piles up empty lookups → gets locked out
+    // (iPhone-style escalating block). Legit customers hit their real order on the first try.
+    await this.abuse.assertNotBlocked(clientIp);
+
     const shop = await this.prisma.shop.findFirst({
       where: { slug: dto.shopSlug },
       include: { seller: { select: { tier: true } } },
@@ -4258,6 +4338,14 @@ export class WarrantyService {
       });
     }
 
+    // Feed the abuse guard: empty result = a guess/typo (counts toward lockout); a hit clears
+    // the IP's miss streak (a real customer who found their order is not an enumerator).
+    if (results.length === 0) {
+      await this.abuse.recordMiss(clientIp);
+    } else {
+      await this.abuse.recordHit(clientIp);
+    }
+
     return {
       shop: { name: shop.name, supportTelegram: shop.supportTelegram, supportZalo: shop.supportZalo },
       orders: results,
@@ -4334,7 +4422,9 @@ export class WarrantyService {
     };
   }
 
-  async publicSubmitClaim(dto: PublicWarrantyClaimDto) {
+  async publicSubmitClaim(dto: PublicWarrantyClaimDto, clientIp?: string | null) {
+    // Block a flagged enumerator before doing any work (same lockout as search).
+    await this.abuse.assertNotBlocked(clientIp);
     // Idempotency: cùng (shopSlug, idempotencyKey) trong 10 phút → trả lại response cũ
     // thay vì tạo claim mới. Bảo vệ khỏi double-click / mạng retry POST / back-forward.
     // Scope theo shopSlug + orderId để 2 shop / 2 đơn khác nhau không đụng key. orderId trong key
@@ -4343,10 +4433,10 @@ export class WarrantyService {
     const cacheKey = dto.idempotencyKey
       ? `warranty:claim:${dto.shopSlug}:${dto.orderId}:${dto.idempotencyKey}`
       : null;
-    return this.idempotency.runOnce(cacheKey, () => this._publicSubmitClaimImpl(dto));
+    return this.idempotency.runOnce(cacheKey, () => this._publicSubmitClaimImpl(dto, clientIp));
   }
 
-  private async _publicSubmitClaimImpl(dto: PublicWarrantyClaimDto) {
+  private async _publicSubmitClaimImpl(dto: PublicWarrantyClaimDto, clientIp?: string | null) {
     const shop = await this.prisma.shop.findFirst({
       where: { slug: dto.shopSlug },
       select: { id: true },
@@ -4372,6 +4462,8 @@ export class WarrantyService {
     });
 
     if (!order) {
+      // Submitting against a non-existent order id = probing → counts toward lockout.
+      await this.abuse.recordMiss(clientIp);
       throw new NotFoundException("Order not found.");
     }
 
@@ -4719,6 +4811,9 @@ export class WarrantyService {
             } as Prisma.InputJsonValue,
           },
         });
+        // #3: retire the issued accounts from the stock_entries pool too (no-op if none match)
+        // so a legacy-metadata fallback replacement can't stay AVAILABLE and be re-sold.
+        await this.consumeMatchingStockEntries(tx, order.sourceProductId, decision.deliveredAccountText, order.id, order.customerId);
       }
 
       if (decision.internalSourceStockUpdate) {
@@ -4744,6 +4839,9 @@ export class WarrantyService {
             } as Prisma.InputJsonValue,
           },
         });
+        // Finding G: retire the issued accounts from the UPSTREAM product's stock_entries too, so a
+        // legacy-metadata fallback on the ULTRA source can't leave them AVAILABLE and re-sellable.
+        await this.consumeMatchingStockEntries(tx, sourceProductId, decision.deliveredAccountText, order.id, order.customerId);
       }
 
       const claim = await tx.warrantyClaim.create({
@@ -4882,7 +4980,9 @@ export class WarrantyService {
       // theo từng lô (cùng 1 SP nhiều lô giá vốn khác nhau). Chỉ fallback xuống kho text cũ
       // khi SP chưa có StockEntry nào (hàng nhập kiểu cũ). Chỉ xử lý đủ-hàng (>= qty) ở đây;
       // thiếu hàng để fallback/hoàn tiền theo logic text bên dưới.
-      const seReplacement = await this.pickReplacementStockEntries(order.sourceProductId, qty);
+      const _fallbackUnitCost =
+        decimalToNumber(order.sourcePriceSnapshot) || decimalToNumber(order.sourceProduct?.sourcePrice) || 0;
+      const seReplacement = await this.pickReplacementStockEntries(order.sourceProductId, qty, _fallbackUnitCost);
       if (seReplacement) {
         return {
           nextStatus: WARRANTY_CLAIM_STATUS.AUTO_RESOLVED,
@@ -5112,11 +5212,13 @@ export class WarrantyService {
       },
     });
 
-    if (!shop?.botConfig?.telegramBotTokenEncrypted || !shop.supportTelegram) {
+    if (!shop?.botConfig?.telegramBotTokenEncrypted) {
       return;
     }
 
-    const chatId = String(shop.supportTelegram || "").trim();
+    // Fall back to the owner's own bot chat (ownerTelegramUserId) when no support handle is set —
+    // otherwise a shop without supportTelegram never learns a manual/review claim is waiting.
+    const chatId = String(shop.supportTelegram || shop.botConfig.ownerTelegramUserId || "").trim();
     const token = decryptSecret(
       shop.botConfig.telegramBotTokenEncrypted,
       this.config.encryptionKey,
@@ -5172,9 +5274,10 @@ export class WarrantyService {
         where: { id: claim.shopId },
         include: { botConfig: true },
       });
-      if (!shop?.botConfig?.telegramBotTokenEncrypted || !shop.supportTelegram) return;
+      if (!shop?.botConfig?.telegramBotTokenEncrypted) return;
       const token = decryptSecret(shop.botConfig.telegramBotTokenEncrypted, this.config.encryptionKey);
-      const chatId = String(shop.supportTelegram || "").trim();
+      // Fall back to the owner's own bot chat when no support handle is configured.
+      const chatId = String(shop.supportTelegram || shop.botConfig.ownerTelegramUserId || "").trim();
       if (!token || !chatId || (this.config.mockTelegramEnabled && isMockBotToken(token))) return;
       const header =
         outcome === "resolved" ? "✅ Bảo hành XONG — đã cấp tài khoản thay thế"
@@ -5216,21 +5319,26 @@ export class WarrantyService {
       return;
     }
     const _acctScoped = !!(claim as any).targetAccountEmail;
+    const _l = String(claim.customer?.preferredLanguage || "").toLowerCase();
+    const lang: "vi" | "en" | "th" = _l === "en" ? "en" : _l === "th" ? "th" : "vi";
+    const orderLabel = lang === "en" ? "Order" : lang === "th" ? "รหัสคำสั่งซื้อ" : "Mã đơn";
+    const productLabel = lang === "en" ? "Product" : lang === "th" ? "สินค้า" : "Sản phẩm";
     const invoice = await this.buildClaimInvoiceMessage(claim.orderId, _acctScoped).catch(() => null);
     const parts: (string | null)[] = [
       claim.deliveredAccountText
-        ? "✅ <b>Bảo hành đã được duyệt — tài khoản thay thế bên dưới</b>"
-        : "✅ <b>Bảo hành đã được xử lý</b>",
+        ? (lang === "en" ? "✅ <b>Warranty approved — replacement account below</b>" : lang === "th" ? "✅ <b>อนุมัติการรับประกันแล้ว — บัญชีทดแทนด้านล่าง</b>" : "✅ <b>Bảo hành đã được duyệt — tài khoản thay thế bên dưới</b>")
+        : (lang === "en" ? "✅ <b>Warranty processed</b>" : lang === "th" ? "✅ <b>ดำเนินการรับประกันแล้ว</b>" : "✅ <b>Bảo hành đã được xử lý</b>"),
       "",
-      _acctScoped ? null : `📝 Mã đơn: <code>${this.escapeHtml(claim.orderCodeSnapshot)}</code>`,
-      `📦 Sản phẩm: ${this.escapeHtml(claim.productNameSnapshot)}`,
+      _acctScoped ? null : `📝 ${orderLabel}: <code>${this.escapeHtml(claim.orderCodeSnapshot)}</code>`,
+      `📦 ${productLabel}: ${this.escapeHtml(claim.productNameSnapshot)}`,
       `🔢 Claim #${claim.claimNumber}`,
       ...this.claimIdentityLines(claim as any),
     ];
     if (claim.deliveredAccountText) {
-      parts.push("", `🔑 <b>Tài khoản thay thế:</b>`, `<pre>${this.escapeHtml(claim.deliveredAccountText)}</pre>`);
+      const replHdr = lang === "en" ? "🔑 <b>Replacement account:</b>" : lang === "th" ? "🔑 <b>บัญชีทดแทน:</b>" : "🔑 <b>Tài khoản thay thế:</b>";
+      parts.push("", replHdr, `<pre>${this.escapeHtml(claim.deliveredAccountText)}</pre>`);
     } else {
-      parts.push("", "Shop đã xử lý yêu cầu bảo hành của bạn.");
+      parts.push("", lang === "en" ? "The shop has processed your warranty request." : lang === "th" ? "ทางร้านดำเนินการคำขอรับประกันของคุณแล้ว" : "Shop đã xử lý yêu cầu bảo hành của bạn.");
     }
     if (claim.resolutionNote) {
       parts.push(`💬 ${this.escapeHtml(claim.resolutionNote)}`);
@@ -5291,20 +5399,26 @@ export class WarrantyService {
     }
 
     const _acctScoped = !!(claim as any).targetAccountEmail;
+    const _l = String(claim.customer?.preferredLanguage || "").toLowerCase();
+    const lang: "vi" | "en" | "th" = _l === "en" ? "en" : _l === "th" ? "th" : "vi";
+    const orderLabel = lang === "en" ? "Order" : lang === "th" ? "รหัสคำสั่งซื้อ" : "Mã đơn";
+    const productLabel = lang === "en" ? "Product" : lang === "th" ? "สินค้า" : "Sản phẩm";
     const invoice = await this.buildClaimInvoiceMessage(claim.orderId, _acctScoped).catch(() => null);
     const parts: (string | null)[] = [
-      "❌ <b>Yêu cầu bảo hành bị từ chối</b>",
+      lang === "en" ? "❌ <b>Warranty request rejected</b>" : lang === "th" ? "❌ <b>คำขอรับประกันถูกปฏิเสธ</b>" : "❌ <b>Yêu cầu bảo hành bị từ chối</b>",
       "",
-      _acctScoped ? null : `📝 Mã đơn: <code>${this.escapeHtml(claim.orderCodeSnapshot)}</code>`,
-      `📦 Sản phẩm: ${this.escapeHtml(claim.productNameSnapshot)}`,
+      _acctScoped ? null : `📝 ${orderLabel}: <code>${this.escapeHtml(claim.orderCodeSnapshot)}</code>`,
+      `📦 ${productLabel}: ${this.escapeHtml(claim.productNameSnapshot)}`,
       `🔢 Claim #${claim.claimNumber}`,
       ...this.claimIdentityLines(claim as any),
     ];
     if (reason) {
-      parts.push("", `💬 Lý do: ${this.escapeHtml(reason)}`);
+      const reasonLabel = lang === "en" ? "Reason" : lang === "th" ? "เหตุผล" : "Lý do";
+      parts.push("", `💬 ${reasonLabel}: ${this.escapeHtml(reason)}`);
     }
     if (accountDetails?.length) {
-      parts.push("", `📊 <b>Chi tiết tài khoản:</b>`, this.escapeHtml(this.formatStillPaidAccounts(accountDetails)));
+      const detailHdr = lang === "en" ? "📊 <b>Account details:</b>" : lang === "th" ? "📊 <b>รายละเอียดบัญชี:</b>" : "📊 <b>Chi tiết tài khoản:</b>";
+      parts.push("", detailHdr, this.escapeHtml(this.formatStillPaidAccounts(accountDetails)));
     }
     if (invoice) parts.push("", invoice);
     const text = parts.filter((s) => s !== null).join("\n").trimEnd();
@@ -5752,6 +5866,7 @@ export class WarrantyService {
   private async pickReplacementStockEntries(
     sourceProductId: string,
     qty: number,
+    fallbackUnitCost = 0, // COGS for entries with no batch (batchId/costPerUnit NULL) — avoids 0-cost
   ): Promise<{ entryIds: string[]; entries: string[]; totalCost: number; availableBefore: number } | null> {
     const now = new Date();
     const where: Prisma.StockEntryWhereInput = {
@@ -5777,7 +5892,7 @@ export class WarrantyService {
     });
     if (picked.length < qty) return null;
     const totalCost = picked.reduce(
-      (sum, e) => sum + (e.batch?.costPerUnit ? Number(e.batch.costPerUnit) : 0),
+      (sum, e) => sum + (e.batch?.costPerUnit ? Number(e.batch.costPerUnit) : fallbackUnitCost),
       0,
     );
     return {
@@ -5844,23 +5959,45 @@ export class WarrantyService {
       .map((s) => s.trim())
       .filter(Boolean);
     if (blocks.length === 0) return null;
+    // How many of each EXACT account text were actually handed out. We must consume at most this
+    // many AVAILABLE entries per text — otherwise a duplicate text (the same account re-uploaded
+    // into another batch, or appearing in both the delivered slice and the still-for-sale
+    // remainder) would get its still-sellable copy marked SOLD too → silent inventory loss.
+    const wantByText = new Map<string, number>();
+    for (const b of blocks) wantByText.set(b, (wantByText.get(b) || 0) + 1);
     await tx.$queryRaw`SELECT id FROM source_products WHERE id = ${sourceProductId} FOR UPDATE`;
-    const matched = await tx.stockEntry.findMany({
-      where: { sourceProductId, status: "AVAILABLE", text: { in: blocks } },
+    const candidates = await tx.stockEntry.findMany({
+      where: { sourceProductId, status: "AVAILABLE", text: { in: Array.from(wantByText.keys()) } },
+      orderBy: [
+        { batchId: { sort: "asc", nulls: "first" } },
+        { uploadedAt: "asc" },
+        { id: "asc" },
+      ],
       include: { batch: { select: { costPerUnit: true } } },
     });
-    if (matched.length === 0) return null;
-    const ids = matched.map((e) => e.id);
+    if (candidates.length === 0) return null;
+    // FIFO-pick up to wantByText[text] entries per text.
+    const takenByText = new Map<string, number>();
+    const picked: typeof candidates = [];
+    for (const e of candidates) {
+      const want = wantByText.get(e.text) || 0;
+      const taken = takenByText.get(e.text) || 0;
+      if (taken >= want) continue;
+      picked.push(e);
+      takenByText.set(e.text, taken + 1);
+    }
+    if (picked.length === 0) return null;
+    const ids = picked.map((e) => e.id);
     const now = new Date();
     await tx.stockEntry.updateMany({
       where: { id: { in: ids } },
       data: { status: "SOLD", soldAt: now, soldToOrderId: orderId, soldToCustomerId: customerId },
     });
-    const totalCost = matched.reduce(
+    const totalCost = picked.reduce(
       (sum, e) => sum + (e.batch?.costPerUnit ? Number(e.batch.costPerUnit) : 0),
       0,
     );
-    const batchIds = Array.from(new Set(matched.map((e) => e.batchId).filter((b): b is string => Boolean(b))));
+    const batchIds = Array.from(new Set(picked.map((e) => e.batchId).filter((b): b is string => Boolean(b))));
     for (const bId of batchIds) {
       const rem = await tx.stockEntry.count({ where: { batchId: bId, status: "AVAILABLE" } });
       if (rem === 0) await tx.stockBatch.update({ where: { id: bId }, data: { deletedAt: new Date() } });
@@ -5877,7 +6014,7 @@ export class WarrantyService {
       },
     });
     await tx.sourceProduct.update({ where: { id: sourceProductId }, data: { available: remainingAvail } });
-    return { totalCost, matchedCount: matched.length };
+    return { totalCost, matchedCount: picked.length };
   }
 
   private readManualDeliveryEntries(metadata: Record<string, unknown>) {
