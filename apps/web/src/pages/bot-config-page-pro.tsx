@@ -441,8 +441,10 @@ export function BotConfigPage() {
   const t = T[lang];
 
   const { session } = useAuth();
-  const isUltra = session?.user.sellerTier === "ultra";
-  const isPro = !isUltra;
+  const sellerTier = session?.user.sellerTier;
+  const isUltra = sellerTier === "ultra";
+  const isPro = sellerTier === "pro";
+  const canUseSource = sellerTier === "pro" || sellerTier === "ultra";
   const queryClient = useQueryClient();
   const configQuery = useQuery({
     queryKey: ["bot-config"],
@@ -457,7 +459,7 @@ export function BotConfigPage() {
   const sourceConnectionQuery = useQuery({
     queryKey: ["seller-source-connection"],
     queryFn: async () => (await api.get("/seller/source-connection")).data,
-    enabled: isPro,
+    enabled: canUseSource,
   });
 
   const connectSourceMutation = useMutation({

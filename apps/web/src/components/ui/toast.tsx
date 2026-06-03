@@ -9,6 +9,7 @@ import {
   type CSSProperties,
   type ReactNode,
 } from "react";
+import { createPortal } from "react-dom";
 import { AlertCircle, CheckCircle2, Info, TriangleAlert, X } from "lucide-react";
 
 import { cn } from "@/lib/cn";
@@ -142,10 +143,8 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     [dismissToast, showToast],
   );
 
-  return (
-    <ToastContext.Provider value={contextValue}>
-      {children}
-      <div className="pointer-events-none fixed right-4 top-4 z-[90] flex w-[calc(100vw-2rem)] max-w-[420px] flex-col gap-3 sm:right-5 sm:top-5">
+  const toastPortal = typeof document !== "undefined" ? createPortal(
+      <div className="pointer-events-none fixed right-4 top-4 z-[2147483000] flex w-[calc(100vw-2rem)] max-w-[420px] flex-col gap-3 sm:right-5 sm:top-5">
         {toasts.map((toast) => {
           const styles = toneStyles[toast.tone];
           const Icon = styles.icon;
@@ -199,7 +198,14 @@ export function ToastProvider({ children }: { children: ReactNode }) {
             </div>
           );
         })}
-      </div>
+      </div>,
+      document.body,
+    ) : null;
+
+  return (
+    <ToastContext.Provider value={contextValue}>
+      {children}
+      {toastPortal}
     </ToastContext.Provider>
   );
 }
