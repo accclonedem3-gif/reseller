@@ -1,7 +1,10 @@
-import { Inject, Injectable } from "@nestjs/common";
+import { Inject, Injectable, NotFoundException } from "@nestjs/common";
 import { OrderStatus, Prisma, SellerTier, UserRole, UserStatus } from "@prisma/client";
+import { decryptSecret, isMockBotToken, telegramSetCommands } from "@reseller/shared/server";
 
+import { AppConfigService } from "../config/app-config.service";
 import { PrismaService } from "../db/prisma.service";
+import { commandsForTier } from "../lib/bot-commands";
 import { decimalToNumber } from "../lib/utils";
 
 @Injectable()
@@ -9,6 +12,8 @@ export class AdminService {
   constructor(
     @Inject(PrismaService)
     private readonly prisma: PrismaService,
+    @Inject(AppConfigService)
+    private readonly config: AppConfigService,
   ) {}
 
   async getOverview() {
@@ -383,5 +388,75 @@ export class AdminService {
       ),
     );
     return this.getSystemConfigs();
+  }
+
+  async syncBotCommands(shopId?: string) {
+    const rows = await this.prisma.botConfig.findMany({
+      where: shopId ? { shopId } : {},
+      select: {
+        shopId: true,
+        telegramBotTokenEncrypted: true,
+        telegramBotUsername: true,
+        shop: { select: { seller: { select: { tier: true } } } },
+      },
+    });
+    if (shopId && rows.length === 0) {
+      throw new NotFoundException("Shop or BotConfig not found");
+    }
+
+    type SyncResult = {
+      shopId: string;
+      botUsername: string | null;
+      tier: SellerTier;
+      status: "ok" | "skipped" | "failed";
+      reason?: string;
+      error?: string;
+    };
+
+    const concurrency = 5;
+    const queue = [...rows];
+    const results: SyncResult[] = [];
+
+    const run = async () => {
+      while (queue.length > 0) {
+        const row = queue.shift();
+        if (!row) break;
+        const tier = row.shop?.seller?.tier ?? SellerTier.PRO;
+        const commands = commandsForTier(tier);
+        let token = "";
+        try {
+          token = decryptSecret(row.telegramBotTokenEncrypted, this.config.encryptionKey);
+        } catch {
+          token = "";
+        }
+        if (!token) {
+          results.push({ shopId: row.shopId, botUsername: row.telegramBotUsername, tier, status: "skipped", reason: "no_token" });
+          continue;
+        }
+        if (isMockBotToken(token)) {
+          results.push({ shopId: row.shopId, botUsername: row.telegramBotUsername, tier, status: "skipped", reason: "mock_token" });
+          continue;
+        }
+        try {
+          await telegramSetCommands(token, commands);
+          results.push({ shopId: row.shopId, botUsername: row.telegramBotUsername, tier, status: "ok" });
+        } catch (err: unknown) {
+          const message = err instanceof Error ? err.message : String(err);
+          // eslint-disable-next-line no-console
+          console.error(`[sync-bot-commands] failed shop=${row.shopId} bot=${row.telegramBotUsername ?? "?"} err=${message}`);
+          results.push({ shopId: row.shopId, botUsername: row.telegramBotUsername, tier, status: "failed", error: message });
+        }
+      }
+    };
+
+    await Promise.all(Array.from({ length: Math.min(concurrency, rows.length || 1) }, () => run()));
+
+    const ok = results.filter((r) => r.status === "ok").length;
+    const skipped = results.filter((r) => r.status === "skipped").length;
+    const failed = results.filter((r) => r.status === "failed").length;
+    // eslint-disable-next-line no-console
+    console.log(`[sync-bot-commands] done total=${results.length} ok=${ok} skipped=${skipped} failed=${failed}`);
+
+    return { total: results.length, ok, skipped, failed, results };
   }
 }

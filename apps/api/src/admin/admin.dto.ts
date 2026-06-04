@@ -59,3 +59,9 @@ export class BulkUpdateSystemConfigDto {
   @IsOptional()
   configs!: Record<string, string>;
 }
+
+export class SyncBotCommandsDto {
+  @IsOptional()
+  @IsString()
+  shopId?: string;
+}

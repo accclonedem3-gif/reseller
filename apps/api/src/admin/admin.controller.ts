@@ -27,6 +27,7 @@ import {
   BulkUpdateSystemConfigDto,
   ListAdminOrdersQueryDto,
   ListSellersQueryDto,
+  SyncBotCommandsDto,
   UpdateSellerTierDto,
   UpdateSellerTierDatesDto,
 } from "./admin.dto";
@@ -133,5 +134,10 @@ export class AdminController {
     @Body() body: RejectWithdrawRequestDto,
   ) {
     return this.walletService.adminRejectWithdrawRequest(user, id, body.reason);
+  }
+
+  @Post("sync-bot-commands")
+  syncBotCommands(@Body() body: SyncBotCommandsDto) {
+    return this.adminService.syncBotCommands(body.shopId);
   }
 }

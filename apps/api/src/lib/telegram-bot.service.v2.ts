@@ -627,6 +627,15 @@ export class TelegramBotService {
       return { ok: true, actions };
     }
 
+    if (message?.text?.startsWith("/home")) {
+      await this.clearPendingQuantitySelection(shopId, String(message.from?.id || ""));
+      await this.clearPendingWalletTopup(shopId, String(message.from?.id || ""));
+      await this.clearPendingPaymentSelection(shopId, String(message.from?.id || ""));
+      await this.clearPendingTxHashSubmission(shopId, String(message.from?.id || ""));
+      await this.renderHome(shopId, outboundToken, message.chat.id, undefined, actions, messageLanguage);
+      return { ok: true, actions };
+    }
+
     if (message?.text?.startsWith("/language")) {
       await this.renderLanguageMenu(outboundToken, message.chat.id, undefined, messageLanguage, actions);
       return { ok: true, actions };

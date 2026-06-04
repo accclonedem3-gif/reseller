@@ -44,18 +44,7 @@ import { decimalToNumber, slugify, toDecimal } from "../lib/utils";
 import type { AuthenticatedUser } from "../types";
 import type { UpdateBotConfigDto, UpdateShopDto } from "./shops.dto";
 
-const PRO_COMMANDS = [
-  { command: "start", description: "Trang chủ" },
-  { command: "products", description: "Xem sản phẩm" },
-  { command: "help", description: "Hướng dẫn mua hàng" },
-  { command: "support", description: "Thông tin hỗ trợ" },
-];
-
-const ULTRA_COMMANDS = [
-  ...PRO_COMMANDS,
-  { command: "warranty", description: "Yêu cầu bảo hành" },
-  { command: "api", description: "Quản lý API key" },
-];
+import { PRO_COMMANDS, ULTRA_COMMANDS } from "../lib/bot-commands";
 
 type ShopCatalogContext = Prisma.ShopGetPayload<{
   include: {
