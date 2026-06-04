@@ -228,16 +228,30 @@ export class SellerSourceConnectionService {
         shopId: connection.upstreamShopId,
         internalSourceEnabled: true,
       },
+      include: {
+        overrides: {
+          where: { sellerId: connection.upstreamSellerId },
+          select: { salePrice: true },
+          take: 1,
+        },
+      },
       orderBy: { createdAt: "asc" },
     });
 
-    const providerProducts: ProviderProduct[] = upstreamProducts.map((p) => ({
+    const providerProducts: ProviderProduct[] = upstreamProducts.map((p) => {
+      const fallbackSalePrice = p.overrides?.[0]?.salePrice
+        ? decimalToNumber(p.overrides[0].salePrice)
+        : 0;
+      const wholesalePrice = p.internalSourcePrice != null
+        ? decimalToNumber(p.internalSourcePrice)
+        : fallbackSalePrice;
+      return ({
       externalId: p.id,
       sourceName: p.sourceName,
       sourceRawName: p.sourceRawName,
       description: p.sourceDescription,
       rawDescription: p.sourceDescription,
-      price: decimalToNumber(p.internalSourcePrice ?? p.sourcePrice),
+      price: wholesalePrice,
       available: p.available,
       hidden: false,
       isSlotProduct: false,
@@ -264,7 +278,8 @@ export class SellerSourceConnectionService {
         iconCustomEmojiId: p.iconCustomEmojiId ?? null,
         imageUrl: p.imageUrl ?? null,
       },
-    }));
+    });
+    });
 
     const result = await this.shopsService.applyCatalogProductsForShop(
       shop.id,

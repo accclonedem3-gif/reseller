@@ -907,15 +907,25 @@ async function syncCatalogForShop(shopId) {
         if (!connection || connection.status !== "ACTIVE") throw new Error("Internal source connection is not active.");
         const upstreamProducts = await prisma.sourceProduct.findMany({
             where: { shopId: connection.upstreamShopId, internalSourceEnabled: true },
+            include: {
+                overrides: {
+                    where: { sellerId: connection.upstreamSellerId },
+                    select: { salePrice: true },
+                    take: 1,
+                },
+            },
             orderBy: { createdAt: "asc" },
         });
-        products = upstreamProducts.map((p) => ({
+        products = upstreamProducts.map((p) => {
+            const fallbackSalePrice = p.overrides?.[0]?.salePrice ? Number(p.overrides[0].salePrice) : 0;
+            const wholesalePrice = p.internalSourcePrice != null ? Number(p.internalSourcePrice) : fallbackSalePrice;
+            return ({
             externalId: p.id,
             sourceName: p.sourceName,
             sourceRawName: p.sourceRawName || p.sourceName,
             description: p.sourceDescription,
             rawDescription: p.sourceDescription,
-            price: p.internalSourcePrice != null ? Number(p.internalSourcePrice) : Number(p.sourcePrice),
+            price: wholesalePrice,
             available: p.available,
             hidden: false,
             isSlotProduct: false,
@@ -937,7 +947,8 @@ async function syncCatalogForShop(shopId) {
                 internalSourceEnabled: p.internalSourceEnabled,
                 internalSourcePrice: p.internalSourcePrice != null ? Number(p.internalSourcePrice) : null,
             },
-        }));
+        });
+        });
         await prisma.downstreamSourceConnection.update({
             where: { id: connection.id },
             data: { lastCatalogSyncAt: new Date() },

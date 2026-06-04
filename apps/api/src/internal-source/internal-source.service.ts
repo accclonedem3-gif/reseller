@@ -909,7 +909,20 @@ export class InternalSourceService {
       return errorResponse;
     }
 
-    const unitPrice = decimalToNumber(product.internalSourcePrice || product.sourcePrice);
+    const fallbackOverridePrice = product.overrides?.[0]?.salePrice
+      ? decimalToNumber(product.overrides[0].salePrice)
+      : null;
+    const unitPrice = product.internalSourcePrice != null
+      ? decimalToNumber(product.internalSourcePrice)
+      : fallbackOverridePrice ?? 0;
+    if (unitPrice <= 0) {
+      const errorResponse = {
+        success: false,
+        message: "Source product has no wholesale or sale price configured.",
+      };
+      await this.recordAccessLog(resolvedKey, requestMeta, 400, payload, errorResponse);
+      return errorResponse;
+    }
     const totalAmount = unitPrice * quantity;
     let createdOrderId = "";
 
@@ -1485,7 +1498,10 @@ export class InternalSourceService {
   ) {
     const override = product.overrides.find((item) => item.sellerId === sellerId);
     const displayName = override?.displayName || product.sourceName;
-    const basePrice = decimalToNumber(product.internalSourcePrice || product.sourcePrice);
+    const fallbackSalePrice = override?.salePrice ? decimalToNumber(override.salePrice) : 0;
+    const basePrice = product.internalSourcePrice != null
+      ? decimalToNumber(product.internalSourcePrice)
+      : fallbackSalePrice;
     const wholesalePrice = discountPercent > 0
       ? Math.round(basePrice * (1 - discountPercent / 100))
       : basePrice;
