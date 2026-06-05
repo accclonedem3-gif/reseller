@@ -390,6 +390,64 @@ export class AdminService {
     return this.getSystemConfigs();
   }
 
+  async debugConnectionsByChatId(chatId: string) {
+    const normalized = String(chatId || "").trim();
+    if (!normalized) {
+      return { error: "chatId is required" };
+    }
+
+    const matchingConnections = await this.prisma.downstreamSourceConnection.findMany({
+      where: { downstreamTelegramChatId: normalized },
+      include: {
+        upstreamShop: { select: { id: true, name: true, slug: true } },
+        downstreamShop: { select: { id: true, name: true, slug: true, botConfig: { select: { ownerTelegramUserId: true, telegramBotUsername: true } } } },
+      },
+    });
+
+    const botConfigsOwnedByChatId = await this.prisma.botConfig.findMany({
+      where: { ownerTelegramUserId: normalized },
+      select: {
+        shopId: true,
+        ownerTelegramUserId: true,
+        telegramBotUsername: true,
+        shop: {
+          select: {
+            id: true,
+            name: true,
+            slug: true,
+            downstreamSourceConnections: {
+              select: {
+                id: true,
+                downstreamTelegramChatId: true,
+                upstreamShop: { select: { id: true, name: true } },
+              },
+            },
+          },
+        },
+      },
+    });
+
+    const customersInUpstreamShops = await this.prisma.customer.findMany({
+      where: { telegramChatId: normalized },
+      select: {
+        id: true,
+        shopId: true,
+        telegramChatId: true,
+        telegramUserId: true,
+        telegramUsername: true,
+        shop: { select: { name: true, slug: true } },
+        wallet: { select: { balance: true, currency: true } },
+      },
+    });
+
+    return {
+      queryChatId: normalized,
+      connectionsWhereThisChatIdIsDownstream: matchingConnections,
+      botConfigsOwnedByThisChatId: botConfigsOwnedByChatId,
+      customerRecordsWithThisChatId: customersInUpstreamShops,
+    };
+  }
+
   async syncBotCommands(shopId?: string) {
     const rows = await this.prisma.botConfig.findMany({
       where: shopId ? { shopId } : {},

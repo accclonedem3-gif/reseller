@@ -1245,6 +1245,68 @@ async function scheduleCatalogSyncJobs(queue, redis) {
         scheduled,
     };
 }
+function generateInternalSourceOrderCode() {
+    const ts = new Date().toISOString().replace(/[-:.TZ]/g, "").slice(2, 14);
+    const rand = Math.random().toString(36).slice(2, 8).toUpperCase();
+    return `ISO-${ts}-${rand}`;
+}
+
+async function recordInternalSourceOrder(tx, params) {
+    const {
+        connection,
+        order,
+        upstreamProduct,
+        unitPrice,
+        sourcePriceSnapshot,
+        totalAmount,
+        deliveredText,
+        deliveredAt,
+        fulfillment,
+        canbosoProviderOrderId,
+        canbosoProviderOrderCode,
+    } = params;
+    const sourceOrderCode = generateInternalSourceOrderCode();
+    const created = await tx.internalSourceOrder.create({
+        data: {
+            connectionId: connection.id,
+            apiKeyId: connection.apiKeyId,
+            upstreamSellerId: connection.upstreamSellerId,
+            upstreamShopId: connection.upstreamShopId,
+            downstreamSellerId: connection.downstreamSellerId,
+            downstreamShopId: connection.downstreamShopId,
+            sourceProductId: upstreamProduct.id,
+            sourceOrderCode,
+            downstreamOrderCode: order.orderCode,
+            quantity: order.quantity,
+            unitPrice: new client_1.Prisma.Decimal(Number(unitPrice || 0).toFixed(2)),
+            sourcePriceSnapshot: new client_1.Prisma.Decimal(Number(sourcePriceSnapshot || 0).toFixed(2)),
+            totalAmount: new client_1.Prisma.Decimal(Number(totalAmount || 0).toFixed(2)),
+            status: "DELIVERED",
+            deliveredAccountText: deliveredText || null,
+            deliveredAt,
+            metadataJson: {
+                fulfilledVia: fulfillment,
+                ...(canbosoProviderOrderId ? { canbosoProviderOrderId } : {}),
+                ...(canbosoProviderOrderCode ? { canbosoProviderOrderCode } : {}),
+                downstreamOrderId: order.id,
+            },
+        },
+    });
+    await tx.internalSourceOrderEvent.create({
+        data: {
+            orderId: created.id,
+            eventType: "order_delivered_via_downstream_purchase",
+            payloadJson: {
+                downstreamOrderCode: order.orderCode,
+                fulfillment,
+                quantity: order.quantity,
+                ...(canbosoProviderOrderId ? { canbosoProviderOrderId } : {}),
+            },
+        },
+    });
+    return created;
+}
+
 async function debitConnectionBalance(connectionId, amount, orderId) {
     await prisma.$transaction(async (tx) => {
         const connection = await tx.downstreamSourceConnection.findUnique({ where: { id: connectionId } });
@@ -1643,6 +1705,10 @@ async function processPurchase(job) {
         const upstreamMetadata = upstreamProduct?.metadataJson && typeof upstreamProduct.metadataJson === "object" && !Array.isArray(upstreamProduct.metadataJson)
             ? upstreamProduct.metadataJson
             : {};
+        const upstreamConnection = await prisma.downstreamSourceConnection.findUnique({
+            where: { id: providerConfig.internalSourceConnectionId },
+            include: { upstreamShop: { include: { providerConfig: true } } },
+        });
         const upstreamAvailable = upstreamProduct ? await countAvailableManualEntries(prisma, upstreamProduct.id) : 0;
         if (upstreamAvailable >= order.quantity && upstreamProduct) {
             const deliveredAt = new Date();
@@ -1680,6 +1746,23 @@ async function processPurchase(job) {
                     txDeliveredText = deliveredText;
                     txTotalCost = popped.totalCost;
                     const totalSourceAmount = popped.totalCost > 0 ? popped.totalCost : Number(order.totalSourceAmount || 0);
+                    let createdInternalSourceOrderId = null;
+                    if (upstreamConnection) {
+                        const unitPriceISO = order.quantity > 0 ? Number(order.totalSourceAmount || 0) / order.quantity : Number(order.totalSourceAmount || 0);
+                        const sourcePriceSnapshotISO = order.quantity > 0 ? totalSourceAmount / order.quantity : totalSourceAmount;
+                        const isoRow = await recordInternalSourceOrder(tx, {
+                            connection: upstreamConnection,
+                            order,
+                            upstreamProduct,
+                            unitPrice: unitPriceISO,
+                            sourcePriceSnapshot: sourcePriceSnapshotISO,
+                            totalAmount: Number(order.totalSourceAmount || 0),
+                            deliveredText,
+                            deliveredAt,
+                            fulfillment: "ultra_stock",
+                        });
+                        createdInternalSourceOrderId = isoRow.id;
+                    }
                     await tx.order.update({
                         where: { id: order.id },
                         data: {
@@ -1688,6 +1771,7 @@ async function processPurchase(job) {
                             deliveredAt,
                             failureReason: null,
                             totalSourceAmount: new client_1.Prisma.Decimal(totalSourceAmount.toFixed(2)),
+                            ...(createdInternalSourceOrderId ? { internalSourceOrderId: createdInternalSourceOrderId } : {}),
                         },
                     });
                     await tx.orderEvent.create({
@@ -1699,6 +1783,7 @@ async function processPurchase(job) {
                                 deliveredText,
                                 entryIds: popped.entryIds,
                                 totalCost: popped.totalCost,
+                                internalSourceOrderId: createdInternalSourceOrderId,
                             },
                         },
                     });
@@ -1758,11 +1843,7 @@ async function processPurchase(job) {
             return;
         }
         // No manual delivery entries — check if upstream shop can purchase from Canboso
-        const connection = await prisma.downstreamSourceConnection.findUnique({
-            where: { id: providerConfig.internalSourceConnectionId },
-            include: { upstreamShop: { include: { providerConfig: true } } },
-        });
-        const upstreamProviderConfig = connection?.upstreamShop?.providerConfig;
+        const upstreamProviderConfig = upstreamConnection?.upstreamShop?.providerConfig;
         if (upstreamProviderConfig?.providerKind === "EXTERNAL" && upstreamProduct?.externalProductId) {
             const upstreamBuyerKey = (0, server_1.decryptSecret)(upstreamProviderConfig.buyerKeyEncrypted, process.env.APP_ENCRYPTION_KEY || "change-me-32-byte-key");
             const upstreamResult = await (0, server_1.purchaseFromProvider)({
@@ -1777,13 +1858,32 @@ async function processPurchase(job) {
             if (upstreamResult.success && upstreamResult.deliveredText) {
                 const deliveredAt = new Date();
                 await prisma.$transaction(async (tx) => {
+                    let createdInternalSourceOrderId = null;
+                    if (upstreamConnection) {
+                        const unitPriceISO = order.quantity > 0 ? Number(order.totalSourceAmount || 0) / order.quantity : Number(order.totalSourceAmount || 0);
+                        const sourcePriceSnapshotISO = upstreamProduct?.sourcePrice ? Number(upstreamProduct.sourcePrice) : 0;
+                        const isoRow = await recordInternalSourceOrder(tx, {
+                            connection: upstreamConnection,
+                            order,
+                            upstreamProduct,
+                            unitPrice: unitPriceISO,
+                            sourcePriceSnapshot: sourcePriceSnapshotISO,
+                            totalAmount: Number(order.totalSourceAmount || 0),
+                            deliveredText: upstreamResult.deliveredText,
+                            deliveredAt,
+                            fulfillment: "ultra_canboso_fallback",
+                            canbosoProviderOrderId: upstreamResult.providerOrderId || null,
+                            canbosoProviderOrderCode: upstreamResult.providerOrderCode || null,
+                        });
+                        createdInternalSourceOrderId = isoRow.id;
+                    }
                     await tx.order.update({
                         where: { id: order.id },
                         data: {
                             status: "DELIVERED",
                             deliveredAccountText: upstreamResult.deliveredText,
                             deliveredAt,
-                            internalSourceOrderId: upstreamResult.providerOrderId || undefined,
+                            internalSourceOrderId: createdInternalSourceOrderId || undefined,
                             internalSourceOrderCode: upstreamResult.providerOrderCode || undefined,
                             failureReason: null,
                         },
@@ -1796,6 +1896,7 @@ async function processPurchase(job) {
                                 deliveredText: upstreamResult.deliveredText,
                                 providerOrderId: upstreamResult.providerOrderId || null,
                                 providerOrderCode: upstreamResult.providerOrderCode || null,
+                                internalSourceOrderId: createdInternalSourceOrderId,
                             },
                         },
                     });
@@ -1806,6 +1907,14 @@ async function processPurchase(job) {
                             available: order.sourceProduct.available === null ? undefined : { decrement: order.quantity },
                         },
                     });
+                    if (upstreamProduct) {
+                        await tx.sourceProduct.update({
+                            where: { id: upstreamProduct.id },
+                            data: {
+                                soldCount: { increment: order.quantity },
+                            },
+                        });
+                    }
                 });
                 await snapshotWarrantyForDeliveredOrder(order.id);
                 await creditAffiliateCommission(order.id).catch(() => undefined);

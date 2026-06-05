@@ -140,4 +140,9 @@ export class AdminController {
   syncBotCommands(@Body() body: SyncBotCommandsDto) {
     return this.adminService.syncBotCommands(body.shopId);
   }
+
+  @Get("debug/connections-by-chat-id/:chatId")
+  debugConnectionsByChatId(@Param("chatId") chatId: string) {
+    return this.adminService.debugConnectionsByChatId(chatId);
+  }
 }

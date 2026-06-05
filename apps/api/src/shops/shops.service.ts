@@ -1757,15 +1757,42 @@ export class ShopsService {
       });
       if (!connection) throw new BadRequestException("Internal source connection not found.");
 
+      const downstreamBotConfig = await this.prisma.botConfig.findUnique({
+        where: { shopId: connection.downstreamShopId },
+        select: { ownerTelegramUserId: true },
+      });
+
+      const candidateChatIds = Array.from(new Set([
+        connection.downstreamTelegramChatId,
+        downstreamBotConfig?.ownerTelegramUserId,
+      ].filter((v): v is string => typeof v === "string" && v.length > 0)));
+
       let balance = 0;
-      if (connection.downstreamTelegramChatId) {
+      let matchedChatId: string | null = null;
+      for (const chatId of candidateChatIds) {
         const wallet = await this.prisma.customerWallet.findFirst({
           where: {
-            customer: { shopId: connection.upstreamShopId, telegramChatId: connection.downstreamTelegramChatId },
+            customer: { shopId: connection.upstreamShopId, telegramChatId: chatId },
           },
           select: { balance: true },
         });
-        if (wallet) balance = decimalToNumber(wallet.balance);
+        if (wallet) {
+          balance = decimalToNumber(wallet.balance);
+          matchedChatId = chatId;
+          // Auto-heal: if connection's chatId is stale/null, sync it from the matched lookup
+          if (chatId !== connection.downstreamTelegramChatId) {
+            await this.prisma.downstreamSourceConnection.update({
+              where: { id: connection.id },
+              data: { downstreamTelegramChatId: chatId },
+            }).catch(() => undefined);
+          }
+          break;
+        }
+      }
+
+      if (!matchedChatId) {
+        // eslint-disable-next-line no-console
+        console.warn(`[provider-balance] No customerWallet matched for connection=${connection.id} candidates=${JSON.stringify(candidateChatIds)} upstreamShop=${connection.upstreamShopId}`);
       }
 
       return {
@@ -1778,9 +1805,9 @@ export class ShopsService {
         usdtBalance: 0,
         updatedAt: connection.updatedAt.toISOString(),
         requesterName: null,
-        requesterChatId: null,
+        requesterChatId: matchedChatId,
         botSource: connection.upstreamShop?.name || "ULTRA",
-        rawPayload: {},
+        rawPayload: { candidateChatIds, matchedChatId },
       };
     }
 

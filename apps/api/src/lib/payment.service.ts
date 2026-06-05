@@ -559,24 +559,46 @@ export class PaymentService {
    * List PENDING Web2m payments for a shop within a time window.
    */
   async listPendingWeb2mPayments(shopId: string, since: Date) {
-    const rows = await this.prisma.paymentTransaction.findMany({
-      where: {
-        provider: PaymentProvider.WEB2M,
-        status: "PENDING",
-        createdAt: { gte: since },
-      },
-      select: {
-        externalOrderCode: true,
-        amount: true,
-        order: { select: { orderCode: true } },
-      },
-      take: 200,
-    });
-    return rows.map((r) => ({
-      externalOrderCode: r.externalOrderCode,
-      amount: r.amount,
-      orderCode: (r as any).order?.orderCode ?? null,
-    }));
+    const [txRows, depositRows] = await Promise.all([
+      this.prisma.paymentTransaction.findMany({
+        where: {
+          provider: PaymentProvider.WEB2M,
+          status: "PENDING",
+          createdAt: { gte: since },
+        },
+        select: {
+          externalOrderCode: true,
+          amount: true,
+          order: { select: { orderCode: true } },
+        },
+        take: 200,
+      }),
+      this.prisma.depositRequest.findMany({
+        where: {
+          provider: PaymentProvider.WEB2M,
+          status: "PENDING",
+          createdAt: { gte: since },
+          externalOrderCode: { not: null },
+        },
+        select: {
+          externalOrderCode: true,
+          amount: true,
+        },
+        take: 200,
+      }),
+    ]);
+    return [
+      ...txRows.map((r) => ({
+        externalOrderCode: r.externalOrderCode,
+        amount: r.amount,
+        orderCode: (r as any).order?.orderCode ?? null,
+      })),
+      ...depositRows.map((d) => ({
+        externalOrderCode: d.externalOrderCode!,
+        amount: d.amount,
+        orderCode: null,
+      })),
+    ];
   }
 
   /**
@@ -687,17 +709,34 @@ export class PaymentService {
     const normalized = content.toUpperCase().replace(/[^A-Z0-9]/g, "");
     if (!normalized) return null;
 
-    const pending = await this.prisma.paymentTransaction.findMany({
-      where: {
-        provider: PaymentProvider.PAY2S,
-        status: "PENDING",
-      },
-      select: { externalOrderCode: true, amount: true },
-      orderBy: { createdAt: "desc" },
-      take: 100,
-    });
+    const [pendingTx, pendingDeposits] = await Promise.all([
+      this.prisma.paymentTransaction.findMany({
+        where: {
+          provider: PaymentProvider.PAY2S,
+          status: "PENDING",
+        },
+        select: { externalOrderCode: true, amount: true },
+        orderBy: { createdAt: "desc" },
+        take: 100,
+      }),
+      this.prisma.depositRequest.findMany({
+        where: {
+          provider: PaymentProvider.PAY2S,
+          status: "PENDING",
+          externalOrderCode: { not: null },
+        },
+        select: { externalOrderCode: true, amount: true },
+        orderBy: { createdAt: "desc" },
+        take: 100,
+      }),
+    ]);
 
-    for (const p of pending) {
+    const candidates = [
+      ...pendingTx.map((p) => ({ externalOrderCode: p.externalOrderCode, amount: p.amount })),
+      ...pendingDeposits.map((d) => ({ externalOrderCode: d.externalOrderCode!, amount: d.amount })),
+    ];
+
+    for (const p of candidates) {
       const code = String(p.externalOrderCode).toUpperCase().replace(/[^A-Z0-9]/g, "");
       if (!code) continue;
       const last6 = code.slice(-6);

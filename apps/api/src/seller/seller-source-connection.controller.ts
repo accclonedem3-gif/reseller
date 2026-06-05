@@ -36,6 +36,11 @@ export class SellerSourceConnectionController {
     return this.service.getCurrentConnection(user);
   }
 
+  @Get("debug-balance")
+  debugBalance(@CurrentUser() user: AuthenticatedUser) {
+    return this.service.debugBalance(user);
+  }
+
   @Post()
   connect(
     @CurrentUser() user: AuthenticatedUser,

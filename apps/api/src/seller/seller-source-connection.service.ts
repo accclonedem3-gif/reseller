@@ -629,4 +629,80 @@ export class SellerSourceConnectionService {
   private getInternalBuyerBaseUrl() {
     return `${String(this.config.appPublicUrl || "").replace(/\/$/, "")}/api/v1`;
   }
+
+  async debugBalance(user: AuthenticatedUser) {
+    const shop = await this.shopsService.getSellerShop(user.id);
+    if (!shop.providerConfig?.internalSourceConnectionId) {
+      return { error: "No internal source connection found.", shopId: shop.id };
+    }
+    const connection = await this.prisma.downstreamSourceConnection.findUnique({
+      where: { id: shop.providerConfig.internalSourceConnectionId },
+      include: { upstreamShop: { select: { id: true, name: true } } },
+    });
+    if (!connection) {
+      return { error: "Connection record not found.", connectionId: shop.providerConfig.internalSourceConnectionId };
+    }
+    const downstreamBotConfig = await this.prisma.botConfig.findUnique({
+      where: { shopId: connection.downstreamShopId },
+      select: { ownerTelegramUserId: true, telegramBotUsername: true },
+    });
+    const candidateChatIds = Array.from(new Set([
+      connection.downstreamTelegramChatId,
+      downstreamBotConfig?.ownerTelegramUserId,
+    ].filter((v): v is string => typeof v === "string" && v.length > 0)));
+
+    const customerLookups = await Promise.all(
+      candidateChatIds.map(async (chatId) => {
+        const customer = await this.prisma.customer.findFirst({
+          where: { shopId: connection.upstreamShopId, telegramChatId: chatId },
+          select: {
+            id: true,
+            telegramChatId: true,
+            telegramUserId: true,
+            telegramUsername: true,
+            wallet: { select: { balance: true, currency: true } },
+          },
+        });
+        return { chatId, customer };
+      }),
+    );
+
+    // Also fuzzy-search any customer in upstream shop matching the downstream bot owner username (debug helper)
+    const allDownstreamRelatedCustomers = await this.prisma.customer.findMany({
+      where: {
+        shopId: connection.upstreamShopId,
+        OR: candidateChatIds.length > 0
+          ? [
+              { telegramChatId: { in: candidateChatIds } },
+              { telegramUserId: { in: candidateChatIds } },
+            ]
+          : [{ id: "__never__" }],
+      },
+      select: {
+        id: true,
+        telegramChatId: true,
+        telegramUserId: true,
+        telegramUsername: true,
+        wallet: { select: { balance: true } },
+      },
+      take: 10,
+    });
+
+    return {
+      shopId: shop.id,
+      connectionId: connection.id,
+      upstreamShop: connection.upstreamShop,
+      downstreamShopId: connection.downstreamShopId,
+      connectionDownstreamTelegramChatId: connection.downstreamTelegramChatId,
+      downstreamBotOwnerTelegramUserId: downstreamBotConfig?.ownerTelegramUserId ?? null,
+      downstreamBotUsername: downstreamBotConfig?.telegramBotUsername ?? null,
+      candidateChatIds,
+      customerLookupsByChatId: customerLookups,
+      fuzzyMatchedCustomers: allDownstreamRelatedCustomers,
+      hint:
+        customerLookups.some((c) => c.customer?.wallet)
+          ? "OK — found wallet via chatId lookup. Order should pass balance check."
+          : "MISMATCH — neither connection.downstreamTelegramChatId nor downstreamBotConfig.ownerTelegramUserId points at a customer with a wallet in the upstream shop. Tell em which chatId you used to top-up the ULTRA bot.",
+    };
+  }
 }

@@ -750,17 +750,9 @@ export class OrdersService {
       }
     }
 
-    const revenueAmount = decimalToNumber(order.totalSaleAmount);
-    if (revenueAmount > 0) {
-      await this.walletService.creditWallet(
-        order.shop.sellerId,
-        revenueAmount,
-        WalletLedgerType.SALE_REVENUE,
-        "order",
-        order.id,
-        "Doanh thu đơn hàng thủ công",
-      ).catch(() => undefined);
-    }
+    // Note: do NOT credit seller wallet here — customer paid via gateway/customer-wallet
+    // which already deposits to the seller's bank account directly. Crediting here would
+    // double-count and let the seller withdraw twice.
 
     await this.sendSellerResolvedMessage(order, "completed");
 
