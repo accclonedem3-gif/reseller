@@ -1,4 +1,5 @@
 import { Injectable } from "@nestjs/common";
+import { DEFAULT_USDT_VND_RATE } from "@reseller/shared";
 
 @Injectable()
 export class AppConfigService {
@@ -118,7 +119,7 @@ export class AppConfigService {
   }
 
   get usdtVndRate() {
-    return Number(process.env.USDT_VND_RATE || 27000);
+    return Number(process.env.USDT_VND_RATE || DEFAULT_USDT_VND_RATE);
   }
 
   get usdtPaymentTolerance() {

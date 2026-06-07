@@ -12,6 +12,8 @@ import {
   PaymentTransactionStatus,
   Prisma,
 } from "@prisma/client";
+import { DEFAULT_USDT_VND_RATE } from "@reseller/shared/server";
+
 import { WalletPromotionService } from "../wallet/wallet-promotion.service";
 
 import { PrismaService } from "../db/prisma.service";
@@ -25,7 +27,7 @@ import { ShopsService } from "../shops/shops.service";
 
 const TOPUP_EXPIRY_MS = 5 * 60 * 1000;
 const TOPUP_EXPIRY_TRC20_MS = 60 * 60 * 1000;
-const USDT_VND_RATE = 27000;
+const USDT_VND_RATE = DEFAULT_USDT_VND_RATE;
 
 type TelegramCustomerProfile = {
   telegramUserId: string;

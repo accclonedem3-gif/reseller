@@ -15,6 +15,7 @@ import {
   WalletLedgerType,
 } from "@prisma/client";
 import {
+  DEFAULT_USDT_VND_RATE,
   decryptSecret,
   isMockBotToken,
   telegramSendMessage,
@@ -234,7 +235,7 @@ export class OrdersService {
       const balanceAfter = split.balanceAfter;
       const commissionAfter = split.commissionAfter;
       const usdtBefore = decimalToNumber(currentWallet.balanceUsdt);
-      const usdtAfter = Math.max(0, usdtBefore - split.fromMain / 27000);
+      const usdtAfter = Math.max(0, usdtBefore - split.fromMain / DEFAULT_USDT_VND_RATE);
 
       const order = await tx.order.create({
         data: {
@@ -1024,7 +1025,7 @@ export class OrdersService {
       const walletAfter = split.balanceAfter;
       const commissionAfter = split.commissionAfter;
       const walletUsdtBefore = decimalToNumber(customer.wallet.balanceUsdt);
-      const walletUsdtAfter = Math.max(0, walletUsdtBefore - split.fromMain / 27000);
+      const walletUsdtAfter = Math.max(0, walletUsdtBefore - split.fromMain / DEFAULT_USDT_VND_RATE);
 
       await tx.customerWallet.update({
         where: { id: customer.wallet.id },

@@ -48,6 +48,11 @@ export const walletLedgerTypeSchema = z.enum([
   "withdraw",
   "adjust",
   "withdraw_reject_refund",
+  "sale_revenue",
+  "affiliate_level_1",
+  "affiliate_level_2",
+  "affiliate_clawback",
+  "subscription_payment",
 ]);
 export type WalletLedgerType = z.infer<typeof walletLedgerTypeSchema>;
 

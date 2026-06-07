@@ -1,4 +1,11 @@
-export type WarrantyPolicyCode = "KBH" | "BH24H" | "BH1M" | "BH6M" | "BH12M";
+export type WarrantyPolicyCode =
+  | "KBH"
+  | "BH24H"
+  | "BH1M"
+  | "BH3M"
+  | "BH6M"
+  | "BH12M"
+  | "BHF";
 export type DeliveryModeCode = "AUTO_API" | "AUTO_STOCK" | "MANUAL";
 
 type WarrantySnapshotInput = {
@@ -42,8 +49,10 @@ function normalizeWarrantyPolicy(value: unknown): WarrantyPolicyCode | null {
   if (normalized === "KBH") return "KBH";
   if (normalized === "BH24H") return "BH24H";
   if (normalized === "BH1M") return "BH1M";
+  if (normalized === "BH3M") return "BH3M";
   if (normalized === "BH6M") return "BH6M";
   if (normalized === "BH12M") return "BH12M";
+  if (normalized === "BHF") return "BHF";
 
   return null;
 }
@@ -100,12 +109,20 @@ export function inferWarrantyPolicy(
     return "KBH";
   }
 
+  if (/vinh\s*vien|vĩnh\s*viễn|tron\s*doi|trọn\s*đời|life\s*time|lifetime|\bbhf\b/i.test(searchText)) {
+    return "BHF";
+  }
+
   if (/\b24\s*h\b|\b24\s*gio\b|\b24\s*giờ\b|\b1\s*day\b|\b1\s*ngay\b|\b1\s*ngày\b/i.test(searchText)) {
     return "BH24H";
   }
 
   if (/\b1\s*m\b|\b1\s*month\b|\b1\s*thang\b|\b1\s*tháng\b|\b30\s*day/i.test(searchText)) {
     return "BH1M";
+  }
+
+  if (/\b3\s*m\b|\b3\s*month\b|\b3\s*thang\b|\b3\s*tháng\b|\b90\s*day/i.test(searchText)) {
+    return "BH3M";
   }
 
   if (/\b6\s*m\b|\b6\s*month\b|\b6\s*thang\b|\b6\s*tháng\b/i.test(searchText)) {
@@ -146,7 +163,8 @@ export function calculateWarrantyExpiry(
   policy: WarrantyPolicyCode | null | undefined,
   startedAt: Date | null | undefined,
 ) {
-  if (!policy || !startedAt || policy === "KBH") {
+  // KBH = no warranty, BHF = lifetime warranty — both have no expiry window.
+  if (!policy || !startedAt || policy === "KBH" || policy === "BHF") {
     return null;
   }
 
@@ -159,6 +177,11 @@ export function calculateWarrantyExpiry(
 
   if (policy === "BH1M") {
     expiresAt.setMonth(expiresAt.getMonth() + 1);
+    return expiresAt;
+  }
+
+  if (policy === "BH3M") {
+    expiresAt.setMonth(expiresAt.getMonth() + 3);
     return expiresAt;
   }
 
