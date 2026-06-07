@@ -10,6 +10,8 @@ import {
   telegramSendMessage,
   telegramSendPhoto,
   telegramSendPhotoBuffer,
+  telegramSendVideo,
+  isVideoUrl,
   type PayOSBankInfo,
 } from "@reseller/shared/server";
 import { DownstreamSourceConnectionStatus, PaymentProvider, PaymentStatus, PaymentTransactionStatus, Prisma, SellerTier } from "@prisma/client";
@@ -28,7 +30,7 @@ import { OkxPersonalApiService } from "./okx-personal-api.service";
 import { OnchainPaymentService } from "./onchain-payment.service";
 import { SolanaPaymentService } from "./solana-payment.service";
 import { PaymentService } from "./payment.service";
-import { GramJsService } from "./gramjs.service";
+import { TelegramClientService } from "./telegram-client.service";
 import { decimalToNumber, formatCurrency } from "./utils";
 
 const BIN_TO_BANK: Record<string, string> = {
@@ -292,8 +294,8 @@ export class TelegramBotService {
     private readonly apiKeyService: InternalSourceApiKeyService,
     @Inject(SellerSourceConnectionService)
     private readonly connectionTopupService: SellerSourceConnectionService,
-    @Inject(GramJsService)
-    private readonly gramJsService: GramJsService,
+    @Inject(TelegramClientService)
+    private readonly tg: TelegramClientService,
   ) {
     this.redis = new IORedis(this.config.redisUrl, {
       maxRetriesPerRequest: null,
@@ -325,7 +327,7 @@ export class TelegramBotService {
     const globalDefault = await this.getGlobalDefaultCustomization();
     if (!globalDefault) return shopCust ?? {};
     if (!shopCust) return globalDefault;
-    const DEEP_KEYS = ["labelEmojiIds", "buttonEmojiIds", "messageEmojiIds", "buttonLabels", "buttonEmojis", "welcomeMessage", "footerBill", "productNote", "catalogText", "homeFooter", "walletNote"];
+    const DEEP_KEYS = ["labelEmojiIds", "labelEmojis", "buttonEmojiIds", "messageEmojiIds", "buttonLabels", "buttonEmojis", "welcomeMessage", "footerBill", "productNote", "catalogText", "homeFooter", "walletNote"];
     const merged: Record<string, unknown> = { ...globalDefault };
     for (const [k, v] of Object.entries(shopCust)) {
       if (DEEP_KEYS.includes(k) && v && typeof v === "object" && !Array.isArray(v) && merged[k] && typeof merged[k] === "object") {
@@ -1252,6 +1254,40 @@ export class TelegramBotService {
     }
   }
 
+  /**
+   * Resolve CTV (collaborator) pricing context for a chat.
+   * A chat is CTV if the Customer.isCtv flag is set, OR it holds an active
+   * InternalSourceApiKey, OR it has an active DownstreamSourceConnection —
+   * unless explicitly blocked (isCtv === false). `getEffectivePrice` applies
+   * the CTV base (internalSourcePrice when available, else salePrice) then the
+   * per-customer discount. Centralizes logic previously duplicated across the
+   * catalog / quantity-prompt renderers.
+   */
+  private buildCtvPricing(
+    customerRecord: { isCtv?: boolean | null; discountPercent?: Prisma.Decimal | number | null } | null,
+    ctvApiKey: { id: string } | null,
+    downstreamConn: { id: string } | null,
+  ) {
+    const blocked = customerRecord?.isCtv === false;
+    const isCtv =
+      !blocked &&
+      ((customerRecord?.isCtv ?? false) || ctvApiKey != null || downstreamConn != null);
+    const discountPercent = Number(customerRecord?.discountPercent ?? 0);
+    const getEffectivePrice = (item: {
+      salePrice: number;
+      internalSourceEnabled?: boolean | null;
+      internalSourcePrice?: number | null;
+    }): number => {
+      if (!isCtv) return item.salePrice;
+      const base =
+        item.internalSourceEnabled && item.internalSourcePrice != null
+          ? item.internalSourcePrice
+          : item.salePrice;
+      return discountPercent > 0 ? Math.round(base * (1 - discountPercent / 100)) : base;
+    };
+    return { isCtv, discountPercent, getEffectivePrice };
+  }
+
   private async _renderCatalogInner(
     shopId: string,
     token: string,
@@ -1291,16 +1327,7 @@ export class TelegramBotService {
     const mkMsgIcon = (key: string, fallback: string) =>
       custMsgEmojiIdsCatalog[key] ? `<tg-emoji emoji-id="${custMsgEmojiIdsCatalog[key]}">${fallback}</tg-emoji>` : fallback;
 
-    const ctvBlocked = customerRecord?.isCtv === false;
-    const isCtv = !ctvBlocked && ((customerRecord?.isCtv ?? false) || ctvApiKey != null || downstreamConn != null);
-    const discountPercent = Number(customerRecord?.discountPercent ?? 0);
-    const getEffectivePrice = (item: CatalogItem): number => {
-      if (!isCtv) return item.salePrice;
-      const ctvBase = item.internalSourceEnabled && item.internalSourcePrice != null
-        ? item.internalSourcePrice
-        : item.salePrice;
-      return discountPercent > 0 ? Math.round(ctvBase * (1 - discountPercent / 100)) : ctvBase;
-    };
+    const { getEffectivePrice } = this.buildCtvPricing(customerRecord, ctvApiKey, downstreamConn);
 
     const visibleBase = allCatalog.filter(
       (item) =>
@@ -1381,10 +1408,17 @@ export class TelegramBotService {
         const banners = activePromos.filter((x) => x.bannerUrl);
         for (const ap of banners) {
           try {
-            await telegramSendPhoto(token, chatId, ap.bannerUrl!, {
-              caption: `🎉 <b>${this.escapeHtml(ap.name)}</b>\n${this.escapeHtml(ap.banner!)}`,
-              parse_mode: "HTML",
-            });
+            if (isVideoUrl(ap.bannerUrl!)) {
+              await telegramSendVideo(token, chatId, ap.bannerUrl!, {
+                caption: `🎉 <b>${this.escapeHtml(ap.name)}</b>\n${this.escapeHtml(ap.banner!)}`,
+                parse_mode: "HTML",
+              });
+            } else {
+              await telegramSendPhoto(token, chatId, ap.bannerUrl!, {
+                caption: `🎉 <b>${this.escapeHtml(ap.name)}</b>\n${this.escapeHtml(ap.banner!)}`,
+                parse_mode: "HTML",
+              });
+            }
           } catch {
             // ignore
           }
@@ -1533,14 +1567,7 @@ export class TelegramBotService {
       return;
     }
 
-    const ctvBlockedGrp = customerRecordGrp?.isCtv === false;
-    const isCtvGrp = !ctvBlockedGrp && ((customerRecordGrp?.isCtv ?? false) || ctvApiKeyGrp != null || downstreamConnGrp != null);
-    const discountGrp = Number(customerRecordGrp?.discountPercent ?? 0);
-    const getEffectivePriceGrp = (item: CatalogItem): number => {
-      if (!isCtvGrp) return item.salePrice;
-      const base = item.internalSourceEnabled && item.internalSourcePrice != null ? item.internalSourcePrice : item.salePrice;
-      return discountGrp > 0 ? Math.round(base * (1 - discountGrp / 100)) : base;
-    };
+    const { getEffectivePrice: getEffectivePriceGrp } = this.buildCtvPricing(customerRecordGrp, ctvApiKeyGrp, downstreamConnGrp);
 
     const products = allProducts.filter(
       (item) =>
@@ -1632,14 +1659,7 @@ export class TelegramBotService {
         select: { id: true },
       }),
     ]);
-    const ctvBlockedFt = customerRecordFt?.isCtv === false;
-    const isCtvFt = !ctvBlockedFt && ((customerRecordFt?.isCtv ?? false) || ctvApiKeyFt != null || downstreamConnFt != null);
-    const discountFt = Number(customerRecordFt?.discountPercent ?? 0);
-    const getEffectivePriceFt = (item: CatalogItem): number => {
-      if (!isCtvFt) return item.salePrice;
-      const base = item.internalSourceEnabled && item.internalSourcePrice != null ? item.internalSourcePrice : item.salePrice;
-      return discountFt > 0 ? Math.round(base * (1 - discountFt / 100)) : base;
-    };
+    const { getEffectivePrice: getEffectivePriceFt } = this.buildCtvPricing(customerRecordFt, ctvApiKeyFt, downstreamConnFt);
     const products = allProducts.filter(
       (item) =>
         item.enabled &&
@@ -1970,18 +1990,8 @@ export class TelegramBotService {
         select: { id: true },
       }),
     ]);
-    const ctvBlockedQ = customerRecord?.isCtv === false;
-    const isCtv = !ctvBlockedQ && ((customerRecord?.isCtv ?? false) || ctvApiKey != null || downstreamConn != null);
-    const discountPercent = Number(customerRecord?.discountPercent ?? 0);
-    // CTV base price: internalSourcePrice if available, else salePrice (for discount-only CTV)
-    const ctvBasePrice = isCtv
-      ? (product.internalSourceEnabled && product.internalSourcePrice != null
-          ? product.internalSourcePrice
-          : product.salePrice)
-      : null;
-    const ctvPrice = ctvBasePrice != null
-      ? (discountPercent > 0 ? Math.round(ctvBasePrice * (1 - discountPercent / 100)) : ctvBasePrice)
-      : null;
+    const { isCtv, getEffectivePrice } = this.buildCtvPricing(customerRecord, ctvApiKey, downstreamConn);
+    const ctvPrice = isCtv ? getEffectivePrice(product) : null;
 
     await this.sendQuantityReplyPrompt(
       shopId,
@@ -4371,6 +4381,8 @@ export class TelegramBotService {
       ? cust.messageEmojiIds as Record<string, string> : {};
     const labelEmojiIds = (cust?.labelEmojiIds && typeof cust.labelEmojiIds === "object")
       ? cust.labelEmojiIds as Record<string, string> : {};
+    const labelEmojis = (cust?.labelEmojis && typeof cust.labelEmojis === "object")
+      ? cust.labelEmojis as Record<string, string> : {};
     const custEmojiIdsQty = (cust?.buttonEmojiIds && typeof cust.buttonEmojiIds === "object")
       ? cust.buttonEmojiIds as Record<string, string> : {};
     const productNoteRaw = productNoteMap[language]?.trim() || productNoteMap["vi"]?.trim() || "";
@@ -4405,8 +4417,10 @@ export class TelegramBotService {
     const useHtml = !!(dbEmojiId || productNoteEmojiId || hasLabelEmojis || selection.description?.trim());
 
     const mkLabel = (key: string, fallback: string) => {
+      const customChar = labelEmojis[key]?.trim();
+      const visible = customChar || fallback;
       const eid = labelEmojiIds[key]?.trim();
-      return eid ? `<tg-emoji emoji-id="${eid}">${fallback}</tg-emoji>` : fallback;
+      return eid ? `<tg-emoji emoji-id="${eid}">${visible}</tg-emoji>` : visible;
     };
 
     if (selection.imageUrl && !leadLine) {
@@ -4465,11 +4479,16 @@ export class TelegramBotService {
       if (this.isSimulationToken(token) || (this.config.mockTelegramEnabled && isMockBotToken(token))) {
         actions.push({ type: "sendPhoto", chatId, photo: selection.imageUrl, caption, replyMarkup });
       } else {
-        await telegramSendPhoto(token, chatId, selection.imageUrl, {
+        const sendOptions = {
           caption,
           reply_markup: replyMarkup,
           ...(useHtml ? { parse_mode: "HTML" } : captionEntities ? { caption_entities: captionEntities } : {}),
-        });
+        };
+        if (isVideoUrl(selection.imageUrl)) {
+          await telegramSendVideo(token, chatId, selection.imageUrl, sendOptions);
+        } else {
+          await telegramSendPhoto(token, chatId, selection.imageUrl, sendOptions);
+        }
       }
     } else {
       // Full-detail text message (no photo)
@@ -6675,11 +6694,11 @@ export class TelegramBotService {
   }
 
   private createSimulationToken(token: string) {
-    return `simulate:${token}`;
+    return this.tg.createSimulationToken(token);
   }
 
   private isSimulationToken(token: string) {
-    return String(token || "").startsWith("simulate:");
+    return this.tg.isSimulationToken(token);
   }
 
   private normalizeLanguage(value: unknown): BotLanguage {
@@ -6981,14 +7000,12 @@ export class TelegramBotService {
       : this.formatCompactBotMoney(product.salePrice, language, usdtVndRate);
     const stockLabel = product.available === null ? "∞" : String(Math.max(0, product.available));
     const suffix = ` | ${priceLabel} | 📦 ${stockLabel}`;
-    // If the product has a custom emoji icon (iconCustomEmojiId), Telegram renders it
-    // beside the button on its own (Premium users see the animated logo, others see the
-    // fallback character bundled with the custom emoji). In that case we DON'T also
-    // prepend a text emoji — otherwise Premium users see two icons stacked.
-    // No custom emoji → fall back to productIcon (admin-set) or auto-resolved emoji.
-    const emoji = product.iconCustomEmojiId
-      ? ""
-      : product.productIcon?.trim() || this.resolveProductEmoji(product.displayName, product.sourceName);
+    // Inline keyboard buttons do NOT support icon_custom_emoji_id (that field only works
+    // on Reply keyboard buttons). So we always prepend a text emoji — either the
+    // admin-set productIcon, or an auto-resolved emoji based on product name.
+    // Premium animated emojis can only be rendered inside the product detail message
+    // body via <tg-emoji> tag, not in catalog button labels.
+    const emoji = product.productIcon?.trim() || this.resolveProductEmoji(product.displayName, product.sourceName);
     const normalizedName = [emoji, this.compactProductName(this.localizeProductName(product.displayName, language))].filter(Boolean).join(" ");
     const safeNameLength = Math.max(16, 58 - suffix.length);
 
@@ -7542,11 +7559,7 @@ export class TelegramBotService {
     actions: unknown[],
     parseMode?: "HTML" | "Markdown",
   ) {
-    if (messageId) {
-      return this.editText(token, chatId, messageId, text, replyMarkup, actions, parseMode);
-    }
-
-    return this.sendText(token, chatId, text, actions, replyMarkup, parseMode);
+    return this.tg.editOrSend(token, chatId, messageId, text, replyMarkup, actions, parseMode);
   }
 
   private async sendText(
@@ -7558,49 +7571,15 @@ export class TelegramBotService {
     parseMode?: "HTML" | "Markdown",
     entities?: Array<{ type: string; offset: number; length: number; custom_emoji_id?: string }>,
   ) {
-    if (this.isSimulationToken(token) || (this.config.mockTelegramEnabled && isMockBotToken(token))) {
-      const mockResult = { message_id: actions.length + 1 };
-      actions.push({ type: "sendMessage", chatId, text, replyMarkup, parseMode });
-      return mockResult;
-    }
-
-    return telegramSendMessage(token, chatId, text, {
-      reply_markup: replyMarkup,
-      ...(parseMode ? { parse_mode: parseMode } : {}),
-      ...(entities && entities.length > 0 ? { entities } : {}),
-    }).catch(async (err: unknown) => {
-      if (replyMarkup && this.hasInlineEmojiIds(replyMarkup)) {
-        return telegramSendMessage(token, chatId, text, {
-          reply_markup: this.stripInlineEmojiIds(replyMarkup),
-          ...(parseMode ? { parse_mode: parseMode } : {}),
-        });
-      }
-      throw err;
-    });
+    return this.tg.sendText(token, chatId, text, actions, replyMarkup, parseMode, entities);
   }
 
   private hasInlineEmojiIds(markup: Record<string, unknown> | undefined): boolean {
-    if (!markup?.inline_keyboard || !Array.isArray(markup.inline_keyboard)) return false;
-    return (markup.inline_keyboard as unknown[][]).some((row) =>
-      Array.isArray(row) && row.some((btn) => btn && typeof btn === "object" && "icon_custom_emoji_id" in (btn as object)),
-    );
+    return this.tg.hasInlineEmojiIds(markup);
   }
 
   private stripInlineEmojiIds(markup: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
-    if (!markup?.inline_keyboard || !Array.isArray(markup.inline_keyboard)) return markup;
-    return {
-      ...markup,
-      inline_keyboard: (markup.inline_keyboard as unknown[][]).map((row) =>
-        row.map((btn) => {
-          if (btn && typeof btn === "object") {
-            // eslint-disable-next-line @typescript-eslint/no-unused-vars
-            const { icon_custom_emoji_id: _, ...rest } = btn as Record<string, unknown>;
-            return rest;
-          }
-          return btn;
-        }),
-      ),
-    };
+    return this.tg.stripInlineEmojiIds(markup);
   }
 
   private async sendPhoto(
@@ -7612,28 +7591,7 @@ export class TelegramBotService {
     replyMarkup?: Record<string, unknown>,
     parseMode?: "HTML" | "Markdown",
   ): Promise<number | null> {
-    if (this.isSimulationToken(token) || (this.config.mockTelegramEnabled && isMockBotToken(token))) {
-      actions.push({ type: "sendPhoto", chatId, photo: Buffer.isBuffer(photo) ? "[buffer]" : photo, caption, replyMarkup, parseMode });
-      return null;
-    }
-
-    try {
-      const options = {
-        caption,
-        reply_markup: replyMarkup,
-        ...(parseMode ? { parse_mode: parseMode } : {}),
-      };
-      const result = Buffer.isBuffer(photo)
-        ? await telegramSendPhotoBuffer(token, chatId, photo, options)
-        : await telegramSendPhoto(token, chatId, photo, options) as { message_id: number } | undefined;
-      return result?.message_id ?? null;
-    } catch {
-      const result = await telegramSendMessage(token, chatId, caption, {
-        reply_markup: replyMarkup,
-        ...(parseMode ? { parse_mode: parseMode } : {}),
-      }) as { message_id: number } | undefined;
-      return result?.message_id ?? null;
-    }
+    return this.tg.sendPhoto(token, chatId, photo, caption, actions, replyMarkup, parseMode);
   }
 
   private async editText(
@@ -7645,28 +7603,10 @@ export class TelegramBotService {
     actions: unknown[],
     parseMode?: "HTML" | "Markdown",
   ) {
-    if (this.isSimulationToken(token) || (this.config.mockTelegramEnabled && isMockBotToken(token))) {
-      actions.push({ type: "editMessageText", chatId, messageId, text, replyMarkup, parseMode });
-      return;
-    }
-
-    await telegramEditMessageText(token, chatId, messageId, text, {
-      reply_markup: replyMarkup,
-      ...(parseMode ? { parse_mode: parseMode } : {}),
-    }).catch(async () => {
-      await telegramSendMessage(token, chatId, text, {
-        reply_markup: this.hasInlineEmojiIds(replyMarkup) ? this.stripInlineEmojiIds(replyMarkup) : replyMarkup,
-        ...(parseMode ? { parse_mode: parseMode } : {}),
-      });
-    });
+    return this.tg.editText(token, chatId, messageId, text, replyMarkup, actions, parseMode);
   }
 
   private async answerCallback(token: string, callbackQueryId: string, actions: unknown[]) {
-    if (this.isSimulationToken(token) || (this.config.mockTelegramEnabled && isMockBotToken(token))) {
-      actions.push({ type: "answerCallbackQuery", callbackQueryId });
-      return;
-    }
-
-    await telegramAnswerCallbackQuery(token, callbackQueryId).catch(() => undefined);
+    return this.tg.answerCallback(token, callbackQueryId, actions);
   }
 }

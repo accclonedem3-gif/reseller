@@ -11,13 +11,11 @@ import { JwtAuthGuard } from "./common/guards/jwt-auth.guard";
 import { RolesGuard } from "./common/guards/roles.guard";
 import { SellerCapabilitiesGuard } from "./common/guards/seller-capabilities.guard";
 import { SellerTierGuard } from "./common/guards/seller-tier.guard";
-import { SellerCapabilityService } from "./seller/seller-capability.service";
 import { InternalSourceApiKeyService } from "./source/internal-source-api-key.service";
 import { SellerSourceConnectionController } from "./seller/seller-source-connection.controller";
 import { SellerSourceConnectionService } from "./seller/seller-source-connection.service";
 import { InternalSourceAuthMiddleware } from "./source/internal-source-auth.middleware";
 import { InternalSourceApiController } from "./source/internal-source-api.controller";
-import { DownstreamSourceConnectionService } from "./source/downstream-source-connection.service";
 import { SourceProductController } from "./source/source-product.controller";
 import { SourceProductService } from "./source/source-product.service";
 import { StockAlertService } from "./source/stock-alert.service";
@@ -35,6 +33,7 @@ import { OnchainPaymentService } from "./lib/onchain-payment.service";
 import { SolanaPaymentService } from "./lib/solana-payment.service";
 import { QueueService } from "./lib/queue.service";
 import { TelegramBotService } from "./lib/telegram-bot.service.v2";
+import { TelegramClientService } from "./lib/telegram-client.service";
 import { OrdersController } from "./orders/orders.controller";
 import { OrdersService } from "./orders/orders.service";
 import { ProductsController } from "./products/products.controller";
@@ -126,6 +125,7 @@ import { MailService } from "./lib/mail.service";
     OnchainPaymentService,
     SolanaPaymentService,
     PaymentService,
+    TelegramClientService,
     TelegramBotService,
     AuthService,
     ShopsService,
@@ -148,11 +148,9 @@ import { MailService } from "./lib/mail.service";
     RolesGuard,
     SellerCapabilitiesGuard,
     SellerTierGuard,
-    SellerCapabilityService,
     InternalSourceApiKeyService,
     InternalSourceAuthMiddleware,
     SellerSourceConnectionService,
-    DownstreamSourceConnectionService,
     SourceProductService,
     StockAlertService,
     ProAnalyticsService,
