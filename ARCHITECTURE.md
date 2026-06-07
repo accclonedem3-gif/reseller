@@ -3,14 +3,14 @@
 ## Overview
 
 Reseller platform — sellers run Telegram bots that sell digital accounts. Sellers can source
-products from a built-in catalog (external provider) or from another seller's PRO-tier shop
-(internal source). A web storefront layer is being added in later phases.
+products from a built-in catalog (external provider) or from another seller's ULTRA-tier shop
+(internal source). A web storefront layer was scoped but dropped (see Storefront Modes).
 
 Monorepo layout:
 
 ```
 apps/api      NestJS REST API + webhook handler + bot handler
-apps/web      Next.js seller dashboard (management UI)
+apps/web      Vite + React seller dashboard (management UI)
 apps/worker   Background job processor (order fulfillment, queue drain)
 packages/shared   Shared types, utilities, and provider adapters
 prisma/       Single schema, single PostgreSQL database
@@ -22,45 +22,49 @@ prisma/       Single schema, single PostgreSQL database
 
 ```
 FREE  ──────  read-only dashboard, no shop/bot/payment/source features
-PLUS  ──────  full bot + shop, can connect to external OR internal source
-PRO   ──────  superset of PLUS, can also issue API keys and act as upstream source
+PRO   ──────  full bot + shop, can connect to external OR internal source
+ULTRA ──────  superset of PRO, can also issue API keys and act as upstream source
 ```
 
-Tier lives on `Seller.tier` (enum: `FREE`, `PLUS`, `PRO`).
+Tier lives on `Seller.tier` (enum: `FREE`, `PRO`, `ULTRA`).
 `UserRole` (`SUPER_ADMIN`, `SELLER`) is for system permissions only — never used for tier logic.
 
-Capability gates (`SellerCapabilityService`):
+Capability gates (`getSellerCapabilities` in `apps/api/src/business/seller-tier.ts`):
 
-| Capability             | FREE | PLUS | PRO |
-|------------------------|------|------|-----|
-| `shop_manage`          | ✗    | ✓    | ✓   |
-| `bot_manage`           | ✗    | ✓    | ✓   |
-| `payment_manage`       | ✗    | ✓    | ✓   |
-| `source_internal_use`  | ✗    | ✓    | ✓   |
-| `source_internal_manage` | ✗  | ✗    | ✓   |
-| `source_key_manage`    | ✗    | ✗    | ✓   |
-| `warranty_manage`      | ✗    | ✓    | ✓   |
+| Capability               | FREE | PRO | ULTRA |
+|--------------------------|------|-----|-------|
+| `shop_manage`            | ✗    | ✓   | ✓     |
+| `bot_manage`             | ✗    | ✓   | ✓     |
+| `products_manage`        | ✗    | ✓   | ✓     |
+| `orders_manage`          | ✗    | ✓   | ✓     |
+| `wallet_manage`          | ✗    | ✓   | ✓     |
+| `broadcast_manage`       | ✗    | ✓   | ✓     |
+| `source_external_use`    | ✗    | ✓   | ✓     |
+| `source_internal_use`    | ✗    | ✓   | ✓     |
+| `warranty_manage`        | ✗    | ✓   | ✓     |
+| `source_internal_manage` | ✗    | ✗   | ✓     |
+| `source_key_manage`      | ✗    | ✗   | ✓     |
 
 ---
 
 ## Internal Source Flow
 
-A PRO seller issues API keys to PLUS sellers so they can buy from PRO's catalog directly,
+An ULTRA seller issues API keys to PRO sellers so they can buy from ULTRA's catalog directly,
 bypassing external providers.
 
 ```
-PRO Seller
+ULTRA Seller
   │
   ├─ InternalSourceApiKey  (bcrypt-hashed, prefix: isk_…)
   │     issued to one downstream shop at a time
   │
   └─ SourceProduct (internalSourceEnabled=true, internalSourcePrice)
-        PRO manages their catalog via /pro/source-products
+        ULTRA manages their catalog via /pro/source-products
 
-PLUS Seller (downstream)
+PRO Seller (downstream)
   │
   ├─ POST /seller/source-connection { apiKey: "isk_…" }
-  │     → validates key (bcrypt), checks upstream PRO tier
+  │     → validates key (bcrypt), checks upstream ULTRA tier
   │     → creates DownstreamSourceConnection
   │     → upserts ProviderConfig { providerKind: INTERNAL, buyerKeyEncrypted }
   │
@@ -84,7 +88,7 @@ PLUS Seller (downstream)
               ├─ Creates InternalSourceOrderEvent (order_created)
               │
               └─ fulfillInternalSourceOrder()
-                    → PRO's InternalSourceService delivers the account
+                    → ULTRA's InternalSourceService delivers the account
                     → InternalSourceOrder { status: FULFILLED | FAILED }
                     → Order.internalSourceOrderId linked back
 ```
@@ -151,20 +155,21 @@ Seller resolves via dashboard:
 
 ---
 
-## Storefront Modes
+## Storefront Modes (dropped — schema-only)
 
-`Shop.storefrontMode` controls which customer-facing surfaces are active:
+The web-storefront scope was cut. The `StorefrontMode` enum and the
+`Shop.storefrontMode` / `Shop.storefrontConfigJson` columns still exist in the schema
+(and `shops.service.ts` reads them), but `StorefrontService` and
+`storefront-config.types.ts` have been **removed**. The Telegram bot is the only live
+customer-facing surface today.
 
 | Mode             | Telegram bot | Web storefront |
 |------------------|:------------:|:--------------:|
-| `TELEGRAM_ONLY`  | ✓            | ✗              |
-| `HYBRID`         | ✓            | ✓              |
-| `WEB_ONLY`       | ✗            | ✓              |
+| `TELEGRAM_ONLY`  | ✓            | ✗ (inert)      |
+| `HYBRID`         | ✓            | ✗ (inert)      |
+| `WEB_ONLY`       | ✗            | ✗ (inert)      |
 
-Web storefront configuration lives in `Shop.storefrontConfigJson` (typed in
-`apps/api/src/storefront/storefront-config.types.ts`). The `StorefrontService`
-is the single entry point for all storefront-mode-aware routing decisions — neither
-bot handlers nor source-core services should read `storefrontMode` directly.
+If storefront stays out of scope, drop the enum + columns in a follow-up migration.
 
 ---
 

@@ -72,18 +72,18 @@ Shared code in `packages/shared`.
 
 ### 🔥 High priority
 
-- **`apps/worker/src/main.ts` has `// @ts-nocheck` at line 1** + file is pre-transpiled JS committed as TS source. 3200 lines of business-critical code (queue, scheduler, payment auto-detect, wallet debit) have NO type check. Refactor into typed modules incrementally — do NOT mass-rewrite (see lessons in `[[gemini-refactor-failure]]`).
-- **Hardcoded USDT/VND = 27000** at 3 locations: `apps/worker/src/main.ts:1091`, `apps/api/src/orders/orders.service.ts:237` and `:1027`. Diverges from dynamic `paymentConfig.usdtVndRateOverride` used in bot display. Centralize into one helper.
+- **`apps/worker/src/main.ts` has `// @ts-nocheck` at line 1** + file is pre-transpiled JS committed as TS source. ~3800 lines of business-critical code (queue, scheduler, payment auto-detect, wallet debit) have NO type check. Refactor into typed modules incrementally — do NOT mass-rewrite (see lessons in `[[gemini-refactor-failure]]`).
+- **USDT/VND default rate — centralized (DONE).** The magic `27000` is now `DEFAULT_USDT_VND_RATE` in `packages/shared/src/constants.ts`, consumed by `app-config.service.ts` (env fallback), `orders.service.ts`, `customer-wallet.service.ts`, and `worker/main.ts`. ⚠️ Still a deliberate follow-up: wallet `balanceUsdt` debits use the flat default, NOT the per-shop `paymentConfig.usdtVndRateOverride` used in bot display — wiring the override into those transaction paths is a financial-behavior change, not done yet.
 
 ### ⚠️ Medium
 
 - **Fire-and-forget audit ledger** at `apps/api/src/customer-wallet/customer-wallet.service.ts:311` — `prisma.internalSourceLedger.create(...).catch(...)` lacks `await`. Audit row may not flush before request returns.
-- **`pollWeb2mShops` dead code with decrypt bug** at `apps/worker/src/main.ts:2395` — uses `ENCRYPTION_KEY` env var (should be `APP_ENCRYPTION_KEY`). Currently unused (bootstrap doesn't call it) — remove or fix.
+- **`pollWeb2mShops` dead code with decrypt bug** at `apps/worker/src/main.ts:2985` — uses `ENCRYPTION_KEY` env var (should be `APP_ENCRYPTION_KEY`) and references a non-existent `JOBS.processPurchase`. Never called by bootstrap (web2m moved to webhook `/api/v1/webhooks/web2m`) — remove.
 - **API key hashing inconsistency**: `InternalSourceApiKeyService.issueKey` uses bcrypt; `internal-source.service.ts:148` `createApiKey` uses sha256. `resolveApiKey` handles both, but `validateKey` (used in middleware) only handles bcrypt. Unify.
 
 ### ℹ️ Low
 
-- Dead service: `apps/api/src/storefront/storefront.service.ts` — 3 methods throw "TODO Phase 8+", not wired into `app.module.ts`. Storefront scope is dropped; safe to delete.
+- ~~Dead service `apps/api/src/storefront/storefront.service.ts`~~ — **removed** (storefront scope dropped). The `StorefrontMode` enum + `Shop.storefrontMode`/`storefrontConfigJson` columns still exist in the schema but are inert; `shops.service.ts` reads them directly. Consider a migration to drop them if storefront stays out of scope.
 - Fallback `"change-me-32-byte-key"` for `APP_ENCRYPTION_KEY` exists across worker files. Production validator catches it, but dev mode silently uses mock key.
 - Routing-by-string in `wallet.service.ts:201-251` — `note.startsWith("UPGRADE_TIER:" / "TIER_SUB:")`. Fragile when adding new prefixes.
 
