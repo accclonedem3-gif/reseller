@@ -176,7 +176,7 @@ export class ProductsService {
     const inheritedEmojiId = dto.iconCustomEmojiId?.trim() || adminDefaults?.customEmojiId || null;
     const inheritedImageUrl =
       dto.imageUrl?.trim()
-      || (adminDefaults?.media?.type === "photo" ? (adminDefaults.media.url ?? null) : null);
+      || ((adminDefaults?.media?.type === "photo" || adminDefaults?.media?.type === "video") ? (adminDefaults.media.url ?? null) : null);
     const inheritedDescription = dto.sourceDescription?.trim() || adminDefaults?.description || null;
 
     const created = await this.prisma.$transaction(async (tx) => {

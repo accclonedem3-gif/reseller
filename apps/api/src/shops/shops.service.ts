@@ -933,7 +933,7 @@ export class ShopsService {
         imageUrl:
           previous?.imageUrl
             ?? rawBusinessFields.imageUrl
-            ?? (adminMatch?.media?.type === "photo" ? (adminMatch.media.url ?? undefined) : undefined),
+            ?? ((adminMatch?.media?.type === "photo" || adminMatch?.media?.type === "video") ? (adminMatch.media.url ?? undefined) : undefined),
       };
       const sourceProduct = await this.prisma.sourceProduct.upsert({
         where: {
@@ -1050,17 +1050,33 @@ export class ShopsService {
       .map((p) => p.externalProductId);
 
     if (staleExternalIds.length > 0) {
-      const staleProducts = await this.prisma.sourceProduct.findMany({
-        where: { shopId: shop.id, externalProductId: { in: staleExternalIds }, providerName: { not: "manual" } },
+      // Split stale products into "deletable" (no order history) vs "must-keep" (has orders → FK Restrict)
+      const deletable = await this.prisma.sourceProduct.findMany({
+        where: {
+          shopId: shop.id,
+          externalProductId: { in: staleExternalIds },
+          providerName: { not: "manual" },
+          orders: { none: {} },
+          internalSourceOrders: { none: {} },
+        },
         select: { id: true },
       });
-      const staleIds = staleProducts.map((p) => p.id);
+      if (deletable.length > 0) {
+        await this.prisma.sourceProduct.deleteMany({
+          where: { id: { in: deletable.map((p) => p.id) } },
+        });
+      }
+
+      // For stale products that DO have order history (cannot delete due to FK Restrict),
+      // set available=0 so bot stops showing them, but keep the row for invoice / warranty traceback.
       await this.prisma.sourceProduct.updateMany({
-        where: { id: { in: staleIds } },
+        where: {
+          shopId: shop.id,
+          externalProductId: { in: staleExternalIds },
+          providerName: { not: "manual" },
+        },
         data: { available: 0 },
       });
-      // Don't toggle override.enabled/hidden — those are user-controlled.
-      // available = 0 alone is enough to hide from bot (bot filters by available > 0).
     }
 
     await this.prisma.shop.update({

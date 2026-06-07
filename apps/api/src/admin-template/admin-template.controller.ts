@@ -125,8 +125,11 @@ export class AdminTemplateController {
   }
 
   @Post("backfill-icons")
-  backfillIcons(@CurrentUser() user: AuthenticatedUser) {
-    return this.service.backfillIcons(user);
+  backfillIcons(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() body: { force?: boolean } = {},
+  ) {
+    return this.service.backfillIcons(user, { force: body.force === true });
   }
 
   @Get("invoice-template")

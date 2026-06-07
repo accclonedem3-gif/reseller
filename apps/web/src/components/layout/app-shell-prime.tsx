@@ -33,6 +33,7 @@ import { api } from "@/lib/api";
 
 import { useAuth } from "@/auth/auth-provider";
 import { ReadOnlyNotice } from "@/components/ui/read-only-notice";
+import { TierExpiryBanner } from "@/components/ui/tier-expiry-banner";
 import { cn } from "@/lib/cn";
 import { formatRoleLabel } from "@/lib/format";
 import { hasSellerCapability } from "@/lib/seller-access";
@@ -527,6 +528,7 @@ export function AppShellPrime({ children }: { children: ReactNode }) {
           />
           <div className="max-w-[1600px] mx-auto relative z-10">
             <div key={location.pathname} className="page-stage space-y-6">
+              <TierExpiryBanner />
               {session?.user.sellerReadOnly ? <ReadOnlyNotice /> : null}
               {children}
             </div>

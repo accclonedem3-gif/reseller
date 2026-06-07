@@ -91,6 +91,21 @@ export class SellerSourceConnectionService {
         },
       });
 
+      // Detect "switching source" — if shop currently linked to a DIFFERENT internal source connection,
+      // we need to clean orphan catalog rows that came from the previous source.
+      const previousProviderConfig = await tx.providerConfig.findUnique({
+        where: { shopId: downstreamShop.id },
+        select: { internalSourceConnectionId: true, providerName: true },
+      });
+      const isSwitchingSource =
+        previousProviderConfig?.internalSourceConnectionId != null &&
+        previousProviderConfig.internalSourceConnectionId !== existing?.id;
+      const wasExternalProvider =
+        previousProviderConfig != null &&
+        previousProviderConfig.internalSourceConnectionId == null &&
+        previousProviderConfig.providerName !== "manual" &&
+        previousProviderConfig.providerName !== "internal_pro";
+
       const nextConnection = existing
         ? await tx.downstreamSourceConnection.update({
             where: { id: existing.id },
@@ -112,6 +127,24 @@ export class SellerSourceConnectionService {
               downstreamTelegramChatId: resolvedTelegramChatId,
             },
           });
+
+      // Cleanup orphan catalog rows from previous source (only those without order history)
+      if (isSwitchingSource || wasExternalProvider) {
+        const orphans = await tx.sourceProduct.findMany({
+          where: {
+            shopId: downstreamShop.id,
+            providerName: { not: "manual" },
+            orders: { none: {} },
+            internalSourceOrders: { none: {} },
+          },
+          select: { id: true },
+        });
+        if (orphans.length > 0) {
+          await tx.sourceProduct.deleteMany({
+            where: { id: { in: orphans.map((o) => o.id) } },
+          });
+        }
+      }
 
       const encryptedKey = encryptSecret(normalizedKey, this.config.encryptionKey);
 
@@ -628,6 +661,63 @@ export class SellerSourceConnectionService {
 
   private getInternalBuyerBaseUrl() {
     return `${String(this.config.appPublicUrl || "").replace(/\/$/, "")}/api/v1`;
+  }
+
+  async cleanupOrphanCatalogProducts(user: AuthenticatedUser) {
+    const shop = await this.shopsService.getSellerShop(user.id);
+    const candidates = await this.prisma.sourceProduct.findMany({
+      where: {
+        shopId: shop.id,
+        providerName: { not: "manual" },
+        orders: { none: {} },
+        internalSourceOrders: { none: {} },
+      },
+      select: { id: true, sourceName: true, externalProductId: true, providerName: true, available: true },
+    });
+
+    // Only delete those that are stale (available=0) OR no longer match the current provider naming.
+    // Manual products (providerName=manual) are protected above. Products with order history are protected above.
+    const currentProvider = await this.prisma.providerConfig.findUnique({
+      where: { shopId: shop.id },
+      select: { internalSourceConnectionId: true },
+    });
+    let upstreamShopId: string | null = null;
+    if (currentProvider?.internalSourceConnectionId) {
+      const connection = await this.prisma.downstreamSourceConnection.findUnique({
+        where: { id: currentProvider.internalSourceConnectionId },
+        select: { upstreamShopId: true },
+      });
+      upstreamShopId = connection?.upstreamShopId ?? null;
+    }
+
+    let activeUpstreamIds = new Set<string>();
+    if (upstreamShopId) {
+      const activeUpstream = await this.prisma.sourceProduct.findMany({
+        where: { shopId: upstreamShopId, internalSourceEnabled: true },
+        select: { id: true },
+      });
+      activeUpstreamIds = new Set(activeUpstream.map((p) => p.id));
+    }
+
+    const toDelete = candidates.filter((c) => {
+      // Drop if: not in current upstream catalog
+      if (activeUpstreamIds.size > 0 && !activeUpstreamIds.has(c.externalProductId)) return true;
+      // Drop if: legacy provider (e.g. canboso) — different from current internal_pro
+      if (currentProvider?.internalSourceConnectionId && c.providerName !== "internal_pro") return true;
+      // Drop if: marked stale and no upstream context to verify
+      if (!upstreamShopId && c.available === 0) return true;
+      return false;
+    });
+
+    if (toDelete.length === 0) {
+      return { deleted: 0, scanned: candidates.length };
+    }
+
+    await this.prisma.sourceProduct.deleteMany({
+      where: { id: { in: toDelete.map((p) => p.id) } },
+    });
+
+    return { deleted: toDelete.length, scanned: candidates.length };
   }
 
   async debugBalance(user: AuthenticatedUser) {

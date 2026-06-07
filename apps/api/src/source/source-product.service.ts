@@ -102,9 +102,9 @@ export class SourceProductService {
     const shop = await this.shopsService.getSellerShop(user.id);
     const cleanedName = dto.sourceName.trim();
     const templateDefault = await this.getAdminTemplateDefaults({ family: dto.productFamily as any, sourceName: cleanedName });
-    // If admin set media as photo → use it as imageUrl. For video/animation, imageUrl stays null.
+    // If admin set media as photo OR video → use it as imageUrl. Bot detects by extension and uses sendPhoto/sendVideo accordingly.
     const inheritedImageUrl =
-      templateDefault?.media?.type === "photo" && typeof templateDefault.media.url === "string"
+      (templateDefault?.media?.type === "photo" || templateDefault?.media?.type === "video") && typeof templateDefault.media.url === "string"
         ? (templateDefault.media.url as string)
         : null;
     const product = await this.prisma.sourceProduct.create({

@@ -680,6 +680,38 @@ function DeliveryTextArea({
   );
 }
 
+function isVideoUrl(url: string | null | undefined): boolean {
+  if (!url) return false;
+  const cleaned = (String(url).split("?")[0] ?? "").toLowerCase();
+  return /\.(mp4|mov|webm|m4v)$/i.test(cleaned);
+}
+
+function MediaPreview({ url, className }: { url: string; className?: string }) {
+  if (isVideoUrl(url)) {
+    return (
+      <video
+        src={url}
+        className={className}
+        muted
+        playsInline
+        controls={false}
+        loop
+        autoPlay
+        onError={(e) => { (e.target as HTMLVideoElement).style.display = "none"; }}
+      />
+    );
+  }
+  return (
+    <img
+      src={url}
+      alt=""
+      className={className}
+      onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
+      onLoad={(e) => { (e.target as HTMLImageElement).style.display = "block"; }}
+    />
+  );
+}
+
 function getErrorMessage(error: unknown, fallback: string) {
   if (axios.isAxiosError(error)) {
     const responseData = error.response?.data as
@@ -2143,7 +2175,7 @@ export function ProductsPageStudio({
                 {editorImageUploading ? "..." : lang === "vi" ? "Tải ảnh lên" : "Upload"}
                 <input
                   type="file"
-                  accept="image/*"
+                  accept="image/*,video/mp4,video/quicktime,video/webm"
                   className="hidden"
                   disabled={editorImageUploading}
                   onChange={async (e) => {
@@ -2173,13 +2205,7 @@ export function ProductsPageStudio({
               />
             </div>
             {editorForm.imageUrl.trim() && (
-              <img
-                src={editorForm.imageUrl}
-                alt=""
-                className="h-16 w-16 rounded-xl object-cover"
-                onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
-                onLoad={(e) => { (e.target as HTMLImageElement).style.display = "block"; }}
-              />
+              <MediaPreview url={editorForm.imageUrl} className="h-16 w-16 rounded-xl object-cover" />
             )}
           </div>
         </Field>
@@ -3325,17 +3351,17 @@ export function ProductsPageStudio({
 
               {/* Banner image upload */}
               <div>
-                <p className="mb-2 text-[11px] font-black uppercase tracking-widest" style={{ color: "var(--tx-f)" }}>🖼️ Ảnh banner khuyến mãi</p>
+                <p className="mb-2 text-[11px] font-black uppercase tracking-widest" style={{ color: "var(--tx-f)" }}>🖼️ Ảnh / video banner khuyến mãi</p>
                 <p className="mb-2 text-[11px]" style={{ color: "var(--tx-f)" }}>
-                  Khi khách xem danh sách sản phẩm, bot sẽ gửi ảnh này như 1 tin nhắn riêng kèm caption khuyến mãi.
+                  Khi khách xem danh sách sản phẩm, bot sẽ gửi ảnh/video này như 1 tin nhắn riêng kèm caption khuyến mãi.
                 </p>
                 <div className="flex gap-2">
                   <label className="flex cursor-pointer items-center gap-1.5 rounded-[14px] border px-3 py-2 text-sm font-medium transition hover:opacity-80" style={{ borderColor: "var(--bd)", background: "var(--inp)", color: "var(--tx-m)" }}>
                     <Upload className="h-3.5 w-3.5" />
-                    {promoBannerUploading ? "..." : "Tải ảnh"}
+                    {promoBannerUploading ? "..." : "Tải lên"}
                     <input
                       type="file"
-                      accept="image/*"
+                      accept="image/*,video/mp4,video/quicktime,video/webm"
                       className="hidden"
                       disabled={promoBannerUploading}
                       onChange={async (e) => {
@@ -3372,12 +3398,7 @@ export function ProductsPageStudio({
                   )}
                 </div>
                 {editorForm.promoBannerUrl && (
-                  <img
-                    src={editorForm.promoBannerUrl}
-                    alt=""
-                    className="mt-2 max-h-48 rounded-xl object-contain"
-                    onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
-                  />
+                  <MediaPreview url={editorForm.promoBannerUrl} className="mt-2 max-h-48 rounded-xl object-contain" />
                 )}
               </div>
 
@@ -3741,7 +3762,7 @@ export function ProductsPageStudio({
                       {createImageUploading ? "..." : lang === "vi" ? "Tải ảnh lên" : "Upload"}
                       <input
                         type="file"
-                        accept="image/*"
+                        accept="image/*,video/mp4,video/quicktime,video/webm"
                         className="hidden"
                         disabled={createImageUploading}
                         onChange={async (e) => {
@@ -3771,13 +3792,7 @@ export function ProductsPageStudio({
                     />
                   </div>
                   {createForm.imageUrl.trim() && (
-                    <img
-                      src={createForm.imageUrl}
-                      alt=""
-                      className="h-16 w-16 rounded-xl object-cover"
-                      onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
-                      onLoad={(e) => { (e.target as HTMLImageElement).style.display = "block"; }}
-                    />
+                    <MediaPreview url={createForm.imageUrl} className="h-16 w-16 rounded-xl object-cover" />
                   )}
                 </div>
               </Field>

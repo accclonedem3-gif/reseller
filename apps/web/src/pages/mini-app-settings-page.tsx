@@ -21,11 +21,21 @@ interface BotCustomization {
     stockAdded?: string;
   };
   labelEmojiIds?: { price?: string; stock?: string; sold?: string; format?: string; description?: string };
+  labelEmojis?: { price?: string; stock?: string; sold?: string; format?: string; description?: string };
   outOfStockEmojiId?: string;
   buttonEmojis?: Record<string, string>;
   buttonEmojiIds?: Record<string, string>;
   buttonLabels?: Record<string, { vi?: string; en?: string }>;
 }
+
+const PRODUCT_LABEL_KEYS = ["price", "stock", "sold", "format", "description"] as const;
+const PRODUCT_LABEL_DEFAULTS: Record<string, { vi: string; emoji: string }> = {
+  price:       { vi: "Giá", emoji: "💳" },
+  stock:       { vi: "Tồn kho", emoji: "📦" },
+  sold:        { vi: "Đã bán", emoji: "📊" },
+  format:      { vi: "Định dạng", emoji: "🔑" },
+  description: { vi: "Mô tả", emoji: "💬" },
+};
 
 const BUTTON_KEYS = [
   "products", "orders", "wallet", "guide", "support", "warranty",
@@ -113,6 +123,7 @@ export function MiniAppSettingsPage() {
     homeIcon: undefined,
     messageEmojiIds: {},
     labelEmojiIds: {},
+    labelEmojis: {},
     outOfStockEmojiId: "",
     buttonEmojis: { ...DEFAULT_EMOJIS },
     buttonEmojiIds: {},
@@ -166,6 +177,7 @@ export function MiniAppSettingsPage() {
           homeIcon: data.customization.homeIcon !== undefined ? data.customization.homeIcon : prev.homeIcon,
           messageEmojiIds: { ...prev.messageEmojiIds, ...data.customization.messageEmojiIds },
           labelEmojiIds: { ...prev.labelEmojiIds, ...data.customization.labelEmojiIds },
+          labelEmojis: { ...prev.labelEmojis, ...data.customization.labelEmojis },
           outOfStockEmojiId: data.customization.outOfStockEmojiId ?? prev.outOfStockEmojiId ?? "",
           buttonEmojis: { ...DEFAULT_EMOJIS, ...data.customization.buttonEmojis },
           buttonEmojiIds: { ...data.customization.buttonEmojiIds },
@@ -601,22 +613,19 @@ export function MiniAppSettingsPage() {
 
             {/* Label icons */}
             <div style={card}>
-              {sectionTitle("🏷️", "Icon label trong card sản phẩm", "Thay emoji trước mỗi dòng thông tin")}
-              {([
-                { key: "price", label: "💳 Giá" },
-                { key: "stock", label: "📦 Tồn kho" },
-                { key: "sold", label: "📊 Đã bán" },
-                { key: "format", label: "🔑 Định dạng" },
-                { key: "description", label: "💬 Mô tả" },
-              ] as { key: keyof NonNullable<BotCustomization["labelEmojiIds"]>; label: string }[]).map(({ key, label }, i, arr) => (
-                <div key={key} style={{ marginBottom: i < arr.length - 1 ? "12px" : "0" }}>
-                  {idInput(
-                    customization.labelEmojiIds?.[key] || "",
-                    (val) => setCustomization((p) => ({ ...p, labelEmojiIds: { ...p.labelEmojiIds, [key]: val } })),
-                    label,
-                  )}
-                </div>
-              ))}
+              {sectionTitle("🏷️", "Icon label trong card sản phẩm", "Chỉ chỉnh emoji động (Premium document_id). Emoji thường dùng mặc định hệ thống.")}
+              {PRODUCT_LABEL_KEYS.map((key, i) => {
+                const def = PRODUCT_LABEL_DEFAULTS[key]!;
+                return (
+                  <div key={key} style={{ marginBottom: i < PRODUCT_LABEL_KEYS.length - 1 ? "12px" : "0" }}>
+                    {idInput(
+                      customization.labelEmojiIds?.[key] || "",
+                      (val) => setCustomization((p) => ({ ...p, labelEmojiIds: { ...p.labelEmojiIds, [key]: val } })),
+                      `${def.emoji} ${def.vi}`,
+                    )}
+                  </div>
+                );
+              })}
             </div>
           </div>
         )}

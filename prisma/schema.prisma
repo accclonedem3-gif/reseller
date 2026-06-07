@@ -342,6 +342,8 @@ model Seller {
   tier                        SellerTier                   @default(PRO)
   tierStartedAt               DateTime?                    @map("tier_started_at")
   tierExpiresAt               DateTime?                    @map("tier_expires_at")
+  lastTierReminderStage       String?                      @map("last_tier_reminder_stage")
+  lastTierReminderAt          DateTime?                    @map("last_tier_reminder_at")
   referredBySellerId          String?                      @map("referred_by_seller_id")
   referralCode                String?                      @unique @map("referral_code")
   affiliateUnlockedTier       Int                          @default(1) @map("affiliate_unlocked_tier")

@@ -61,10 +61,12 @@ export class ProductsController {
   @RequireSellerCapabilities("products_manage")
   @UseInterceptors(FileInterceptor("file", {
     storage: memoryStorage(),
-    limits: { fileSize: 5 * 1024 * 1024 },
+    limits: { fileSize: 20 * 1024 * 1024 },
     fileFilter: (_req, file, cb) => {
-      if (!file.mimetype.startsWith("image/")) {
-        cb(new BadRequestException("Only image files are allowed"), false);
+      const isImage = file.mimetype.startsWith("image/");
+      const isVideo = file.mimetype === "video/mp4" || file.mimetype === "video/quicktime" || file.mimetype === "video/webm";
+      if (!isImage && !isVideo) {
+        cb(new BadRequestException("Only image or video files (mp4/mov/webm) are allowed"), false);
       } else {
         cb(null, true);
       }

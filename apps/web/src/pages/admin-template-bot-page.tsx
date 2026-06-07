@@ -103,7 +103,7 @@ export function AdminTemplateBotPage() {
     if (tplQuery.data?.botConfig) {
       setCustomJson(JSON.stringify(tplQuery.data.botConfig.customization ?? {}, null, 2));
     }
-  }, [tplQuery.data?.botConfig?.id]);
+  }, [tplQuery.data?.botConfig?.customization]);
 
   const updateMutation = useMutation({
     mutationFn: async (parsed: any) => api.put("/admin-template/customization", { customization: parsed }),
@@ -214,11 +214,13 @@ export function AdminTemplateBotPage() {
   });
 
   const backfillMutation = useMutation({
-    mutationFn: async () => (await api.post("/admin-template/backfill-icons")).data,
+    mutationFn: async (force?: boolean) =>
+      (await api.post("/admin-template/backfill-icons", { force: force === true })).data,
     onSuccess: (data: any) => {
       const fdetect = data.familyDetected ?? 0;
       const detectMsg = fdetect > 0 ? ` · Auto-detect family: ${fdetect}` : "";
-      showToast({ tone: "success", message: `Quét ${data.scanned}, cập nhật ${data.updated}${detectMsg}.` });
+      const modeMsg = data.mode === "force" ? " (force overwrite)" : "";
+      showToast({ tone: "success", message: `Quét ${data.scanned}, cập nhật ${data.updated}${detectMsg}${modeMsg}.` });
     },
     onError: (err) => showToast({ tone: "error", message: getErrMsg(err, "Backfill thất bại.") }),
   });
@@ -392,11 +394,18 @@ export function AdminTemplateBotPage() {
           </div>
           <div className="flex items-center gap-2">
             <button type="button"
-              onClick={() => { if (window.confirm("Quét toàn bộ products của tất cả shop và fill icon/emoji/ảnh từ admin template theo family. Chỉ fill các field đang NULL, không ghi đè. Tiếp tục?")) backfillMutation.mutate(); }}
+              onClick={() => { if (window.confirm("Quét toàn bộ products của tất cả shop và fill icon/emoji/ảnh từ admin template theo family. Chỉ fill các field đang NULL, không ghi đè. Tiếp tục?")) backfillMutation.mutate(false); }}
               disabled={backfillMutation.isPending}
               className="flex items-center gap-1.5 rounded-xl px-3 py-2 text-[12px] font-black transition hover:opacity-90 disabled:opacity-40"
               style={{ background: "rgba(56,189,248,0.12)", border: "1px solid rgba(56,189,248,0.3)", color: "rgb(56,189,248)" }}>
               {backfillMutation.isPending ? "Đang quét..." : "↻ Backfill products cũ"}
+            </button>
+            <button type="button"
+              onClick={() => { if (window.confirm("Đè 100% ẢNH/VIDEO của TẤT CẢ sản phẩm theo admin template (kể cả seller đã chỉnh ảnh riêng — sẽ bị mất). Icon emoji vẫn được giữ nếu seller đã chỉnh. Tiếp tục?")) backfillMutation.mutate(true); }}
+              disabled={backfillMutation.isPending}
+              className="flex items-center gap-1.5 rounded-xl px-3 py-2 text-[12px] font-black transition hover:opacity-90 disabled:opacity-40"
+              style={{ background: "rgba(248,113,113,0.12)", border: "1px solid rgba(248,113,113,0.3)", color: "rgb(248,113,113)" }}>
+              {backfillMutation.isPending ? "Đang quét..." : "⚠ Đè ảnh, giữ icon"}
             </button>
             {!showForm && (
               <button type="button" onClick={() => { resetPdForm(); setShowForm(true); }}
@@ -419,11 +428,8 @@ export function AdminTemplateBotPage() {
                   ))}
                 </select>
               </Field>
-              <Field label="Icon emoji (text)">
-                <input value={pdIcon} onChange={(e) => setPdIcon(e.target.value)} placeholder="🎨" className={inputCls} style={inputStyle} />
-              </Field>
-              <Field label="Custom Emoji ID (Telegram premium)">
-                <input value={pdEmojiId} onChange={(e) => setPdEmojiId(e.target.value)} placeholder="5391..." className={`${inputCls} font-mono`} style={inputStyle} />
+              <Field label="Custom Emoji ID (Telegram Premium)">
+                <input value={pdEmojiId} onChange={(e) => setPdEmojiId(e.target.value)} placeholder="5391... (mặc định hệ thống auto-detect emoji theo family)" className={`${inputCls} font-mono`} style={inputStyle} />
               </Field>
               <Field label="Loại media">
                 <select value={pdMediaType} onChange={(e) => setPdMediaType(e.target.value as any)} className={inputCls} style={inputStyle}>

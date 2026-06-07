@@ -499,40 +499,12 @@ function PaymentModal({
               />
             </div>
 
-            {/* Mã giới thiệu / Mã giảm giá (1 ô duy nhất) */}
-            <div className="mt-5">
-              <label className="text-[11px] font-semibold uppercase tracking-[0.18em]" style={{ color: "var(--tx-f)" }}>
-                Mã giới thiệu / giảm giá (tuỳ chọn)
-              </label>
-              <input
-                type="text"
-                value={discountCode}
-                onChange={(e) => {
-                  const v = e.target.value.toUpperCase();
-                  onChangeDiscountCode(v);
-                  onChangeReferralCode(v);
-                }}
-                placeholder="VD: LAMTHANHTHIEN hoặc E4360EEA"
-                maxLength={32}
-                className="mt-1.5 w-full rounded-xl px-4 py-3 font-mono text-sm uppercase tracking-wider outline-none"
-                style={{ background: "var(--inp)", border: "1px solid var(--bd)", color: "var(--tx)" }}
-              />
-              <p className="mt-1.5 text-[11px]" style={{ color: "var(--tx-f)" }}>
-                Mã hợp lệ sẽ tự áp dụng giảm giá (nếu có) và ghi nhận người giới thiệu.
-              </p>
-            </div>
-
             {/* Summary */}
             <div className="mt-6 rounded-2xl p-4" style={{ background: "var(--inp)" }}>
               <div className="flex items-center justify-between text-sm">
                 <span style={{ color: "var(--tx-m)" }}>Tổng cộng</span>
                 <span className="text-lg font-semibold" style={{ color: "var(--tx)" }}>{formatCurrency(priceVnd)}</span>
               </div>
-              {discountCode.trim() && (
-                <p className="mt-1 text-[11px]" style={{ color: "var(--tx-f)" }}>
-                  ℹ️ Giá cuối có thể thấp hơn nếu mã có % giảm.
-                </p>
-              )}
             </div>
 
             <button

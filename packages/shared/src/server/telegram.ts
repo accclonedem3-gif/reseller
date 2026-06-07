@@ -103,6 +103,26 @@ export async function telegramSendPhoto(
   });
 }
 
+export async function telegramSendVideo(
+  token: string,
+  chatId: string | number,
+  video: string,
+  options?: Record<string, unknown>,
+) {
+  return callTelegramApi(token, "sendVideo", {
+    chat_id: chatId,
+    video,
+    supports_streaming: true,
+    ...options,
+  });
+}
+
+export function isVideoUrl(url: string | null | undefined): boolean {
+  if (!url) return false;
+  const cleaned = (String(url).split("?")[0] ?? "").toLowerCase();
+  return /\.(mp4|mov|webm|m4v)$/i.test(cleaned);
+}
+
 export async function telegramSendDocument(
   token: string,
   chatId: string | number,

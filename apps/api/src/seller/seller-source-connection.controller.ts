@@ -41,6 +41,11 @@ export class SellerSourceConnectionController {
     return this.service.debugBalance(user);
   }
 
+  @Post("cleanup-orphan-products")
+  cleanupOrphanProducts(@CurrentUser() user: AuthenticatedUser) {
+    return this.service.cleanupOrphanCatalogProducts(user);
+  }
+
   @Post()
   connect(
     @CurrentUser() user: AuthenticatedUser,

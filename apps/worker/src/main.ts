@@ -1329,7 +1329,7 @@ async function debitConnectionBalance(connectionId, amount, orderId) {
         const walletAfter = Math.max(0, walletBefore - fromMain);
         const commissionAfter = Math.max(0, commissionBefore - fromCommission);
         const walletUsdtBefore = Number(customer.wallet.balanceUsdt);
-        const walletUsdtAfter = Math.max(0, walletUsdtBefore - fromMain / 27000);
+        const walletUsdtAfter = Math.max(0, walletUsdtBefore - fromMain / server_1.DEFAULT_USDT_VND_RATE);
         await tx.customerWallet.update({
             where: { id: customer.wallet.id },
             data: { balance: walletAfter, commissionBalance: commissionAfter, balanceUsdt: walletUsdtAfter },
@@ -2829,6 +2829,96 @@ async function cleanupStaleData() {
     ]);
     console.log(`[worker] Data cleanup: orderEvents=${orderEventsDeleted.count}, referralEvents=${referralEventsDeleted.count}, topups=${topupsDeleted.count}, accountsCleared=${accountsCleared.count}`);
 }
+async function runTierExpiryReminders() {
+    const now = new Date();
+    // Mốc nhắc: 7 ngày, 3 ngày, 1 ngày trước hết hạn
+    const stages = [
+        { code: "7d", minDays: 6, maxDays: 7 },
+        { code: "3d", minDays: 2, maxDays: 3 },
+        { code: "1d", minDays: 0, maxDays: 1 },
+    ];
+
+    for (const stage of stages) {
+        const lowerBound = new Date(now.getTime() + stage.minDays * 24 * 60 * 60 * 1000);
+        const upperBound = new Date(now.getTime() + stage.maxDays * 24 * 60 * 60 * 1000);
+
+        const candidates = await prisma.seller.findMany({
+            where: {
+                tier: { in: ["PRO", "ULTRA"] },
+                tierExpiresAt: { gte: lowerBound, lte: upperBound },
+                OR: [
+                    { lastTierReminderStage: null },
+                    { lastTierReminderStage: { not: stage.code } },
+                ],
+            },
+            select: {
+                id: true,
+                displayName: true,
+                tier: true,
+                tierExpiresAt: true,
+                lastTierReminderStage: true,
+                shops: {
+                    select: {
+                        id: true,
+                        botConfig: {
+                            select: { telegramBotTokenEncrypted: true, ownerTelegramUserId: true },
+                        },
+                    },
+                    take: 1,
+                },
+            },
+            take: 100,
+        });
+
+        for (const seller of candidates) {
+            const shop = seller.shops?.[0];
+            const botConfig = shop?.botConfig;
+            if (!botConfig?.telegramBotTokenEncrypted || !botConfig?.ownerTelegramUserId) continue;
+
+            const token = (0, server_1.decryptSecret)(
+                botConfig.telegramBotTokenEncrypted,
+                process.env.APP_ENCRYPTION_KEY || "change-me-32-byte-key",
+            );
+            if (!token || (0, server_1.isMockBotToken)(token)) continue;
+
+            const remainingMs = (seller.tierExpiresAt?.getTime() ?? 0) - now.getTime();
+            const remainingDays = Math.max(0, Math.ceil(remainingMs / (24 * 60 * 60 * 1000)));
+            const expiryStr = seller.tierExpiresAt
+                ? `${String(seller.tierExpiresAt.getDate()).padStart(2, "0")}/${String(seller.tierExpiresAt.getMonth() + 1).padStart(2, "0")}/${seller.tierExpiresAt.getFullYear()} ${String(seller.tierExpiresAt.getHours()).padStart(2, "0")}:${String(seller.tierExpiresAt.getMinutes()).padStart(2, "0")}`
+                : "-";
+
+            const heading =
+                stage.code === "1d"
+                    ? "🚨 Gói của bạn HẾT HẠN TRONG HÔM NAY"
+                    : stage.code === "3d"
+                        ? "⏰ Gói sắp hết hạn"
+                        : "📅 Nhắc nhở gia hạn";
+
+            const lines = [
+                heading,
+                "",
+                `Gói hiện tại: ${seller.tier}`,
+                `Hết hạn: ${expiryStr} (còn ${remainingDays} ngày)`,
+                "",
+                "Sau khi hết hạn, shop sẽ tự động hạ về FREE — không thể tạo đơn mới qua bot.",
+                "",
+                "Anh/chị có thể gia hạn trên web dashboard (mục Gia hạn gói).",
+            ];
+
+            try {
+                await (0, server_1.telegramSendMessage)(token, botConfig.ownerTelegramUserId, lines.join("\n"));
+                await prisma.seller.update({
+                    where: { id: seller.id },
+                    data: { lastTierReminderStage: stage.code, lastTierReminderAt: new Date() },
+                });
+                console.log(`[tier-reminder] sent ${stage.code} to seller=${seller.id} owner=${botConfig.ownerTelegramUserId}`);
+            } catch (error) {
+                console.error(`[tier-reminder] failed seller=${seller.id} stage=${stage.code}:`, formatError(error));
+            }
+        }
+    }
+}
+
 async function expireSellerTiers() {
     const now = new Date();
     const expired = await prisma.seller.findMany({
@@ -3693,6 +3783,12 @@ async function bootstrap() {
         });
     }, 6 * 60 * 60 * 1000); // mỗi 6 giờ
     void runTierAutoRenewals().catch(() => undefined);
+    setInterval(() => {
+        void runTierExpiryReminders().catch((error) => {
+            console.error("[worker] Tier expiry reminders failed:", formatError(error));
+        });
+    }, 6 * 60 * 60 * 1000); // mỗi 6 giờ
+    void runTierExpiryReminders().catch(() => undefined);
     setInterval(() => {
         void sweepScheduledBroadcasts(broadcastQueue).catch((error) => {
             console.error("[worker] Broadcast schedule sweep failed:", formatError(error));

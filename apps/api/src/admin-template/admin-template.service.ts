@@ -417,9 +417,13 @@ export class AdminTemplateService {
 
   /**
    * Backfill icons/media on existing SourceProducts. Auto-detect family if NULL.
-   * Only fills NULL fields — does not override existing values.
+   * If force=true, OVERWRITES existing icon/emoji/imageUrl with admin template values.
+   * If force=false (default), only fills NULL fields.
    */
-  async backfillIcons(user: AuthenticatedUser): Promise<{ scanned: number; familyDetected: number; updated: number }> {
+  async backfillIcons(
+    user: AuthenticatedUser,
+    options: { force?: boolean } = {},
+  ): Promise<{ scanned: number; familyDetected: number; updated: number; mode: "fill" | "force" }> {
     await this.assertSuperAdmin(user);
     const tpl = await this.findTemplateShopOrNull();
     if (!tpl?.botConfig) {
@@ -428,10 +432,11 @@ export class AdminTemplateService {
     const cust = (tpl.botConfig.customizationJson as Record<string, any>) ?? {};
     const map = (cust.productDefaultsByFamily as Record<string, any>) ?? {};
     if (Object.keys(map).length === 0) {
-      return { scanned: 0, familyDetected: 0, updated: 0 };
+      return { scanned: 0, familyDetected: 0, updated: 0, mode: options.force ? "force" : "fill" };
     }
 
-    // Lấy MỌI products (không filter family) — sẽ detect ở runtime
+    const force = options.force === true;
+
     const products = await this.prisma.sourceProduct.findMany({
       select: {
         id: true,
@@ -446,7 +451,6 @@ export class AdminTemplateService {
     let familyDetected = 0;
     let updated = 0;
     for (const p of products) {
-      // Step 1: detect family if NULL
       let family = p.productFamily;
       let needSetFamily = false;
       if (!family) {
@@ -460,7 +464,6 @@ export class AdminTemplateService {
 
       const defaults = map[family];
       if (!defaults) {
-        // Family detected nhưng admin không có config → vẫn save family
         if (needSetFamily) {
           await this.prisma.sourceProduct.update({ where: { id: p.id }, data: { productFamily: family } });
         }
@@ -469,15 +472,20 @@ export class AdminTemplateService {
 
       const data: Record<string, any> = {};
       if (needSetFamily) data.productFamily = family;
+      // Icon (emoji): fill-only — không ghi đè giá trị seller đã chỉnh
       if (!p.productIcon && defaults.icon) data.productIcon = defaults.icon;
       if (!p.iconCustomEmojiId && defaults.customEmojiId) data.iconCustomEmojiId = defaults.customEmojiId;
-      if (!p.imageUrl && defaults.media?.type === "photo" && defaults.media?.url) data.imageUrl = defaults.media.url;
+      // Image/video URL: force=true → ép 100% theo admin (ghi đè cả seller đã chỉnh);
+      // force=false → chỉ fill khi seller chưa có.
+      if ((defaults.media?.type === "photo" || defaults.media?.type === "video") && defaults.media?.url) {
+        if (force || !p.imageUrl) data.imageUrl = defaults.media.url;
+      }
       if (Object.keys(data).length === 0) continue;
       await this.prisma.sourceProduct.update({ where: { id: p.id }, data });
       updated++;
     }
 
-    return { scanned: products.length, familyDetected, updated };
+    return { scanned: products.length, familyDetected, updated, mode: force ? "force" : "fill" };
   }
 
   /**
