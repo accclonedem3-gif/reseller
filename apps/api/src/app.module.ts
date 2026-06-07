@@ -34,6 +34,7 @@ import { SolanaPaymentService } from "./lib/solana-payment.service";
 import { QueueService } from "./lib/queue.service";
 import { TelegramBotService } from "./lib/telegram-bot.service.v2";
 import { TelegramClientService } from "./lib/telegram-client.service";
+import { BotSessionStore } from "./lib/bot-session.store";
 import { OrdersController } from "./orders/orders.controller";
 import { OrdersService } from "./orders/orders.service";
 import { ProductsController } from "./products/products.controller";
@@ -126,6 +127,7 @@ import { MailService } from "./lib/mail.service";
     SolanaPaymentService,
     PaymentService,
     TelegramClientService,
+    BotSessionStore,
     TelegramBotService,
     AuthService,
     ShopsService,
