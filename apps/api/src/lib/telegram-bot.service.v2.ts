@@ -1262,7 +1262,7 @@ export class TelegramBotService {
       const emojiId = isOos ? globalOosEmojiId : item.iconCustomEmojiId;
       const effectivePrice = getEffectivePrice(item);
       const btn: Record<string, string> = {
-        text: this.buildProductButtonLabel({ ...item, salePrice: effectivePrice }, language, usdtVndRate),
+        text: this.buildProductButtonLabel({ ...item, salePrice: effectivePrice }, language, usdtVndRate, Boolean(emojiId)),
         callback_data: `buy:${item.id}`,
       };
       if (emojiId) btn.icon_custom_emoji_id = emojiId;
@@ -1497,7 +1497,7 @@ export class TelegramBotService {
     const usdtVndRate = await this.getShopUsdtVndRate(shopId);
     const productBtn = (item: (typeof allProducts)[number]) => {
       const btn: Record<string, string> = {
-        text: this.buildProductButtonLabel({ ...item, salePrice: getEffectivePriceGrp(item) }, language, usdtVndRate),
+        text: this.buildProductButtonLabel({ ...item, salePrice: getEffectivePriceGrp(item) }, language, usdtVndRate, Boolean(item.iconCustomEmojiId)),
         callback_data: `buy:${item.id}`,
       };
       if (item.iconCustomEmojiId) btn.icon_custom_emoji_id = item.iconCustomEmojiId;
@@ -1586,7 +1586,7 @@ export class TelegramBotService {
     const usdtVndRate = await this.getShopUsdtVndRate(shopId);
     const productBtn = (item: (typeof products)[number]) => {
       const btn: Record<string, string> = {
-        text: this.buildProductButtonLabel({ ...item, salePrice: getEffectivePriceFt(item) }, language, usdtVndRate),
+        text: this.buildProductButtonLabel({ ...item, salePrice: getEffectivePriceFt(item) }, language, usdtVndRate, Boolean(item.iconCustomEmojiId)),
         callback_data: `buy:${item.id}`,
       };
       if (item.iconCustomEmojiId) btn.icon_custom_emoji_id = item.iconCustomEmojiId;
@@ -6774,6 +6774,7 @@ export class TelegramBotService {
     product: CatalogItem,
     language: BotLanguage = "vi",
     usdtVndRate?: Prisma.Decimal | number | string | null,
+    hasCustomIcon = false,
   ) {
     const effectiveUsdPrice =
       language === "en" && product.salePriceUsd != null && product.salePriceUsd > 0
@@ -6784,12 +6785,13 @@ export class TelegramBotService {
       : this.formatCompactBotMoney(product.salePrice, language, usdtVndRate);
     const stockLabel = product.available === null ? "∞" : String(Math.max(0, product.available));
     const suffix = ` | ${priceLabel} | 📦 ${stockLabel}`;
-    // Inline keyboard buttons do NOT support icon_custom_emoji_id (that field only works
-    // on Reply keyboard buttons). So we always prepend a text emoji — either the
-    // admin-set productIcon, or an auto-resolved emoji based on product name.
-    // Premium animated emojis can only be rendered inside the product detail message
-    // body via <tg-emoji> tag, not in catalog button labels.
-    const emoji = product.productIcon?.trim() || this.resolveProductEmoji(product.displayName, product.sourceName);
+    // When the button already carries an icon_custom_emoji_id (Bot API 9.4+),
+    // Telegram renders that premium emoji as the button icon, so prepending a text
+    // emoji too would show two icons. Only prepend a text-emoji fallback when the
+    // button has no custom icon.
+    const emoji = hasCustomIcon
+      ? ""
+      : (product.productIcon?.trim() || this.resolveProductEmoji(product.displayName, product.sourceName));
     const normalizedName = [emoji, this.compactProductName(this.localizeProductName(product.displayName, language))].filter(Boolean).join(" ");
     const safeNameLength = Math.max(16, 58 - suffix.length);
 
