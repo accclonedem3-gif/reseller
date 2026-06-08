@@ -1,0 +1,13 @@
+{
+  "name": "Nền tảng Reseller Bot",
+  "short_name": "Reseller",
+  "description": "Quản lý shop, bot Telegram, đơn hàng và kho.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#1a1d2e",
+  "theme_color": "#1a1d2e",
+  "icons": [
+    { "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}

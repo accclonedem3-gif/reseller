@@ -1,0 +1,17 @@
+# Dashboard riêng tư — không cho công cụ tìm kiếm index trang quản trị.
+# Vẫn cho phép các bot tạo link-preview (Telegram/Facebook/Twitter) đọc OG tags.
+
+User-agent: Googlebot
+Disallow: /
+
+User-agent: Bingbot
+Disallow: /
+
+User-agent: facebookexternalhit
+Allow: /
+
+User-agent: Twitterbot
+Allow: /
+
+User-agent: *
+Disallow: /
