@@ -90,7 +90,12 @@ export class CustomerWalletService {
     });
     if (!customer) return [];
     const entries = await this.prisma.customerWalletLedger.findMany({
-      where: { customerId: customer.id },
+      where: {
+        customerId: customer.id,
+        // Hide the internal currency-sync shadow rows (e.g. the USDT mirror of a
+        // VND adjust) — they confuse the customer and visually double-count.
+        NOT: { note: { startsWith: "Auto-sync" } },
+      },
       orderBy: { createdAt: "desc" },
       take: limit,
       select: {
