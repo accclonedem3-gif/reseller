@@ -254,8 +254,9 @@ export class TiersService {
           ? PaymentProvider.USDT_SOL
           : PaymentProvider.PAYOS;
 
-    // PayOS 5 phút (chuyển khoản nhanh), USDT 30 phút (crypto chậm hơn)
-    const expiryMinutes = providerOverride === PaymentProvider.PAYOS ? 5 : PAYMENT_EXPIRY_MINUTES;
+    // Tier payment links live for PAYMENT_EXPIRY_MINUTES so a manual bank transfer
+    // via the PayOS QR has time to land before the link (and DepositRequest) expires.
+    const expiryMinutes = PAYMENT_EXPIRY_MINUTES;
     const expiresAt = new Date(Date.now() + expiryMinutes * 60 * 1000);
 
     const payment = await this.paymentService.createPaymentLink({

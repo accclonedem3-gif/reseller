@@ -2618,6 +2618,76 @@ async function reconcilePendingPayOSOrders(purchaseQueue) {
     }
 }
 // ─────────────────────────────────────────────────────────────────
+// Tier subscription PayOS fallback — tier payments are stored as
+// DepositRequest (note "TIER_SUB:..."), NOT as Order, so the order
+// sweep above does not cover them. Without this, a tier renewal only
+// confirms if the live PayOS webhook lands — a missed/late webhook
+// leaves the seller paid-but-not-upgraded. Poll PayOS for pending
+// tier deposits and confirm via the internal endpoint as a fallback.
+// ─────────────────────────────────────────────────────────────────
+async function reconcilePendingTierDeposits() {
+    // Mirror the API's platform-shop resolution (tiers.service uses the same
+    // fallback) so the PayOS credentials are read from the exact shop that
+    // created the tier payment link.
+    const platformShopId = process.env.PLATFORM_DEPOSIT_SHOP_ID || "platform-tier";
+    const pending = await prisma.depositRequest.findMany({
+        where: {
+            provider: "PAYOS",
+            status: "PENDING",
+            externalOrderCode: { not: null },
+            note: { startsWith: "TIER_SUB:" },
+        },
+        orderBy: { createdAt: "asc" },
+        take: 20,
+    });
+    if (pending.length === 0) {
+        return;
+    }
+    const platformShop = await prisma.shop.findUnique({
+        where: { id: platformShopId },
+        include: { paymentConfig: true },
+    });
+    const credentials = resolvePayOSCredentials(platformShop?.paymentConfig);
+    if (!credentials) {
+        return;
+    }
+    const baseUrl = (process.env.APP_PUBLIC_URL || "http://localhost:3000").replace(/\/$/, "");
+    const internalToken = process.env.INTERNAL_API_TOKEN || "";
+    for (const deposit of pending) {
+        const externalOrderCode = deposit.externalOrderCode;
+        if (!externalOrderCode) {
+            continue;
+        }
+        try {
+            const remoteStatus = await (0, server_1.getPayOSPaymentLinkStatus)(credentials, externalOrderCode);
+            const providerStatus = String(remoteStatus.status || "UNKNOWN").toUpperCase();
+            const isPaid = ["PAID", "COMPLETED", "SUCCESS", "SUCCEEDED"].includes(providerStatus) ||
+                (Number(remoteStatus.amountPaid || 0) > 0 &&
+                    Number(remoteStatus.amount || 0) > 0 &&
+                    Number(remoteStatus.amountPaid || 0) >= Number(remoteStatus.amount || 0));
+            if (!isPaid) {
+                continue;
+            }
+            await axios_1.default.post(
+                `${baseUrl}/api/v1/webhooks/internal-crypto-confirm/${encodeURIComponent(externalOrderCode)}`,
+                {
+                    source: "worker_tier_payos_poll",
+                    providerStatus,
+                    payos: remoteStatus.providerResponse,
+                },
+                {
+                    headers: { "x-internal-token": internalToken, "Content-Type": "application/json" },
+                    timeout: 20000,
+                },
+            );
+            console.log(`[worker] Tier PayOS deposit ${externalOrderCode} → confirmed via poll (${providerStatus}).`);
+        }
+        catch (error) {
+            console.error(`[worker] Tier PayOS deposit reconcile failed for ${externalOrderCode}:`, formatError(error));
+        }
+    }
+}
+// ─────────────────────────────────────────────────────────────────
 // OKX Personal API — poll deposit history every 30s and match
 // pending OKX payment transactions by USDT amount (set at order
 // creation time with the same anti-collision offset trick we use
@@ -3740,6 +3810,12 @@ async function bootstrap() {
             console.error("[worker] PayOS order sweep failed:", formatError(error));
         });
     }, PAYOS_ORDER_SWEEP_INTERVAL_MS);
+    setInterval(() => {
+        void reconcilePendingTierDeposits().catch((error) => {
+            console.error("[worker] Tier PayOS deposit sweep failed:", formatError(error));
+        });
+    }, PAYOS_ORDER_SWEEP_INTERVAL_MS);
+    void reconcilePendingTierDeposits().catch(() => undefined);
     setInterval(() => {
         void pollOkxDeposits(purchaseQueue).catch((error) => {
             console.error("[worker] OKX deposit poll failed:", formatError(error));
