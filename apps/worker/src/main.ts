@@ -1379,6 +1379,7 @@ async function creditAffiliateCommission(orderId) {
     if (!config?.enabled || !config.commissionPct) return;
     const commission = Math.round(Number(order.totalSaleAmount) * Number(config.commissionPct) / 100);
     if (commission <= 0) return;
+    let creditedCommissionAfter = null;
     await prisma.$transaction(async (tx) => {
         await tx.order.update({ where: { id: orderId }, data: { affiliateCommission: commission, affiliateCustomerId: order.customer.referredById } });
         const wallet = await tx.customerWallet.upsert({
@@ -1393,6 +1394,7 @@ async function creditAffiliateCommission(orderId) {
         const commissionBefore = Number(fresh.commissionBalance);
         const commissionAfter = commissionBefore + commission;
         await tx.customerWallet.update({ where: { id: wallet.id }, data: { commissionBalance: commissionAfter } });
+        creditedCommissionAfter = commissionAfter;
         await tx.customerWalletLedger.create({
             data: {
                 customerId: order.customer.referredById,
@@ -1408,6 +1410,27 @@ async function creditAffiliateCommission(orderId) {
             },
         });
     });
+    // Notify the referrer that their bot-wallet commission balance went up.
+    if (creditedCommissionAfter != null && order.customer.referredById) {
+        try {
+            const [ref, botCfg] = await Promise.all([
+                prisma.customer.findUnique({ where: { id: order.customer.referredById }, select: { telegramChatId: true } }),
+                prisma.botConfig.findUnique({ where: { shopId: order.shopId }, select: { telegramBotTokenEncrypted: true } }),
+            ]);
+            const enc = botCfg?.telegramBotTokenEncrypted;
+            const chatId = ref?.telegramChatId;
+            if (enc && chatId) {
+                const token = (0, server_1.decryptSecret)(enc, process.env.APP_ENCRYPTION_KEY || "change-me-32-byte-key");
+                if (token && !(0, server_1.isMockBotToken)(token)) {
+                    const amt = new Intl.NumberFormat("vi-VN").format(commission) + "đ";
+                    const bal = new Intl.NumberFormat("vi-VN").format(creditedCommissionAfter) + "đ";
+                    await (0, server_1.telegramSendMessage)(token, chatId, `🎁 Bạn vừa nhận hoa hồng: <b>+${amt}</b>\nSố dư hoa hồng: ${bal}`, { parse_mode: "HTML" }).catch(() => undefined);
+                }
+            }
+        } catch (error) {
+            console.error("[worker] commission notify failed:", formatError(error));
+        }
+    }
 }
 async function deleteQrMessage(botToken, order) {
     const messageId = order.paymentTransaction?.qrTelegramMessageId;

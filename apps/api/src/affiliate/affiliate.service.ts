@@ -1,6 +1,7 @@
 import { Inject, Injectable, NotFoundException } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../db/prisma.service";
+import { WalletNotifyService } from "../customer-wallet/wallet-notify.service";
 import { UpdateAffiliateConfigDto } from "./affiliate.dto";
 import type { AuthenticatedUser } from "../types";
 
@@ -17,6 +18,8 @@ export class AffiliateService {
   constructor(
     @Inject(PrismaService)
     private readonly prisma: PrismaService,
+    @Inject(WalletNotifyService)
+    private readonly walletNotify: WalletNotifyService,
   ) {}
 
   private async resolveShop(user: AuthenticatedUser) {
@@ -71,7 +74,7 @@ export class AffiliateService {
   }
 
   async creditCommission(orderId: string, affiliateCustomerId: string, amount: number) {
-    await this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx) => {
       await tx.order.update({
         where: { id: orderId },
         data: {
@@ -116,7 +119,17 @@ export class AffiliateService {
           referenceId: orderId,
         },
       });
+
+      return { commissionAfter };
     });
+
+    if (result) {
+      await this.walletNotify.notifyCustomerWalletChange(affiliateCustomerId, {
+        type: "AFFILIATE_COMMISSION",
+        amount,
+        commissionBalanceAfter: result.commissionAfter,
+      });
+    }
   }
 
   async revokeCommission(orderId: string) {
@@ -128,7 +141,7 @@ export class AffiliateService {
     const amount = Number(order.affiliateCommission ?? 0);
     if (amount <= 0) return;
 
-    await this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx) => {
       await tx.order.update({
         where: { id: orderId },
         data: { affiliateCommission: toDecimal(0) },
@@ -171,7 +184,17 @@ export class AffiliateService {
           note: "Claw back commission when order failed/refunded",
         },
       });
+
+      return { commissionAfter };
     });
+
+    if (result) {
+      await this.walletNotify.notifyCustomerWalletChange(order.affiliateCustomerId as string, {
+        type: "REFUND_ORDER",
+        amount: -amount,
+        commissionBalanceAfter: result.commissionAfter,
+      });
+    }
   }
 
   async getLeaderboard(user: AuthenticatedUser, limit = 20) {

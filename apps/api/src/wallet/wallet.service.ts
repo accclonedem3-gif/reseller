@@ -21,6 +21,7 @@ import { MailService } from "../lib/mail.service";
 import { PaymentService } from "../lib/payment.service";
 import { decimalToNumber, generateExternalPaymentCode, toDecimal } from "../lib/utils";
 import { ShopsService } from "../shops/shops.service";
+import { WalletNotifyService } from "../customer-wallet/wallet-notify.service";
 import type { AuthenticatedUser } from "../types";
 
 import type {
@@ -46,6 +47,8 @@ export class WalletService {
     private readonly mail: MailService,
     @Inject(AdminNotifyService)
     private readonly adminNotify: AdminNotifyService,
+    @Inject(WalletNotifyService)
+    private readonly walletNotify: WalletNotifyService,
   ) {}
 
   async getWallet(user: AuthenticatedUser) {
@@ -838,7 +841,7 @@ export class WalletService {
 
     const USDT_VND_RATE = this.config.usdtVndRate || 27000;
 
-    return this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx) => {
       const wallet = await tx.customerWallet.upsert({
         where: { customerId },
         update: {},
@@ -924,8 +927,18 @@ export class WalletService {
         balanceUsdt: decimalToNumber(updatedWallet.balanceUsdt),
         balanceBefore,
         balanceAfter,
+        vndDelta: isUsdt ? syncDelta : delta,
+        vndBalanceAfter: isUsdt ? syncBalanceAfter : balanceAfter,
       };
     });
+
+    await this.walletNotify.notifyCustomerWalletChange(customerId, {
+      type: "ADJUST",
+      amount: result.vndDelta,
+      balanceAfter: result.vndBalanceAfter,
+    });
+
+    return result;
   }
 
   async getCustomerTopupHistory(user: AuthenticatedUser, customerId: string) {

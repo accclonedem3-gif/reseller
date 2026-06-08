@@ -21,6 +21,7 @@ import { SourceProductService } from "./source/source-product.service";
 import { StockAlertService } from "./source/stock-alert.service";
 import { AppConfigService } from "./config/app-config.service";
 import { CustomerWalletService } from "./customer-wallet/customer-wallet.service";
+import { WalletNotifyService } from "./customer-wallet/wallet-notify.service";
 import { PrismaService } from "./db/prisma.service";
 import { DevController } from "./dev/dev.controller.v2";
 import { InternalController } from "./internal/internal.controller";
@@ -138,6 +139,7 @@ import { MailService } from "./lib/mail.service";
     AuthService,
     ShopsService,
     CustomerWalletService,
+    WalletNotifyService,
     ProductsService,
     ProductsStockService,
     SourceStockService,
