@@ -82,6 +82,37 @@ export class CustomerWalletService {
     };
   }
 
+  /** Recent wallet ledger entries (all balance movements) for the bot history view. */
+  async getWalletLedgerForTelegram(shopId: string, telegramUserId: string, limit = 15) {
+    const customer = await this.prisma.customer.findUnique({
+      where: { shopId_telegramUserId: { shopId, telegramUserId } },
+      select: { id: true },
+    });
+    if (!customer) return [];
+    const entries = await this.prisma.customerWalletLedger.findMany({
+      where: { customerId: customer.id },
+      orderBy: { createdAt: "desc" },
+      take: limit,
+      select: {
+        type: true,
+        amount: true,
+        balanceAfter: true,
+        commissionBalanceAfter: true,
+        note: true,
+        createdAt: true,
+      },
+    });
+    return entries.map((e) => ({
+      type: e.type as string,
+      amount: decimalToNumber(e.amount),
+      balanceAfter: decimalToNumber(e.balanceAfter),
+      commissionBalanceAfter:
+        e.commissionBalanceAfter != null ? decimalToNumber(e.commissionBalanceAfter) : null,
+      note: e.note ?? null,
+      createdAt: e.createdAt,
+    }));
+  }
+
   async createTopupForTelegram(input: {
     shopId: string;
     amount: number;

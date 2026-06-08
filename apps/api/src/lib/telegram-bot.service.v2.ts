@@ -671,6 +671,8 @@ export class TelegramBotService {
         await this.clearPendingPaymentSelection(shopId, telegramUserId);
         await this.clearPendingTxHashSubmission(shopId, telegramUserId);
         await this.renderWalletPanel(shopId, outboundToken, chatId, messageId, telegramUserId, actions, callbackLanguage);
+      } else if (data === "wallet:ledger") {
+        await this.renderWalletLedger(shopId, outboundToken, chatId, messageId, telegramUserId, actions, callbackLanguage);
       } else if (data === "home:warranty" || data === "warranty:start") {
         await this.clearPendingQuantitySelection(shopId, telegramUserId);
         await this.clearPendingWalletTopup(shopId, telegramUserId);
@@ -1739,6 +1741,7 @@ export class TelegramBotService {
       {
         inline_keyboard: [
           [{ text: language === "en" ? "🏦 Top up wallet" : language === "th" ? "🏦 เติมเงินกระเป๋า" : "🏦 Nạp vào ví", callback_data: "wallet:topup" }],
+          [{ text: language === "en" ? "📋 Balance history" : language === "th" ? "📋 ประวัติยอดเงิน" : "📋 Lịch sử biến động", callback_data: "wallet:ledger" }],
           ...paymentRows,
           [
             this.buildNavTextBtn(custDataWallet, "orders", "history", "home:history", language),
@@ -1751,6 +1754,79 @@ export class TelegramBotService {
         ],
       },
       actions,
+    );
+  }
+
+  private walletLedgerLabel(type: string, language: BotLanguage): { icon: string; label: string } {
+    const map: Record<string, { icon: string; vi: string; en: string; th: string }> = {
+      TOPUP: { icon: "🟢", vi: "Nạp ví", en: "Top-up", th: "เติมเงิน" },
+      TOPUP_BONUS: { icon: "🎁", vi: "Thưởng nạp", en: "Top-up bonus", th: "โบนัสเติมเงิน" },
+      SPEND_ORDER: { icon: "🛒", vi: "Mua hàng", en: "Purchase", th: "ซื้อสินค้า" },
+      REFUND_ORDER: { icon: "↩️", vi: "Hoàn tiền", en: "Refund", th: "คืนเงิน" },
+      AFFILIATE_COMMISSION: { icon: "💸", vi: "Hoa hồng", en: "Commission", th: "ค่าคอมมิชชั่น" },
+      ADJUST: { icon: "⚙️", vi: "Điều chỉnh", en: "Adjustment", th: "ปรับยอด" },
+    };
+    const m = map[type];
+    if (!m) return { icon: "•", label: type };
+    return { icon: m.icon, label: language === "en" ? m.en : language === "th" ? m.th : m.vi };
+  }
+
+  private async renderWalletLedger(
+    shopId: string,
+    token: string,
+    chatId: number,
+    messageId: number | undefined,
+    telegramUserId: string,
+    actions: unknown[],
+    language: BotLanguage = "vi",
+  ) {
+    const [usdtVndRate, entries] = await Promise.all([
+      this.getShopUsdtVndRate(shopId),
+      this.customerWalletService.getWalletLedgerForTelegram(shopId, telegramUserId, 15),
+    ]);
+
+    const title =
+      language === "en"
+        ? "📋 Wallet balance history"
+        : language === "th"
+          ? "📋 ประวัติยอดกระเป๋าเงิน"
+          : "📋 Lịch sử biến động ví";
+    const lines: string[] = [title, ""];
+
+    if (entries.length === 0) {
+      lines.push(
+        language === "en"
+          ? "No movements yet."
+          : language === "th"
+            ? "ยังไม่มีการเปลี่ยนแปลง"
+            : "Chưa có biến động nào.",
+      );
+    } else {
+      for (const e of entries) {
+        const { icon, label } = this.walletLedgerLabel(e.type, language);
+        const sign = e.amount >= 0 ? "+" : "−";
+        const amountStr = this.formatBotMoney(Math.abs(e.amount), language, usdtVndRate);
+        const isCommission = e.type === "AFFILIATE_COMMISSION";
+        const purse = isCommission
+          ? language === "en" ? " (commission)" : language === "th" ? " (ค่าคอม)" : " (ví hoa hồng)"
+          : "";
+        lines.push(`${icon} ${label}${purse}  <b>${sign}${amountStr}</b>`);
+        lines.push(`   ${this.formatDateTime(e.createdAt)}`);
+      }
+    }
+
+    await this.editOrSend(
+      token,
+      chatId,
+      messageId,
+      lines.join("\n"),
+      {
+        inline_keyboard: [
+          [{ text: language === "en" ? "⬅️ Back to wallet" : language === "th" ? "⬅️ กลับกระเป๋าเงิน" : "⬅️ Quay lại ví", callback_data: "home:wallet" }],
+        ],
+      },
+      actions,
+      "HTML",
     );
   }
 
@@ -5397,19 +5473,7 @@ export class TelegramBotService {
         lines.push("You have no pending wallet top-ups.", "");
       }
 
-      if (summary.recentTopups.length > 0) {
-        lines.push("Recent top-ups:", "");
-        lines.push(
-          ...summary.recentTopups.slice(0, 5).flatMap((topup, index) => [
-            `${index + 1}. ${this.formatBotMoney(topup.amount, language, usdtVndRate)} • ${this.formatTopupStatus(topup.status, language)}`,
-            `   Top-up code: ${topup.externalOrderCode}`,
-            `   Time: ${this.formatDateTime(topup.paidAt || topup.createdAt)}`,
-            "",
-          ]),
-        );
-      } else {
-        lines.push("No top-up history yet.", "");
-      }
+      lines.push("📋 See all movements in “Balance history” below.");
 
       return lines.join("\n");
     }
@@ -5439,19 +5503,7 @@ export class TelegramBotService {
         lines.push("ไม่มีรายการเติมเงินที่รอชำระ", "");
       }
 
-      if (summary.recentTopups.length > 0) {
-        lines.push("ประวัติการเติมเงินล่าสุด:", "");
-        lines.push(
-          ...summary.recentTopups.slice(0, 5).flatMap((topup, index) => [
-            `${index + 1}. ${this.formatBotMoney(topup.amount, language, usdtVndRate)} • ${this.formatTopupStatus(topup.status, language)}`,
-            `   รหัสเติมเงิน: ${topup.externalOrderCode}`,
-            `   เวลา: ${this.formatDateTime(topup.paidAt || topup.createdAt)}`,
-            "",
-          ]),
-        );
-      } else {
-        lines.push("ยังไม่มีประวัติการเติมเงิน", "");
-      }
+      lines.push("📋 ดูการเปลี่ยนแปลงทั้งหมดที่ปุ่ม “ประวัติยอดเงิน” ด้านล่าง");
 
       return lines.join("\n");
     }
@@ -5482,19 +5534,7 @@ export class TelegramBotService {
       lines.push("Hiện bạn không có lệnh nạp ví nào đang chờ thanh toán.", "");
     }
 
-    if (summary.recentTopups.length > 0) {
-      lines.push("Lịch sử nạp ví gần đây:", "");
-      lines.push(
-        ...summary.recentTopups.slice(0, 5).flatMap((topup, index) => [
-          `${index + 1}. ${this.formatBotMoney(topup.amount, language, usdtVndRate)} • ${this.formatTopupStatus(topup.status, language)}`,
-          `   Mã nạp: ${topup.externalOrderCode}`,
-          `   Thời gian: ${this.formatDateTime(topup.paidAt || topup.createdAt)}`,
-          "",
-        ]),
-      );
-    } else {
-      lines.push("Chưa có lịch sử nạp ví.", "");
-    }
+    lines.push("📋 Xem toàn bộ biến động ở nút “Lịch sử biến động” bên dưới.");
 
     return lines.join("\n");
   }
