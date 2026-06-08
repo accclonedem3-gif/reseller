@@ -370,7 +370,7 @@ export class AdminTemplateService {
    * Inherit lookup: given a product family + sourceName, return defaults from admin template.
    * Match by family first, fallback to sourceName for legacy.
    */
-  async getInheritedDefaults(args: { family?: SourceProductFamily | null; sourceName?: string | null }) {
+  async getInheritedDefaults(args: { family?: string | null; sourceName?: string | null }) {
     const shop = await this.findTemplateShopOrNull();
     if (!shop?.botConfig) return null;
     const cust = (shop.botConfig.customizationJson as Record<string, any>) ?? {};
@@ -388,7 +388,10 @@ export class AdminTemplateService {
   /**
    * Auto-detect SourceProductFamily từ tên sản phẩm — dùng cho products không có family.
    */
-  private detectFamilyFromName(name: string | null | undefined): SourceProductFamily | null {
+  private detectFamilyFromName(
+    name: string | null | undefined,
+    families: Array<{ key: string; label: string }> = [],
+  ): string | null {
     if (!name) return null;
     const n = String(name).toLowerCase();
     if (/\b(chatgpt|gpt[\s-]*plus|gpt[\s-]*pro|gpt[\s-]*team|openai)\b/.test(n)) return SourceProductFamily.CHATGPT;
@@ -412,6 +415,13 @@ export class AdminTemplateService {
     if (/\b(duolingo|duo[\s-]*lingo)\b/.test(n)) return SourceProductFamily.DUOLINGO;
     if (/\b(hidemyass|hma)\b/.test(n)) return SourceProductFamily.HMA;
     if (/\b(vpn|nordvpn|expressvpn|surfshark|protonvpn|cyberghost)\b/.test(n)) return SourceProductFamily.VPN;
+    // Admin-added families: match the product name against the family label/key.
+    for (const fam of families) {
+      const lbl = String(fam.label || "").toLowerCase().trim();
+      const key = String(fam.key || "").toLowerCase().trim();
+      if (lbl.length >= 3 && n.includes(lbl)) return fam.key;
+      if (key.length >= 3 && n.includes(key)) return fam.key;
+    }
     return null;
   }
 
@@ -431,11 +441,17 @@ export class AdminTemplateService {
     }
     const cust = (tpl.botConfig.customizationJson as Record<string, any>) ?? {};
     const map = (cust.productDefaultsByFamily as Record<string, any>) ?? {};
-    if (Object.keys(map).length === 0) {
-      return { scanned: 0, familyDetected: 0, updated: 0, mode: options.force ? "force" : "fill" };
-    }
 
     const force = options.force === true;
+    const families = await this.prisma.productFamily.findMany({
+      where: { isActive: true },
+      select: { key: true, label: true, emoji: true, customEmojiId: true },
+    });
+    const familyByKey = new Map(families.map((f) => [f.key, f] as const));
+    const familiesHaveIcon = families.some((f) => f.emoji || f.customEmojiId);
+    if (Object.keys(map).length === 0 && !familiesHaveIcon) {
+      return { scanned: 0, familyDetected: 0, updated: 0, mode: force ? "force" : "fill" };
+    }
 
     const products = await this.prisma.sourceProduct.findMany({
       select: {
@@ -454,7 +470,7 @@ export class AdminTemplateService {
       let family = p.productFamily;
       let needSetFamily = false;
       if (!family) {
-        family = this.detectFamilyFromName(p.sourceName);
+        family = this.detectFamilyFromName(p.sourceName, families);
         if (family) {
           needSetFamily = true;
           familyDetected++;
@@ -462,19 +478,18 @@ export class AdminTemplateService {
       }
       if (!family) continue;
 
-      const defaults = map[family];
-      if (!defaults) {
-        if (needSetFamily) {
-          await this.prisma.sourceProduct.update({ where: { id: p.id }, data: { productFamily: family } });
-        }
-        continue;
-      }
+      const defaults = map[family] ?? {};
+      const famRow = familyByKey.get(family);
+      // Icon comes from the per-family product-default first, then falls back to the
+      // family catalog row (emoji / custom emoji set in the family manager).
+      const iconVal = defaults.icon ?? famRow?.emoji ?? null;
+      const emojiIdVal = defaults.customEmojiId ?? famRow?.customEmojiId ?? null;
 
       const data: Record<string, any> = {};
       if (needSetFamily) data.productFamily = family;
       // Icon (emoji): fill-only — không ghi đè giá trị seller đã chỉnh
-      if (!p.productIcon && defaults.icon) data.productIcon = defaults.icon;
-      if (!p.iconCustomEmojiId && defaults.customEmojiId) data.iconCustomEmojiId = defaults.customEmojiId;
+      if (!p.productIcon && iconVal) data.productIcon = iconVal;
+      if (!p.iconCustomEmojiId && emojiIdVal) data.iconCustomEmojiId = emojiIdVal;
       // Image/video URL: force=true → ép 100% theo admin (ghi đè cả seller đã chỉnh);
       // force=false → chỉ fill khi seller chưa có.
       if ((defaults.media?.type === "photo" || defaults.media?.type === "video") && defaults.media?.url) {

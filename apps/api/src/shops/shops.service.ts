@@ -904,6 +904,11 @@ export class ShopsService {
 
     // Pre-load admin template defaults once for the whole batch (perf)
     const adminTplDefaults = await this.loadAdminTemplateProductDefaultsByFamily();
+    const adminFamilies = await this.prisma.productFamily.findMany({
+      where: { isActive: true },
+      select: { key: true, label: true, emoji: true, customEmojiId: true },
+    });
+    const adminFamilyByKey = new Map(adminFamilies.map((f) => [f.key, f] as const));
 
     for (const product of normalizedProducts) {
       const previous = existingByExternalId.get(product.externalId);
@@ -912,23 +917,26 @@ export class ShopsService {
       // Auto-detect family: ưu tiên dữ liệu DB cũ → metadata → name detect
       const detectedFamily = previous?.productFamily
         ?? rawBusinessFields.productFamily
-        ?? this.detectFamilyFromName(product.sourceName)
+        ?? this.detectFamilyFromName(product.sourceName, adminFamilies)
         ?? undefined;
       // Inject admin template defaults nhưng KHÔNG ghi đè giá trị seller đã set
       const adminMatch = detectedFamily ? adminTplDefaults[detectedFamily] : null;
+      const famRow = detectedFamily ? adminFamilyByKey.get(detectedFamily) : undefined;
       const businessFields = {
         ...rawBusinessFields,
         productFamily: detectedFamily,
-        // Ưu tiên: previous (seller đã set) → canboso → admin template
+        // Ưu tiên: previous (seller đã set) → canboso → admin template → family catalog
         productIcon:
           previous?.productIcon
             ?? rawBusinessFields.productIcon
             ?? adminMatch?.icon
+            ?? famRow?.emoji
             ?? undefined,
         iconCustomEmojiId:
           previous?.iconCustomEmojiId
             ?? rawBusinessFields.iconCustomEmojiId
             ?? adminMatch?.customEmojiId
+            ?? famRow?.customEmojiId
             ?? undefined,
         imageUrl:
           previous?.imageUrl
@@ -1501,7 +1509,10 @@ export class ShopsService {
    * Auto-detect SourceProductFamily từ tên sản phẩm (keyword matching).
    * Dùng khi canboso sync không gửi productFamily metadata.
    */
-  private detectFamilyFromName(name: string | null | undefined): SourceProductFamily | null {
+  private detectFamilyFromName(
+    name: string | null | undefined,
+    families: Array<{ key: string; label: string }> = [],
+  ): string | null {
     if (!name) return null;
     const n = String(name).toLowerCase();
     // Thứ tự match: keyword cụ thể trước, generic sau
@@ -1526,6 +1537,13 @@ export class ShopsService {
     if (/\b(duolingo|duo[\s-]*lingo)\b/.test(n)) return SourceProductFamily.DUOLINGO;
     if (/\b(hidemyass|hma)\b/.test(n)) return SourceProductFamily.HMA;
     if (/\b(vpn|nordvpn|expressvpn|surfshark|protonvpn|cyberghost)\b/.test(n)) return SourceProductFamily.VPN;
+    // Admin-added families: match the product name against the family label/key.
+    for (const fam of families) {
+      const lbl = String(fam.label || "").toLowerCase().trim();
+      const key = String(fam.key || "").toLowerCase().trim();
+      if (lbl.length >= 3 && n.includes(lbl)) return fam.key;
+      if (key.length >= 3 && n.includes(key)) return fam.key;
+    }
     return null;
   }
 
