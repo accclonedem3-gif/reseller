@@ -170,6 +170,10 @@ export function TierPricingPage() {
     const divisor = billingCycle === "monthly" ? 1 : billingCycle === "quarterly" ? 3 : billingCycle === "semi_annual" ? 6 : 12;
     return Math.round(p / divisor);
   };
+  const hasActiveTier = (currentTierLower === "pro" || currentTierLower === "ultra") && !!quote.currentTierExpiresAt;
+  const daysLeft = quote.currentTierExpiresAt
+    ? Math.max(0, Math.ceil((new Date(quote.currentTierExpiresAt).getTime() - Date.now()) / 86400000))
+    : 0;
 
   return (
     <div className="mx-auto max-w-5xl px-6 py-16 sm:py-20">
@@ -177,6 +181,24 @@ export function TierPricingPage() {
         <h1 className="text-balance text-5xl font-semibold tracking-tight sm:text-6xl" style={{ color: "var(--tx)", letterSpacing: "-0.02em" }}>Nâng cấp gói</h1>
         <p className="mx-auto mt-4 max-w-lg text-base sm:text-lg" style={{ color: "var(--tx-m)" }}>Chọn gói phù hợp với quy mô shop của bạn.</p>
       </div>
+
+      {hasActiveTier && (
+        <div className="mx-auto mt-8 flex max-w-2xl flex-wrap items-center justify-center gap-x-3 gap-y-1.5 rounded-2xl px-5 py-4 text-center"
+          style={{ background: "var(--inp)", border: "1px solid var(--bd)" }}>
+          <span className="rounded-full px-2.5 py-1 text-[11px] font-bold uppercase tracking-wider"
+            style={{
+              background: currentTierLower === "ultra" ? "rgba(139,92,246,0.18)" : "rgba(99,102,241,0.18)",
+              color: currentTierLower === "ultra" ? "rgb(167,139,250)" : "rgb(129,140,248)",
+            }}>
+            Đang dùng · Gói {currentTierLower === "ultra" ? "Ultra" : "Pro"}
+          </span>
+          <span className="text-sm" style={{ color: "var(--tx-m)" }}>
+            Hết hạn <b style={{ color: "var(--tx)" }}>{new Date(quote.currentTierExpiresAt!).toLocaleDateString("vi-VN")}</b>
+            {" · còn "}
+            <b style={{ color: daysLeft <= 3 ? "rgb(239,68,68)" : "var(--tx)" }}>{daysLeft} ngày</b>
+          </span>
+        </div>
+      )}
 
       {quote.availableDiscount && (
         <div className="mx-auto mt-8 max-w-2xl rounded-2xl px-5 py-4 text-center"
@@ -213,6 +235,7 @@ export function TierPricingPage() {
             discountPercent={quote.availableDiscount?.discountPercent}
             pricePerMonth={pricePerMonth(proPlan.priceVnd)} features={TIER_FEATURES.pro}
             isCurrent={currentTierLower === "pro"} featured={false}
+            locked={currentTierLower === "ultra"}
             onPurchase={() => { setModalTier("pro"); setPaymentMethod("PAYOS"); }}
             currentExpiresAt={currentTierLower === "pro" ? quote.currentTierExpiresAt : null} />
         )}
@@ -354,18 +377,20 @@ function AutoRenewCard({ quote }: { quote: TierQuote }) {
   );
 }
 
-function TierCard({ tierKey, label, tagline, priceVnd, originalPriceVnd, pricePerMonth, discountPercent, features, isCurrent, featured, onPurchase, currentExpiresAt }: {
+function TierCard({ tierKey, label, tagline, priceVnd, originalPriceVnd, pricePerMonth, discountPercent, features, isCurrent, featured, onPurchase, currentExpiresAt, locked = false }: {
   tierKey: TierKey; label: string; tagline: string; priceVnd: number; originalPriceVnd?: number; pricePerMonth: number; discountPercent?: number; features: string[];
-  isCurrent: boolean; featured: boolean; onPurchase: () => void; currentExpiresAt: string | null;
+  isCurrent: boolean; featured: boolean; onPurchase: () => void; currentExpiresAt: string | null; locked?: boolean;
 }) {
   const hasDiscount = !!originalPriceVnd && originalPriceVnd > priceVnd;
   return (
     <div className="relative flex flex-col rounded-3xl p-8 sm:p-10" style={{
       background: featured ? "linear-gradient(180deg, rgba(99,102,241,0.06), transparent 60%), var(--surface)" : "var(--surface)",
       border: `1px solid ${featured ? "rgba(99,102,241,0.35)" : "var(--bd)"}`,
+      opacity: locked ? 0.5 : 1,
     }}>
-      {isCurrent && <span className="absolute right-6 top-6 rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider" style={{ background: "rgba(16,185,129,0.15)", color: "rgb(16,185,129)" }}>Gói hiện tại</span>}
-      {featured && !isCurrent && <span className="absolute right-6 top-6 rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider" style={{ background: "rgba(99,102,241,0.15)", color: "rgb(129,140,248)" }}>Khuyên dùng</span>}
+      {locked && <span className="absolute right-6 top-6 rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider" style={{ background: "var(--inp)", color: "var(--tx-f)" }}>Đã có ở Ultra</span>}
+      {!locked && isCurrent && <span className="absolute right-6 top-6 rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider" style={{ background: "rgba(16,185,129,0.15)", color: "rgb(16,185,129)" }}>Gói hiện tại</span>}
+      {!locked && featured && !isCurrent && <span className="absolute right-6 top-6 rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider" style={{ background: "rgba(99,102,241,0.15)", color: "rgb(129,140,248)" }}>Khuyên dùng</span>}
 
       <div>
         <h3 className="text-2xl font-semibold" style={{ color: "var(--tx)" }}>{label}</h3>
@@ -392,10 +417,10 @@ function TierCard({ tierKey, label, tagline, priceVnd, originalPriceVnd, pricePe
         {pricePerMonth !== priceVnd && <p className="mt-2 text-sm" style={{ color: "var(--tx-m)" }}>Tương đương <span className="font-semibold" style={{ color: "var(--tx)" }}>{formatCurrency(pricePerMonth)}/tháng</span></p>}
       </div>
 
-      <button type="button" onClick={onPurchase}
-        className="mt-8 w-full rounded-2xl py-3.5 text-[15px] font-semibold transition-all hover:opacity-90"
+      <button type="button" onClick={locked ? undefined : onPurchase} disabled={locked}
+        className="mt-8 w-full rounded-2xl py-3.5 text-[15px] font-semibold transition-all hover:opacity-90 disabled:cursor-default disabled:hover:opacity-100"
         style={{ background: featured ? "rgb(99,102,241)" : "var(--tx)", color: featured ? "white" : "var(--surface)" }}>
-        {isCurrent ? "Gia hạn" : tierKey === "ultra" ? "Nâng cấp Ultra" : "Chọn gói Pro"}
+        {locked ? "Đã bao gồm trong Ultra" : isCurrent ? "Gia hạn" : tierKey === "ultra" ? "Nâng cấp Ultra" : "Chọn gói Pro"}
       </button>
 
       {isCurrent && currentExpiresAt && <p className="mt-3 text-center text-xs" style={{ color: "var(--tx-f)" }}>Hết hạn {new Date(currentExpiresAt).toLocaleDateString("vi-VN")}</p>}

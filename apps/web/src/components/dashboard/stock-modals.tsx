@@ -2451,45 +2451,61 @@ export function ViewStockModal({
                       </div>
                     </div>
                     {!isCollapsed && (
-                      <div className="divide-y" style={{ borderColor: "var(--bd)" }}>
+                      <div className="divide-y divide-[#6b7280] overflow-hidden rounded-lg border border-[#6b7280]">
                         {group.items.map((item, localIdx) => {
                           const globalIdx = groupStartIdx + localIdx;
                           const isSelected = selectedIds.has(item.id);
                           const isAvailable = item.status === "AVAILABLE";
+                          const accent =
+                            item.status === "AVAILABLE"
+                              ? "rgb(16,185,129)"
+                              : item.status === "SOLD"
+                                ? "rgb(239,68,68)"
+                                : "rgb(168,85,247)";
                           return (
                             <div
                               key={item.id}
-                              className="flex items-center gap-2 px-2 py-1 hover:bg-black/5 cursor-pointer"
+                              className="flex items-stretch cursor-pointer transition-colors hover:bg-orange-500/10"
+                              style={{
+                                borderLeft: `3px solid ${accent}`,
+                                background: isSelected ? "rgba(249,115,22,0.12)" : undefined,
+                              }}
                               onClick={(e) => {
                                 if (!isAvailable) return;
                                 toggleSelect(item.id, globalIdx, e.shiftKey);
                               }}
                             >
-                              <input
-                                type="checkbox"
-                                checked={isSelected}
-                                disabled={!isAvailable}
-                                onChange={() => undefined}
-                                className="shrink-0"
-                              />
-                              <span
-                                className="min-w-0 flex-1 truncate font-mono text-[11.5px]"
-                                style={{ color: item.status === "AVAILABLE" ? "var(--tx)" : "var(--tx-f)" }}
-                                title={item.text}
-                              >
-                                {item.text}
-                              </span>
-                              <span className="shrink-0 whitespace-nowrap text-[10px]" style={{ color: "var(--tx-f)" }}>
-                                {item.status === "AVAILABLE" && <>🟢 {formatDateTime(item.uploadedAt)}</>}
-                                {item.status === "SOLD" && item.soldToOrder && (
-                                  <>
-                                    🔴 {formatDateTime(item.soldToOrder.deliveredAt || item.soldAt!)}{" "}
-                                    @{item.soldToCustomer?.telegramUsername ?? item.soldToCustomer?.telegramUserId ?? "?"}{" "}
-                                    <span className="opacity-60">({item.soldToOrder.code})</span>
-                                  </>
-                                )}
-                                {item.status === "EXTRACTED" && <>🟣 {item.extractedAt ? formatDateTime(item.extractedAt) : ""}</>}
-                              </span>
+                              <div className="flex items-center px-2.5 py-2.5" style={{ borderRight: "1px solid #6b7280" }}>
+                                <input
+                                  type="checkbox"
+                                  checked={isSelected}
+                                  disabled={!isAvailable}
+                                  onChange={() => undefined}
+                                  className="shrink-0"
+                                />
+                              </div>
+                              <div className="flex min-w-0 flex-1 items-center px-3 py-2.5" style={{ borderRight: "1px solid #6b7280" }}>
+                                <span
+                                  className="min-w-0 flex-1 truncate font-mono text-[13px]"
+                                  style={{ color: "var(--tx)" }}
+                                  title={item.text}
+                                >
+                                  {item.text}
+                                </span>
+                              </div>
+                              <div className="flex shrink-0 items-center px-3 py-2.5">
+                                <span className="whitespace-nowrap text-[11px]" style={{ color: "var(--tx-m)" }}>
+                                  {item.status === "AVAILABLE" && <>🟢 {formatDateTime(item.uploadedAt)}</>}
+                                  {item.status === "SOLD" && item.soldToOrder && (
+                                    <>
+                                      🔴 {formatDateTime(item.soldToOrder.deliveredAt || item.soldAt!)}{" "}
+                                      @{item.soldToCustomer?.telegramUsername ?? item.soldToCustomer?.telegramUserId ?? "?"}{" "}
+                                      <span className="opacity-60">({item.soldToOrder.code})</span>
+                                    </>
+                                  )}
+                                  {item.status === "EXTRACTED" && <>🟣 {item.extractedAt ? formatDateTime(item.extractedAt) : ""}</>}
+                                </span>
+                              </div>
                             </div>
                           );
                         })}
