@@ -4,7 +4,9 @@ import { Check, Plus, Save, Trash2, Upload, X } from "lucide-react";
 
 import { useToast } from "@/components/ui/toast";
 import { InvoiceTemplateEditor, type InvoiceTemplate } from "@/components/dashboard/invoice-template-editor";
+import { ProductFamilyManager } from "@/components/dashboard/product-family-manager";
 import { api } from "@/lib/api";
+import { useProductFamilyOptions } from "@/hooks/use-product-families";
 
 type TemplateResp = {
   shopId: string;
@@ -66,6 +68,7 @@ function getErrMsg(err: unknown, fallback: string) {
 export function AdminTemplateBotPage() {
   const { showToast } = useToast();
   const queryClient = useQueryClient();
+  const familyOptions = useProductFamilyOptions();
 
   const tplQuery = useQuery<TemplateResp>({
     queryKey: ["admin-template"],
@@ -383,6 +386,9 @@ export function AdminTemplateBotPage() {
         </p>
       </div>
 
+      {/* Product family catalog (admin-managed) */}
+      <ProductFamilyManager />
+
       {/* Product defaults */}
       <div className="rounded-2xl p-5" style={{ background: "var(--surface)", border: "1px solid var(--bd)" }}>
         <div className="flex items-center justify-between">
@@ -423,7 +429,7 @@ export function AdminTemplateBotPage() {
               <Field label="Dòng sản phẩm (productFamily)">
                 <select value={pdFamily} onChange={(e) => setPdFamily(e.target.value)} disabled={!!editingFamily}
                   className={`${inputCls} ${editingFamily ? "opacity-60" : ""}`} style={inputStyle}>
-                  {FAMILY_OPTIONS.map((opt) => (
+                  {familyOptions.map((opt) => (
                     <option key={opt.value} value={opt.value}>{opt.label}</option>
                   ))}
                 </select>

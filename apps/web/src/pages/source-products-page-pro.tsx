@@ -52,6 +52,7 @@ import {
   sourceProductPackageOptions,
   sourceWarrantyPolicyOptions,
 } from "@/lib/source-product-options";
+import { useProductFamilyOptions } from "@/hooks/use-product-families";
 
 const T = {
   vi: {
@@ -706,6 +707,7 @@ function ProductForm({
 }) {
   const { lang } = useLang();
   const t = T[lang];
+  const familyOptions = useProductFamilyOptions();
   const set = <K extends keyof SourceProductForm>(key: K, value: SourceProductForm[K]) =>
     setForm((f) => ({ ...f, [key]: value }));
 
@@ -790,7 +792,7 @@ function ProductForm({
                 productPackage: "", // reset package when family changes
               }))
             }
-            options={sourceProductFamilyOptions}
+            options={familyOptions}
             placeholder={t.phFamily}
           />
         </Field>

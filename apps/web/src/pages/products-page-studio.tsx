@@ -66,6 +66,7 @@ import { api } from "@/lib/api";
 import { formatCurrency, formatDate } from "@/lib/format";
 import { useLang } from "@/lib/lang";
 import { hasSellerCapability } from "@/lib/seller-access";
+import { useProductFamilyOptions } from "@/hooks/use-product-families";
 import {
   sourceProductFamilyOptions,
   sourceProductPackageOptions,
@@ -1002,6 +1003,7 @@ export function ProductsPageStudio({
   const { showToast } = useToast();
   const { session } = useAuth();
   const isUltra = hasSellerCapability(session, "source_internal_manage");
+  const familyOptions = useProductFamilyOptions();
   const productsQuery = useQuery<Product[]>({
     queryKey: ["products"],
     queryFn: async () => (await api.get("/products")).data,
@@ -2019,7 +2021,7 @@ export function ProductsPageStudio({
                 style={{ borderColor: "var(--bd)", background: "var(--inp)", color: "var(--tx)" }}
               >
                 <option value="">— Chọn —</option>
-                {sourceProductFamilyOptions.map((opt) => (
+                {familyOptions.map((opt) => (
                   <option key={opt.value} value={opt.value}>{opt.label}</option>
                 ))}
               </select>
@@ -3577,7 +3579,7 @@ export function ProductsPageStudio({
                       style={{ borderColor: "var(--bd)", background: "var(--inp)", color: "var(--tx)" }}
                     >
                       <option value="">— Chọn —</option>
-                      {sourceProductFamilyOptions.map((opt) => (
+                      {familyOptions.map((opt) => (
                         <option key={opt.value} value={opt.value}>{opt.label}</option>
                       ))}
                     </select>
