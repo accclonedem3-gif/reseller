@@ -97,10 +97,10 @@ export class UpdateProductDto {
   internalSourcePrice?: number;
 
   @IsOptional()
-  @IsEnum(SourceProductFamily)
-  productFamily?: SourceProductFamily;
+  @IsString()
+  productFamily?: string;
 
-  @ValidateIf((input: UpdateProductDto) => input.productFamily === SourceProductFamily.OTHER)
+  @ValidateIf((input: UpdateProductDto) => input.productFamily === "OTHER")
   @IsString()
   productFamilyOther?: string;
 
@@ -254,10 +254,10 @@ export class CreateManualProductDto {
   internalSourcePrice?: number;
 
   @IsOptional()
-  @IsEnum(SourceProductFamily)
-  productFamily?: SourceProductFamily;
+  @IsString()
+  productFamily?: string;
 
-  @ValidateIf((input: CreateManualProductDto) => input.productFamily === SourceProductFamily.OTHER)
+  @ValidateIf((input: CreateManualProductDto) => input.productFamily === "OTHER")
   @IsString()
   productFamilyOther?: string;
 

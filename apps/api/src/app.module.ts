@@ -79,6 +79,8 @@ import { AdminTemplateController } from "./admin-template/admin-template.control
 import { AdminTemplateService } from "./admin-template/admin-template.service";
 import { DiscountCodesController } from "./discount-codes/discount-codes.controller";
 import { DiscountCodesService } from "./discount-codes/discount-codes.service";
+import { ProductFamilyController, AdminProductFamilyController } from "./product-family/product-family.controller";
+import { ProductFamilyService } from "./product-family/product-family.service";
 import { AdminNotifyService } from "./lib/admin-notify.service";
 import { MailService } from "./lib/mail.service";
 
@@ -117,6 +119,8 @@ import { MailService } from "./lib/mail.service";
     MiniAppController,
     AdminTemplateController,
     DiscountCodesController,
+    ProductFamilyController,
+    AdminProductFamilyController,
   ],
   providers: [
     AppConfigService,
@@ -169,6 +173,7 @@ import { MailService } from "./lib/mail.service";
     DiscountCodesService,
     MailService,
     AdminNotifyService,
+    ProductFamilyService,
   ],
 })
 export class AppModule implements NestModule {

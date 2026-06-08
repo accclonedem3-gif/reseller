@@ -32,7 +32,7 @@ type SourceProductRow = {
   available: number | null;
   internalSourceEnabled: boolean;
   internalSourcePrice: Prisma.Decimal | null;
-  productFamily: SourceProductFamily | null;
+  productFamily: string | null;
   productFamilyOther: string | null;
   accountType: SourceAccountType | null;
   accountTypeOther: string | null;

@@ -7,8 +7,8 @@ export class UpdateTemplateCustomizationDto {
 }
 
 export class SetProductDefaultDto {
-  @IsEnum(SourceProductFamily)
-  family!: SourceProductFamily;
+  @IsString()
+  family!: string;
 
   @IsOptional()
   @IsString()
@@ -34,13 +34,13 @@ export class SetProductDefaultDto {
 }
 
 export class RemoveProductDefaultDto {
-  @IsEnum(SourceProductFamily)
-  family!: SourceProductFamily;
+  @IsString()
+  family!: string;
 }
 
 export class UploadMediaUrlDto {
-  @IsEnum(SourceProductFamily)
-  family!: SourceProductFamily;
+  @IsString()
+  family!: string;
 
   @IsString()
   url!: string;

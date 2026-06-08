@@ -55,10 +55,10 @@ export class CreateSourceProductDto {
   @Min(0)
   available?: number;
 
-  @IsEnum(SourceProductFamily)
-  productFamily!: SourceProductFamily;
+  @IsString()
+  productFamily!: string;
 
-  @ValidateIf((o) => o.productFamily === SourceProductFamily.OTHER)
+  @ValidateIf((o) => o.productFamily === "OTHER")
   @IsNotEmpty()
   @IsString()
   productFamilyOther?: string;
@@ -153,10 +153,10 @@ export class UpdateSourceProductDto {
   available?: number;
 
   @IsOptional()
-  @IsEnum(SourceProductFamily)
-  productFamily?: SourceProductFamily;
+  @IsString()
+  productFamily?: string;
 
-  @ValidateIf((o) => o.productFamily === SourceProductFamily.OTHER)
+  @ValidateIf((o) => o.productFamily === "OTHER")
   @IsNotEmpty()
   @IsString()
   productFamilyOther?: string;

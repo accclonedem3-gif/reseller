@@ -628,7 +628,7 @@ model SourceProduct {
   totalCount              Int                     @default(0) @map("total_count")
   internalSourceEnabled   Boolean                 @default(false) @map("internal_source_enabled")
   internalSourcePrice     Decimal?                @map("internal_source_price") @db.Decimal(18, 2)
-  productFamily           SourceProductFamily?    @map("product_family")
+  productFamily           String?                 @map("product_family")
   productFamilyOther      String?                 @map("product_family_other")
   productPackage          String?                 @map("product_package")
   accountType             SourceAccountType?      @map("account_type")
@@ -667,6 +667,24 @@ model SourceProduct {
 
   @@unique([shopId, externalProductId])
   @@map("source_products")
+}
+
+/// Admin-managed catalog of product families (replaces the old hardcoded
+/// SourceProductFamily enum). `key` is what gets stored on
+/// SourceProduct.productFamily; built-in rows are seeded + cannot be deleted.
+model ProductFamily {
+  id            String   @id @default(cuid())
+  key           String   @unique
+  label         String
+  emoji         String?
+  customEmojiId String?  @map("custom_emoji_id")
+  sortOrder     Int      @default(0) @map("sort_order")
+  isActive      Boolean  @default(true) @map("is_active")
+  isBuiltin     Boolean  @default(false) @map("is_builtin")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  @@map("product_families")
 }
 
 enum StockEntryStatus {
