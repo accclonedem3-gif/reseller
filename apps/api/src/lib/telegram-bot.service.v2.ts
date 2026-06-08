@@ -1791,10 +1791,11 @@ export class TelegramBotService {
         : language === "th"
           ? "📋 ประวัติยอดกระเป๋าเงิน"
           : "📋 Lịch sử biến động ví";
-    const lines: string[] = [title, ""];
+    const lines: string[] = [title];
 
     if (entries.length === 0) {
       lines.push(
+        "",
         language === "en"
           ? "No movements yet."
           : language === "th"
@@ -1802,16 +1803,35 @@ export class TelegramBotService {
             : "Chưa có biến động nào.",
       );
     } else {
-      for (const e of entries) {
+      // Pre-format amounts to find the column width (right-aligned in a monospace block).
+      const rows = entries.map((e) => {
         const { icon, label } = this.walletLedgerLabel(e.type, language);
         const sign = e.amount >= 0 ? "+" : "−";
-        const amountStr = this.formatBotMoney(Math.abs(e.amount), language, usdtVndRate);
-        const isCommission = e.type === "AFFILIATE_COMMISSION";
-        const purse = isCommission
-          ? language === "en" ? " (commission)" : language === "th" ? " (ค่าคอม)" : " (ví hoa hồng)"
-          : "";
-        lines.push(`${icon} ${label}${purse}  <b>${sign}${amountStr}</b>`);
-        lines.push(`   ${this.formatDateTime(e.createdAt)}`);
+        const amtStr = `${sign}${this.formatBotMoney(Math.abs(e.amount), language, usdtVndRate)}`;
+        return { createdAt: e.createdAt, icon, label, amtStr };
+      });
+      const maxW = rows.reduce((m, r) => Math.max(m, r.amtStr.length), 0);
+      const now = new Date();
+      const dayKey = (d: Date) => `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+      const todayKey = dayKey(now);
+      const yesterdayKey = dayKey(new Date(now.getTime() - 86400000));
+
+      let lastDay = "";
+      for (const r of rows) {
+        const d = new Date(r.createdAt);
+        const k = dayKey(d);
+        if (k !== lastDay) {
+          lastDay = k;
+          const ddmm = `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}`;
+          const dayLabel =
+            k === todayKey
+              ? (language === "en" ? `Today ${ddmm}` : language === "th" ? `วันนี้ ${ddmm}` : `Hôm nay ${ddmm}`)
+              : k === yesterdayKey
+                ? (language === "en" ? `Yesterday ${ddmm}` : language === "th" ? `เมื่อวาน ${ddmm}` : `Hôm qua ${ddmm}`)
+                : ddmm;
+          lines.push("", `── ${dayLabel} ──`);
+        }
+        lines.push(`<code>${this.escapeHtml(r.amtStr.padStart(maxW, " "))}</code>  ${r.icon} ${r.label}`);
       }
     }
 
