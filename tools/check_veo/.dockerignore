@@ -1,0 +1,12 @@
+node_modules
+debug_*.png
+die.txt
+live_no_credit.txt
+wrong.txt
+timeout.txt
+24*_credits.txt
+*.log
+.git
+.gitignore
+Dockerfile
+.dockerignore

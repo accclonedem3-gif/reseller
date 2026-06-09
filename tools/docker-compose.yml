@@ -1,0 +1,59 @@
+# ============================================================================
+# VPS-2 — 3 công cụ kiểm tra tài khoản (bảo hành auto-check) chạy dạng HTTP service.
+# Worker ở VPS chính gọi sang qua: CHECK_GROK_URL / CHECK_VEO_URL / CHECK_GPT_URL.
+#
+#   grok → :4001   veo → :4002   gpt → :4003   (đều nghe :3000 trong container)
+#
+# ⚠️ BẮT BUỘC đặt API_KEY trong .env — không có thì checker MỞ CÔNG KHAI cho bất kỳ
+#    ai chạm tới port (lộ proxy + tốn tài nguyên). Worker gửi kèm header X-API-Key.
+#
+# Trước khi `docker compose up`: tạo file proxy rỗng để bind-mount không tạo nhầm thư mục:
+#   touch CheckGrokJS/proxy.txt check_veo/proxies.txt check_gpt/proxies.txt
+# ============================================================================
+
+services:
+  grok:
+    build: ./CheckGrokJS
+    image: warranty-check-grok
+    restart: unless-stopped
+    ports: ["4001:3000"]
+    environment:
+      API_KEY: ${API_KEY:?set API_KEY in .env}
+      PORT: "3000"
+      WARMER: ${GROK_WARMER:-1}        # CF cookie warmer 24/7 (0 = tắt)
+    volumes:
+      - ./CheckGrokJS/proxy.txt:/app/proxy.txt
+      - grok-profiles:/tmp/cgrok-profiles
+    mem_limit: 1500m
+    shm_size: 512m
+
+  veo:
+    build: ./check_veo
+    image: warranty-check-veo
+    restart: unless-stopped
+    ports: ["4002:3000"]
+    environment:
+      API_KEY: ${API_KEY:?set API_KEY in .env}
+      PORT: "3000"
+    volumes:
+      - ./check_veo/proxies.txt:/app/proxies.txt
+      - veo-profiles:/home/pwuser/.cache/playwright-profiles
+    mem_limit: 1500m
+    shm_size: 512m
+
+  gpt:
+    build: ./check_gpt
+    image: warranty-check-gpt
+    restart: unless-stopped
+    ports: ["4003:3000"]
+    environment:
+      API_KEY: ${API_KEY:?set API_KEY in .env}
+      PORT: "3000"
+    volumes:
+      - ./check_gpt/proxies.txt:/app/proxies.txt
+    mem_limit: 1500m
+    shm_size: 512m
+
+volumes:
+  grok-profiles:
+  veo-profiles:

@@ -60,6 +60,10 @@ import { ProAnalyticsService } from "./pro/pro-analytics.service";
 import { WarrantyController } from "./warranty/warranty.controller";
 import { WarrantyPublicController } from "./warranty/warranty-public.controller";
 import { WarrantyService } from "./warranty/warranty.service";
+import { WarrantyAutoCheckService } from "./warranty/warranty-auto-check.service";
+import { WarrantyAbuseService } from "./warranty/warranty-abuse.service";
+import { CacheService } from "./lib/cache.service";
+import { IdempotencyService } from "./lib/idempotency.service";
 import { AffiliateController } from "./affiliate/affiliate.controller";
 import { AffiliateService } from "./affiliate/affiliate.service";
 import { AdminController } from "./admin/admin.controller";
@@ -146,6 +150,10 @@ import { MailService } from "./lib/mail.service";
     WalletService,
     WalletPromotionService,
     WarrantyService,
+    WarrantyAutoCheckService,
+    WarrantyAbuseService,
+    CacheService,
+    IdempotencyService,
     OrdersService,
     ReportsService,
     BroadcastsService,

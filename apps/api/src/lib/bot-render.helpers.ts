@@ -482,6 +482,7 @@ export class BotRenderHelpers {
         "",
         supportTelegram ? `Telegram: ${supportTelegram}` : null,
         supportZalo ? `Zalo: ${supportZalo}` : null,
+        !supportTelegram && !supportZalo ? "Please reply right here in this chat — the shop will assist you." : null,
         "",
         "When you need help, please include your order code so support can check faster.",
       ]
@@ -495,6 +496,7 @@ export class BotRenderHelpers {
         "",
         supportTelegram ? `Telegram: ${supportTelegram}` : null,
         supportZalo ? `Zalo: ${supportZalo}` : null,
+        !supportTelegram && !supportZalo ? "กรุณาตอบกลับในแชทนี้ ทางร้านจะช่วยเหลือคุณ" : null,
         "",
         "เมื่อต้องการความช่วยเหลือ กรุณาแนบรหัสคำสั่งซื้อเพื่อให้ทีมงานตรวจสอบได้รวดเร็วขึ้น",
       ]
@@ -507,6 +509,7 @@ export class BotRenderHelpers {
       "",
       supportTelegram ? `Telegram: ${supportTelegram}` : null,
       supportZalo ? `Zalo: ${supportZalo}` : null,
+      !supportTelegram && !supportZalo ? "Bạn cứ nhắn ngay trong khung chat này — shop sẽ hỗ trợ bạn." : null,
       "",
       "Khi cần hỗ trợ, vui lòng gửi kèm mã đơn hàng để được xử lý nhanh hơn.",
     ]

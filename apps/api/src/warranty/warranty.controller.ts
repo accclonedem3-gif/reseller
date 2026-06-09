@@ -9,6 +9,7 @@ import {
   Query,
   UseGuards,
 } from "@nestjs/common";
+import { Throttle, ThrottlerGuard } from "@nestjs/throttler";
 
 import { CurrentUser } from "../common/decorators/current-user.decorator";
 import { RequireSellerCapabilities } from "../common/decorators/seller-capabilities.decorator";
@@ -17,18 +18,35 @@ import { SellerCapabilitiesGuard } from "../common/guards/seller-capabilities.gu
 import type { AuthenticatedUser } from "../types";
 
 import { OpenWarrantyClaimDto, RejectWarrantyClaimDto, ResolveWarrantyClaimDto } from "./warranty.dto";
+import { WarrantyAutoCheckService } from "./warranty-auto-check.service";
 import { WarrantyService } from "./warranty.service";
 
 @Controller("warranty")
+@UseGuards(ThrottlerGuard)
 export class WarrantyController {
   constructor(
     @Inject(WarrantyService)
     private readonly warrantyService: WarrantyService,
+    @Inject(WarrantyAutoCheckService)
+    private readonly autoCheckService: WarrantyAutoCheckService,
   ) {}
 
+  @Get("claims/:id/auto-check")
+  @Throttle({ default: { ttl: 10000, limit: 30 } })
+  async getAutoCheckStatus(@Param("id") id: string, @Query("token") token?: string) {
+    const status = await this.autoCheckService.getStatus(id, token);
+    return status || { autoCheckStatus: null };
+  }
+
+  // Seller-only claim open (legacy dashboard path; customers use POST /public/warranty/claim).
+  // Now authenticated + scoped to the seller's own shop — previously this was unauthenticated,
+  // letting anyone knowing an orderCode open a claim (triggering provider logins / auto-refunds).
   @Post("claim")
-  openClaim(@Body() dto: OpenWarrantyClaimDto) {
-    return this.warrantyService.openClaim(dto);
+  @UseGuards(JwtAuthGuard, SellerCapabilitiesGuard)
+  @RequireSellerCapabilities("warranty_manage")
+  @Throttle({ default: { ttl: 60000, limit: 5 } })
+  openClaim(@CurrentUser() user: AuthenticatedUser, @Body() dto: OpenWarrantyClaimDto) {
+    return this.warrantyService.openClaim(dto, user);
   }
 
   @Get("claims")
@@ -79,5 +97,13 @@ export class WarrantyController {
     @Body() body: RejectWarrantyClaimDto,
   ) {
     return this.warrantyService.rejectClaim(user, id, body);
+  }
+
+  @Post("claims/:id/recheck")
+  @UseGuards(JwtAuthGuard, SellerCapabilitiesGuard)
+  @RequireSellerCapabilities("warranty_manage")
+  @Throttle({ default: { ttl: 60000, limit: 10 } })
+  recheckClaim(@CurrentUser() user: AuthenticatedUser, @Param("id") id: string) {
+    return this.warrantyService.recheckClaim(user, id);
   }
 }

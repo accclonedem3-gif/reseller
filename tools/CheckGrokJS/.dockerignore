@@ -1,0 +1,11 @@
+node_modules
+cookies
+debug_*.png
+grok_results_*
+accounts.txt
+*.log
+.git
+.gitignore
+README.md
+Dockerfile
+.dockerignore

@@ -139,6 +139,7 @@ enum PaymentProvider {
   PAYOS
   PAY2S
   WEB2M
+  THUNDER
   MOCK
   BINANCE
   OKX
@@ -635,6 +636,11 @@ model SourceProduct {
   accountTypeOther        String?                 @map("account_type_other")
   durationType            SourceDurationType?     @map("duration_type")
   durationTypeOther       String?                 @map("duration_type_other")
+  // Warranty pre-die date (from warranty branch): declared lifetime (days) of the current batch,
+  // counted from accBatchStartedAt (import time), NOT delivery. When set + elapsed → warranty
+  // short-circuits the auto-check tool with a synthetic isDead verdict. Falls back to deliveredAt.
+  accLifetimeDays         Int?                    @map("acc_lifetime_days")
+  accBatchStartedAt       DateTime?               @map("acc_batch_started_at")
   productIcon             String?                 @map("product_icon")
   iconCustomEmojiId       String?                 @map("icon_custom_emoji_id")
   iconOutOfStockEmojiId   String?                 @map("icon_out_of_stock_emoji_id")
@@ -940,6 +946,8 @@ model Order {
   warrantyStartedAt            DateTime?             @map("warranty_started_at")
   warrantyExpiresAt            DateTime?             @map("warranty_expires_at")
   warrantyClaimCount           Int                   @default(0) @map("warranty_claim_count")
+  // Per-order warranty secret (from warranty branch); nullable for legacy orders. Generated at order create.
+  warrantyClaimCode            String?               @map("warranty_claim_code")
   productNameSnapshot          String                @map("product_name_snapshot")
   quantity                     Int                   @default(1)
   salePrice                    Decimal               @map("sale_price") @db.Decimal(18, 2)
@@ -1145,7 +1153,18 @@ model WarrantyClaim {
   resolutionNote          String?               @map("resolution_note")
   replacementCostSnapshot Decimal?              @map("replacement_cost_snapshot") @db.Decimal(18, 2)
   metadataJson            Json?                 @map("metadata_json")
+  targetAccountEmail      String?               @map("target_account_email")
   resolvedAt              DateTime?             @map("resolved_at")
+  // Audit: which user (seller/admin) manually resolved/rejected. NULL for auto/system or legacy.
+  resolvedById            String?               @map("resolved_by_id")
+  autoCheckStatus         String?               @map("auto_check_status")
+  autoCheckTool           String?               @map("auto_check_tool")
+  autoCheckJobId          String?               @map("auto_check_job_id")
+  autoCheckResult         Json?                 @map("auto_check_result")
+  autoCheckStartedAt      DateTime?             @map("auto_check_started_at")
+  autoCheckCompletedAt    DateTime?             @map("auto_check_completed_at")
+  autoCheckErrorMessage   String?               @map("auto_check_error_message")
+  autoCheckAttempts       Int                   @default(0) @map("auto_check_attempts")
   createdAt               DateTime              @default(now()) @map("created_at")
   updatedAt               DateTime              @updatedAt @map("updated_at")
   order                   Order                 @relation(fields: [orderId], references: [id], onDelete: Cascade)
@@ -1157,6 +1176,9 @@ model WarrantyClaim {
   @@index([sellerId, status, createdAt])
   @@index([shopId, status, createdAt])
   @@index([customerId, createdAt])
+  @@index([autoCheckStatus])
+  @@index([autoCheckStatus, autoCheckStartedAt])
+  @@index([orderId, status, resolvedAt])
   @@map("warranty_claims")
 }
 

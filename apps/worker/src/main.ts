@@ -10,6 +10,7 @@ const client_1 = require("@prisma/client");
 const bullmq_1 = require("bullmq");
 const ioredis_1 = __importDefault(require("ioredis"));
 const server_1 = require("@reseller/shared/server");
+const account_check_1 = require("./account-check");
 const prisma = new client_1.PrismaClient();
 const REDIS_URL = process.env.REDIS_URL || "redis://localhost:6379";
 const INFRA_RETRY_MS = Number(process.env.WORKER_INFRA_RETRY_MS || 5000);
@@ -3913,7 +3914,74 @@ async function bootstrap() {
     }, 30 * 1000);
     void scanTrc20UsdtPayments().catch(() => undefined);
     // Web2m polling removed — replaced by webhook /api/v1/webhooks/web2m
+    // ── Warranty auto-check worker: consumes the `account-check` BullMQ queue (grok/veo via the
+    //    separate tool-server VPS), runs the verdict, and calls back the API. Owns its own
+    //    stuck-claim sweep timer (accountCheckHandles.sweepTimer). Deploy note: warranty runs on a
+    //    dedicated VPS, so this is the piece that makes auto-resolve actually fire.
+    let accountCheckHandles = null;
+    try {
+        accountCheckHandles = await account_check_1.setupAccountCheckWorker(prisma, redis);
+    }
+    catch (error) {
+        console.error("[worker] Failed to setup account-check worker:", formatError(error));
+    }
     console.log(`[worker] Started queue workers and Telegram poller. Catalog sync concurrency=${Math.max(1, Math.floor(CATALOG_SYNC_CONCURRENCY))}, scheduler tick=${CATALOG_SCHEDULER_TICK_MS}ms, target interval=${CATALOG_SYNC_INTERVAL_MS}ms.`);
+
+    // Graceful shutdown: drain in-flight jobs, stop the sweep timer, close BullMQ workers + queues,
+    // disconnect Redis. Without this, PM2/Docker restart leaves Chromium subprocesses orphaned.
+    let shuttingDown = false;
+    const shutdown = async (signal) => {
+        if (shuttingDown) return;
+        shuttingDown = true;
+        console.log(`[worker] Received ${signal} — beginning graceful shutdown.`);
+        // 1. Stop the stuck-claim sweep immediately so it can't enqueue new work mid-shutdown.
+        if (accountCheckHandles && accountCheckHandles.sweepTimer) clearInterval(accountCheckHandles.sweepTimer);
+        // 2. DRAIN in-flight account-check jobs FIRST (bounded ~12s). worker.close(false) stops
+        //    accepting new jobs and resolves once active jobs finish. We must do this BEFORE
+        //    killAllChildren — otherwise a check mid-login has its Chromium killed under it and
+        //    reports a false failure instead of a real verdict. Bound it so a genuinely stuck job
+        //    can't block exit past the orchestrator's SIGKILL window.
+        if (accountCheckHandles) {
+            await Promise.race([
+                accountCheckHandles.worker.close().catch((e) => console.error("[worker] account-check worker.close failed:", formatError(e))),
+                new Promise((resolve) => setTimeout(resolve, 12000)),
+            ]);
+        }
+        // 3. NOW kill any subprocess children that didn't finish within the drain window
+        //    (best-effort; primary mechanism is the process-group kill inside spawnSingleCheck).
+        if (typeof account_check_1.killAllChildren === "function") {
+            try { account_check_1.killAllChildren(); } catch {}
+        }
+        // 4. Close queues + the remaining workers (fast — no in-flight work left to drain).
+        const tasks = [];
+        if (accountCheckHandles) {
+            tasks.push(accountCheckHandles.queue.close().catch((e) => console.error("[worker] account-check queue.close failed:", formatError(e))));
+        }
+        try { tasks.push(syncWorker.close().catch(() => undefined)); } catch {}
+        try { tasks.push(syncQueue.close().catch(() => undefined)); } catch {}
+        try { tasks.push(purchaseQueue.close().catch(() => undefined)); } catch {}
+        try { tasks.push(broadcastQueue.close().catch(() => undefined)); } catch {}
+        await Promise.race([
+            Promise.all(tasks),
+            new Promise((resolve) => setTimeout(resolve, 3000)),
+        ]);
+        try { await redis.quit(); } catch {}
+        console.log("[worker] Shutdown complete.");
+        process.exit(0);
+    };
+    process.on("SIGTERM", () => { void shutdown("SIGTERM"); });
+    process.on("SIGINT", () => { void shutdown("SIGINT"); });
+    // Crash safety: a stray rejected promise (e.g. a fire-and-forget .catch omission) must NOT take
+    // the worker down mid-check — log and keep going. An uncaughtException leaves the process in an
+    // undefined state, so close Chromium children + redis (bounded by shutdown's 3s race) and let
+    // PM2 restart clean — avoids zombie browsers from a hard exit.
+    process.on("unhandledRejection", (reason) => {
+        console.error("[worker] UNHANDLED REJECTION:", reason instanceof Error ? (reason.stack || reason.message) : reason);
+    });
+    process.on("uncaughtException", (err) => {
+        console.error("[worker] UNCAUGHT EXCEPTION:", err?.stack || err);
+        void shutdown("uncaughtException");
+    });
 }
 bootstrap().catch((error) => {
     console.error(error);

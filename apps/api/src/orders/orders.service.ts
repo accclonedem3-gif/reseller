@@ -29,6 +29,7 @@ import {
   decimalToNumber,
   generateExternalPaymentCode,
   generateOrderCode,
+  generateWarrantyClaimCode,
   splitWalletDebit,
   toDecimal,
 } from "../lib/utils";
@@ -129,6 +130,7 @@ export class OrdersService {
   async createTelegramOrder(input: CreateTelegramOrderInput) {
     const prepared = await this.prepareTelegramOrderContext(input);
     const orderCode = generateOrderCode();
+    const warrantyClaimCode = generateWarrantyClaimCode();
     const externalOrderCode = generateExternalPaymentCode();
     const payment = await this.paymentService.createPaymentLink({
       shopId: input.shopId,
@@ -144,6 +146,7 @@ export class OrdersService {
         sellerId: prepared.shop.sellerId,
         customerId: prepared.customer.id,
         orderCode,
+        warrantyClaimCode,
         sourceProductId: prepared.product.id,
         sourceProviderKindSnapshot:
           prepared.shop.providerConfig?.providerKind || ProviderKind.EXTERNAL,
@@ -196,6 +199,7 @@ export class OrdersService {
   async createTelegramOrderWithWallet(input: CreateTelegramOrderInput) {
     const prepared = await this.prepareTelegramOrderContext(input);
     const orderCode = generateOrderCode();
+    const warrantyClaimCode = generateWarrantyClaimCode();
     const externalOrderCode = generateExternalPaymentCode();
     const paidAt = new Date();
 
@@ -243,6 +247,7 @@ export class OrdersService {
           sellerId: prepared.shop.sellerId,
           customerId: prepared.customer.id,
           orderCode,
+          warrantyClaimCode,
           sourceProductId: prepared.product.id,
           sourceProviderKindSnapshot:
             prepared.shop.providerConfig?.providerKind || ProviderKind.EXTERNAL,
@@ -930,6 +935,7 @@ export class OrdersService {
     order: {
       orderCode: string;
       productNameSnapshot: string;
+      warrantyClaimCode?: string | null;
       customer: { telegramChatId: string; preferredLanguage?: string | null } | null;
       shop: {
         name: string;
