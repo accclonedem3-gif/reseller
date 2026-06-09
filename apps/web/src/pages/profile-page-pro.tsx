@@ -702,7 +702,7 @@ export function ProfilePage() {
               {avatarInitials}
             </div>
             <div className="min-w-0">
-              <h1 className="text-3xl font-black tracking-tight" style={{ color: "var(--tx)" }}>
+              <h1 className="text-2xl sm:text-3xl font-black tracking-tight break-words" style={{ color: "var(--tx)" }}>
                 {session?.user.displayName || "Seller"}
               </h1>
               <div className="mt-2 flex flex-wrap items-center gap-2.5">
@@ -714,7 +714,7 @@ export function ProfilePage() {
                     {isUltra ? "★ Ultra · Tổng sỉ" : `★ ${tier.charAt(0).toUpperCase() + tier.slice(1)}`}
                   </span>
                 )}
-                <span className="text-[12px] font-mono" style={{ color: "var(--tx-f)" }}>
+                <span className="break-all text-[12px] font-mono" style={{ color: "var(--tx-f)" }}>
                   ID: <span style={{ color: "var(--tx-m)" }}>{session?.user.email}</span>
                 </span>
               </div>
