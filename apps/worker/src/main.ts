@@ -3252,12 +3252,15 @@ async function scanTrc20UsdtPayments() {
     });
     if (configs.length === 0) return;
     const sinceMs = Date.now() - 60 * 60 * 1000;
+    const platformDepositShopId = process.env.PLATFORM_DEPOSIT_SHOP_ID || null;
 
     for (const cfg of configs) {
         const wallet = String(cfg.usdtTrc20Address || "").trim();
         if (!wallet) continue;
+        const isPlatformShop = platformDepositShopId && cfg.shopId === platformDepositShopId;
 
-        const [pendingPayments, pendingTopups] = await Promise.all([
+        // Find pending USDT_TRC20 payments + topups + tier deposit requests for this shop
+        const [pendingPayments, pendingTopups, pendingDeposits] = await Promise.all([
             prisma.paymentTransaction.findMany({
                 where: {
                     provider: "USDT_TRC20",
@@ -3276,8 +3279,18 @@ async function scanTrc20UsdtPayments() {
                 },
                 select: { id: true, externalOrderCode: true, rawPayloadJson: true, createdAt: true },
             }),
+            isPlatformShop
+                ? prisma.depositRequest.findMany({
+                    where: {
+                        provider: "USDT_TRC20",
+                        status: "PENDING",
+                        createdAt: { gte: new Date(sinceMs) },
+                    },
+                    select: { id: true, externalOrderCode: true, rawPayloadJson: true, createdAt: true, note: true },
+                })
+                : Promise.resolve([]),
         ]);
-        if (pendingPayments.length === 0 && pendingTopups.length === 0) continue;
+        if (pendingPayments.length === 0 && pendingTopups.length === 0 && pendingDeposits.length === 0) continue;
 
         const amountToOrder = new Map();
         for (const p of pendingPayments) {
@@ -3289,6 +3302,13 @@ async function scanTrc20UsdtPayments() {
             const amt = Number((t.rawPayloadJson)?.manualCrypto?.usdtAmount || 0);
             if (amt > 0 && !amountToOrder.has(Number(amt.toFixed(2)))) {
                 amountToTopup.set(Number(amt.toFixed(2)), { type: "topup", record: t });
+            }
+        }
+        const amountToDeposit = new Map();
+        for (const d of pendingDeposits) {
+            const amt = Number((d.rawPayloadJson)?.manualCrypto?.usdtAmount || 0);
+            if (amt > 0 && !amountToOrder.has(Number(amt.toFixed(2))) && !amountToTopup.has(Number(amt.toFixed(2)))) {
+                amountToDeposit.set(Number(amt.toFixed(2)), { type: "deposit", record: d });
             }
         }
 
@@ -3351,6 +3371,31 @@ async function scanTrc20UsdtPayments() {
                 }
                 continue;
             }
+            const matchDeposit = amountToDeposit.get(Number(transfer.amountUsdt.toFixed(2)));
+            if (matchDeposit) {
+                try {
+                    const baseUrl = (process.env.APP_PUBLIC_URL || "http://localhost:3000").replace(/\/$/, "");
+                    const internalToken = process.env.INTERNAL_API_TOKEN || "";
+                    await axios_1.default.post(
+                        `${baseUrl}/api/v1/webhooks/internal-crypto-confirm/${encodeURIComponent(matchDeposit.record.externalOrderCode || "")}`,
+                        {
+                            // endpoint reads `signature`; map TRC20 txHash into it so the tx is recorded
+                            signature: transfer.txHash,
+                            amountUsdt: transfer.amountUsdt,
+                            source: "trc20_auto_scan",
+                        },
+                        {
+                            headers: { "x-internal-token": internalToken, "Content-Type": "application/json" },
+                            timeout: 20000,
+                        },
+                    );
+                    console.log(`[worker] TRC20 auto-detected deposit ${matchDeposit.record.externalOrderCode} → confirmed (${transfer.amountUsdt} USDT, tx ${transfer.txHash.slice(0, 16)}...)`);
+                    amountToDeposit.delete(Number(transfer.amountUsdt.toFixed(2)));
+                } catch (error) {
+                    console.error(`[worker] TRC20 auto-confirm deposit failed:`, formatError(error));
+                }
+                continue;
+            }
             const matchTopup = amountToTopup.get(Number(transfer.amountUsdt.toFixed(2)));
             if (matchTopup) {
                 try {
@@ -3396,7 +3441,7 @@ async function scanTrc20UsdtPayments() {
                     console.error(`[worker] TRC20 auto-confirm topup failed:`, formatError(error));
                 }
             }
-            if (amountToOrder.size === 0 && amountToTopup.size === 0) break;
+            if (amountToOrder.size === 0 && amountToTopup.size === 0 && amountToDeposit.size === 0) break;
         }
     }
 }
