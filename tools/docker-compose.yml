@@ -1,14 +1,18 @@
 # ============================================================================
-# VPS-2 — 3 công cụ kiểm tra tài khoản (bảo hành auto-check) chạy dạng HTTP service.
-# Worker ở VPS chính gọi sang qua: CHECK_GROK_URL / CHECK_VEO_URL / CHECK_GPT_URL.
+# Công cụ kiểm tra tài khoản (bảo hành auto-check) chạy dạng HTTP service.
+# Worker gọi sang qua: CHECK_GROK_URL / CHECK_VEO_URL. Có thể chạy chung VPS với
+# app (worker gọi qua localhost:4001/4002 — đúng default trong account-check.ts).
 #
-#   grok → :4001   veo → :4002   gpt → :4003   (đều nghe :3000 trong container)
+#   grok → :4001   veo → :4002   (đều nghe :3000 trong container)
+#
+# ⚠️ gpt: ĐÃ TẮT — thiếu source ./check_gpt trong bản merge. Khi nào có source thì
+#    bỏ comment service gpt bên dưới + thêm CHECK_GPT_URL/API_KEY phía app.
 #
 # ⚠️ BẮT BUỘC đặt API_KEY trong .env — không có thì checker MỞ CÔNG KHAI cho bất kỳ
 #    ai chạm tới port (lộ proxy + tốn tài nguyên). Worker gửi kèm header X-API-Key.
 #
-# Trước khi `docker compose up`: tạo file proxy rỗng để bind-mount không tạo nhầm thư mục:
-#   touch CheckGrokJS/proxy.txt check_veo/proxies.txt check_gpt/proxies.txt
+# Trước khi `docker compose up -d`: tạo file proxy rỗng để bind-mount không tạo nhầm thư mục:
+#   touch CheckGrokJS/proxy.txt check_veo/proxies.txt
 # ============================================================================
 
 services:
@@ -41,18 +45,19 @@ services:
     mem_limit: 1500m
     shm_size: 512m
 
-  gpt:
-    build: ./check_gpt
-    image: warranty-check-gpt
-    restart: unless-stopped
-    ports: ["4003:3000"]
-    environment:
-      API_KEY: ${API_KEY:?set API_KEY in .env}
-      PORT: "3000"
-    volumes:
-      - ./check_gpt/proxies.txt:/app/proxies.txt
-    mem_limit: 1500m
-    shm_size: 512m
+  # gpt: ĐÃ TẮT — thiếu source ./check_gpt. Có source rồi thì bỏ comment khối này.
+  # gpt:
+  #   build: ./check_gpt
+  #   image: warranty-check-gpt
+  #   restart: unless-stopped
+  #   ports: ["4003:3000"]
+  #   environment:
+  #     API_KEY: ${API_KEY:?set API_KEY in .env}
+  #     PORT: "3000"
+  #   volumes:
+  #     - ./check_gpt/proxies.txt:/app/proxies.txt
+  #   mem_limit: 1500m
+  #   shm_size: 512m
 
 volumes:
   grok-profiles:
