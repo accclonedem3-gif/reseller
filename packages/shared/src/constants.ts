@@ -60,13 +60,17 @@ export const ACCOUNT_CHECK_TOOLS = {
   VEO: "veo",
   GROK: "grok",
   GPT: "gpt",
+  CURSOR: "cursor",
 } as const;
 
 // Maps a product family → its auto-check tool. CHATGPT is intentionally NOT listed: the GPT
 // checker isn't built yet, so ChatGPT warranties resolve to UNSUPPORTED → seller handles manually
 // (resolveToolForFamily returns null for unmapped families). Add CHATGPT: "gpt" back once the
 // check_gpt tool is implemented + hardened.
-export const PRODUCT_FAMILY_TO_TOOL: Record<string, "veo" | "grok" | "gpt"> = {
+// CURSOR → "cursor": external HTTP checker (separate repo/VPS). Auto-routes once the
+// CHECK_CURSOR_URL env points the worker at the running cursor checker server.
+export const PRODUCT_FAMILY_TO_TOOL: Record<string, "veo" | "grok" | "gpt" | "cursor"> = {
   VEO3: "veo",
   GROK: "grok",
+  CURSOR: "cursor",
 };

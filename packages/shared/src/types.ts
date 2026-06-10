@@ -120,7 +120,7 @@ export type TopBuyer = z.infer<typeof topBuyerSchema>;
 
 export const accountCheckResultSchema = z.object({
   ok: z.boolean(),
-  tool: z.enum(["veo", "grok", "gpt"]),
+  tool: z.enum(["veo", "grok", "gpt", "cursor"]),
   status: z.string(),
   plan: z.string().nullable().optional(),
   tier: z.string().nullable().optional(),
@@ -139,7 +139,7 @@ export type AccountCheckResult = z.infer<typeof accountCheckResultSchema>;
 export const accountCheckJobSchema = z.object({
   claimId: z.string(),
   shopId: z.string(),
-  tool: z.enum(["veo", "grok", "gpt"]),
+  tool: z.enum(["veo", "grok", "gpt", "cursor"]),
   email: z.string(),
   password: z.string(),
   extra: z.string().nullable().optional(),

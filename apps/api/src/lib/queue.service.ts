@@ -78,7 +78,7 @@ export class QueueService implements OnModuleDestroy {
   async addAccountCheckJob(payload: {
     claimId: string;
     shopId: string;
-    tool: "veo" | "grok" | "gpt";
+    tool: "veo" | "grok" | "gpt" | "cursor";
     email: string;
     password: string;
     extra?: string | null;

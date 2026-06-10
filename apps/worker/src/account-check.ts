@@ -56,6 +56,13 @@ const VEO_HTTP_TIMEOUT_MS = Math.max(30_000, Number(process.env.CHECK_VEO_HTTP_T
 const CHECK_GPT_URL = (process.env.CHECK_GPT_URL || "").replace(/\/+$/, "");
 const CHECK_GPT_API_KEY = process.env.CHECK_GPT_API_KEY || "";
 const GPT_HTTP_TIMEOUT_MS = Math.max(30_000, Number(process.env.CHECK_GPT_HTTP_TIMEOUT_MS || 120_000));
+// Cursor HTTP API: EXTERNAL checker living in its own repo/VPS. HTTP-only (no subprocess fallback —
+// the cursor single-check.js is intentionally NOT shipped with the worker). Empty CHECK_CURSOR_URL
+// → resolveToolForFamily still returns "cursor" but the dispatch block below produces an
+// unverified result → claim falls to seller review (never auto-resolves on a missing checker).
+const CHECK_CURSOR_URL = (process.env.CHECK_CURSOR_URL || "").replace(/\/+$/, "");
+const CHECK_CURSOR_API_KEY = process.env.CHECK_CURSOR_API_KEY || "";
+const CURSOR_HTTP_TIMEOUT_MS = Math.max(30_000, Number(process.env.CHECK_CURSOR_HTTP_TIMEOUT_MS || 120_000));
 const CONCURRENCY = Math.max(1, Number(process.env.ACCOUNT_CHECK_CONCURRENCY || 3));
 // Per-claim parallelism: keep up to 3 Chrome slots filled continuously. parallelLimit's
 // drain loop already does the right thing for N accounts: N=1 spawns 1, N=2 spawns 2,
@@ -613,6 +620,69 @@ async function runVeoBatchViaHttp(
         resp.data.on("error", (e: Error) => finish(e));
       })
       .catch((e) => finish(e));
+  });
+}
+
+/**
+ * Submit a batch to the EXTERNAL cursor checker (its own repo/VPS) and return results in the
+ * same {raw, parsed, exitCode, timedOut} shape as the grok/veo adapters. Synchronous contract
+ * (NO SSE): POST /check { accounts:[{user,pwd,proxy}] } → 200 { results:[{...}] } in input order.
+ * The server maps its login verdict into our canonical fields — most importantly `is_dead`
+ * (→ AUTO_RESOLVE / replace acc) and `still_paid` (→ AUTO_REJECT). Anything else (login stuck,
+ * unknown plan) → leave both false → worker retries then falls to seller review.
+ */
+async function runCursorBatchViaHttp(
+  accounts: Array<{ email: string; password: string; extra?: string | null }>,
+  proxies: Array<string | null>,
+): Promise<Array<{ raw: string; parsed: any | null; exitCode: number | null; timedOut: boolean }>> {
+  if (!CHECK_CURSOR_URL) throw new Error("CHECK_CURSOR_URL not set");
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (CHECK_CURSOR_API_KEY) headers["X-API-Key"] = CHECK_CURSOR_API_KEY;
+
+  const resp = await axios.post(
+    `${CHECK_CURSOR_URL}/check`,
+    {
+      accounts: accounts.map((a, i) => ({
+        user: a.email,
+        pwd: a.password,
+        ...(a.extra ? { extra: a.extra } : {}),
+        ...(proxies[i] ? { proxy: proxies[i] } : {}),
+      })),
+    },
+    { headers, timeout: CURSOR_HTTP_TIMEOUT_MS },
+  );
+
+  const results: any[] = Array.isArray(resp.data?.results) ? resp.data.results : [];
+  // Server preserves input order; fall back to email match if it doesn't.
+  return accounts.map((a, i) => {
+    const r =
+      results[i] && (results[i].email == null || results[i].email === a.email)
+        ? results[i]
+        : results.find((x) => x?.email === a.email) ?? null;
+    if (!r) {
+      return { raw: `cursor idx=${i} no result`, parsed: null, exitCode: null, timedOut: true };
+    }
+    const status = (String(r.status || "").toUpperCase() || (r.is_dead ? "DIE" : "LIVE"));
+    return {
+      raw: `cursor ${a.email} status=${status}`,
+      parsed: {
+        ok: !r.error,
+        tool: "cursor",
+        status,
+        plan: r.plan ?? null,
+        tier: r.tier ?? r.plan ?? null,
+        expires: r.expires ?? null,
+        daysRemaining: r.days_remaining ?? null,
+        cancelAtEnd: r.cancel_at_end ?? null,
+        detail: r.detail ?? null,
+        errorType: r.error_type ?? (r.error ? "error" : null),
+        error: r.error ?? null,
+        isDead: r.is_dead === true,
+        stillPaid: r.still_paid === true,
+      },
+      exitCode: 0,
+      timedOut: false,
+    };
   });
 }
 
@@ -1197,6 +1267,35 @@ async function processJob(prisma: PrismaClient, redis: Redis, job: Job): Promise
       } else {
         // Every account short-circuited via mass-die — no HTTP call needed, use the locals.
         allResults = localResults as any;
+      }
+    }
+
+    // CURSOR: HTTP-only external checker. Unlike grok/veo it has NO subprocess fallback (no
+    // single-check.js shipped), so this block ALWAYS sets allResults — on failure it returns
+    // unverified (timedOut) entries instead of null, so we never fall through to spawnSingleCheck
+    // (which would crash on a missing tool path) and the claim safely lands in seller review.
+    if (!allResults && tool === "cursor") {
+      if (!CHECK_CURSOR_URL) {
+        console.warn(`[account-check] claim=${claimId} cursor: CHECK_CURSOR_URL not set → unverified → seller review`);
+        allResults = allAccounts.map((_, i) => ({ raw: `cursor idx=${i} no checker configured`, parsed: null, exitCode: null, timedOut: true }));
+      } else {
+        const proxiesForBatch: Array<string | null> = [];
+        for (let i = 0; i < allAccounts.length; i++) {
+          const p = await pickHealthyProxy(proxyStartIdx(i, 0));
+          proxiesForBatch.push(p);
+          lastProxyByIdx.set(i, p);
+        }
+        try {
+          allResults = await runCursorBatchViaHttp(
+            allAccounts.map((a) => ({ email: a.email, password: a.password, extra: a.extra })),
+            proxiesForBatch,
+          );
+          completed = total;
+          await writeProgress();
+        } catch (err: any) {
+          console.warn(`[account-check] claim=${claimId} cursor HTTP failed (${err?.message || err}) → unverified → seller review`);
+          allResults = allAccounts.map((_, i) => ({ raw: `cursor idx=${i} http error`, parsed: null, exitCode: null, timedOut: true }));
+        }
       }
     }
 

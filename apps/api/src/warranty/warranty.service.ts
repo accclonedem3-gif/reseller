@@ -36,7 +36,7 @@ import { countResolvedWarrantyAccounts, decimalToNumber } from "../lib/utils";
 import { ShopsService } from "../shops/shops.service";
 import type { AuthenticatedUser } from "../types";
 
-import { WarrantyAutoCheckService } from "./warranty-auto-check.service";
+import { WarrantyAutoCheckService, type AutoCheckTool } from "./warranty-auto-check.service";
 import { WarrantyAbuseService } from "./warranty-abuse.service";
 import type { OpenWarrantyClaimDto, PublicWarrantyClaimDto, PublicWarrantySearchDto, RejectWarrantyClaimDto, ResolveWarrantyClaimDto } from "./warranty.dto";
 
@@ -211,7 +211,7 @@ export class WarrantyService {
       productFamily: string | null;
       metadataJson?: Prisma.JsonValue | null | undefined;
     } | null | undefined,
-    autoCheckTool: "veo" | "grok" | "gpt",
+    autoCheckTool: AutoCheckTool,
     accountText?: string | null,
   ): { errorType: string; note: string; expiredOn: Date; days: number } | null {
     const days = this.resolveBatchLifetimeDays(sourceProduct?.durationType, sourceProduct?.durationTypeOther);
@@ -278,7 +278,7 @@ export class WarrantyService {
       productFamily: string | null;
       metadataJson?: Prisma.JsonValue | null | undefined;
     } | null | undefined,
-    autoCheckTool: "veo" | "grok" | "gpt",
+    autoCheckTool: AutoCheckTool,
     accountText?: string | null,
   ): Promise<{ errorType: string; note: string; expiredOn: Date; days: number } | null> {
     try {
@@ -339,7 +339,7 @@ export class WarrantyService {
   private async createAutoCheckClaim(input: {
     order: { id: string; sellerId: string; shopId: string; customerId: string; orderCode: string; productNameSnapshot: string };
     snapshot: { warrantyPolicySnapshot: SourceWarrantyPolicy | null; warrantyDeliveryModeSnapshot: SourceDeliveryMode | null };
-    autoCheckTool: "veo" | "grok" | "gpt";
+    autoCheckTool: AutoCheckTool;
     creds: { email: string; password: string; extra?: string | null };
     allCreds?: { email: string; password: string; extra?: string | null }[];
     customerMessage?: string | null;

@@ -13,7 +13,7 @@ import { CacheService } from "../lib/cache.service";
 import { QueueService } from "../lib/queue.service";
 import { countResolvedWarrantyAccounts } from "../lib/utils";
 
-export type AutoCheckTool = "veo" | "grok" | "gpt";
+export type AutoCheckTool = "veo" | "grok" | "gpt" | "cursor";
 
 type DeliveredCredentials = {
   email: string;
