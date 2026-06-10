@@ -1,7 +1,5 @@
 -- Full warranty system port (from the warranty branch) onto master — additive only.
 -- New nullable columns + the auto-check pipeline fields + supporting indexes + trigram search.
--- (THUNDER payment provider enum value is added in the sibling isolated migration because
---  Postgres does not allow ALTER TYPE ... ADD VALUE in the same transaction as dependent DDL.)
 
 -- 1. SourceProduct: batch pre-die lifetime (counted from import time, not delivery)
 ALTER TABLE "source_products"

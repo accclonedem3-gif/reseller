@@ -139,7 +139,6 @@ enum PaymentProvider {
   PAYOS
   PAY2S
   WEB2M
-  THUNDER
   MOCK
   BINANCE
   OKX
