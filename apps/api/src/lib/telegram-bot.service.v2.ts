@@ -4526,14 +4526,17 @@ export class TelegramBotService {
       }
 
       if (selection.description?.trim()) {
-        const descLines: string[] = [`${mkLabel("description", "💬")} ${descLabel}:`];
-        for (const rawLine of selection.description.trim().split(/\r?\n/)) {
-          const trimmed = rawLine.trim();
-          if (!trimmed) continue;
-          const bulleted = /^[•·*\-]\s*/.test(trimmed) ? trimmed : `• ${trimmed}`;
-          descLines.push(escFn(bulleted));
-        }
-        lines.push(``, `<blockquote>${descLines.join("\n")}</blockquote>`);
+        // Photo caption budget is tight (Telegram hard limit 1024) → keep description short.
+        lines.push(
+          ``,
+          this.buildProductDescBlock(
+            selection.description,
+            `${mkLabel("description", "💬")} ${descLabel}:`,
+            escFn,
+            language,
+            { maxLines: 20, maxChars: 700 },
+          ),
+        );
       }
 
       if (selection.promoBanner) {
@@ -4543,7 +4546,7 @@ export class TelegramBotService {
       if (productNote) lines.push(``, productNote);
       lines.push(``, quantityLine);
 
-      const caption = lines.join("\n");
+      const caption = this.clampTelegramHtml(lines.join("\n"), 1024);
 
       const captionEntities = !useHtml && customEmoji
         ? [{ type: "custom_emoji", offset: 0, length: 2, custom_emoji_id: customEmoji.id }]
@@ -4601,14 +4604,16 @@ export class TelegramBotService {
       }
 
       if (selection.description?.trim()) {
-        const descLines: string[] = [`${mkLabel("description", "💬")} ${descLabel}:`];
-        for (const rawLine of selection.description.trim().split(/\r?\n/)) {
-          const trimmed = rawLine.trim();
-          if (!trimmed) continue;
-          const bulleted = /^[•·*\-]\s*/.test(trimmed) ? trimmed : `• ${trimmed}`;
-          descLines.push(escFn(bulleted));
-        }
-        textLines.push(``, `<blockquote>${descLines.join("\n")}</blockquote>`);
+        textLines.push(
+          ``,
+          this.buildProductDescBlock(
+            selection.description,
+            `${mkLabel("description", "💬")} ${descLabel}:`,
+            escFn,
+            language,
+            { maxLines: 60, maxChars: 3500 },
+          ),
+        );
       }
 
       if (selection.promoBanner) {
@@ -4618,7 +4623,7 @@ export class TelegramBotService {
       if (productNote) textLines.push(``, productNote);
       textLines.push(``, quantityLine);
 
-      const fullText = textLines.join("\n");
+      const fullText = this.clampTelegramHtml(textLines.join("\n"), 4096);
 
       await this.sendText(token, chatId, fullText, actions, replyMarkup, "HTML");
     }
@@ -4643,6 +4648,58 @@ export class TelegramBotService {
       },
       this.sessions.pendingQuantityTtlMs,
     );
+  }
+
+  /**
+   * Build the <blockquote>-wrapped product description with hard caps. A long description
+   * (the only unbounded field a seller controls) could otherwise push the photo caption past
+   * Telegram's 1024-char limit (or text past 4096) → sendPhoto/sendMessage fails → the product
+   * silently doesn't render when tapped. Truncates by WHOLE lines so the escaped HTML stays valid.
+   */
+  private buildProductDescBlock(
+    description: string,
+    header: string,
+    escFn: (s: string) => string,
+    language: BotLanguage,
+    opts: { maxLines: number; maxChars: number },
+  ): string {
+    const descLines: string[] = [header];
+    let used = 0;
+    let truncated = false;
+    for (const rawLine of description.trim().split(/\r?\n/)) {
+      const trimmed = rawLine.trim();
+      if (!trimmed) continue;
+      if (descLines.length - 1 >= opts.maxLines || used >= opts.maxChars) {
+        truncated = true;
+        break;
+      }
+      let bulleted = /^[•·*\-]\s*/.test(trimmed) ? trimmed : `• ${trimmed}`;
+      if (bulleted.length > 280) bulleted = `${bulleted.slice(0, 280)}…`;
+      descLines.push(escFn(bulleted));
+      used += bulleted.length;
+    }
+    if (truncated) {
+      const more = language === "en" ? "… (truncated)" : language === "th" ? "… (ย่อ)" : "… (đã rút gọn)";
+      descLines.push(escFn(more));
+    }
+    return `<blockquote>${descLines.join("\n")}</blockquote>`;
+  }
+
+  /**
+   * Hard backstop: clamp an HTML message/caption so its raw length stays under Telegram's limit
+   * (photo caption 1024, text 4096). Cuts on a newline boundary (never inside a <tg-emoji>/tag),
+   * appends "…", and re-closes a <blockquote> if the cut landed inside one. Raw length ≥ visible
+   * length (tags don't count toward Telegram's limit), so clamping raw is conservative but safe.
+   */
+  private clampTelegramHtml(text: string, limit: number): string {
+    if (text.length <= limit) return text;
+    let cut = text.lastIndexOf("\n", limit - 24);
+    if (cut < Math.floor(limit / 2)) cut = limit - 24; // no usable newline → hard cut
+    let out = `${text.slice(0, cut).trimEnd()}…`;
+    const opens = (out.match(/<blockquote>/g) || []).length;
+    const closes = (out.match(/<\/blockquote>/g) || []).length;
+    if (opens > closes) out += "</blockquote>";
+    return out;
   }
 
   private async getCatalogItemForTelegram(
