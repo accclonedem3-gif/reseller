@@ -246,7 +246,30 @@ export class TelegramBotService {
     ownCust: Record<string, unknown> | null,
   ): Promise<Record<string, unknown>> {
     const inherited = await this.shopsService.getInheritedCustomizationJson(shopId);
-    return this.resolveCustomization(inherited ?? ownCust);
+    // Not inheriting → the shop's own customization.
+    if (!inherited) return this.resolveCustomization(ownCust);
+    // Inheriting → ULTRA source is the base (over globalDefault), PRO's own fields override on top
+    // so PRO can tweak a few things (welcome text, labels, catalog text...) while inheriting the rest.
+    const base = await this.resolveCustomization(inherited);
+    return this.mergeCustomization(base, ownCust);
+  }
+
+  /** Overlay `over`'s fields onto `base` (deep-merge for known object keys). `over` wins per-field. */
+  private mergeCustomization(
+    base: Record<string, unknown>,
+    over: Record<string, unknown> | null,
+  ): Record<string, unknown> {
+    if (!over) return base;
+    const DEEP_KEYS = ["labelEmojiIds", "labelEmojis", "buttonEmojiIds", "messageEmojiIds", "buttonLabels", "buttonEmojis", "welcomeMessage", "footerBill", "productNote", "catalogText", "homeFooter", "walletNote"];
+    const merged: Record<string, unknown> = { ...base };
+    for (const [k, v] of Object.entries(over)) {
+      if (DEEP_KEYS.includes(k) && v && typeof v === "object" && !Array.isArray(v) && merged[k] && typeof merged[k] === "object") {
+        merged[k] = { ...(merged[k] as Record<string, unknown>), ...(v as Record<string, unknown>) };
+      } else {
+        merged[k] = v;
+      }
+    }
+    return merged;
   }
 
   private async resolveCustomization(
@@ -255,16 +278,7 @@ export class TelegramBotService {
     const globalDefault = await this.getGlobalDefaultCustomization();
     if (!globalDefault) return shopCust ?? {};
     if (!shopCust) return globalDefault;
-    const DEEP_KEYS = ["labelEmojiIds", "labelEmojis", "buttonEmojiIds", "messageEmojiIds", "buttonLabels", "buttonEmojis", "welcomeMessage", "footerBill", "productNote", "catalogText", "homeFooter", "walletNote"];
-    const merged: Record<string, unknown> = { ...globalDefault };
-    for (const [k, v] of Object.entries(shopCust)) {
-      if (DEEP_KEYS.includes(k) && v && typeof v === "object" && !Array.isArray(v) && merged[k] && typeof merged[k] === "object") {
-        merged[k] = { ...(merged[k] as Record<string, unknown>), ...(v as Record<string, unknown>) };
-      } else {
-        merged[k] = v;
-      }
-    }
-    return merged;
+    return this.mergeCustomization(globalDefault, shopCust);
   }
 
   async handleIncomingUpdate(
