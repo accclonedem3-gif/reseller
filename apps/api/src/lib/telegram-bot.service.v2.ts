@@ -2904,10 +2904,10 @@ export class TelegramBotService {
                 ? "ระบบจะดำเนินการอัตโนมัติหลังจากโอนเงินสำเร็จ"
                 : "Hệ thống sẽ tự xử lý khi bạn chuyển khoản thành công.",
             language === "en"
-              ? "If you have already paid, tap 'I've paid' below for an immediate check."
+              ? "⚠️ Please make sure the transfer description (content) is exactly correct."
               : language === "th"
-                ? "หากชำระแล้ว กด 'ฉันชำระแล้ว' ด้านล่างเพื่อให้ระบบตรวจสอบทันที"
-                : "Nếu bạn đã thanh toán, bấm 'Tôi đã thanh toán' bên dưới để hệ thống kiểm tra ngay.",
+                ? "⚠️ กรุณากรอกเนื้อหาการโอนเงินให้ถูกต้อง"
+                : "⚠️ Hãy đảm bảo bạn điền đúng nội dung chuyển khoản.",
           ]),
       ...bankLines,
     ];
