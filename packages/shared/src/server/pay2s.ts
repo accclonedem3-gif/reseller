@@ -129,22 +129,46 @@ export async function createPay2sPaymentLink(
 }
 
 /**
- * Verify HMAC-SHA256 signature on a Pay2s payment-notification (IPN) payload.
- * Per Pay2s docs the IPN signature field is `m2signature`, and the raw string is (alphabetical):
- *   accessKey&amount&message&orderId&orderInfo&orderType&partnerCode&payType&requestId&responseTime&resultCode
- * (NO extraData, NO transId — those are NOT part of the signature.)
+ * Verify the HMAC-SHA256 signature on a Pay2s payment-notification (IPN) payload (field
+ * `m2signature`). Pay2s's documented raw-string formula does NOT match the real IPN (their docs
+ * omit extraData/transId/requestTrace which the live payload actually carries), so instead of
+ * trusting one formula we try a few candidates and accept if ANY matches — all candidates are
+ * HMAC'd with the merchant secret, so this stays unforgeable. Returns the NAME of the matching
+ * formula (for logging/diagnosis) or null if none match.
  */
 export function verifyPay2sIpnSignature(
   payload: Record<string, unknown>,
   accessKey: string,
   secretKey: string,
-  signatureField: "signature" | "m2signature" = "m2signature",
-): boolean {
-  const sigFromPayload = String(payload[signatureField] || "");
-  if (!sigFromPayload) return false;
+): string | null {
+  const received = String(payload.m2signature || payload.signature || "");
+  if (!received) return null;
 
-  const raw = `accessKey=${accessKey}&amount=${payload.amount}&message=${payload.message ?? ""}&orderId=${payload.orderId}&orderInfo=${payload.orderInfo}&orderType=${payload.orderType ?? ""}&partnerCode=${payload.partnerCode}&payType=${payload.payType ?? ""}&requestId=${payload.requestId}&responseTime=${payload.responseTime ?? ""}&resultCode=${payload.resultCode}`;
+  const val = (f: string) => String(payload[f] ?? (f === "accessKey" ? accessKey : ""));
 
-  const expected = createHmac("sha256", secretKey).update(raw).digest("hex");
-  return expected === sigFromPayload;
+  // Pay2s signs an alphabetically-sorted subset of the payload, but their docs misstate exactly
+  // which fields. Search combinatorially: always include the fields that are near-certainly signed,
+  // toggle the uncertain ones, sort alphabetically, HMAC each. Accept the first match (every
+  // candidate requires the secret, so this can't be forged). The returned name lists the toggled
+  // fields that matched — once seen in logs we know the real formula.
+  const core = ["accessKey", "amount", "orderId", "orderInfo", "partnerCode", "requestId", "resultCode"];
+  const optional = ["extraData", "message", "orderType", "payType", "requestTrace", "responseTime", "transId"];
+
+  for (let mask = 0; mask < (1 << optional.length); mask++) {
+    const fields = [...core];
+    const included: string[] = [];
+    for (let i = 0; i < optional.length; i++) {
+      if (mask & (1 << i)) {
+        const f = optional[i]!;
+        fields.push(f);
+        included.push(f);
+      }
+    }
+    const raw = fields.sort().map((f) => `${f}=${val(f)}`).join("&");
+    const expected = createHmac("sha256", secretKey).update(raw).digest("hex");
+    if (expected === received) {
+      return included.length ? `core+${included.sort().join("+")}` : "core";
+    }
+  }
+  return null;
 }

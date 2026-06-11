@@ -197,12 +197,12 @@ export class WebhooksController {
     }
 
     if (creds?.accessKey && creds.secretKey) {
-      const sigField = body.m2signature !== undefined ? "m2signature" : "signature";
-      const ok = verifyPay2sIpnSignature(body, creds.accessKey, creds.secretKey, sigField);
-      if (!ok) {
-        this.logger.warn(`[pay2s] IPN signature mismatch for ${externalOrderCode} (field=${sigField}) — not confirming`);
+      const matched = verifyPay2sIpnSignature(body, creds.accessKey, creds.secretKey);
+      if (!matched) {
+        this.logger.warn(`[pay2s] IPN signature mismatch for ${externalOrderCode} — not confirming`);
         return { success: true };
       }
+      this.logger.log(`[pay2s] IPN signature OK for ${externalOrderCode} (formula=${matched})`);
     }
 
     const resultCode = Number(body.resultCode);
