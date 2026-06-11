@@ -2082,11 +2082,12 @@ export class TelegramBotService {
     const msgEmojiIdsBuy = (shopCustBuy?.messageEmojiIds && typeof shopCustBuy.messageEmojiIds === "object")
       ? shopCustBuy.messageEmojiIds as Record<string, string> : {};
     const isPublicCheckoutUrl = this.isPublicCheckoutUrl(created.checkoutUrl);
-    // Prefer a provider-supplied ready QR (PAY2S returns base64); else regenerate from bank info.
-    let qrBuffer = this.decodeDataUriToBuffer(created.qrCode);
-    if (!qrBuffer && created.bankInfo) {
-      qrBuffer = await this.downloadVietQrAsBuffer(created.bankInfo, created.order.totalSaleAmount);
-    }
+    // Prefer the branded VietQR (img.vietqr.io — same look as PayOS); fall back to a
+    // provider-supplied ready base64 QR (PAY2S), then to a generic QR image URL.
+    let qrBuffer = created.bankInfo
+      ? await this.downloadVietQrAsBuffer(created.bankInfo, created.order.totalSaleAmount)
+      : null;
+    if (!qrBuffer) qrBuffer = this.decodeDataUriToBuffer(created.qrCode);
     const qrFallbackUrl = qrBuffer ? null : this.buildQrImageUrl(created.qrCode);
     const hasQr = qrBuffer !== null || qrFallbackUrl !== null;
     const paymentLines = this.buildOrderPaymentLines(created, language, usdtVndRate, created.isManualNoDelivery, shop.supportTelegram, shop.supportZalo, msgEmojiIdsBuy);
@@ -4087,10 +4088,10 @@ export class TelegramBotService {
 
       await this.clearPendingWalletTopup(shopId, telegramUserId);
 
-      let qrBuffer = this.decodeDataUriToBuffer(created.topup.qrCode);
-      if (!qrBuffer && created.bankInfo) {
-        qrBuffer = await this.downloadVietQrAsBuffer(created.bankInfo, created.topup.amount);
-      }
+      let qrBuffer = created.bankInfo
+        ? await this.downloadVietQrAsBuffer(created.bankInfo, created.topup.amount)
+        : null;
+      if (!qrBuffer) qrBuffer = this.decodeDataUriToBuffer(created.topup.qrCode);
       const qrFallbackUrl = qrBuffer ? null : this.buildQrImageUrl(created.topup.qrCode);
       const usdtVndRate = await this.getShopUsdtVndRate(shopId);
       const text = this.buildWalletTopupInstructionText(

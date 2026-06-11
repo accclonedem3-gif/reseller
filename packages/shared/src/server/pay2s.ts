@@ -11,6 +11,23 @@ export interface Pay2sCredentials {
   bankId: string;
 }
 
+// Pay2s returns a bank CODE (e.g. "MBB", "VCB"); img.vietqr.io needs the NAPAS numeric BIN to
+// render a branded VietQR. Map the codes used in the bot-config bank dropdown.
+const PAY2S_BANK_CODE_TO_BIN: Record<string, string> = {
+  VCB: "970436", CTG: "970415", TCB: "970407", BIDV: "970418", ACB: "970416",
+  MBB: "970422", MB: "970422", TPB: "970423", VPB: "970432", STB: "970403",
+  AGRIBANK: "970405", VBA: "970405", VIB: "970441", HDB: "970437", MSB: "970426",
+  SHB: "970443", OCB: "970448", EIB: "970431", SCB: "970429", NAB: "970428",
+  SEAB: "970440", LPB: "970449",
+};
+
+export function pay2sBankCodeToBin(code: string | null | undefined): string | null {
+  if (!code) return null;
+  const c = String(code).trim().toUpperCase();
+  if (/^\d{6}$/.test(c)) return c; // already a numeric BIN
+  return PAY2S_BANK_CODE_TO_BIN[c] ?? null;
+}
+
 export interface Pay2sBankInfo {
   bankId: string;
   accountNumber: string;

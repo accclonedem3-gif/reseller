@@ -4,6 +4,7 @@ import { PaymentProvider } from "@prisma/client";
 import {
   buildVietQrImageUrl,
   createPay2sPaymentLink,
+  pay2sBankCodeToBin,
   createPayOSPaymentLink,
   decryptSecret,
   fetchWeb2mTransactions,
@@ -197,8 +198,11 @@ export class PaymentService {
         ? {
             accountNumber: response.bankInfo.accountNumber,
             accountName: response.bankInfo.accountName,
-            bin: response.bankInfo.bankId,
-            description: input.description,
+            // Map Pay2s bank CODE → NAPAS BIN so we can render a branded VietQR (like PayOS).
+            bin: pay2sBankCodeToBin(response.bankInfo.bankId) || response.bankInfo.bankId,
+            // Memo = externalOrderCode so both the QR scan and a manual transfer carry the code the
+            // balance webhook / IPN match on (findPay2sPendingByContent matches externalOrderCode).
+            description: input.externalOrderCode,
           }
         : undefined;
 
