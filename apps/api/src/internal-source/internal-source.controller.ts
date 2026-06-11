@@ -72,6 +72,16 @@ export class InternalSourceController {
     return this.internalSourceService.getCurrentConnection(user);
   }
 
+  @Post("source/connections/current/inherit-template")
+  @UseGuards(JwtAuthGuard, SellerCapabilitiesGuard)
+  @RequireSellerCapabilities("source_internal_use")
+  setInheritTemplate(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() body: { enabled: boolean },
+  ) {
+    return this.internalSourceService.setInheritTemplate(user, body.enabled === true);
+  }
+
   @Post("source/connections/connect")
   @UseGuards(JwtAuthGuard, SellerTierGuard, SellerCapabilitiesGuard)
   @RequireSellerTier(SellerTier.PRO, SellerTier.ULTRA)

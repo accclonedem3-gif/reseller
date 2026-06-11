@@ -247,6 +247,18 @@ export class InternalSourceService {
     return this.mapConnection(connection, walletBalance);
   }
 
+  async setInheritTemplate(user: AuthenticatedUser, enabled: boolean) {
+    const shop = await this.shopsService.getSellerShop(user.id);
+    const result = await this.prisma.downstreamSourceConnection.updateMany({
+      where: { downstreamShopId: shop.id, status: DownstreamSourceConnectionStatus.ACTIVE },
+      data: { inheritSourceTemplate: enabled },
+    });
+    if (result.count === 0) {
+      throw new NotFoundException("No active source connection.");
+    }
+    return { ok: true, inheritSourceTemplate: enabled };
+  }
+
   async listDownstreamConnections(user: AuthenticatedUser) {
     const shop = await this.getProSellerShopOrThrow(user.id);
     const connections = await this.prisma.downstreamSourceConnection.findMany({
@@ -1769,6 +1781,7 @@ export class InternalSourceService {
       label: connection.label,
       balance: walletBalance,
       currency: connection.currency,
+      inheritSourceTemplate: connection.inheritSourceTemplate,
       lastCatalogSyncAt: connection.lastCatalogSyncAt,
       lastOrderedAt: connection.lastOrderedAt,
       buyerApiBaseUrl: this.getInternalBuyerBaseUrl(),

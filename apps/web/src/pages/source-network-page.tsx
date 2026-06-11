@@ -496,11 +496,24 @@ export function SourceNetworkPage() {
   });
 
   const inheritTemplateMutation = useMutation({
-    mutationFn: async (enabled: boolean) => api.post("/seller/source-connection/inherit-template", { enabled }),
-    onSuccess: async () => {
+    mutationFn: async (enabled: boolean) => api.post("/source/connections/current/inherit-template", { enabled }),
+    onMutate: async (enabled: boolean) => {
+      await queryClient.cancelQueries({ queryKey: ["source-network", "current-connection"] });
+      const prev = queryClient.getQueryData(["source-network", "current-connection"]);
+      queryClient.setQueryData(["source-network", "current-connection"], (old: any) =>
+        old ? { ...old, inheritSourceTemplate: enabled } : old,
+      );
+      return { prev };
+    },
+    onError: (e, _enabled, ctx: any) => {
+      if (ctx?.prev !== undefined) {
+        queryClient.setQueryData(["source-network", "current-connection"], ctx.prev);
+      }
+      showToast({ tone: "error", message: getApiErrorMessage(e, t.toastError) });
+    },
+    onSettled: async () => {
       await queryClient.invalidateQueries({ queryKey: ["source-network", "current-connection"] });
     },
-    onError: (e) => showToast({ tone: "error", message: getApiErrorMessage(e, t.toastError) }),
   });
 
   const connectMutation = useMutation({
