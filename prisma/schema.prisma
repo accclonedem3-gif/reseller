@@ -551,6 +551,7 @@ model PaymentConfig {
   pay2sSecretKeyEncrypted           String?         @map("pay2s_secret_key_encrypted")
   pay2sBankAccount                  String?         @map("pay2s_bank_account")
   pay2sBankId                       String?         @map("pay2s_bank_id")
+  pay2sWebhookTokenEncrypted        String?         @map("pay2s_webhook_token_encrypted")
   web2mAccountNumber                String?         @map("web2m_account_number")
   web2mBankCode                     String?         @map("web2m_bank_code")
   web2mPasswordEncrypted            String?         @map("web2m_password_encrypted")

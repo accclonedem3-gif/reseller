@@ -256,6 +256,9 @@ export class ShopsService {
       ),
       pay2sBankAccount: paymentConfig?.pay2sBankAccount || "",
       pay2sBankId: paymentConfig?.pay2sBankId || "",
+      pay2sWebhookTokenMasked: maskSecret(
+        this.safeDecryptSecret(paymentConfig?.pay2sWebhookTokenEncrypted),
+      ),
       web2mAccountNumber: paymentConfig?.web2mAccountNumber || "",
       web2mBankCode: paymentConfig?.web2mBankCode || "",
       web2mPasswordMasked: maskSecret(this.safeDecryptSecret(paymentConfig?.web2mPasswordEncrypted)),
@@ -428,6 +431,9 @@ export class ShopsService {
             : undefined,
           pay2sBankAccount: dto.pay2sBankAccount ?? undefined,
           pay2sBankId: dto.pay2sBankId ?? undefined,
+          pay2sWebhookTokenEncrypted: dto.pay2sWebhookToken
+            ? encryptSecret(dto.pay2sWebhookToken, encryptionKey)
+            : undefined,
           web2mAccountNumber: dto.web2mAccountNumber ?? undefined,
           web2mBankCode: dto.web2mBankCode ?? undefined,
           web2mPasswordEncrypted: dto.web2mPassword
@@ -498,6 +504,9 @@ export class ShopsService {
             : null,
           pay2sBankAccount: dto.pay2sBankAccount ?? null,
           pay2sBankId: dto.pay2sBankId ?? null,
+          pay2sWebhookTokenEncrypted: dto.pay2sWebhookToken
+            ? encryptSecret(dto.pay2sWebhookToken, encryptionKey)
+            : null,
           web2mAccountNumber: dto.web2mAccountNumber ?? null,
           web2mBankCode: dto.web2mBankCode ?? null,
           web2mPasswordEncrypted: dto.web2mPassword

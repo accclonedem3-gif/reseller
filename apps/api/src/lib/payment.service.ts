@@ -779,6 +779,22 @@ export class PaymentService {
     };
   }
 
+  /** Resolve a shop's Pay2s balance-webhook token (the value the seller declared on the Hook). */
+  async getPay2sWebhookTokenForExternalOrderCode(externalOrderCode: string): Promise<string> {
+    const target = await this.resolvePaymentStatusTarget(externalOrderCode);
+    if (!target) {
+      return process.env.PAY2S_WEBHOOK_TOKEN || "";
+    }
+    const paymentConfig = await this.prisma.paymentConfig.findUnique({
+      where: { shopId: target.shopId },
+    });
+    return (
+      this.safeDecryptSecret(paymentConfig?.pay2sWebhookTokenEncrypted) ||
+      process.env.PAY2S_WEBHOOK_TOKEN ||
+      ""
+    );
+  }
+
   async getPayOSChecksumKeyForExternalOrderCode(externalOrderCode: string) {
     const target = await this.resolvePaymentStatusTarget(externalOrderCode);
 

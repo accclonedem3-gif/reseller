@@ -293,6 +293,7 @@ type BotConfigForm = {
   pay2sSecretKey: string;
   pay2sBankAccount: string;
   pay2sBankId: string;
+  pay2sWebhookToken: string;
   web2mAccountNumber: string;
   web2mBankCode: string;
   web2mPassword: string;
@@ -345,6 +346,7 @@ function buildBotConfigPayload(form: BotConfigForm) {
     ["pay2sSecretKey", "pay2sSecretKey"],
     ["pay2sBankAccount", "pay2sBankAccount"],
     ["pay2sBankId", "pay2sBankId"],
+    ["pay2sWebhookToken", "pay2sWebhookToken"],
     ["web2mAccountNumber", "web2mAccountNumber"],
     ["web2mBankCode", "web2mBankCode"],
     ["web2mPassword", "web2mPassword"],
@@ -405,6 +407,7 @@ function getInitialForm(): BotConfigForm {
     pay2sSecretKey: "",
     pay2sBankAccount: "",
     pay2sBankId: "",
+    pay2sWebhookToken: "",
     web2mAccountNumber: "",
     web2mBankCode: "",
     web2mPassword: "",
@@ -500,6 +503,7 @@ export function BotConfigPage() {
       pay2sSecretKey: "",
       pay2sBankAccount: (configQuery.data as any).pay2sBankAccount || "",
       pay2sBankId: (configQuery.data as any).pay2sBankId || "",
+      pay2sWebhookToken: "",
       web2mAccountNumber: (configQuery.data as any).web2mAccountNumber || "",
       web2mBankCode: (configQuery.data as any).web2mBankCode || "",
       web2mPassword: "",
@@ -993,6 +997,12 @@ export function BotConfigPage() {
                     <option value="SEAB">SeABank (SEAB)</option>
                     <option value="LPB">LPBank (LPB)</option>
                   </select>
+                </Field>
+                <Field
+                  label="Webhook Token (biến động số dư)"
+                  hint={(configQuery.data as any)?.pay2sWebhookTokenMasked ? "Đã mã hoá — để trống nếu không đổi" : "Token của Webhook bạn tạo trên Pay2s (Webhooks → Thêm webhook, sự kiện Nhận, URL trỏ về hệ thống). Giúp tự xác nhận đơn khi tiền vào."}
+                >
+                  <Input value={form.pay2sWebhookToken} onChange={(e) => setForm((c) => ({ ...c, pay2sWebhookToken: e.target.value }))} placeholder={(configQuery.data as any)?.pay2sWebhookTokenMasked || "Dán token webhook Pay2s"} />
                 </Field>
               </div>
               <div className="mt-6 flex justify-end">

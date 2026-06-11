@@ -220,21 +220,11 @@ export class WebhooksController {
     body: Record<string, any>,
     authHeader?: string,
   ) {
-    // Pay2s balance webhook auth: "Authorization: Bearer <token>" where <token> is the value you
-    // declared when creating the Hook (dashboard → Webhooks). Configure it as PAY2S_WEBHOOK_TOKEN.
-    const expectedToken = (process.env.PAY2S_WEBHOOK_TOKEN || "").trim();
-    if (this.config.nodeEnv === "production") {
-      if (!expectedToken) {
-        this.logger.warn(`[pay2s] balance webhook: PAY2S_WEBHOOK_TOKEN not set — ignoring`);
-        return { success: true };
-      }
-      if (authHeader !== `Bearer ${expectedToken}`) {
-        this.logger.warn(`[pay2s] balance webhook: bad/missing Bearer token — ignoring`);
-        return { success: true };
-      }
-    }
-
-    // Pay2s posts { transactions: [ { content, transferType:"IN", transferAmount, ... } ] }.
+    // Pay2s posts { transactions: [ { content, transferType:"IN", transferAmount, ... } ] } with
+    // "Authorization: Bearer <token>" — <token> is the per-shop value the seller declared when
+    // creating the Hook (saved encrypted in PaymentConfig.pay2sWebhookToken). We match each tx to a
+    // pending order first (which identifies the shop), then verify the Bearer token against THAT
+    // shop's stored token.
     const txs: any[] = Array.isArray(body.transactions)
       ? body.transactions
       : body.transferAmount !== undefined || body.content !== undefined
@@ -254,6 +244,15 @@ export class WebhooksController {
         this.logger.log(`[pay2s] balance tx no match content="${content}" amount=${amount}`);
         continue;
       }
+
+      if (this.config.nodeEnv === "production") {
+        const token = await this.paymentService.getPay2sWebhookTokenForExternalOrderCode(matched);
+        if (!token || authHeader !== `Bearer ${token}`) {
+          this.logger.warn(`[pay2s] balance webhook: bad/missing Bearer token for ${matched} — ignoring`);
+          continue;
+        }
+      }
+
       this.logger.log(`[pay2s] balance tx matched ${matched} (amount=${amount}) → confirming`);
       try {
         await this.processPaymentCompletion(matched, { source: "pay2s_balance_webhook", ...tx });

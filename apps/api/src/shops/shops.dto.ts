@@ -171,6 +171,11 @@ export class UpdateBotConfigDto {
   @IsOptional()
   @Transform(emptyStringToUndefined)
   @IsString()
+  pay2sWebhookToken?: string;
+
+  @IsOptional()
+  @Transform(emptyStringToUndefined)
+  @IsString()
   web2mAccountNumber?: string;
 
   @IsOptional()
