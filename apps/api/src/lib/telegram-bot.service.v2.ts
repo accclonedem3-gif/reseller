@@ -2550,6 +2550,7 @@ export class TelegramBotService {
 
     if (normalized === "WALLET") return "WALLET";
     if (normalized === "PAYOS") return PaymentProvider.PAYOS;
+    if (normalized === "PAY2S") return PaymentProvider.PAY2S;
     if (normalized === "MOCK") return PaymentProvider.MOCK;
     if (normalized === "BINANCE") return PaymentProvider.BINANCE;
     if (normalized === "BINANCE_PAY") return PaymentProvider.BINANCE_PAY;
