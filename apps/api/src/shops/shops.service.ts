@@ -61,6 +61,12 @@ type CatalogStockNotification = {
   available: number;
 };
 
+// PRO per-connection overrides layered on top of an inherited ULTRA template.
+type TemplateOverrides = {
+  groups?: Record<string, { name?: string; position?: number; hidden?: boolean }>;
+  products?: Record<string, { position?: number }>;
+};
+
 @Injectable()
 export class ShopsService {
   constructor(
@@ -1690,27 +1696,43 @@ export class ShopsService {
    * which equals the ULTRA SellerProductOverride.sourceProductId — so we can look up ULTRA's
    * group/position per product. Prices are left untouched (PRO keeps its own salePrice).
    */
-  private async applyInheritedLayout(
+  /** Active inherit-connection for a downstream shop, with the PRO's template-override map. */
+  private async getInheritedContext(
     shopId: string,
-    mapped: { sourceProductId: string; groupId: string | null; position: number }[],
-  ) {
+  ): Promise<{ upstreamShopId: string; overrides: TemplateOverrides } | null> {
     const conn = await this.prisma.downstreamSourceConnection.findFirst({
       where: { downstreamShopId: shopId, status: "ACTIVE", inheritSourceTemplate: true },
-      select: { upstreamShopId: true },
+      select: { upstreamShopId: true, templateOverridesJson: true },
     });
-    if (!conn) return;
+    if (!conn) return null;
+    const overrides = (conn.templateOverridesJson && typeof conn.templateOverridesJson === "object"
+      ? conn.templateOverridesJson
+      : {}) as TemplateOverrides;
+    return { upstreamShopId: conn.upstreamShopId, overrides };
+  }
+
+  private async applyInheritedLayout(
+    shopId: string,
+    mapped: { id: string; sourceProductId: string; groupId: string | null; position: number }[],
+  ) {
+    const ctx = await this.getInheritedContext(shopId);
+    if (!ctx) return;
     const ultraOverrides = await this.prisma.sellerProductOverride.findMany({
-      where: { shopId: conn.upstreamShopId },
+      where: { shopId: ctx.upstreamShopId },
       select: { sourceProductId: true, groupId: true, position: true },
     });
     const layout = new Map<string, { groupId: string | null; position: number }>();
     for (const o of ultraOverrides) {
       layout.set(o.sourceProductId, { groupId: o.groupId, position: o.position });
     }
+    const productOv = ctx.overrides.products ?? {};
     for (const m of mapped) {
       const l = layout.get(m.sourceProductId);
       m.groupId = l ? l.groupId : null;
       if (l) m.position = l.position;
+      // PRO per-product position override on top of the inherited layout.
+      const po = productOv[m.id];
+      if (po && typeof po.position === "number") m.position = po.position;
     }
   }
 
@@ -1829,16 +1851,30 @@ export class ShopsService {
   }
 
   async getCatalogGroupsForShop(shopId: string, applyInheritedTemplate = false) {
-    let targetShopId = shopId;
     if (applyInheritedTemplate) {
-      const conn = await this.prisma.downstreamSourceConnection.findFirst({
-        where: { downstreamShopId: shopId, status: "ACTIVE", inheritSourceTemplate: true },
-        select: { upstreamShopId: true },
-      });
-      if (conn) targetShopId = conn.upstreamShopId;
+      const ctx = await this.getInheritedContext(shopId);
+      if (ctx) {
+        const groups = await this.prisma.shopCatalogGroup.findMany({
+          where: { shopId: ctx.upstreamShopId },
+          orderBy: [{ position: "asc" }, { createdAt: "asc" }],
+        });
+        const groupOv = ctx.overrides.groups ?? {};
+        // Apply PRO overrides: custom name, custom order, hide a category.
+        return groups
+          .filter((g) => !groupOv[g.id]?.hidden)
+          .map((g) => {
+            const ov = groupOv[g.id];
+            return {
+              ...g,
+              name: ov?.name?.trim() || g.name,
+              position: typeof ov?.position === "number" ? ov.position : g.position,
+            };
+          })
+          .sort((a, b) => a.position - b.position);
+      }
     }
     return this.prisma.shopCatalogGroup.findMany({
-      where: { shopId: targetShopId },
+      where: { shopId },
       orderBy: [{ position: "asc" }, { createdAt: "asc" }],
     });
   }

@@ -259,6 +259,42 @@ export class InternalSourceService {
     return { ok: true, inheritSourceTemplate: enabled };
   }
 
+  /** Save PRO's per-connection overrides (custom category names/order/hide + product order). */
+  async setTemplateOverrides(user: AuthenticatedUser, overrides: unknown) {
+    const shop = await this.shopsService.getSellerShop(user.id);
+    const clean = overrides && typeof overrides === "object" && !Array.isArray(overrides) ? overrides : {};
+    const result = await this.prisma.downstreamSourceConnection.updateMany({
+      where: { downstreamShopId: shop.id, status: DownstreamSourceConnectionStatus.ACTIVE },
+      data: { templateOverridesJson: clean as Prisma.InputJsonValue },
+    });
+    if (result.count === 0) {
+      throw new NotFoundException("No active source connection.");
+    }
+    return { ok: true };
+  }
+
+  /** Structure for the override editor: ULTRA categories + the PRO's (effective) products + saved overrides. */
+  async getInheritedStructure(user: AuthenticatedUser) {
+    const shop = await this.shopsService.getSellerShop(user.id);
+    const conn = await this.prisma.downstreamSourceConnection.findFirst({
+      where: { downstreamShopId: shop.id, status: DownstreamSourceConnectionStatus.ACTIVE },
+      select: { upstreamShopId: true, templateOverridesJson: true },
+    });
+    if (!conn) return { groups: [], products: [], overrides: {} };
+    const groups = await this.prisma.shopCatalogGroup.findMany({
+      where: { shopId: conn.upstreamShopId },
+      orderBy: [{ position: "asc" }, { createdAt: "asc" }],
+    });
+    const products = await this.shopsService.getCatalogViewForShop(shop.id, false, true);
+    return {
+      overrides: (conn.templateOverridesJson && typeof conn.templateOverridesJson === "object" ? conn.templateOverridesJson : {}),
+      groups: groups.map((g) => ({ id: g.id, name: g.name, position: g.position, icon: g.icon })),
+      products: products
+        .filter((p) => p.enabled && !p.hidden)
+        .map((p) => ({ id: p.id, name: p.displayName, groupId: p.groupId, position: p.position })),
+    };
+  }
+
   async listDownstreamConnections(user: AuthenticatedUser) {
     const shop = await this.getProSellerShopOrThrow(user.id);
     const connections = await this.prisma.downstreamSourceConnection.findMany({
@@ -1782,6 +1818,9 @@ export class InternalSourceService {
       balance: walletBalance,
       currency: connection.currency,
       inheritSourceTemplate: connection.inheritSourceTemplate,
+      templateOverrides: (connection.templateOverridesJson && typeof connection.templateOverridesJson === "object"
+        ? connection.templateOverridesJson
+        : {}),
       lastCatalogSyncAt: connection.lastCatalogSyncAt,
       lastOrderedAt: connection.lastOrderedAt,
       buyerApiBaseUrl: this.getInternalBuyerBaseUrl(),

@@ -1030,6 +1030,7 @@ model DownstreamSourceConnection {
   label                    String?
   currency                 String                           @default("VND")
   inheritSourceTemplate    Boolean                          @default(false) @map("inherit_source_template")
+  templateOverridesJson    Json?                            @map("template_overrides_json")
   lastCatalogSyncAt        DateTime?                        @map("last_catalog_sync_at")
   lastOrderedAt            DateTime?                        @map("last_ordered_at")
   createdAt                DateTime                         @default(now()) @map("created_at")

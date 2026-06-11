@@ -82,6 +82,23 @@ export class InternalSourceController {
     return this.internalSourceService.setInheritTemplate(user, body.enabled === true);
   }
 
+  @Get("source/connections/current/inherited-structure")
+  @UseGuards(JwtAuthGuard, SellerCapabilitiesGuard)
+  @RequireSellerCapabilities("source_internal_use")
+  getInheritedStructure(@CurrentUser() user: AuthenticatedUser) {
+    return this.internalSourceService.getInheritedStructure(user);
+  }
+
+  @Post("source/connections/current/template-overrides")
+  @UseGuards(JwtAuthGuard, SellerCapabilitiesGuard)
+  @RequireSellerCapabilities("source_internal_use")
+  setTemplateOverrides(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() body: { overrides: unknown },
+  ) {
+    return this.internalSourceService.setTemplateOverrides(user, body?.overrides);
+  }
+
   @Post("source/connections/connect")
   @UseGuards(JwtAuthGuard, SellerTierGuard, SellerCapabilitiesGuard)
   @RequireSellerTier(SellerTier.PRO, SellerTier.ULTRA)

@@ -516,6 +516,43 @@ export function SourceNetworkPage() {
     },
   });
 
+  // Inherited-template override editor (rename/reorder/hide categories + reorder products).
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [edGroups, setEdGroups] = useState<{ id: string; name: string; position: number }[]>([]);
+  const [edProducts, setEdProducts] = useState<{ id: string; name: string; position: number }[]>([]);
+  const [groupOv, setGroupOv] = useState<Record<string, { name?: string; position?: number; hidden?: boolean }>>({});
+  const [productOv, setProductOv] = useState<Record<string, { position?: number }>>({});
+
+  const openOverrideEditor = async () => {
+    try {
+      const { data } = await api.get<{
+        groups: { id: string; name: string; position: number }[];
+        products: { id: string; name: string; position: number }[];
+        overrides: { groups?: Record<string, any>; products?: Record<string, any> };
+      }>("/source/connections/current/inherited-structure");
+      setEdGroups(data.groups || []);
+      setEdProducts(data.products || []);
+      setGroupOv(data.overrides?.groups || {});
+      setProductOv(data.overrides?.products || {});
+      setEditorOpen(true);
+    } catch (e) {
+      showToast({ tone: "error", message: getApiErrorMessage(e, t.toastError) });
+    }
+  };
+
+  const saveOverridesMutation = useMutation({
+    mutationFn: async () =>
+      api.post("/source/connections/current/template-overrides", {
+        overrides: { groups: groupOv, products: productOv },
+      }),
+    onSuccess: async () => {
+      showToast({ tone: "success", message: "Đã lưu tùy chỉnh hiển thị." });
+      setEditorOpen(false);
+      await queryClient.invalidateQueries({ queryKey: ["source-network", "current-connection"] });
+    },
+    onError: (e) => showToast({ tone: "error", message: getApiErrorMessage(e, t.toastError) }),
+  });
+
   const connectMutation = useMutation({
     mutationFn: async () => api.post("/source/connections/connect", { apiKey: connectKey.trim() }),
     onSuccess: async () => {
@@ -1165,6 +1202,100 @@ export function SourceNetworkPage() {
                   />
                 </button>
               </div>
+
+              {/* Override editor — only when inheriting */}
+              {currentConnection.inheritSourceTemplate && (
+                <div className="mt-3">
+                  {!editorOpen ? (
+                    <button
+                      type="button"
+                      onClick={openOverrideEditor}
+                      className="rounded-xl px-4 py-2 text-[12px] font-black transition hover:opacity-80"
+                      style={{ background: "var(--inp)", border: "1px solid var(--bd)", color: "var(--tx)" }}
+                    >
+                      ✏️ Tùy chỉnh danh mục &amp; thứ tự
+                    </button>
+                  ) : (
+                    <div className="rounded-xl p-4" style={{ background: "var(--inp)", border: "1px solid var(--bd)" }}>
+                      <p className="text-[12px] font-black mb-2" style={{ color: "var(--tx)" }}>
+                        Danh mục — đổi tên / thứ tự (#) / ẩn
+                      </p>
+                      {edGroups.length === 0 && (
+                        <p className="text-[11px]" style={{ color: "var(--tx-f)" }}>Nguồn chưa có danh mục.</p>
+                      )}
+                      {edGroups.map((g) => (
+                        <div key={g.id} className="flex items-center gap-2 mb-1.5">
+                          <input
+                            value={groupOv[g.id]?.name ?? ""}
+                            placeholder={g.name}
+                            onChange={(e) => setGroupOv((s) => ({ ...s, [g.id]: { ...s[g.id], name: e.target.value } }))}
+                            className="flex-1 rounded-lg px-2 py-1.5 text-[12px] outline-none"
+                            style={{ background: "var(--surface)", border: "1px solid var(--bd)", color: "var(--tx)" }}
+                          />
+                          <input
+                            type="number"
+                            placeholder="#"
+                            value={groupOv[g.id]?.position ?? ""}
+                            onChange={(e) => setGroupOv((s) => ({ ...s, [g.id]: { ...s[g.id], position: e.target.value === "" ? undefined : Number(e.target.value) } }))}
+                            className="w-14 rounded-lg px-2 py-1.5 text-[12px] outline-none"
+                            style={{ background: "var(--surface)", border: "1px solid var(--bd)", color: "var(--tx)" }}
+                          />
+                          <label className="flex items-center gap-1 text-[11px]" style={{ color: "var(--tx-f)" }}>
+                            <input
+                              type="checkbox"
+                              checked={!!groupOv[g.id]?.hidden}
+                              onChange={(e) => setGroupOv((s) => ({ ...s, [g.id]: { ...s[g.id], hidden: e.target.checked } }))}
+                            />
+                            ẩn
+                          </label>
+                        </div>
+                      ))}
+
+                      <p className="text-[12px] font-black mt-4 mb-2" style={{ color: "var(--tx)" }}>
+                        Sản phẩm — thứ tự (#)
+                      </p>
+                      <div className="max-h-64 overflow-y-auto">
+                        {edProducts.map((p) => (
+                          <div key={p.id} className="flex items-center gap-2 mb-1.5">
+                            <span className="flex-1 truncate text-[12px]" style={{ color: "var(--tx)" }}>{p.name}</span>
+                            <input
+                              type="number"
+                              placeholder={String(p.position)}
+                              value={productOv[p.id]?.position ?? ""}
+                              onChange={(e) => setProductOv((s) => ({ ...s, [p.id]: { position: e.target.value === "" ? undefined : Number(e.target.value) } }))}
+                              className="w-14 rounded-lg px-2 py-1.5 text-[12px] outline-none"
+                              style={{ background: "var(--surface)", border: "1px solid var(--bd)", color: "var(--tx)" }}
+                            />
+                          </div>
+                        ))}
+                      </div>
+
+                      <div className="mt-3 flex gap-2">
+                        <button
+                          type="button"
+                          disabled={saveOverridesMutation.isPending}
+                          onClick={() => saveOverridesMutation.mutate()}
+                          className="rounded-xl px-4 py-2 text-[12px] font-black transition hover:opacity-80 disabled:opacity-40"
+                          style={{ background: "rgb(249,115,22)", color: "#fff" }}
+                        >
+                          {saveOverridesMutation.isPending ? "Đang lưu..." : "Lưu thay đổi"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setEditorOpen(false)}
+                          className="rounded-xl px-4 py-2 text-[12px] font-black transition hover:opacity-80"
+                          style={{ background: "var(--surface)", border: "1px solid var(--bd)", color: "var(--tx)" }}
+                        >
+                          Đóng
+                        </button>
+                      </div>
+                      <p className="text-[10px] mt-2" style={{ color: "var(--tx-f)" }}>
+                        Để trống = giữ theo nguồn ULTRA. Số thứ tự nhỏ hiện trước.
+                      </p>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           ) : (
             <div
