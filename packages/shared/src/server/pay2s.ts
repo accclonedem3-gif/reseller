@@ -26,6 +26,7 @@ export interface CreatePay2sPaymentLinkInput {
   description: string;        // orderInfo, 10–32 alphanumeric
   redirectUrl: string;
   ipnUrl: string;
+  partnerName?: string;       // merchant display name (body only, NOT in signature)
 }
 
 export interface Pay2sPaymentLinkResult {
@@ -80,10 +81,13 @@ export async function createPay2sPaymentLink(
     {
       accessKey: credentials.accessKey,
       partnerCode: credentials.partnerCode,
+      partnerName: input.partnerName || input.description,
       requestId: input.orderCode,
       amount: input.amount,
       orderId: input.orderId,
       orderInfo: input.description,
+      // orderType mirrors requestType in Pay2S's documented body (not part of the signature)
+      orderType: requestType,
       bankAccounts: [
         { account_number: credentials.bankAccount, bank_id: credentials.bankId },
       ],
