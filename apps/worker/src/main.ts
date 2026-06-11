@@ -1107,8 +1107,11 @@ async function syncCatalogForShop(shopId) {
         }
     }
     if (shop.providerConfig.providerKind === "INTERNAL") {
+        // Stale = products not from the internal upstream feed. EXCLUDE "manual" — seller-created
+        // products are never in any upstream feed, so without this they'd get disabled/hidden +
+        // available=0 on every sync the moment they're created.
         const staleProducts = await prisma.sourceProduct.findMany({
-            where: { shopId: shop.id, providerName: { not: "internal_pro" } },
+            where: { shopId: shop.id, providerName: { notIn: ["internal_pro", "manual"] } },
             select: { id: true, soldCount: true },
         });
         if (staleProducts.length > 0) {
