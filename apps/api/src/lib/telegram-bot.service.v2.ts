@@ -2082,9 +2082,11 @@ export class TelegramBotService {
     const msgEmojiIdsBuy = (shopCustBuy?.messageEmojiIds && typeof shopCustBuy.messageEmojiIds === "object")
       ? shopCustBuy.messageEmojiIds as Record<string, string> : {};
     const isPublicCheckoutUrl = this.isPublicCheckoutUrl(created.checkoutUrl);
-    const qrBuffer = created.bankInfo
-      ? await this.downloadVietQrAsBuffer(created.bankInfo, created.order.totalSaleAmount)
-      : null;
+    // Prefer a provider-supplied ready QR (PAY2S returns base64); else regenerate from bank info.
+    let qrBuffer = this.decodeDataUriToBuffer(created.qrCode);
+    if (!qrBuffer && created.bankInfo) {
+      qrBuffer = await this.downloadVietQrAsBuffer(created.bankInfo, created.order.totalSaleAmount);
+    }
     const qrFallbackUrl = qrBuffer ? null : this.buildQrImageUrl(created.qrCode);
     const hasQr = qrBuffer !== null || qrFallbackUrl !== null;
     const paymentLines = this.buildOrderPaymentLines(created, language, usdtVndRate, created.isManualNoDelivery, shop.supportTelegram, shop.supportZalo, msgEmojiIdsBuy);
@@ -4085,9 +4087,10 @@ export class TelegramBotService {
 
       await this.clearPendingWalletTopup(shopId, telegramUserId);
 
-      const qrBuffer = created.bankInfo
-        ? await this.downloadVietQrAsBuffer(created.bankInfo, created.topup.amount)
-        : null;
+      let qrBuffer = this.decodeDataUriToBuffer(created.topup.qrCode);
+      if (!qrBuffer && created.bankInfo) {
+        qrBuffer = await this.downloadVietQrAsBuffer(created.bankInfo, created.topup.amount);
+      }
       const qrFallbackUrl = qrBuffer ? null : this.buildQrImageUrl(created.topup.qrCode);
       const usdtVndRate = await this.getShopUsdtVndRate(shopId);
       const text = this.buildWalletTopupInstructionText(
@@ -4823,6 +4826,22 @@ export class TelegramBotService {
     }
 
     return `❌ Số lượng không hợp lệ. Vui lòng nhập số từ 1 đến ${maxQuantity}.`;
+  }
+
+  /**
+   * Decode a base64 image data-URI to a Buffer for sendPhoto. PAY2S returns the ready VietQR as
+   * "data:image/png;base64,..." in its response — we use that directly instead of regenerating via
+   * img.vietqr.io (which needs a NUMERIC bank BIN; PAY2S gives a bank CODE like "MBB" → vietqr 404).
+   */
+  private decodeDataUriToBuffer(value: string | null): Buffer | null {
+    const match = /^data:image\/\w+;base64,(.+)$/.exec(String(value || "").trim());
+    const b64 = match?.[1];
+    if (!b64) return null;
+    try {
+      return Buffer.from(b64, "base64");
+    } catch {
+      return null;
+    }
   }
 
   private buildQrImageUrl(qrCode: string | null) {
