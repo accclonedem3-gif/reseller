@@ -954,21 +954,21 @@ export function BotConfigPage() {
                 <p className="text-[12px]" style={{ color: "rgb(56,189,248)" }}>ⓘ Nhập credentials Pay2s. Để dùng làm cổng thanh toán mặc định, đổi provider ở DB hoặc liên hệ admin.</p>
               </div>
               <div className="grid gap-5 sm:grid-cols-2">
-                <Field label="Partner Code" hint={(configQuery.data as any)?.pay2sPartnerCodeMasked ? "Đã mã hoá" : "Optional"}>
+                <Field label="Partner Code">
                   <Input value={form.pay2sPartnerCode} onChange={(e) => setForm((c) => ({ ...c, pay2sPartnerCode: e.target.value }))} placeholder={(configQuery.data as any)?.pay2sPartnerCodeMasked || "MOMOXXXX"} />
                 </Field>
-                <Field label="Access Key" hint={(configQuery.data as any)?.pay2sAccessKeyMasked ? "Đã mã hoá" : "Optional"}>
+                <Field label="Access Key">
                   <Input value={form.pay2sAccessKey} onChange={(e) => setForm((c) => ({ ...c, pay2sAccessKey: e.target.value }))} placeholder={(configQuery.data as any)?.pay2sAccessKeyMasked || "AccessKey"} />
                 </Field>
                 <div className="sm:col-span-2">
-                  <Field label="Secret Key" hint={(configQuery.data as any)?.pay2sSecretKeyMasked ? "Đã mã hoá" : "Optional"}>
+                  <Field label="Secret Key">
                     <Input value={form.pay2sSecretKey} onChange={(e) => setForm((c) => ({ ...c, pay2sSecretKey: e.target.value }))} placeholder={(configQuery.data as any)?.pay2sSecretKeyMasked || "SecretKey"} />
                   </Field>
                 </div>
-                <Field label="Số tài khoản ngân hàng" hint="Tài khoản đã đăng ký Pay2s">
+                <Field label="Số tài khoản ngân hàng">
                   <Input value={form.pay2sBankAccount} onChange={(e) => setForm((c) => ({ ...c, pay2sBankAccount: e.target.value }))} placeholder="9999000xxxx" />
                 </Field>
-                <Field label="Ngân hàng" hint="Chọn ngân hàng đã đăng ký với Pay2s">
+                <Field label="Ngân hàng">
                   <select
                     value={form.pay2sBankId}
                     onChange={(e) => setForm((c) => ({ ...c, pay2sBankId: e.target.value }))}
@@ -998,10 +998,7 @@ export function BotConfigPage() {
                     <option value="LPB">LPBank (LPB)</option>
                   </select>
                 </Field>
-                <Field
-                  label="Webhook Token (biến động số dư)"
-                  hint={(configQuery.data as any)?.pay2sWebhookTokenMasked ? "Đã mã hoá — để trống nếu không đổi" : "Token của Webhook bạn tạo trên Pay2s (Webhooks → Thêm webhook, sự kiện Nhận, URL trỏ về hệ thống). Giúp tự xác nhận đơn khi tiền vào."}
-                >
+                <Field label="Webhook Token (biến động số dư)">
                   <Input value={form.pay2sWebhookToken} onChange={(e) => setForm((c) => ({ ...c, pay2sWebhookToken: e.target.value }))} placeholder={(configQuery.data as any)?.pay2sWebhookTokenMasked || "Dán token webhook Pay2s"} />
                 </Field>
               </div>
