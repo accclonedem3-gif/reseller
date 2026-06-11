@@ -171,7 +171,8 @@ export class WebhooksController {
     // Pay2s IPN carries `m2signature` (NOT `signature`) + resultCode.
     const isIpn = body.resultCode !== undefined && (body.m2signature !== undefined || body.signature !== undefined);
     const isBalanceWebhook =
-      body.transferType !== undefined && body.transferAmount !== undefined && body.content !== undefined;
+      Array.isArray(body.transactions) ||
+      (body.transferType !== undefined && body.transferAmount !== undefined && body.content !== undefined);
 
     this.logger.log(
       `[pay2s] webhook isIpn=${isIpn} isBalance=${isBalanceWebhook} order=${body.orderId ?? body.requestId ?? "?"} resultCode=${body.resultCode ?? "?"} keys=${Object.keys(body || {}).join(",")}`,
@@ -219,27 +220,49 @@ export class WebhooksController {
     body: Record<string, any>,
     authHeader?: string,
   ) {
-    const transferType = String(body.transferType || "").toUpperCase();
-    if (transferType !== "IN") {
-      return { success: true }; // ignore outgoing transfers
-    }
-
-    const content = String(body.content || "");
-    const amount = Number(body.transferAmount || 0);
-    if (!content || amount <= 0) return { success: true };
-
-    const matched = await this.paymentService.findPay2sPendingByContent(content, amount);
-    if (!matched) return { success: true };
-
-    // Verify Bearer token against shop's secret key
-    const creds = await this.paymentService.getPay2sCredentialsForExternalOrderCode(matched);
+    // Pay2s balance webhook auth: "Authorization: Bearer <token>" where <token> is the value you
+    // declared when creating the Hook (dashboard → Webhooks). Configure it as PAY2S_WEBHOOK_TOKEN.
+    const expectedToken = (process.env.PAY2S_WEBHOOK_TOKEN || "").trim();
     if (this.config.nodeEnv === "production") {
-      if (!authHeader || !creds.secretKey) return { success: true };
-      const expected = `Bearer ${creds.secretKey}`;
-      if (authHeader !== expected) return { success: true };
+      if (!expectedToken) {
+        this.logger.warn(`[pay2s] balance webhook: PAY2S_WEBHOOK_TOKEN not set — ignoring`);
+        return { success: true };
+      }
+      if (authHeader !== `Bearer ${expectedToken}`) {
+        this.logger.warn(`[pay2s] balance webhook: bad/missing Bearer token — ignoring`);
+        return { success: true };
+      }
     }
 
-    return this.processPaymentCompletion(matched, { source: "pay2s_balance_webhook", ...body });
+    // Pay2s posts { transactions: [ { content, transferType:"IN", transferAmount, ... } ] }.
+    const txs: any[] = Array.isArray(body.transactions)
+      ? body.transactions
+      : body.transferAmount !== undefined || body.content !== undefined
+        ? [body]
+        : [];
+
+    let confirmed = 0;
+    for (const tx of txs) {
+      const transferType = String(tx.transferType || "IN").toUpperCase();
+      if (transferType === "OUT") continue; // ignore outgoing
+      const content = String(tx.content || "");
+      const amount = Number(tx.transferAmount || 0);
+      if (!content || amount <= 0) continue;
+
+      const matched = await this.paymentService.findPay2sPendingByContent(content, amount);
+      if (!matched) {
+        this.logger.log(`[pay2s] balance tx no match content="${content}" amount=${amount}`);
+        continue;
+      }
+      this.logger.log(`[pay2s] balance tx matched ${matched} (amount=${amount}) → confirming`);
+      try {
+        await this.processPaymentCompletion(matched, { source: "pay2s_balance_webhook", ...tx });
+        confirmed++;
+      } catch (error) {
+        this.logger.error(`[pay2s] balance confirm failed for ${matched}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    return { success: true, confirmed };
   }
 
   @Post("payos/reconcile/:externalOrderCode")
