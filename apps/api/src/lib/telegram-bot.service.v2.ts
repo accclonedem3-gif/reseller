@@ -343,7 +343,7 @@ export class TelegramBotService {
         await this.clearPendingWalletTopup(shopId, String(message.from?.id || ""));
         await this.clearPendingPaymentSelection(shopId, String(message.from?.id || ""));
         await this.clearPendingTxHashSubmission(shopId, String(message.from?.id || ""));
-        await this.renderCatalog(shopId, outboundToken, message.chat.id, undefined, 0, actions, messageLanguage);
+        await this.renderCatalog(shopId, outboundToken, message.chat.id, undefined, 0, actions, messageLanguage, (message.from as any)?.is_premium === true);
         return { ok: true, actions };
       }
 
@@ -558,7 +558,7 @@ export class TelegramBotService {
       await this.clearPendingWalletTopup(shopId, String(message.from?.id || ""));
       await this.clearPendingPaymentSelection(shopId, String(message.from?.id || ""));
       await this.clearPendingTxHashSubmission(shopId, String(message.from?.id || ""));
-      await this.renderCatalog(shopId, outboundToken, message.chat.id, undefined, 0, actions, messageLanguage);
+      await this.renderCatalog(shopId, outboundToken, message.chat.id, undefined, 0, actions, messageLanguage, (message.from as any)?.is_premium === true);
       return { ok: true, actions };
     }
 
@@ -676,7 +676,7 @@ export class TelegramBotService {
         await this.clearPendingWalletTopup(shopId, telegramUserId);
         await this.clearPendingPaymentSelection(shopId, telegramUserId);
         await this.clearPendingTxHashSubmission(shopId, telegramUserId);
-        await this.renderCatalog(shopId, outboundToken, chatId, messageId, 0, actions, callbackLanguage);
+        await this.renderCatalog(shopId, outboundToken, chatId, messageId, 0, actions, callbackLanguage, (callbackQuery.from as any)?.is_premium === true);
       } else if (data === "home:history") {
         await this.clearPendingQuantitySelection(shopId, telegramUserId);
         await this.clearPendingWalletTopup(shopId, telegramUserId);
@@ -836,7 +836,7 @@ export class TelegramBotService {
         const parts = data.split(":");
         const customGroupId = parts[2] ?? "";
         const page = Number(parts[3] || "0");
-        await this.renderCustomCatalogGroup(shopId, outboundToken, chatId, messageId, customGroupId, page, actions, callbackLanguage, callbackQuery.id);
+        await this.renderCustomCatalogGroup(shopId, outboundToken, chatId, messageId, customGroupId, page, actions, callbackLanguage, callbackQuery.id, (callbackQuery.from as any)?.is_premium === true);
       } else if (data.startsWith("catalog:group:")) {
         const [, , rawGroupKey, rawPage] = data.split(":");
         const page = Number(rawPage || "0");
@@ -849,10 +849,11 @@ export class TelegramBotService {
           page,
           actions,
           callbackLanguage,
+          (callbackQuery.from as any)?.is_premium === true,
         );
       } else if (data.startsWith("catalog:page:")) {
         const page = Number(data.split(":").pop() || "0");
-        await this.renderCatalog(shopId, outboundToken, chatId, messageId, page, actions, callbackLanguage);
+        await this.renderCatalog(shopId, outboundToken, chatId, messageId, page, actions, callbackLanguage, (callbackQuery.from as any)?.is_premium === true);
       } else if (data.startsWith("pay:")) {
         await this.handlePaymentMethodSelection(
           shopId,
@@ -1177,9 +1178,10 @@ export class TelegramBotService {
     page: number,
     actions: unknown[],
     language: BotLanguage = "vi",
+    isPremium = false,
   ) {
     try {
-      return await this._renderCatalogInner(shopId, token, chatId, messageId, page, actions, language);
+      return await this._renderCatalogInner(shopId, token, chatId, messageId, page, actions, language, isPremium);
     } catch (err) {
       await this.sendText(token, chatId,
         language === "en" ? "⚠️ Could not load products. Please try again." : "⚠️ Không tải được sản phẩm. Vui lòng thử lại.",
@@ -1232,6 +1234,7 @@ export class TelegramBotService {
     page: number,
     actions: unknown[],
     language: BotLanguage = "vi",
+    isPremium = false,
   ) {
     const [allCatalog, shopData, customerRecord, downstreamConn, ctvApiKey] = await Promise.all([
       this.shopsService.getCatalogViewForShop(shopId, false, true),
@@ -1281,12 +1284,15 @@ export class TelegramBotService {
     const productBtn = (item: (typeof allCatalog)[number]) => {
       const isOos = item.available !== null && item.available <= 0;
       const emojiId = isOos ? globalOosEmojiId : item.iconCustomEmojiId;
+      // Custom (premium) emoji only renders for Telegram Premium users; for everyone else show
+      // the text-emoji fallback instead (and don't send the custom id they can't see).
+      const useCustom = isPremium && Boolean(emojiId);
       const effectivePrice = getEffectivePrice(item);
       const btn: Record<string, string> = {
-        text: this.buildProductButtonLabel({ ...item, salePrice: effectivePrice }, language, usdtVndRate, Boolean(emojiId)),
+        text: this.buildProductButtonLabel({ ...item, salePrice: effectivePrice }, language, usdtVndRate, useCustom),
         callback_data: `buy:${item.id}`,
       };
-      if (emojiId) btn.icon_custom_emoji_id = emojiId;
+      if (useCustom && emojiId) btn.icon_custom_emoji_id = emojiId;
       return btn;
     };
     if (products.length === 0) {
@@ -1475,6 +1481,7 @@ export class TelegramBotService {
     actions: unknown[],
     language: BotLanguage = "vi",
     callbackQueryId?: string,
+    isPremium = false,
   ) {
     const [allProducts, groups, custDataCustom, customerRecordGrp, downstreamConnGrp, ctvApiKeyGrp] = await Promise.all([
       this.shopsService.getCatalogViewForShop(shopId, false, true),
@@ -1499,7 +1506,7 @@ export class TelegramBotService {
       if (callbackQueryId) {
         await telegramAnswerCallbackQuery(token, callbackQueryId).catch(() => undefined);
       }
-      await this.renderCatalog(shopId, token, chatId, messageId, 0, actions, language);
+      await this.renderCatalog(shopId, token, chatId, messageId, 0, actions, language, isPremium);
       return;
     }
 
@@ -1517,11 +1524,12 @@ export class TelegramBotService {
 
     const usdtVndRate = await this.getShopUsdtVndRate(shopId);
     const productBtn = (item: (typeof allProducts)[number]) => {
+      const useCustom = isPremium && Boolean(item.iconCustomEmojiId);
       const btn: Record<string, string> = {
-        text: this.buildProductButtonLabel({ ...item, salePrice: getEffectivePriceGrp(item) }, language, usdtVndRate, Boolean(item.iconCustomEmojiId)),
+        text: this.buildProductButtonLabel({ ...item, salePrice: getEffectivePriceGrp(item) }, language, usdtVndRate, useCustom),
         callback_data: `buy:${item.id}`,
       };
-      if (item.iconCustomEmojiId) btn.icon_custom_emoji_id = item.iconCustomEmojiId;
+      if (useCustom && item.iconCustomEmojiId) btn.icon_custom_emoji_id = item.iconCustomEmojiId;
       return btn;
     };
 
@@ -1578,6 +1586,7 @@ export class TelegramBotService {
     page: number,
     actions: unknown[],
     language: BotLanguage = "vi",
+    isPremium = false,
   ) {
     const [allProducts, custDataFeatured, customerRecordFt, downstreamConnFt, ctvApiKeyFt] = await Promise.all([
       this.shopsService.getCatalogViewForShop(shopId, false, true),
@@ -1606,18 +1615,19 @@ export class TelegramBotService {
     );
     const usdtVndRate = await this.getShopUsdtVndRate(shopId);
     const productBtn = (item: (typeof products)[number]) => {
+      const useCustom = isPremium && Boolean(item.iconCustomEmojiId);
       const btn: Record<string, string> = {
-        text: this.buildProductButtonLabel({ ...item, salePrice: getEffectivePriceFt(item) }, language, usdtVndRate, Boolean(item.iconCustomEmojiId)),
+        text: this.buildProductButtonLabel({ ...item, salePrice: getEffectivePriceFt(item) }, language, usdtVndRate, useCustom),
         callback_data: `buy:${item.id}`,
       };
-      if (item.iconCustomEmojiId) btn.icon_custom_emoji_id = item.iconCustomEmojiId;
+      if (useCustom && item.iconCustomEmojiId) btn.icon_custom_emoji_id = item.iconCustomEmojiId;
       return btn;
     };
     const { featuredGroups } = this.splitCatalogProducts(products);
     const group = featuredGroups.find((item) => item.key === groupKey);
 
     if (!group || group.items.length === 0) {
-      await this.renderCatalog(shopId, token, chatId, messageId, 0, actions, language);
+      await this.renderCatalog(shopId, token, chatId, messageId, 0, actions, language, isPremium);
       return;
     }
 
