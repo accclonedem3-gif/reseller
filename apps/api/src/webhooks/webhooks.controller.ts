@@ -167,10 +167,15 @@ export class WebhooksController {
     @Body() body: Record<string, any>,
     @Headers("authorization") authHeader?: string,
   ) {
-    // Detect format: IPN (payment link confirmation) vs Balance webhook (bank account credit)
-    const isIpn = body.signature !== undefined && body.resultCode !== undefined;
+    // Detect format: IPN (payment-link confirmation) vs Balance webhook (bank-account credit).
+    // Pay2s IPN carries `m2signature` (NOT `signature`) + resultCode.
+    const isIpn = body.resultCode !== undefined && (body.m2signature !== undefined || body.signature !== undefined);
     const isBalanceWebhook =
       body.transferType !== undefined && body.transferAmount !== undefined && body.content !== undefined;
+
+    this.logger.log(
+      `[pay2s] webhook isIpn=${isIpn} isBalance=${isBalanceWebhook} order=${body.orderId ?? body.requestId ?? "?"} resultCode=${body.resultCode ?? "?"} keys=${Object.keys(body || {}).join(",")}`,
+    );
 
     if (isIpn) {
       return this.handlePay2sIpn(body);
@@ -178,6 +183,7 @@ export class WebhooksController {
     if (isBalanceWebhook) {
       return this.handlePay2sBalanceWebhook(body, authHeader);
     }
+    this.logger.warn(`[pay2s] webhook not recognized as IPN or balance — ignored`);
     return { success: true };
   }
 
@@ -191,15 +197,21 @@ export class WebhooksController {
     }
 
     if (creds?.accessKey && creds.secretKey) {
-      const ok = verifyPay2sIpnSignature(body, creds.accessKey, creds.secretKey, "signature");
-      if (!ok) return { success: true };
+      const sigField = body.m2signature !== undefined ? "m2signature" : "signature";
+      const ok = verifyPay2sIpnSignature(body, creds.accessKey, creds.secretKey, sigField);
+      if (!ok) {
+        this.logger.warn(`[pay2s] IPN signature mismatch for ${externalOrderCode} (field=${sigField}) — not confirming`);
+        return { success: true };
+      }
     }
 
     const resultCode = Number(body.resultCode);
     if (resultCode !== 0) {
+      this.logger.warn(`[pay2s] IPN resultCode=${resultCode} (not success) for ${externalOrderCode}`);
       return { success: true };
     }
 
+    this.logger.log(`[pay2s] IPN verified + success → confirming ${externalOrderCode}`);
     return this.processPaymentCompletion(externalOrderCode, body);
   }
 

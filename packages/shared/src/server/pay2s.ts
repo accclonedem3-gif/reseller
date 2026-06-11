@@ -129,19 +129,21 @@ export async function createPay2sPaymentLink(
 }
 
 /**
- * Verify HMAC-SHA256 signature on Pay2s IPN webhook payload.
- * Field name in payload is `signature` (IPN) or `m2signature` (redirect callback).
+ * Verify HMAC-SHA256 signature on a Pay2s payment-notification (IPN) payload.
+ * Per Pay2s docs the IPN signature field is `m2signature`, and the raw string is (alphabetical):
+ *   accessKey&amount&message&orderId&orderInfo&orderType&partnerCode&payType&requestId&responseTime&resultCode
+ * (NO extraData, NO transId — those are NOT part of the signature.)
  */
 export function verifyPay2sIpnSignature(
   payload: Record<string, unknown>,
   accessKey: string,
   secretKey: string,
-  signatureField: "signature" | "m2signature" = "signature",
+  signatureField: "signature" | "m2signature" = "m2signature",
 ): boolean {
   const sigFromPayload = String(payload[signatureField] || "");
   if (!sigFromPayload) return false;
 
-  const raw = `accessKey=${accessKey}&amount=${payload.amount}&extraData=${payload.extraData ?? ""}&message=${payload.message ?? ""}&orderId=${payload.orderId}&orderInfo=${payload.orderInfo}&orderType=${payload.orderType ?? ""}&partnerCode=${payload.partnerCode}&payType=${payload.payType ?? ""}&requestId=${payload.requestId}&responseTime=${payload.responseTime ?? ""}&resultCode=${payload.resultCode}&transId=${payload.transId}`;
+  const raw = `accessKey=${accessKey}&amount=${payload.amount}&message=${payload.message ?? ""}&orderId=${payload.orderId}&orderInfo=${payload.orderInfo}&orderType=${payload.orderType ?? ""}&partnerCode=${payload.partnerCode}&payType=${payload.payType ?? ""}&requestId=${payload.requestId}&responseTime=${payload.responseTime ?? ""}&resultCode=${payload.resultCode}`;
 
   const expected = createHmac("sha256", secretKey).update(raw).digest("hex");
   return expected === sigFromPayload;
