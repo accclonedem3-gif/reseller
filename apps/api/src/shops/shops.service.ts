@@ -1683,7 +1683,38 @@ export class ShopsService {
     return shop;
   }
 
-  async getCatalogViewForShop(shopId: string, sortByAvailable = true) {
+  /**
+   * When a PRO shop opts to inherit the ULTRA source's layout (DownstreamSourceConnection.
+   * inheritSourceTemplate), remap each synced product's group + position to the UPSTREAM shop's
+   * arrangement. PRO products carry externalProductId = the ULTRA SourceProduct.id (worker sync),
+   * which equals the ULTRA SellerProductOverride.sourceProductId — so we can look up ULTRA's
+   * group/position per product. Prices are left untouched (PRO keeps its own salePrice).
+   */
+  private async applyInheritedLayout(
+    shopId: string,
+    mapped: { sourceProductId: string; groupId: string | null; position: number }[],
+  ) {
+    const conn = await this.prisma.downstreamSourceConnection.findFirst({
+      where: { downstreamShopId: shopId, status: "ACTIVE", inheritSourceTemplate: true },
+      select: { upstreamShopId: true },
+    });
+    if (!conn) return;
+    const ultraOverrides = await this.prisma.sellerProductOverride.findMany({
+      where: { shopId: conn.upstreamShopId },
+      select: { sourceProductId: true, groupId: true, position: true },
+    });
+    const layout = new Map<string, { groupId: string | null; position: number }>();
+    for (const o of ultraOverrides) {
+      layout.set(o.sourceProductId, { groupId: o.groupId, position: o.position });
+    }
+    for (const m of mapped) {
+      const l = layout.get(m.sourceProductId);
+      m.groupId = l ? l.groupId : null;
+      if (l) m.position = l.position;
+    }
+  }
+
+  async getCatalogViewForShop(shopId: string, sortByAvailable = true, applyInheritedTemplate = false) {
     const products = await this.prisma.sourceProduct.findMany({
       where: { shopId },
       include: {
@@ -1764,6 +1795,9 @@ export class ShopsService {
         promoBannerUrl: (product as any).promoBannerUrl ?? null,
       };
     });
+    if (applyInheritedTemplate) {
+      await this.applyInheritedLayout(shopId, mapped);
+    }
     // Sort by manual position first, then by sortByAvailable / createdAt
     return mapped.sort((a, b) => {
       if (a.position !== b.position) return a.position - b.position;
@@ -1776,9 +1810,35 @@ export class ShopsService {
     });
   }
 
-  async getCatalogGroupsForShop(shopId: string) {
+  /**
+   * If the shop inherits the ULTRA source template, return the UPSTREAM shop's bot
+   * customizationJson (welcome text, button labels, catalog text, emojis...); else null so the
+   * caller keeps the shop's own customization.
+   */
+  async getInheritedCustomizationJson(shopId: string): Promise<Record<string, unknown> | null> {
+    const conn = await this.prisma.downstreamSourceConnection.findFirst({
+      where: { downstreamShopId: shopId, status: "ACTIVE", inheritSourceTemplate: true },
+      select: { upstreamShopId: true },
+    });
+    if (!conn) return null;
+    const bc = await this.prisma.botConfig.findUnique({
+      where: { shopId: conn.upstreamShopId },
+      select: { customizationJson: true },
+    });
+    return (bc?.customizationJson as Record<string, unknown> | null) ?? null;
+  }
+
+  async getCatalogGroupsForShop(shopId: string, applyInheritedTemplate = false) {
+    let targetShopId = shopId;
+    if (applyInheritedTemplate) {
+      const conn = await this.prisma.downstreamSourceConnection.findFirst({
+        where: { downstreamShopId: shopId, status: "ACTIVE", inheritSourceTemplate: true },
+        select: { upstreamShopId: true },
+      });
+      if (conn) targetShopId = conn.upstreamShopId;
+    }
     return this.prisma.shopCatalogGroup.findMany({
-      where: { shopId },
+      where: { shopId: targetShopId },
       orderBy: [{ position: "asc" }, { createdAt: "asc" }],
     });
   }

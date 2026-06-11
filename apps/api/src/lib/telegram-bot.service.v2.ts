@@ -236,6 +236,19 @@ export class TelegramBotService {
     }
   }
 
+  /**
+   * Like resolveCustomization but, when the shop inherits the ULTRA source template, uses the
+   * UPSTREAM shop's customizationJson (welcome / labels / catalog text / emojis) instead of the
+   * shop's own. Falls back to the shop's own customization when not inheriting.
+   */
+  private async resolveEffectiveCustomization(
+    shopId: string,
+    ownCust: Record<string, unknown> | null,
+  ): Promise<Record<string, unknown>> {
+    const inherited = await this.shopsService.getInheritedCustomizationJson(shopId);
+    return this.resolveCustomization(inherited ?? ownCust);
+  }
+
   private async resolveCustomization(
     shopCust: Record<string, unknown> | null,
   ): Promise<Record<string, unknown>> {
@@ -1060,7 +1073,7 @@ export class TelegramBotService {
     const isPro = shop.seller.tier === SellerTier.ULTRA;
     const hasWarranty = isPro || shop.providerConfig?.providerKind === "INTERNAL";
 
-    const customization = await this.resolveCustomization(shop.botConfig?.customizationJson as Record<string, unknown> | null ?? null);
+    const customization = await this.resolveEffectiveCustomization(shopId, shop.botConfig?.customizationJson as Record<string, unknown> | null ?? null);
     const custHomeFooter = (customization?.homeFooter && typeof customization.homeFooter === "object")
       ? customization.homeFooter as Record<string, string> : {};
     const homeFooterText = custHomeFooter[language]?.trim() ?? custHomeFooter["vi"]?.trim() ?? undefined;
@@ -1221,7 +1234,7 @@ export class TelegramBotService {
     language: BotLanguage = "vi",
   ) {
     const [allCatalog, shopData, customerRecord, downstreamConn, ctvApiKey] = await Promise.all([
-      this.shopsService.getCatalogViewForShop(shopId, false),
+      this.shopsService.getCatalogViewForShop(shopId, false, true),
       this.shopsService.getSellerShopByShopId(shopId),
       this.prisma.customer.findFirst({
         where: { shopId, telegramChatId: String(chatId) },
@@ -1236,7 +1249,7 @@ export class TelegramBotService {
         select: { id: true },
       }),
     ]);
-    const shopCust = await this.resolveCustomization(shopData.botConfig?.customizationJson as Record<string, unknown> | null ?? null);
+    const shopCust = await this.resolveEffectiveCustomization(shopId, shopData.botConfig?.customizationJson as Record<string, unknown> | null ?? null);
     const globalOosEmojiId = typeof shopCust?.outOfStockEmojiId === "string" ? shopCust.outOfStockEmojiId.trim() : "";
     const showOutOfStock = shopCust?.showOutOfStock === true;
     const custData = {
@@ -1299,7 +1312,7 @@ export class TelegramBotService {
       return;
     }
 
-    const customGroups = await this.shopsService.getCatalogGroupsForShop(shopId);
+    const customGroups = await this.shopsService.getCatalogGroupsForShop(shopId, true);
 
     if (customGroups.length > 0) {
       // Custom group mode: show group buttons + ungrouped products
@@ -1464,8 +1477,8 @@ export class TelegramBotService {
     callbackQueryId?: string,
   ) {
     const [allProducts, groups, custDataCustom, customerRecordGrp, downstreamConnGrp, ctvApiKeyGrp] = await Promise.all([
-      this.shopsService.getCatalogViewForShop(shopId, false),
-      this.shopsService.getCatalogGroupsForShop(shopId),
+      this.shopsService.getCatalogViewForShop(shopId, false, true),
+      this.shopsService.getCatalogGroupsForShop(shopId, true),
       this.loadCustData(shopId),
       this.prisma.customer.findFirst({
         where: { shopId, telegramChatId: String(chatId) },
@@ -1567,7 +1580,7 @@ export class TelegramBotService {
     language: BotLanguage = "vi",
   ) {
     const [allProducts, custDataFeatured, customerRecordFt, downstreamConnFt, ctvApiKeyFt] = await Promise.all([
-      this.shopsService.getCatalogViewForShop(shopId, false),
+      this.shopsService.getCatalogViewForShop(shopId, false, true),
       this.loadCustData(shopId),
       this.prisma.customer.findFirst({
         where: { shopId, telegramChatId: String(chatId) },
@@ -7175,7 +7188,7 @@ export class TelegramBotService {
 
   private async loadCustData(shopId: string): Promise<{ custEmojis: Record<string, string>; custLabels: Record<string, Record<string, string>>; custEmojiIds: Record<string, string> }> {
     const shopData = await this.shopsService.getSellerShopByShopId(shopId);
-    const customization = await this.resolveCustomization(shopData.botConfig?.customizationJson as Record<string, unknown> | null ?? null);
+    const customization = await this.resolveEffectiveCustomization(shopId, shopData.botConfig?.customizationJson as Record<string, unknown> | null ?? null);
     return {
       custEmojis: (customization?.buttonEmojis && typeof customization.buttonEmojis === "object") ? customization.buttonEmojis as Record<string, string> : {},
       custLabels: (customization?.buttonLabels && typeof customization.buttonLabels === "object") ? customization.buttonLabels as Record<string, Record<string, string>> : {},

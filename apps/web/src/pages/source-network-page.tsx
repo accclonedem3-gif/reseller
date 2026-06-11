@@ -332,6 +332,7 @@ type SourceConnection = {
   label: string | null;
   balance: number;
   currency: string;
+  inheritSourceTemplate?: boolean;
   lastCatalogSyncAt: string | null;
   lastOrderedAt: string | null;
   buyerApiBaseUrl: string;
@@ -490,6 +491,14 @@ export function SourceNetworkPage() {
         queryClient.invalidateQueries({ queryKey: ["source-network", "current-connection"] }),
         queryClient.invalidateQueries({ queryKey: ["source-products", "catalog"] }),
       ]);
+    },
+    onError: (e) => showToast({ tone: "error", message: getApiErrorMessage(e, t.toastError) }),
+  });
+
+  const inheritTemplateMutation = useMutation({
+    mutationFn: async (enabled: boolean) => api.post("/seller/source-connection/inherit-template", { enabled }),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["source-network", "current-connection"] });
     },
     onError: (e) => showToast({ tone: "error", message: getApiErrorMessage(e, t.toastError) }),
   });
@@ -1113,6 +1122,34 @@ export function SourceNetworkPage() {
                   }}
                 >
                   {disconnectMutation.isPending ? "Đang ngắt..." : "Ngắt kết nối"}
+                </button>
+              </div>
+
+              {/* Inherit source template toggle */}
+              <div
+                className="mt-3 flex items-center justify-between gap-3 rounded-xl px-4 py-3"
+                style={{ background: "var(--inp)", border: "1px solid var(--bd)" }}
+              >
+                <div>
+                  <p className="text-[12px] font-black" style={{ color: "var(--tx)" }}>
+                    Dùng bố cục · danh mục · template của nguồn
+                  </p>
+                  <p className="text-[11px]" style={{ color: "var(--tx-f)" }}>
+                    Bot hiển thị danh mục, thứ tự sản phẩm và giao diện giống shop ULTRA nguồn. Giá vẫn theo giá của bạn. Tắt = dùng bố cục riêng.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  disabled={inheritTemplateMutation.isPending}
+                  onClick={() => inheritTemplateMutation.mutate(!currentConnection.inheritSourceTemplate)}
+                  className="relative h-6 w-11 shrink-0 rounded-full transition disabled:opacity-40"
+                  style={{ background: currentConnection.inheritSourceTemplate ? "rgb(249,115,22)" : "var(--bd)" }}
+                  aria-pressed={!!currentConnection.inheritSourceTemplate}
+                >
+                  <span
+                    className="absolute top-0.5 h-5 w-5 rounded-full bg-white transition-all"
+                    style={{ left: currentConnection.inheritSourceTemplate ? "22px" : "2px" }}
+                  />
                 </button>
               </div>
             </div>
