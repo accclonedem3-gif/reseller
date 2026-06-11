@@ -59,6 +59,14 @@ export class SellerSourceConnectionController {
     return this.service.syncCatalog(user);
   }
 
+  @Post("inherit-template")
+  setInheritTemplate(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() dto: { enabled: boolean },
+  ) {
+    return this.service.setInheritTemplate(user, dto.enabled === true);
+  }
+
   @Delete()
   disconnect(@CurrentUser() user: AuthenticatedUser) {
     return this.service.disconnect(user);
