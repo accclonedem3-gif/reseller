@@ -2198,7 +2198,8 @@ export class TelegramBotService {
     const hasQr = qrBuffer !== null || qrFallbackUrl !== null;
     const paymentLines = this.buildOrderPaymentLines(created, language, usdtVndRate, created.isManualNoDelivery, shop.supportTelegram, shop.supportZalo, msgEmojiIdsBuy);
     // When QR is shown, hide the checkout URL button — customer should scan directly
-    const baseInlineKeyboard = this.buildPostPaymentInlineKeyboard(created, language, hasQr ? false : isPublicCheckoutUrl, custDataBuy);
+    const isPremiumBuy = await this.resolveIsPremium(shopId, customer.telegramUserId);
+    const baseInlineKeyboard = this.buildPostPaymentInlineKeyboard(created, language, hasQr ? false : isPublicCheckoutUrl, custDataBuy, isPremiumBuy);
     const inlineKeyboard = created.isManualNoDelivery && shop.supportTelegram
       ? [[{ text: language === "en" ? "💬 Contact admin" : language === "th" ? "💬 ติดต่อแอดมิน" : "💬 Liên hệ admin", url: `https://t.me/${shop.supportTelegram.replace(/^@/, "")}` }], ...baseInlineKeyboard]
       : baseInlineKeyboard;
@@ -2354,6 +2355,7 @@ export class TelegramBotService {
     language: BotLanguage,
     isPublicCheckoutUrl: boolean,
     custData: { custEmojis: Record<string, string>; custLabels: Record<string, Record<string, string>>; custEmojiIds: Record<string, string> } = { custEmojis: {}, custLabels: {}, custEmojiIds: {} },
+    isPremium = false,
   ) {
     const custEmojiIds = custData.custEmojiIds;
     const inlineKeyboard: Array<Array<Record<string, string>>> = [];
@@ -2364,8 +2366,14 @@ export class TelegramBotService {
       (paymentProvider === PaymentProvider.PAYOS.toLowerCase() ||
         paymentProvider === PaymentProvider.BINANCE_PAY.toLowerCase());
 
-    const mkBtn = (text: string, extra: Record<string, string>) => {
-      return { text, ...extra };
+    // "I've paid"-style buttons: per-viewer so a premium viewer sees the cusid only (text emoji
+    // stripped), everyone else sees the text emoji — never a blank button, never a double icon.
+    const paidBtn = (text: string, extra: Record<string, string>) => {
+      const sp = text.split(" ");
+      return this.buildViewerBtn(
+        { textEmoji: sp[0] ?? "", label: sp.slice(1).join(" "), cusid: custEmojiIds["paid"], isPremium },
+        extra,
+      );
     };
 
     if (isPublicCheckoutUrl) {
@@ -2376,9 +2384,7 @@ export class TelegramBotService {
     }
 
     if (canInstantVerify) {
-      const btn = mkBtn(this.buttonLabel("paid", language), { callback_data: `payment:verify:${externalOrderCode}` });
-      if (custEmojiIds["paid"]) (btn as Record<string, string>).icon_custom_emoji_id = custEmojiIds["paid"];
-      inlineKeyboard.push([btn]);
+      inlineKeyboard.push([paidBtn(this.buttonLabel("paid", language), { callback_data: `payment:verify:${externalOrderCode}` })]);
     }
 
     if (created.manualCrypto?.provider === "USDT_TRC20") {
@@ -2390,9 +2396,7 @@ export class TelegramBotService {
 
     if (created.manualCrypto?.provider === "BINANCE" && created.manualCrypto?.hasPersonalApi) {
       const text = language === "en" ? "✅ I've paid — Send Order ID" : language === "th" ? "✅ ชำระแล้ว — ส่ง ID คำสั่ง" : "✅ Đã chuyển — Gửi ID lệnh";
-      const btn: Record<string, string> = { text, callback_data: `binance:orderid:prompt:${created.manualCrypto.note}` };
-      if (custEmojiIds["paid"]) btn.icon_custom_emoji_id = custEmojiIds["paid"];
-      inlineKeyboard.push([btn]);
+      inlineKeyboard.push([paidBtn(text, { callback_data: `binance:orderid:prompt:${created.manualCrypto.note}` })]);
     }
 
     if (created.manualCrypto?.provider === "OKX" && created.manualCrypto?.hasPersonalApi) {
@@ -2401,18 +2405,16 @@ export class TelegramBotService {
         : language === "th"
           ? "✅ ชำระแล้ว — ส่ง TX hash"
           : "✅ Đã chuyển — Gửi TX hash";
-      const btn: Record<string, string> = { text, callback_data: `okx:tx:prompt:${created.manualCrypto.note}` };
-      if (custEmojiIds["paid"]) btn.icon_custom_emoji_id = custEmojiIds["paid"];
-      inlineKeyboard.push([btn]);
+      inlineKeyboard.push([paidBtn(text, { callback_data: `okx:tx:prompt:${created.manualCrypto.note}` })]);
     }
 
     inlineKeyboard.push([
-      this.buildNavTextBtn(custData, "orders", "history", "home:history", language),
-      this.buildNavTextBtn(custData, "wallet", "wallet", "home:wallet", language),
+      this.buildNavTextBtn(custData, "orders", "history", "home:history", language, isPremium),
+      this.buildNavTextBtn(custData, "wallet", "wallet", "home:wallet", language, isPremium),
     ]);
     inlineKeyboard.push([
-      this.buildNavTextBtn(custData, "products", "productsShort", "home:products", language),
-      this.buildNavTextBtn(custData, "home", "home", "home:menu", language),
+      this.buildNavTextBtn(custData, "products", "productsShort", "home:products", language, isPremium),
+      this.buildNavTextBtn(custData, "home", "home", "home:menu", language, isPremium),
     ]);
 
     return inlineKeyboard;
@@ -2427,6 +2429,7 @@ export class TelegramBotService {
     options: TelegramPaymentOption[],
     actions: unknown[],
     language: BotLanguage,
+    telegramUserId: string,
   ) {
     const totalAmount = selection.salePrice * quantity;
     const totalUsd = selection.salePriceUsd != null ? selection.salePriceUsd * quantity : null;
@@ -2449,24 +2452,27 @@ export class TelegramBotService {
       return "payQR";
     };
 
+    const isPremiumPay = await this.resolveIsPremium(shopId, telegramUserId);
     const buildPayBtn = (provider: TelegramPaymentOption) => {
       const key = providerToKey(provider);
       const defaultText = this.paymentOptionButtonLabel(provider, language);
       const custLabel = custLabels[key]?.[language];
       const custEmoji = custEmojis[key];
-      const custEmojiId = custEmojiIds[key];
-      // Default emoji + label parsed from the built-in payment label, so a custom label with no
-      // custom emoji (or an empty-string override) still shows the default icon via `|| `.
+      // Default emoji + label parsed from the built-in payment label (a custom label without a custom
+      // emoji still shows the default icon). Per-viewer: premium + cusid → cusid only, else text emoji.
       const parts = defaultText.split(" ");
       const hasLeadingEmoji = parts.length > 1 && !!parts[0] && /\p{Emoji}/u.test(parts[0]);
-      const defPayEmoji = hasLeadingEmoji ? parts[0] : "";
+      const defPayEmoji = hasLeadingEmoji ? (parts[0] ?? "") : "";
       const defPayLabel = hasLeadingEmoji ? parts.slice(1).join(" ") : defaultText;
-      const emoji = custEmoji?.trim() || defPayEmoji;
-      const label = custLabel || defPayLabel;
-      const text = `${emoji} ${label}`.trim();
-      const btn: Record<string, string> = { text, callback_data: `pay:${String(provider).toLowerCase()}` };
-      if (custEmojiId) btn.icon_custom_emoji_id = custEmojiId;
-      return btn;
+      return this.buildViewerBtn(
+        {
+          textEmoji: custEmoji?.trim() || defPayEmoji,
+          label: custLabel || defPayLabel,
+          cusid: custEmojiIds[key],
+          isPremium: isPremiumPay,
+        },
+        { callback_data: `pay:${String(provider).toLowerCase()}` },
+      );
     };
 
     await this.sendText(
@@ -4072,6 +4078,7 @@ export class TelegramBotService {
           paymentProviders,
           actions,
           language,
+          telegramUserId,
         );
         return true;
       }
@@ -4468,6 +4475,7 @@ export class TelegramBotService {
       select: {
         telegramChatId: true,
         preferredLanguage: true,
+        isPremium: true,
       },
     });
 
@@ -4531,7 +4539,7 @@ export class TelegramBotService {
           [],
           {
             inline_keyboard: [
-              [this.buildNavTextBtn(custDataNotif, "buyNow", "buyNow", `buy:${product.id}`, customerLang)],
+              [this.buildNavTextBtn(custDataNotif, "buyNow", "buyNow", `buy:${product.id}`, customerLang, customer.isPremium)],
             ],
           },
           useHtml ? "HTML" : undefined,
@@ -4581,15 +4589,21 @@ export class TelegramBotService {
     const localizedName = this.localizeProductName(selection.displayName, language);
     const priceStr = this.formatBotMoneyWithUsdOverride(selection.salePrice, (selection as any).salePriceUsd, language, usdtVndRate);
     const stockLabel = selection.available === null ? "∞" : String(Math.max(0, selection.available));
-    // If a custom emoji is set, Telegram renders it as the button icon already.
-    // Strip the leading text emoji from the label to avoid two icons stacked side-by-side.
+    // Per-viewer: premium + a cusid → cusid icon only; everyone else → the text emoji (never blank).
     const buyOtherCustomEmoji = custEmojiIdsQty["buyOther"];
-    const buyOtherText = buyOtherCustomEmoji
-      ? this.buttonLabel("buyOther", language).replace(/^[^\p{L}\p{N}]+/u, "").trim()
-      : this.buttonLabel("buyOther", language);
+    const isPremiumQty = await this.resolveIsPremium(shopId, telegramUserId);
+    const buyOtherFull = this.buttonLabel("buyOther", language);
     const replyMarkup = {
       inline_keyboard: [
-        [{ text: buyOtherText, callback_data: "home:products", ...(buyOtherCustomEmoji ? { icon_custom_emoji_id: buyOtherCustomEmoji } : {}) }],
+        [this.buildViewerBtn(
+          {
+            textEmoji: buyOtherFull.split(" ")[0] ?? "",
+            label: buyOtherFull.split(" ").slice(1).join(" "),
+            cusid: buyOtherCustomEmoji,
+            isPremium: isPremiumQty,
+          },
+          { callback_data: "home:products" },
+        )],
       ],
     };
     const quantityLine = this.buildQuantityPromptText(selection.maxQuantity, language, msgEmojiIds["quantityInput"] || "");
@@ -6876,6 +6890,9 @@ export class TelegramBotService {
         telegramUsername: from.username || null,
         firstName: from.first_name || null,
         lastName: from.last_name || null,
+        // Refresh the cached Premium flag on every interaction (self-heals when premium lapses).
+        isPremium: (from as any)?.is_premium === true,
+        isPremiumCheckedAt: new Date(),
       },
       create: {
         sellerId: shop.sellerId,
@@ -6885,6 +6902,8 @@ export class TelegramBotService {
         telegramUsername: from.username || null,
         firstName: from.first_name || null,
         lastName: from.last_name || null,
+        isPremium: (from as any)?.is_premium === true,
+        isPremiumCheckedAt: new Date(),
       },
     });
   }
@@ -6923,6 +6942,21 @@ export class TelegramBotService {
     });
 
     return this.normalizeLanguage(customer?.preferredLanguage);
+  }
+
+  /**
+   * Cached Telegram-Premium flag for a customer (set in ensureTelegramCustomerSeen on every update,
+   * so it's as fresh as this interaction). Used by render paths that don't have a live `from`
+   * (payment/quantity flows behind reconstructed customers, and push notifications). Catalog/home
+   * keep their own live-threaded isPremium — do not switch them to this.
+   */
+  private async resolveIsPremium(shopId: string, telegramUserId: string): Promise<boolean> {
+    if (!telegramUserId) return false;
+    const customer = await this.prisma.customer.findUnique({
+      where: { shopId_telegramUserId: { shopId, telegramUserId } },
+      select: { isPremium: true },
+    });
+    return customer?.isPremium === true;
   }
 
   private async getCustomerLanguageByChatId(
@@ -7393,6 +7427,24 @@ export class TelegramBotService {
     const label = custData.custLabels[key]?.[language] || defLabel;
     const btn: Record<string, string> = { text: useCustom ? label : `${emoji} ${label}`, callback_data: cbData };
     if (useCustom && custData.custEmojiIds[key]) btn.icon_custom_emoji_id = custData.custEmojiIds[key];
+    return btn;
+  }
+
+  /**
+   * Per-viewer inline button (same rule the catalog/home builders inline): a premium viewer WITH a
+   * cusid → cusid icon only (text emoji stripped, no double); everyone else → "textEmoji label" so a
+   * non-premium viewer never gets a blank button. For the payment/quantity/notification gap sites.
+   */
+  private buildViewerBtn(
+    args: { textEmoji: string; label: string; cusid?: string | null; isPremium: boolean },
+    extra: Record<string, string>,
+  ): Record<string, string> {
+    const useCustom = args.isPremium && Boolean(args.cusid);
+    const btn: Record<string, string> = {
+      text: useCustom ? args.label : `${args.textEmoji} ${args.label}`.trim(),
+      ...extra,
+    };
+    if (useCustom && args.cusid) btn.icon_custom_emoji_id = args.cusid;
     return btn;
   }
 

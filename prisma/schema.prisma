@@ -839,6 +839,8 @@ model Customer {
   lastName          String?                @map("last_name")
   preferredLanguage String                 @default("vi") @map("preferred_language")
   isCtv             Boolean                @default(false) @map("is_ctv")
+  isPremium         Boolean                @default(false) @map("is_premium")
+  isPremiumCheckedAt DateTime?             @map("is_premium_checked_at")
   blacklisted       Boolean                @default(false) @map("blacklisted")
   discountPercent   Int                    @default(0) @map("discount_percent")
   referredById      String?                @map("referred_by_id")
