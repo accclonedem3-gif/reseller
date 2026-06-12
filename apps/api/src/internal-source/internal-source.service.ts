@@ -360,8 +360,10 @@ export class InternalSourceService {
           data: {
             shopId: shop.id,
             name: g.name,
+            // Don't copy the ULTRA's stored icon (often a text word/label, not an emoji) — the bot
+            // always shows 📁 for categories anyway.
+            icon: "📁",
             position: nextPos++,
-            icon: (g.icon && g.icon.trim()) || "📁",
             iconCustomEmojiId: null,
           },
         });

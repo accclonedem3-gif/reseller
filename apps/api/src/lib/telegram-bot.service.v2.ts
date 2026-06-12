@@ -1423,13 +1423,11 @@ export class TelegramBotService {
       }
       const groupRows = this.chunkButtons(
         customGroups.map((g) => {
-          // Category icon = the group's TEXT icon (set on clone/edit), else 📁. Never a premium
-          // custom-emoji id — those don't render for non-premium customers (left buttons blank).
-          const groupAny = g as typeof g & { icon?: string | null };
+          // Categories always show the 📁 folder marker for everyone — never the stored text icon
+          // (often a leftover word/label) and never a premium custom-emoji id (blank for non-premium).
           const count = groupCounts.get(g.id) || 0;
-          const iconText = (groupAny.icon && groupAny.icon.trim()) || "📁";
           const btn: Record<string, string> = {
-            text: `${iconText} ${g.name} (${count})`,
+            text: `📁 ${g.name} (${count})`,
             callback_data: `catalog:custom:${g.id}:0`,
           };
           return btn;
