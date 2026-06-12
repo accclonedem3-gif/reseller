@@ -1394,7 +1394,10 @@ export class TelegramBotService {
       const groupRows = this.chunkButtons(
         customGroups.map((g) => {
           const groupAny = g as typeof g & { icon?: string | null; iconCustomEmojiId?: string | null };
-          const iconPrefix = groupAny.iconCustomEmojiId
+          // Custom (premium) emoji only renders for Telegram Premium users; non-premium get the
+          // text-emoji fallback (the group's own icon, else a folder) instead of a blank button.
+          const useCustom = isPremium && Boolean(groupAny.iconCustomEmojiId);
+          const iconPrefix = useCustom
             ? ""
             : (groupAny.icon ? `${groupAny.icon} ` : "📁 ");
           const count = groupCounts.get(g.id) || 0;
@@ -1402,7 +1405,7 @@ export class TelegramBotService {
             text: `${iconPrefix}${g.name} (${count})`,
             callback_data: `catalog:custom:${g.id}:0`,
           };
-          if (groupAny.iconCustomEmojiId) btn.icon_custom_emoji_id = groupAny.iconCustomEmojiId;
+          if (useCustom && groupAny.iconCustomEmojiId) btn.icon_custom_emoji_id = groupAny.iconCustomEmojiId;
           return btn;
         }),
         categoryCols,
