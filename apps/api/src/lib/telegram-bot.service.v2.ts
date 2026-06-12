@@ -1423,17 +1423,13 @@ export class TelegramBotService {
       }
       const groupRows = this.chunkButtons(
         customGroups.map((g) => {
-          // Premium viewers get the category's custom emoji (iconCustomEmojiId — the inherited ULTRA
-          // template's when inheriting); everyone else gets the 📁 folder marker. The stored text
-          // `icon` is ignored — it's often an unrenderable placeholder that left buttons blank.
-          const groupAny = g as typeof g & { iconCustomEmojiId?: string | null };
-          const useCustom = isPremium && Boolean(groupAny.iconCustomEmojiId);
+          // Categories ALWAYS show the 📁 folder marker for everyone (the inherited ULTRA category
+          // custom-emoji IDs don't render → left premium buttons blank). Consistent, never empty.
           const count = groupCounts.get(g.id) || 0;
           const btn: Record<string, string> = {
-            text: `${useCustom ? "" : "📁 "}${g.name} (${count})`,
+            text: `📁 ${g.name} (${count})`,
             callback_data: `catalog:custom:${g.id}:0`,
           };
-          if (useCustom && groupAny.iconCustomEmojiId) btn.icon_custom_emoji_id = groupAny.iconCustomEmojiId;
           return btn;
         }),
         categoryCols,
