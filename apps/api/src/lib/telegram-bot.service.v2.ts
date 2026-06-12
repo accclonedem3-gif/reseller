@@ -1423,14 +1423,16 @@ export class TelegramBotService {
       }
       const groupRows = this.chunkButtons(
         customGroups.map((g) => {
-          // Premium viewer + the category has a custom-emoji id → show that cusid; everyone else
-          // (non-premium, or no cusid) → 📁 folder. Never the stored text `icon` (often a leftover
-          // word/label that duplicated the name). Cloned categories have cusid stripped → always 📁.
+          // Same model as products: a TEXT icon is always on standby (resolveProductEmoji over the
+          // category name — Veo3→🎬, ChatGPT→✨, unknown→🛍️), so categories never go blank. A premium
+          // viewer with a custom-emoji id on the category gets the cusid bling instead (text stripped
+          // to avoid a double icon). Never renders the stored text `icon` (leftover word/label).
           const groupAny = g as typeof g & { iconCustomEmojiId?: string | null };
           const useCustom = isPremium && Boolean(groupAny.iconCustomEmojiId);
           const count = groupCounts.get(g.id) || 0;
+          const textIcon = this.resolveProductEmoji(g.name);
           const btn: Record<string, string> = {
-            text: `${useCustom ? "" : "📁 "}${g.name} (${count})`,
+            text: `${useCustom ? "" : `${textIcon} `}${g.name} (${count})`,
             callback_data: `catalog:custom:${g.id}:0`,
           };
           if (useCustom && groupAny.iconCustomEmojiId) btn.icon_custom_emoji_id = groupAny.iconCustomEmojiId;
