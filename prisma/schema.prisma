@@ -504,6 +504,7 @@ model BotConfig {
   telegramBotId             String?              @map("telegram_bot_id")
   telegramBotUsername       String?              @map("telegram_bot_username")
   ownerTelegramUserId       String?              @map("owner_telegram_user_id")
+  cusidEmitOk               Boolean?             @map("cusid_emit_ok")
   customizationJson         Json?                @map("customization_json")
   isGlobalDefault           Boolean              @default(false) @map("is_global_default")
   webhookUrl                String?              @map("webhook_url")

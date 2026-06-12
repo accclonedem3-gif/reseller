@@ -88,6 +88,9 @@ export class TelegramClientService {
     replyMarkup?: Record<string, unknown>,
     parseMode?: "HTML" | "Markdown",
     entities?: Array<{ type: string; offset: number; length: number; custom_emoji_id?: string }>,
+    // Called when the send only succeeded AFTER stripping custom-emoji ids — i.e. this bot can't emit
+    // them (used to self-learn that the owner isn't premium so we fall back to text icons).
+    onCusidStripped?: () => void | Promise<void>,
   ) {
     if (this.isMockOrSimulation(token)) {
       const mockResult = { message_id: actions.length + 1 };
@@ -101,10 +104,12 @@ export class TelegramClientService {
       ...(entities && entities.length > 0 ? { entities } : {}),
     }).catch(async (err: unknown) => {
       if (replyMarkup && this.hasInlineEmojiIds(replyMarkup)) {
-        return telegramSendMessage(token, chatId, text, {
+        const res = await telegramSendMessage(token, chatId, text, {
           reply_markup: this.stripInlineEmojiIds(replyMarkup),
           ...(parseMode ? { parse_mode: parseMode } : {}),
         });
+        await onCusidStripped?.();
+        return res;
       }
       throw err;
     });
@@ -151,6 +156,7 @@ export class TelegramClientService {
     replyMarkup: Record<string, unknown>,
     actions: unknown[],
     parseMode?: "HTML" | "Markdown",
+    onCusidStripped?: () => void | Promise<void>,
   ) {
     if (this.isMockOrSimulation(token)) {
       actions.push({ type: "editMessageText", chatId, messageId, text, replyMarkup, parseMode });
@@ -161,10 +167,12 @@ export class TelegramClientService {
       reply_markup: replyMarkup,
       ...(parseMode ? { parse_mode: parseMode } : {}),
     }).catch(async () => {
+      const stripped = this.hasInlineEmojiIds(replyMarkup);
       await telegramSendMessage(token, chatId, text, {
-        reply_markup: this.hasInlineEmojiIds(replyMarkup) ? this.stripInlineEmojiIds(replyMarkup) : replyMarkup,
+        reply_markup: stripped ? this.stripInlineEmojiIds(replyMarkup) : replyMarkup,
         ...(parseMode ? { parse_mode: parseMode } : {}),
       });
+      if (stripped) await onCusidStripped?.();
     });
   }
 
