@@ -1394,12 +1394,16 @@ export class TelegramBotService {
       const groupRows = this.chunkButtons(
         customGroups.map((g) => {
           const groupAny = g as typeof g & { icon?: string | null; iconCustomEmojiId?: string | null };
-          // Custom (premium) emoji only renders for Telegram Premium users; non-premium get the
-          // text-emoji fallback (the group's own icon, else a folder) instead of a blank button.
+          // Custom (premium) emoji only renders for Telegram Premium users. For a category that HAS a
+          // custom emoji, the stored text `icon` is usually the unrenderable premium-emoji placeholder
+          // — so for non-premium force the 📁 folder icon (never blank). Plain text-icon categories
+          // (no custom id) keep their own emoji.
           const useCustom = isPremium && Boolean(groupAny.iconCustomEmojiId);
           const iconPrefix = useCustom
             ? ""
-            : (groupAny.icon ? `${groupAny.icon} ` : "📁 ");
+            : groupAny.iconCustomEmojiId
+              ? "📁 "
+              : (groupAny.icon ? `${groupAny.icon} ` : "📁 ");
           const count = groupCounts.get(g.id) || 0;
           const btn: Record<string, string> = {
             text: `${iconPrefix}${g.name} (${count})`,
