@@ -38,6 +38,23 @@ export class PaymentService {
     }
   }
 
+  /**
+   * Only the synthetic PLATFORM pseudo-shops (tier upgrade / renewal / platform deposit) may borrow
+   * the platform-owner's env payment credentials (PAYOS_*, PAY2S_*, WEB2M_*, BINANCE_PAY_*). They
+   * have no PaymentConfig of their own — the env account IS their account by design.
+   *
+   * A REAL shop must NEVER fall back to env: if its own keys are blank or fail to decrypt, payment
+   * creation FAILS CLOSED instead of silently routing the shop's customers' money to the platform
+   * owner's account. (This is the movaci bug: blank shop config → env fallback → money to platform.)
+   */
+  private isPlatformShop(shopId: string): boolean {
+    const id = String(shopId || "").trim();
+    if (!id) return false;
+    if (id.startsWith("platform-")) return true; // "platform-upgrade", "platform-tier"
+    const depositShop = String(this.config.platformDepositShopId || "").trim();
+    return !!depositShop && id === depositShop; // PLATFORM_DEPOSIT_SHOP_ID (wallet top-up / tiers)
+  }
+
   buildPublicReconcileToken(externalOrderCode: string) {
     return createHmac("sha256", this.config.internalApiToken)
       .update(`payos-reconcile:${String(externalOrderCode || "").trim()}`)
@@ -109,13 +126,18 @@ export class PaymentService {
       },
     });
 
+    // Env payment-credential fallback is allowed ONLY for platform pseudo-shops. A real shop with
+    // blank/undecryptable keys fails closed (see isPlatformShop) so its money can't route to the
+    // platform owner's PayOS/Pay2s/etc. account.
+    const allowEnvFallback = this.isPlatformShop(input.shopId);
+
     const provider = this.config.paymentMode === "mock"
       ? PaymentProvider.MOCK
       : (input.providerOverride || paymentConfig?.provider || PaymentProvider.PAYOS);
 
     // ── BINANCE_PAY (auto merchant flow) ──────────────────────────────────────
     if (provider === PaymentProvider.BINANCE_PAY) {
-      return this.createBinancePayPaymentLink(paymentConfig, input);
+      return this.createBinancePayPaymentLink(paymentConfig, input, allowEnvFallback);
     }
 
     if (
@@ -128,7 +150,7 @@ export class PaymentService {
     }
 
     if (provider === PaymentProvider.PAYOS) {
-      const credentials = this.resolvePayOSCredentials(paymentConfig);
+      const credentials = this.resolvePayOSCredentials(paymentConfig, allowEnvFallback);
       const reconcileToken = this.buildPublicReconcileToken(input.externalOrderCode);
       const paymentStatusQuery = `orderCode=${encodeURIComponent(input.externalOrderCode)}&rt=${encodeURIComponent(reconcileToken)}`;
 
@@ -156,7 +178,7 @@ export class PaymentService {
     }
 
     if (provider === PaymentProvider.WEB2M) {
-      const creds = this.resolveWeb2mPaymentCredentials(paymentConfig);
+      const creds = this.resolveWeb2mPaymentCredentials(paymentConfig, allowEnvFallback);
       const orderInfo = input.description.replace(/[^A-Za-z0-9]/g, "").slice(0, 32)
         || `ORD${input.externalOrderCode.slice(-6)}`;
       const qrUrl = buildVietQrImageUrl({
@@ -181,7 +203,7 @@ export class PaymentService {
     }
 
     if (provider === PaymentProvider.PAY2S) {
-      const credentials = this.resolvePay2sCredentials(paymentConfig);
+      const credentials = this.resolvePay2sCredentials(paymentConfig, allowEnvFallback);
       const reconcileToken = this.buildPublicReconcileToken(input.externalOrderCode);
       const paymentStatusQuery = `orderCode=${encodeURIComponent(input.externalOrderCode)}&rt=${encodeURIComponent(reconcileToken)}`;
 
@@ -612,11 +634,16 @@ export class PaymentService {
   private resolveWeb2mPaymentCredentials(paymentConfig: {
     web2mAccountNumber: string | null;
     web2mBankCode: string | null;
-  } | null) {
-    const accountNumber = paymentConfig?.web2mAccountNumber || process.env.WEB2M_ACCOUNT_NUMBER || "";
-    const bankCode = (paymentConfig?.web2mBankCode || process.env.WEB2M_BANK_CODE || "").toLowerCase();
+  } | null, allowEnvFallback = true) {
+    const env = (v: string | undefined) => (allowEnvFallback ? v || "" : "");
+    const accountNumber = paymentConfig?.web2mAccountNumber || env(process.env.WEB2M_ACCOUNT_NUMBER);
+    const bankCode = (paymentConfig?.web2mBankCode || env(process.env.WEB2M_BANK_CODE)).toLowerCase();
     if (!accountNumber || !bankCode) {
-      throw new BadRequestException("Web2m configuration is incomplete (missing bank account or bank code).");
+      throw new BadRequestException(
+        allowEnvFallback
+          ? "Web2m configuration is incomplete (missing bank account or bank code)."
+          : "Shop chưa cấu hình Web2m (thiếu số tài khoản / mã ngân hàng). Vào Cài đặt thanh toán để nhập, hoặc chọn cổng thanh toán khác.",
+      );
     }
     return { accountNumber, bankCode };
   }
@@ -825,26 +852,23 @@ export class PaymentService {
     pay2sSecretKeyEncrypted: string | null;
     pay2sBankAccount: string | null;
     pay2sBankId: string | null;
-  } | null) {
+  } | null, allowEnvFallback = true) {
+    const env = (v: string | undefined) => (allowEnvFallback ? v || "" : "");
     const partnerCode =
-      this.safeDecryptSecret(paymentConfig?.pay2sPartnerCodeEncrypted) ||
-      process.env.PAY2S_PARTNER_CODE ||
-      "";
+      this.safeDecryptSecret(paymentConfig?.pay2sPartnerCodeEncrypted) || env(process.env.PAY2S_PARTNER_CODE);
     const accessKey =
-      this.safeDecryptSecret(paymentConfig?.pay2sAccessKeyEncrypted) ||
-      process.env.PAY2S_ACCESS_KEY ||
-      "";
+      this.safeDecryptSecret(paymentConfig?.pay2sAccessKeyEncrypted) || env(process.env.PAY2S_ACCESS_KEY);
     const secretKey =
-      this.safeDecryptSecret(paymentConfig?.pay2sSecretKeyEncrypted) ||
-      process.env.PAY2S_SECRET_KEY ||
-      "";
-    const bankAccount =
-      paymentConfig?.pay2sBankAccount || process.env.PAY2S_BANK_ACCOUNT || "";
-    const bankId =
-      paymentConfig?.pay2sBankId || process.env.PAY2S_BANK_ID || "";
+      this.safeDecryptSecret(paymentConfig?.pay2sSecretKeyEncrypted) || env(process.env.PAY2S_SECRET_KEY);
+    const bankAccount = paymentConfig?.pay2sBankAccount || env(process.env.PAY2S_BANK_ACCOUNT);
+    const bankId = paymentConfig?.pay2sBankId || env(process.env.PAY2S_BANK_ID);
 
     if (!partnerCode || !accessKey || !secretKey || !bankAccount || !bankId) {
-      throw new BadRequestException("Pay2s configuration is incomplete.");
+      throw new BadRequestException(
+        allowEnvFallback
+          ? "Pay2s configuration is incomplete."
+          : "Shop chưa cấu hình Pay2s. Vào Cài đặt thanh toán để nhập key riêng, hoặc chọn cổng thanh toán khác.",
+      );
     }
 
     return { partnerCode, accessKey, secretKey, bankAccount, bankId };
@@ -854,22 +878,21 @@ export class PaymentService {
     payosClientIdEncrypted: string | null;
     payosApiKeyEncrypted: string | null;
     payosChecksumKeyEncrypted: string | null;
-  } | null) {
+  } | null, allowEnvFallback = true) {
+    const env = (v: string | undefined) => (allowEnvFallback ? v || "" : "");
     const clientId =
-      this.safeDecryptSecret(paymentConfig?.payosClientIdEncrypted) ||
-      process.env.PAYOS_CLIENT_ID ||
-      "";
+      this.safeDecryptSecret(paymentConfig?.payosClientIdEncrypted) || env(process.env.PAYOS_CLIENT_ID);
     const apiKey =
-      this.safeDecryptSecret(paymentConfig?.payosApiKeyEncrypted) ||
-      process.env.PAYOS_API_KEY ||
-      "";
+      this.safeDecryptSecret(paymentConfig?.payosApiKeyEncrypted) || env(process.env.PAYOS_API_KEY);
     const checksumKey =
-      this.safeDecryptSecret(paymentConfig?.payosChecksumKeyEncrypted) ||
-      process.env.PAYOS_CHECKSUM_KEY ||
-      "";
+      this.safeDecryptSecret(paymentConfig?.payosChecksumKeyEncrypted) || env(process.env.PAYOS_CHECKSUM_KEY);
 
     if (!clientId || !apiKey || !checksumKey) {
-      throw new BadRequestException("PayOS configuration is incomplete.");
+      throw new BadRequestException(
+        allowEnvFallback
+          ? "PayOS configuration is incomplete."
+          : "Shop chưa cấu hình PayOS (thiếu Client ID / API Key / Checksum Key). Vào Cài đặt thanh toán để nhập key riêng, hoặc chọn cổng thanh toán khác.",
+      );
     }
 
     return {
@@ -889,18 +912,19 @@ export class PaymentService {
     binancePayApiKeyEncrypted: string | null;
     binancePaySecretKeyEncrypted: string | null;
     binancePayEnabled: boolean;
-  } | null) {
+  } | null, allowEnvFallback = true) {
+    const env = (v: string | undefined) => (allowEnvFallback ? v || "" : "");
     const apiKey =
-      this.safeDecryptSecret(paymentConfig?.binancePayApiKeyEncrypted) ||
-      process.env.BINANCE_PAY_API_KEY ||
-      "";
+      this.safeDecryptSecret(paymentConfig?.binancePayApiKeyEncrypted) || env(process.env.BINANCE_PAY_API_KEY);
     const secretKey =
-      this.safeDecryptSecret(paymentConfig?.binancePaySecretKeyEncrypted) ||
-      process.env.BINANCE_PAY_SECRET_KEY ||
-      "";
+      this.safeDecryptSecret(paymentConfig?.binancePaySecretKeyEncrypted) || env(process.env.BINANCE_PAY_SECRET_KEY);
 
     if (!apiKey || !secretKey) {
-      throw new BadRequestException("Binance Pay Merchant configuration is incomplete (missing API key or secret).");
+      throw new BadRequestException(
+        allowEnvFallback
+          ? "Binance Pay Merchant configuration is incomplete (missing API key or secret)."
+          : "Shop chưa cấu hình Binance Pay. Vào Cài đặt thanh toán để nhập, hoặc chọn cổng thanh toán khác.",
+      );
     }
 
     return { apiKey, secretKey };
@@ -920,8 +944,9 @@ export class PaymentService {
       description: string;
       expiredAt?: Date;
     },
+    allowEnvFallback = true,
   ) {
-    const { apiKey, secretKey } = this.resolveBinancePayCredentials(paymentConfig);
+    const { apiKey, secretKey } = this.resolveBinancePayCredentials(paymentConfig, allowEnvFallback);
     const rate = this.resolveUsdtVndRate(paymentConfig);
 
     const usdtAmount = this.binancePayService.ceilUsdt(Number(input.amount), rate);
