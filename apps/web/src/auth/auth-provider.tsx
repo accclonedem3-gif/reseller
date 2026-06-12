@@ -18,6 +18,7 @@ interface AuthContextValue {
   register: (username: string, email: string, password: string, displayName: string, referralCode?: string | null) => Promise<void>;
   changePassword: (currentPassword: string, newPassword: string) => Promise<void>;
   updateRecoveryEmail: (recoveryEmail: string | null) => Promise<void>;
+  updateDisplayName: (displayName: string) => Promise<void>;
   logout: () => void;
   refreshSession: () => Promise<string | null>;
 }
@@ -109,6 +110,26 @@ export function AuthProvider({ children }: PropsWithChildren) {
             user: {
               ...current.user,
               recoveryEmail: response.data.recoveryEmail,
+            },
+          };
+
+          setSession(nextSession);
+          setStoredSession(nextSession);
+        }
+      },
+      async updateDisplayName(displayName) {
+        const response = await api.put("/auth/me/display-name", {
+          displayName,
+        });
+
+        const current = getStoredSession();
+
+        if (current) {
+          const nextSession = {
+            ...current,
+            user: {
+              ...current.user,
+              displayName: response.data.displayName,
             },
           };
 

@@ -586,6 +586,32 @@ export class AuthService {
     };
   }
 
+  // Seller tự đổi tên hiển thị của chính mình (Seller.displayName). Độ dài đã được DTO ràng buộc
+  // (2–50 ký tự); ở đây chỉ trim + xác thực chủ sở hữu là user đang đăng nhập.
+  async updateDisplayName(userId: string, displayName: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, status: true, seller: { select: { id: true } } },
+    });
+
+    if (!user || user.status !== UserStatus.ACTIVE || !user.seller) {
+      throw new UnauthorizedException("User not found.");
+    }
+
+    const nextDisplayName = String(displayName || "").trim();
+
+    const updated = await this.prisma.seller.update({
+      where: { id: user.seller.id },
+      data: { displayName: nextDisplayName },
+      select: { displayName: true },
+    });
+
+    return {
+      displayName: updated.displayName,
+      message: "Đã cập nhật tên hiển thị.",
+    };
+  }
+
   async changePassword(userId: string, currentPassword: string, newPassword: string) {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },

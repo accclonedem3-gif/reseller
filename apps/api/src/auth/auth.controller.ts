@@ -32,6 +32,7 @@ import {
   SetReferralCodeDto,
   UpdateSellerByAdminDto,
   UpdateRecoveryEmailDto,
+  UpdateDisplayNameDto,
 } from "./auth.dto";
 import { AuthService } from "./auth.service";
 
@@ -120,6 +121,15 @@ export class AuthController {
     @Body() body: UpdateRecoveryEmailDto,
   ) {
     return this.authService.updateRecoveryEmail(user.id, body.recoveryEmail);
+  }
+
+  @Put("auth/me/display-name")
+  @UseGuards(JwtAuthGuard)
+  updateDisplayName(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() body: UpdateDisplayNameDto,
+  ) {
+    return this.authService.updateDisplayName(user.id, body.displayName);
   }
 
   @Get("admin/ctv")

@@ -347,7 +347,7 @@ const inputCls = "w-full rounded-xl px-3 py-2.5 text-[13px] outline-none transit
 const inputStyle = { background: "var(--inp)", border: "1px solid var(--bd)", color: "var(--tx)" };
 
 export function ProfilePage() {
-  const { session, changePassword, updateRecoveryEmail } = useAuth();
+  const { session, changePassword, updateRecoveryEmail, updateDisplayName } = useAuth();
   const navigate = useNavigate();
   const { lang } = useLang();
   const t = T[lang];
@@ -469,8 +469,13 @@ export function ProfilePage() {
   const [submitting, setSubmitting]     = useState(false);
   const [emailSubmitting, setEmailSubmitting] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [editingName, setEditingName] = useState(false);
+  const [nameDraft, setNameDraft] = useState(session?.user.displayName || "");
+  const [nameSaving, setNameSaving] = useState(false);
+  const [nameError, setNameError] = useState<string | null>(null);
 
   useEffect(() => { setRecoveryEmail(session?.user.recoveryEmail || ""); }, [session?.user.recoveryEmail]);
+  useEffect(() => { setNameDraft(session?.user.displayName || ""); }, [session?.user.displayName]);
 
   const shopSlug     = shopData?.slug as string | undefined;
   const warrantyLink = shopSlug ? `${window.location.origin}/bao-hanh?shop=${shopSlug}` : null;
@@ -499,6 +504,27 @@ export function ProfilePage() {
       const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message;
       setEmailError(msg || "Không thể cập nhật email.");
     } finally { setEmailSubmitting(false); }
+  }
+
+  function cancelEditName() {
+    setEditingName(false);
+    setNameDraft(session?.user.displayName || "");
+    setNameError(null);
+  }
+
+  async function handleSaveDisplayName() {
+    const next = nameDraft.trim();
+    setNameError(null);
+    if (next.length < 2) { setNameError("Tên hiển thị tối thiểu 2 ký tự."); return; }
+    if (next === (session?.user.displayName || "")) { setEditingName(false); return; }
+    try {
+      setNameSaving(true);
+      await updateDisplayName(next);
+      setEditingName(false);
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message;
+      setNameError(msg || "Không cập nhật được tên hiển thị.");
+    } finally { setNameSaving(false); }
   }
 
   async function handleChangePassword(e: React.FormEvent) {
@@ -834,7 +860,45 @@ export function ProfilePage() {
               {activeTab === "info" && (
                 <div className="space-y-5">
                   <div>
-                    <InfoRow label={t.displayName}>{session?.user.displayName || "Seller"}</InfoRow>
+                    <InfoRow label={t.displayName}>
+                      {editingName ? (
+                        <span className="flex items-center justify-end gap-1.5">
+                          <input
+                            autoFocus
+                            value={nameDraft}
+                            maxLength={50}
+                            onChange={(e) => setNameDraft(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") { e.preventDefault(); void handleSaveDisplayName(); }
+                              if (e.key === "Escape") cancelEditName();
+                            }}
+                            className="w-44 rounded-lg px-2 py-1 text-right text-[13px] outline-none"
+                            style={inputStyle}
+                          />
+                          <button type="button" onClick={() => void handleSaveDisplayName()} disabled={nameSaving} title="Lưu"
+                            className="flex h-7 w-7 items-center justify-center rounded-lg transition hover:opacity-80 disabled:opacity-40"
+                            style={{ background: "rgb(249,115,22)", color: "#fff" }}>
+                            {nameSaving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
+                          </button>
+                          <button type="button" onClick={cancelEditName} disabled={nameSaving} title="Hủy"
+                            className="flex h-7 w-7 items-center justify-center rounded-lg transition hover:opacity-80 disabled:opacity-40"
+                            style={{ background: "var(--surface)", border: "1px solid var(--bd)", color: "var(--tx-m)" }}>
+                            <X className="h-3.5 w-3.5" />
+                          </button>
+                        </span>
+                      ) : (
+                        <span className="flex items-center justify-end gap-2">
+                          <span>{session?.user.displayName || "Seller"}</span>
+                          <button type="button" title="Sửa tên hiển thị"
+                            onClick={() => { setEditingName(true); setNameDraft(session?.user.displayName || ""); setNameError(null); }}
+                            className="flex h-6 w-6 items-center justify-center rounded-lg transition hover:opacity-80"
+                            style={{ background: "var(--surface)", border: "1px solid var(--bd)", color: "var(--tx-m)" }}>
+                            <Pencil className="h-3 w-3" />
+                          </button>
+                        </span>
+                      )}
+                    </InfoRow>
+                    {nameError && <Alert type="error">{nameError}</Alert>}
                     <InfoRow label={t.username}>
                       <span className="font-mono text-[12px]">{session?.user.email?.split("@")[0]}</span>
                     </InfoRow>
