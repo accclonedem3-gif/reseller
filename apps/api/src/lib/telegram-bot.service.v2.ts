@@ -458,7 +458,7 @@ export class TelegramBotService {
         await this.clearPendingWalletTopup(shopId, String(message.from?.id || ""));
         await this.clearPendingPaymentSelection(shopId, String(message.from?.id || ""));
         await this.clearPendingTxHashSubmission(shopId, String(message.from?.id || ""));
-        await this.renderHome(shopId, outboundToken, message.chat.id, undefined, actions, messageLanguage);
+        await this.renderHome(shopId, outboundToken, message.chat.id, undefined, actions, messageLanguage, (message.from as any)?.is_premium === true);
         return { ok: true, actions };
       }
 
@@ -614,7 +614,7 @@ export class TelegramBotService {
       await this.clearPendingWalletTopup(shopId, String(message.from?.id || ""));
       await this.clearPendingPaymentSelection(shopId, String(message.from?.id || ""));
       await this.clearPendingTxHashSubmission(shopId, String(message.from?.id || ""));
-      await this.renderHome(shopId, outboundToken, message.chat.id, undefined, actions, messageLanguage);
+      await this.renderHome(shopId, outboundToken, message.chat.id, undefined, actions, messageLanguage, (message.from as any)?.is_premium === true);
       return { ok: true, actions };
     }
 
@@ -717,7 +717,7 @@ export class TelegramBotService {
         await this.clearPendingWalletTopup(shopId, telegramUserId);
         await this.clearPendingPaymentSelection(shopId, telegramUserId);
         await this.clearPendingTxHashSubmission(shopId, telegramUserId);
-        await this.renderHome(shopId, outboundToken, chatId, messageId, actions, callbackLanguage);
+        await this.renderHome(shopId, outboundToken, chatId, messageId, actions, callbackLanguage, (callbackQuery.from as any)?.is_premium === true);
       } else if (data === "home:products") {
         await this.clearPendingQuantitySelection(shopId, telegramUserId);
         await this.clearPendingWalletTopup(shopId, telegramUserId);
@@ -834,7 +834,7 @@ export class TelegramBotService {
       } else if (data.startsWith("lang:set:")) {
         const nextLanguage = data.endsWith(":en") ? "en" : data.endsWith(":th") ? "th" : "vi";
         await this.setCustomerLanguage(shopId, telegramUserId, nextLanguage);
-        await this.renderHome(shopId, outboundToken, chatId, messageId, actions, nextLanguage);
+        await this.renderHome(shopId, outboundToken, chatId, messageId, actions, nextLanguage, (callbackQuery.from as any)?.is_premium === true);
       } else if (data === "home:guide") {
         await this.editOrSend(
           outboundToken,
@@ -1112,6 +1112,7 @@ export class TelegramBotService {
     messageId: number | undefined,
     actions: unknown[],
     language: BotLanguage = "vi",
+    isPremium = false,
   ) {
     const shop = await this.shopsService.getSellerShopByShopId(shopId);
     const products = await this.shopsService.getCatalogViewForShop(shopId, false);
@@ -1160,23 +1161,26 @@ export class TelegramBotService {
       : "";
     const fullHomeText = welcomeFormatted ? `${homeText}\n\n${welcomeFormatted}` : homeText;
 
-    const custBtn = (custKey: string, fallback: Parameters<typeof this.buttonLabel>[0]): string => {
+    const custParts = (custKey: string, fallback: Parameters<typeof this.buttonLabel>[0]) => {
       const full = this.buttonLabel(fallback, language);
       const defEmoji = full.split(" ")[0];
       const defLabel = full.split(" ").slice(1).join(" ");
       // `|| ` (not `?? `) so an empty-string emoji override — which an inherited/cloned ULTRA template
       // carries because it uses cusid instead — still falls back to the default text emoji.
-      const emoji = custEmojis[custKey]?.trim() || defEmoji;
-      const label = custLabels[custKey]?.[language] || defLabel;
-      return `${emoji} ${label}`;
+      return {
+        emoji: custEmojis[custKey]?.trim() || defEmoji,
+        label: custLabels[custKey]?.[language] || defLabel,
+      };
     };
 
-    // Bot API 9.4: icon_custom_emoji_id on inline keyboard buttons. The text always carries a default
-    // text emoji (via custBtn), so a non-premium viewer never sees a blank button; a premium viewer
-    // additionally gets the cusid bling when one is set.
+    // Bot API 9.4: icon_custom_emoji_id on inline keyboard buttons. A premium viewer with a cusid gets
+    // the cusid icon only (text emoji stripped so it doesn't render twice); everyone else gets the
+    // default text emoji — so a non-premium viewer never sees a blank button.
     const iconBtn = (key: string, fallback: Parameters<typeof this.buttonLabel>[0], cbData: string) => {
-      const btn: Record<string, string> = { text: custBtn(key, fallback), callback_data: cbData };
-      if (custEmojiIds[key]) btn.icon_custom_emoji_id = custEmojiIds[key];
+      const useCustom = isPremium && Boolean(custEmojiIds[key]);
+      const { emoji, label } = custParts(key, fallback);
+      const btn: Record<string, string> = { text: useCustom ? label : `${emoji} ${label}`, callback_data: cbData };
+      if (useCustom && custEmojiIds[key]) btn.icon_custom_emoji_id = custEmojiIds[key];
       return btn;
     };
 
@@ -1184,7 +1188,7 @@ export class TelegramBotService {
       inline_keyboard: [
         [
           iconBtn("products", "products", "home:products"),
-          { text: this.buttonLabel("guide", language), callback_data: "home:guide", ...(custEmojiIds.guide ? { icon_custom_emoji_id: custEmojiIds.guide } : {}) },
+          iconBtn("guide", "guide", "home:guide"),
         ],
         [
           iconBtn("orders", "history", "home:history"),
@@ -1451,8 +1455,8 @@ export class TelegramBotService {
         ...ungrouped.map((item) => [productBtn(item)]),
         ...outOfStockShown.filter((item) => !item.groupId).map((item) => [productBtn(item)]),
       ];
-      const cgRefreshRow = [this.buildRefreshBtn(custData, language, "home:products")];
-      const cgNavRows = this.buildCatalogNavButtons(custData, language);
+      const cgRefreshRow = [this.buildRefreshBtn(custData, language, "home:products", isPremium)];
+      const cgNavRows = this.buildCatalogNavButtons(custData, language, isPremium);
       const cgFixedBytes =
         [...groupRows, cgRefreshRow, ...cgNavRows].reduce(
           (s, r) => s + r.reduce((x, b) => x + this.inlineBtnBytes(b as Record<string, unknown>), 0),
@@ -1520,8 +1524,8 @@ export class TelegramBotService {
       }
     }
 
-    const flatRefreshRow = [this.buildRefreshBtn(custData, language, "home:products")];
-    const flatNavRows = this.buildCatalogNavButtons(custData, language);
+    const flatRefreshRow = [this.buildRefreshBtn(custData, language, "home:products", isPremium)];
+    const flatNavRows = this.buildCatalogNavButtons(custData, language, isPremium);
     const flatFixedBytes =
       [flatRefreshRow, ...flatNavRows].reduce(
         (s, r) => s + r.reduce((x, b) => x + this.inlineBtnBytes(b as Record<string, unknown>), 0),
@@ -1647,9 +1651,9 @@ export class TelegramBotService {
       {
         inline_keyboard: [
           ...products.map((item) => [productBtn(item)]),
-          [this.buildRefreshBtn(custDataCustom, language, `catalog:custom:${groupId}:0`)],
-          [this.buildNavTextBtn(custDataCustom, "viewAll", "viewAll", "home:products", language)],
-          ...this.buildCatalogNavButtons(custDataCustom, language),
+          [this.buildRefreshBtn(custDataCustom, language, `catalog:custom:${groupId}:0`, isPremium)],
+          [this.buildNavTextBtn(custDataCustom, "viewAll", "viewAll", "home:products", language, isPremium)],
+          ...this.buildCatalogNavButtons(custDataCustom, language, isPremium),
         ],
       },
       actions,
@@ -1728,9 +1732,9 @@ export class TelegramBotService {
       {
         inline_keyboard: [
           ...group.items.map((item) => [productBtn(item)]),
-          [this.buildRefreshBtn(custDataFeatured, language, `catalog:group:${group.key}:0`)],
-          [this.buildNavTextBtn(custDataFeatured, "viewAll", "viewAll", "home:products", language)],
-          ...this.buildCatalogNavButtons(custDataFeatured, language),
+          [this.buildRefreshBtn(custDataFeatured, language, `catalog:group:${group.key}:0`, isPremium)],
+          [this.buildNavTextBtn(custDataFeatured, "viewAll", "viewAll", "home:products", language, isPremium)],
+          ...this.buildCatalogNavButtons(custDataFeatured, language, isPremium),
         ],
       },
       actions,
@@ -7286,15 +7290,17 @@ export class TelegramBotService {
   private buildCatalogNavButtons(
     custData: { custEmojis: Record<string, string>; custLabels: Record<string, Record<string, string>>; custEmojiIds: Record<string, string> },
     language: BotLanguage,
+    isPremium = false,
   ) {
     const navBtn = (key: string, fallback: Parameters<typeof this.buttonLabel>[0], cbData: string) => {
       const full = this.buttonLabel(fallback, language);
       const defEmoji = full.split(" ")[0];
       const defLabel = full.split(" ").slice(1).join(" ");
+      const useCustom = isPremium && Boolean(custData.custEmojiIds[key]);
       const emoji = custData.custEmojis[key]?.trim() || defEmoji;
       const label = custData.custLabels[key]?.[language] || defLabel;
-      const btn: Record<string, string> = { text: `${emoji} ${label}`, callback_data: cbData };
-      if (custData.custEmojiIds[key]) btn.icon_custom_emoji_id = custData.custEmojiIds[key];
+      const btn: Record<string, string> = { text: useCustom ? label : `${emoji} ${label}`, callback_data: cbData };
+      if (useCustom && custData.custEmojiIds[key]) btn.icon_custom_emoji_id = custData.custEmojiIds[key];
       return btn;
     };
     return [
@@ -7359,13 +7365,15 @@ export class TelegramBotService {
     custData: { custEmojis: Record<string, string>; custLabels: Record<string, Record<string, string>>; custEmojiIds: Record<string, string> },
     language: BotLanguage,
     cbData: string,
+    isPremium = false,
   ) {
     const defEmoji = "🔄";
     const defLabel = language === "en" ? "Refresh" : language === "th" ? "รีเฟรช" : "Làm mới";
+    const useCustom = isPremium && Boolean(custData.custEmojiIds["refresh"]);
     const emoji = custData.custEmojis["refresh"]?.trim() || defEmoji;
     const label = custData.custLabels["refresh"]?.[language] || defLabel;
-    const btn: Record<string, string> = { text: `${emoji} ${label}`, callback_data: cbData };
-    if (custData.custEmojiIds["refresh"]) btn.icon_custom_emoji_id = custData.custEmojiIds["refresh"];
+    const btn: Record<string, string> = { text: useCustom ? label : `${emoji} ${label}`, callback_data: cbData };
+    if (useCustom && custData.custEmojiIds["refresh"]) btn.icon_custom_emoji_id = custData.custEmojiIds["refresh"];
     return btn;
   }
 
@@ -7375,14 +7383,16 @@ export class TelegramBotService {
     fallback: Parameters<typeof this.buttonLabel>[0],
     cbData: string,
     language: BotLanguage,
+    isPremium = false,
   ) {
     const full = this.buttonLabel(fallback, language);
     const defEmoji = full.split(" ")[0];
     const defLabel = full.split(" ").slice(1).join(" ");
+    const useCustom = isPremium && Boolean(custData.custEmojiIds[key]);
     const emoji = custData.custEmojis[key]?.trim() || defEmoji;
     const label = custData.custLabels[key]?.[language] || defLabel;
-    const btn: Record<string, string> = { text: `${emoji} ${label}`, callback_data: cbData };
-    if (custData.custEmojiIds[key]) btn.icon_custom_emoji_id = custData.custEmojiIds[key];
+    const btn: Record<string, string> = { text: useCustom ? label : `${emoji} ${label}`, callback_data: cbData };
+    if (useCustom && custData.custEmojiIds[key]) btn.icon_custom_emoji_id = custData.custEmojiIds[key];
     return btn;
   }
 
