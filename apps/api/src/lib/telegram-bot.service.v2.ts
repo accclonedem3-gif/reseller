@@ -1423,23 +1423,14 @@ export class TelegramBotService {
       }
       const groupRows = this.chunkButtons(
         customGroups.map((g) => {
-          const groupAny = g as typeof g & { icon?: string | null; iconCustomEmojiId?: string | null };
-          // Custom (premium) emoji only renders for Telegram Premium users. For a category that HAS a
-          // custom emoji, the stored text `icon` is usually the unrenderable premium-emoji placeholder
-          // — so for non-premium force the 📁 folder icon (never blank). Plain text-icon categories
-          // (no custom id) keep their own emoji.
-          const useCustom = isPremium && Boolean(groupAny.iconCustomEmojiId);
-          const iconPrefix = useCustom
-            ? ""
-            : groupAny.iconCustomEmojiId
-              ? "📁 "
-              : (groupAny.icon ? `${groupAny.icon} ` : "📁 ");
+          // Categories ALWAYS show the 📁 folder marker for everyone. A premium custom emoji on a
+          // category frequently fails to render (leaving the button blank), so keep it simple and
+          // consistent — every category is a folder.
           const count = groupCounts.get(g.id) || 0;
           const btn: Record<string, string> = {
-            text: `${iconPrefix}${g.name} (${count})`,
+            text: `📁 ${g.name} (${count})`,
             callback_data: `catalog:custom:${g.id}:0`,
           };
-          if (useCustom && groupAny.iconCustomEmojiId) btn.icon_custom_emoji_id = groupAny.iconCustomEmojiId;
           return btn;
         }),
         categoryCols,
@@ -7301,10 +7292,6 @@ export class TelegramBotService {
       return btn;
     };
     return [
-      [
-        navBtn("orders", "history", "home:history"),
-        navBtn("wallet", "wallet", "home:wallet"),
-      ],
       [
         navBtn("home", "home", "home:menu"),
         navBtn("support", "supportShort", "home:support"),
