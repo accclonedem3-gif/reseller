@@ -151,7 +151,10 @@ export class TelegramBotService {
       : {};
 
     const btn = (key: keyof typeof l): string => {
-      const emoji = emojis[key] ?? l[key][language].split(" ")[0];
+      // `|| ` (not `?? `): an inherited/cloned ULTRA template sets buttonEmojis="" (it uses cusid
+      // instead), and `?? ` would keep that empty string → blank button. Fall back to the default
+      // text emoji so a non-premium reply-keyboard button always shows an icon.
+      const emoji = emojis[key]?.trim() || l[key][language].split(" ")[0];
       const label = labels[key]?.[language] ?? l[key][language].split(" ").slice(1).join(" ");
       return `${emoji} ${label}`;
     };
@@ -197,7 +200,7 @@ export class TelegramBotService {
     const labels = (customization?.buttonLabels && typeof customization.buttonLabels === "object")
       ? (customization.buttonLabels as Record<string, Record<string, string>>) : {};
     for (const lang of ["vi", "en", "th"] as const) {
-      const emoji = emojis[key] ?? l[key][lang].split(" ")[0];
+      const emoji = emojis[key]?.trim() || l[key][lang].split(" ")[0];
       const label = labels[key]?.[lang] ?? l[key][lang].split(" ").slice(1).join(" ");
       variants.add(`${emoji} ${label}`);
     }
@@ -1161,17 +1164,18 @@ export class TelegramBotService {
       const full = this.buttonLabel(fallback, language);
       const defEmoji = full.split(" ")[0];
       const defLabel = full.split(" ").slice(1).join(" ");
-      const emoji = custEmojis[custKey] ?? defEmoji;
+      // `|| ` (not `?? `) so an empty-string emoji override — which an inherited/cloned ULTRA template
+      // carries because it uses cusid instead — still falls back to the default text emoji.
+      const emoji = custEmojis[custKey]?.trim() || defEmoji;
       const label = custLabels[custKey]?.[language] || defLabel;
       return `${emoji} ${label}`;
     };
 
-    // Bot API 9.4: icon_custom_emoji_id on inline keyboard buttons
+    // Bot API 9.4: icon_custom_emoji_id on inline keyboard buttons. The text always carries a default
+    // text emoji (via custBtn), so a non-premium viewer never sees a blank button; a premium viewer
+    // additionally gets the cusid bling when one is set.
     const iconBtn = (key: string, fallback: Parameters<typeof this.buttonLabel>[0], cbData: string) => {
-      const text = custLabels[key]?.[language]
-        ? (custEmojis[key] ? `${custEmojis[key]} ` : "") + custLabels[key][language]
-        : custBtn(key, fallback);
-      const btn: Record<string, string> = { text, callback_data: cbData };
+      const btn: Record<string, string> = { text: custBtn(key, fallback), callback_data: cbData };
       if (custEmojiIds[key]) btn.icon_custom_emoji_id = custEmojiIds[key];
       return btn;
     };
@@ -2447,17 +2451,15 @@ export class TelegramBotService {
       const custLabel = custLabels[key]?.[language];
       const custEmoji = custEmojis[key];
       const custEmojiId = custEmojiIds[key];
-      let text: string;
-      if (custLabel) {
-        text = (custEmoji ? `${custEmoji} ` : "") + custLabel;
-      } else if (custEmoji) {
-        // replace leading emoji in default text
-        const parts = defaultText.split(" ");
-        const hasLeadingEmoji = parts.length > 1 && !!parts[0] && /\p{Emoji}/u.test(parts[0]);
-        text = hasLeadingEmoji ? `${custEmoji} ${parts.slice(1).join(" ")}` : `${custEmoji} ${defaultText}`;
-      } else {
-        text = defaultText;
-      }
+      // Default emoji + label parsed from the built-in payment label, so a custom label with no
+      // custom emoji (or an empty-string override) still shows the default icon via `|| `.
+      const parts = defaultText.split(" ");
+      const hasLeadingEmoji = parts.length > 1 && !!parts[0] && /\p{Emoji}/u.test(parts[0]);
+      const defPayEmoji = hasLeadingEmoji ? parts[0] : "";
+      const defPayLabel = hasLeadingEmoji ? parts.slice(1).join(" ") : defaultText;
+      const emoji = custEmoji?.trim() || defPayEmoji;
+      const label = custLabel || defPayLabel;
+      const text = `${emoji} ${label}`.trim();
       const btn: Record<string, string> = { text, callback_data: `pay:${String(provider).toLowerCase()}` };
       if (custEmojiId) btn.icon_custom_emoji_id = custEmojiId;
       return btn;
@@ -7289,10 +7291,9 @@ export class TelegramBotService {
       const full = this.buttonLabel(fallback, language);
       const defEmoji = full.split(" ")[0];
       const defLabel = full.split(" ").slice(1).join(" ");
-      const text = custData.custLabels[key]?.[language]
-        ? (custData.custEmojis[key] ? `${custData.custEmojis[key]} ` : "") + custData.custLabels[key][language]
-        : `${custData.custEmojis[key] ?? defEmoji} ${defLabel}`;
-      const btn: Record<string, string> = { text, callback_data: cbData };
+      const emoji = custData.custEmojis[key]?.trim() || defEmoji;
+      const label = custData.custLabels[key]?.[language] || defLabel;
+      const btn: Record<string, string> = { text: `${emoji} ${label}`, callback_data: cbData };
       if (custData.custEmojiIds[key]) btn.icon_custom_emoji_id = custData.custEmojiIds[key];
       return btn;
     };
@@ -7361,10 +7362,9 @@ export class TelegramBotService {
   ) {
     const defEmoji = "🔄";
     const defLabel = language === "en" ? "Refresh" : language === "th" ? "รีเฟรช" : "Làm mới";
-    const text = custData.custLabels["refresh"]?.[language]
-      ? (custData.custEmojis["refresh"] ? `${custData.custEmojis["refresh"]} ` : "") + custData.custLabels["refresh"][language]
-      : `${custData.custEmojis["refresh"] ?? defEmoji} ${defLabel}`;
-    const btn: Record<string, string> = { text, callback_data: cbData };
+    const emoji = custData.custEmojis["refresh"]?.trim() || defEmoji;
+    const label = custData.custLabels["refresh"]?.[language] || defLabel;
+    const btn: Record<string, string> = { text: `${emoji} ${label}`, callback_data: cbData };
     if (custData.custEmojiIds["refresh"]) btn.icon_custom_emoji_id = custData.custEmojiIds["refresh"];
     return btn;
   }
@@ -7379,10 +7379,9 @@ export class TelegramBotService {
     const full = this.buttonLabel(fallback, language);
     const defEmoji = full.split(" ")[0];
     const defLabel = full.split(" ").slice(1).join(" ");
-    const text = custData.custLabels[key]?.[language]
-      ? (custData.custEmojis[key] ? `${custData.custEmojis[key]} ` : "") + custData.custLabels[key][language]
-      : `${custData.custEmojis[key] ?? defEmoji} ${defLabel}`;
-    const btn: Record<string, string> = { text, callback_data: cbData };
+    const emoji = custData.custEmojis[key]?.trim() || defEmoji;
+    const label = custData.custLabels[key]?.[language] || defLabel;
+    const btn: Record<string, string> = { text: `${emoji} ${label}`, callback_data: cbData };
     if (custData.custEmojiIds[key]) btn.icon_custom_emoji_id = custData.custEmojiIds[key];
     return btn;
   }
