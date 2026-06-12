@@ -335,6 +335,12 @@ export class TelegramBotService {
 
     await this.ensureTelegramCustomerSeen(shop, message, callbackQuery);
 
+    // "Bling" custom-emoji interface is gated on the SHOP OWNER's Telegram Premium (NOT the viewer):
+    // a premium owner's bot shows cusid icons to everyone, others show text emojis. Computed once and
+    // threaded into every render below. (ensureTelegramCustomerSeen just refreshed the owner's own
+    // Customer.isPremium if the owner is the one interacting, so this is current.)
+    const ownerIsPremium = await this.resolveOwnerIsPremium(shopId);
+
     // Auto-issue source key for every user of an ULTRA bot (1 key per chatId, forever)
     if (shop.seller.tier === SellerTier.ULTRA) {
       const autoChatId = message?.chat?.id ?? callbackQuery?.message?.chat?.id;
@@ -390,7 +396,7 @@ export class TelegramBotService {
         await this.clearPendingWalletTopup(shopId, String(message.from?.id || ""));
         await this.clearPendingPaymentSelection(shopId, String(message.from?.id || ""));
         await this.clearPendingTxHashSubmission(shopId, String(message.from?.id || ""));
-        await this.renderCatalog(shopId, outboundToken, message.chat.id, undefined, 0, actions, messageLanguage, (message.from as any)?.is_premium === true);
+        await this.renderCatalog(shopId, outboundToken, message.chat.id, undefined, 0, actions, messageLanguage, ownerIsPremium);
         return { ok: true, actions };
       }
 
@@ -458,7 +464,7 @@ export class TelegramBotService {
         await this.clearPendingWalletTopup(shopId, String(message.from?.id || ""));
         await this.clearPendingPaymentSelection(shopId, String(message.from?.id || ""));
         await this.clearPendingTxHashSubmission(shopId, String(message.from?.id || ""));
-        await this.renderHome(shopId, outboundToken, message.chat.id, undefined, actions, messageLanguage, (message.from as any)?.is_premium === true);
+        await this.renderHome(shopId, outboundToken, message.chat.id, undefined, actions, messageLanguage, ownerIsPremium);
         return { ok: true, actions };
       }
 
@@ -605,7 +611,7 @@ export class TelegramBotService {
       await this.clearPendingWalletTopup(shopId, String(message.from?.id || ""));
       await this.clearPendingPaymentSelection(shopId, String(message.from?.id || ""));
       await this.clearPendingTxHashSubmission(shopId, String(message.from?.id || ""));
-      await this.renderCatalog(shopId, outboundToken, message.chat.id, undefined, 0, actions, messageLanguage, (message.from as any)?.is_premium === true);
+      await this.renderCatalog(shopId, outboundToken, message.chat.id, undefined, 0, actions, messageLanguage, ownerIsPremium);
       return { ok: true, actions };
     }
 
@@ -614,7 +620,7 @@ export class TelegramBotService {
       await this.clearPendingWalletTopup(shopId, String(message.from?.id || ""));
       await this.clearPendingPaymentSelection(shopId, String(message.from?.id || ""));
       await this.clearPendingTxHashSubmission(shopId, String(message.from?.id || ""));
-      await this.renderHome(shopId, outboundToken, message.chat.id, undefined, actions, messageLanguage, (message.from as any)?.is_premium === true);
+      await this.renderHome(shopId, outboundToken, message.chat.id, undefined, actions, messageLanguage, ownerIsPremium);
       return { ok: true, actions };
     }
 
@@ -717,13 +723,13 @@ export class TelegramBotService {
         await this.clearPendingWalletTopup(shopId, telegramUserId);
         await this.clearPendingPaymentSelection(shopId, telegramUserId);
         await this.clearPendingTxHashSubmission(shopId, telegramUserId);
-        await this.renderHome(shopId, outboundToken, chatId, messageId, actions, callbackLanguage, (callbackQuery.from as any)?.is_premium === true);
+        await this.renderHome(shopId, outboundToken, chatId, messageId, actions, callbackLanguage, ownerIsPremium);
       } else if (data === "home:products") {
         await this.clearPendingQuantitySelection(shopId, telegramUserId);
         await this.clearPendingWalletTopup(shopId, telegramUserId);
         await this.clearPendingPaymentSelection(shopId, telegramUserId);
         await this.clearPendingTxHashSubmission(shopId, telegramUserId);
-        await this.renderCatalog(shopId, outboundToken, chatId, messageId, 0, actions, callbackLanguage, (callbackQuery.from as any)?.is_premium === true);
+        await this.renderCatalog(shopId, outboundToken, chatId, messageId, 0, actions, callbackLanguage, ownerIsPremium);
       } else if (data === "home:history") {
         await this.clearPendingQuantitySelection(shopId, telegramUserId);
         await this.clearPendingWalletTopup(shopId, telegramUserId);
@@ -834,7 +840,7 @@ export class TelegramBotService {
       } else if (data.startsWith("lang:set:")) {
         const nextLanguage = data.endsWith(":en") ? "en" : data.endsWith(":th") ? "th" : "vi";
         await this.setCustomerLanguage(shopId, telegramUserId, nextLanguage);
-        await this.renderHome(shopId, outboundToken, chatId, messageId, actions, nextLanguage, (callbackQuery.from as any)?.is_premium === true);
+        await this.renderHome(shopId, outboundToken, chatId, messageId, actions, nextLanguage, ownerIsPremium);
       } else if (data === "home:guide") {
         await this.editOrSend(
           outboundToken,
@@ -883,7 +889,7 @@ export class TelegramBotService {
         const parts = data.split(":");
         const customGroupId = parts[2] ?? "";
         const page = Number(parts[3] || "0");
-        await this.renderCustomCatalogGroup(shopId, outboundToken, chatId, messageId, customGroupId, page, actions, callbackLanguage, callbackQuery.id, (callbackQuery.from as any)?.is_premium === true);
+        await this.renderCustomCatalogGroup(shopId, outboundToken, chatId, messageId, customGroupId, page, actions, callbackLanguage, callbackQuery.id, ownerIsPremium);
       } else if (data.startsWith("catalog:group:")) {
         const [, , rawGroupKey, rawPage] = data.split(":");
         const page = Number(rawPage || "0");
@@ -896,11 +902,11 @@ export class TelegramBotService {
           page,
           actions,
           callbackLanguage,
-          (callbackQuery.from as any)?.is_premium === true,
+          ownerIsPremium,
         );
       } else if (data.startsWith("catalog:page:")) {
         const page = Number(data.split(":").pop() || "0");
-        await this.renderCatalog(shopId, outboundToken, chatId, messageId, page, actions, callbackLanguage, (callbackQuery.from as any)?.is_premium === true);
+        await this.renderCatalog(shopId, outboundToken, chatId, messageId, page, actions, callbackLanguage, ownerIsPremium);
       } else if (data.startsWith("pay:")) {
         await this.handlePaymentMethodSelection(
           shopId,
@@ -2198,7 +2204,7 @@ export class TelegramBotService {
     const hasQr = qrBuffer !== null || qrFallbackUrl !== null;
     const paymentLines = this.buildOrderPaymentLines(created, language, usdtVndRate, created.isManualNoDelivery, shop.supportTelegram, shop.supportZalo, msgEmojiIdsBuy);
     // When QR is shown, hide the checkout URL button — customer should scan directly
-    const isPremiumBuy = await this.resolveIsPremium(shopId, customer.telegramUserId);
+    const isPremiumBuy = await this.resolveOwnerIsPremium(shopId);
     const baseInlineKeyboard = this.buildPostPaymentInlineKeyboard(created, language, hasQr ? false : isPublicCheckoutUrl, custDataBuy, isPremiumBuy);
     const inlineKeyboard = created.isManualNoDelivery && shop.supportTelegram
       ? [[{ text: language === "en" ? "💬 Contact admin" : language === "th" ? "💬 ติดต่อแอดมิน" : "💬 Liên hệ admin", url: `https://t.me/${shop.supportTelegram.replace(/^@/, "")}` }], ...baseInlineKeyboard]
@@ -2429,7 +2435,6 @@ export class TelegramBotService {
     options: TelegramPaymentOption[],
     actions: unknown[],
     language: BotLanguage,
-    telegramUserId: string,
   ) {
     const totalAmount = selection.salePrice * quantity;
     const totalUsd = selection.salePriceUsd != null ? selection.salePriceUsd * quantity : null;
@@ -2452,7 +2457,7 @@ export class TelegramBotService {
       return "payQR";
     };
 
-    const isPremiumPay = await this.resolveIsPremium(shopId, telegramUserId);
+    const isPremiumPay = await this.resolveOwnerIsPremium(shopId);
     const buildPayBtn = (provider: TelegramPaymentOption) => {
       const key = providerToKey(provider);
       const defaultText = this.paymentOptionButtonLabel(provider, language);
@@ -4078,7 +4083,6 @@ export class TelegramBotService {
           paymentProviders,
           actions,
           language,
-          telegramUserId,
         );
         return true;
       }
@@ -4475,7 +4479,6 @@ export class TelegramBotService {
       select: {
         telegramChatId: true,
         preferredLanguage: true,
-        isPremium: true,
       },
     });
 
@@ -4494,6 +4497,8 @@ export class TelegramBotService {
       custEmojiIds: (shopCustNotif?.buttonEmojiIds && typeof shopCustNotif.buttonEmojiIds === "object") ? shopCustNotif.buttonEmojiIds as Record<string, string> : {},
     };
     const msgEmojiIdsNotif = (shopCustNotif?.messageEmojiIds && typeof shopCustNotif.messageEmojiIds === "object") ? shopCustNotif.messageEmojiIds as Record<string, string> : {};
+    // Bling (cusid) is gated on the shop OWNER's premium — same for every recipient of this broadcast.
+    const ownerIsPremiumNotif = await this.resolveOwnerIsPremium(shopId);
     const productByExternalId = new Map(
       catalog.map((item) => [item.sourceProductId, item]),
     );
@@ -4539,7 +4544,7 @@ export class TelegramBotService {
           [],
           {
             inline_keyboard: [
-              [this.buildNavTextBtn(custDataNotif, "buyNow", "buyNow", `buy:${product.id}`, customerLang, customer.isPremium)],
+              [this.buildNavTextBtn(custDataNotif, "buyNow", "buyNow", `buy:${product.id}`, customerLang, ownerIsPremiumNotif)],
             ],
           },
           useHtml ? "HTML" : undefined,
@@ -4591,7 +4596,7 @@ export class TelegramBotService {
     const stockLabel = selection.available === null ? "∞" : String(Math.max(0, selection.available));
     // Per-viewer: premium + a cusid → cusid icon only; everyone else → the text emoji (never blank).
     const buyOtherCustomEmoji = custEmojiIdsQty["buyOther"];
-    const isPremiumQty = await this.resolveIsPremium(shopId, telegramUserId);
+    const isPremiumQty = await this.resolveOwnerIsPremium(shopId);
     const buyOtherFull = this.buttonLabel("buyOther", language);
     const replyMarkup = {
       inline_keyboard: [
@@ -6945,18 +6950,25 @@ export class TelegramBotService {
   }
 
   /**
-   * Cached Telegram-Premium flag for a customer (set in ensureTelegramCustomerSeen on every update,
-   * so it's as fresh as this interaction). Used by render paths that don't have a live `from`
-   * (payment/quantity flows behind reconstructed customers, and push notifications). Catalog/home
-   * keep their own live-threaded isPremium — do not switch them to this.
+   * Whether the SHOP OWNER (seller) has Telegram Premium — this gates the "bling" custom-emoji bot
+   * interface for the WHOLE bot (premium-owner bots show cusid icons to every customer; others show
+   * text emojis). Read from the owner's own captured Customer.isPremium (set in
+   * ensureTelegramCustomerSeen when the owner interacts with their bot), matched via
+   * BotConfig.ownerTelegramUserId. Requires the seller to have set OWNER_TELEGRAM_USER_ID and to have
+   * opened the bot at least once; otherwise defaults to false (text emojis).
    */
-  private async resolveIsPremium(shopId: string, telegramUserId: string): Promise<boolean> {
-    if (!telegramUserId) return false;
-    const customer = await this.prisma.customer.findUnique({
-      where: { shopId_telegramUserId: { shopId, telegramUserId } },
+  private async resolveOwnerIsPremium(shopId: string): Promise<boolean> {
+    const bc = await this.prisma.botConfig.findUnique({
+      where: { shopId },
+      select: { ownerTelegramUserId: true },
+    });
+    const ownerId = bc?.ownerTelegramUserId?.trim();
+    if (!ownerId) return false;
+    const owner = await this.prisma.customer.findUnique({
+      where: { shopId_telegramUserId: { shopId, telegramUserId: ownerId } },
       select: { isPremium: true },
     });
-    return customer?.isPremium === true;
+    return owner?.isPremium === true;
   }
 
   private async getCustomerLanguageByChatId(
