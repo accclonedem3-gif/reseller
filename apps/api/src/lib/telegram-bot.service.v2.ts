@@ -180,6 +180,30 @@ export class TelegramBotService {
     };
   }
 
+  /**
+   * All accepted text variants for a reply-keyboard button: the built-in defaults PLUS the labels
+   * actually rendered from the shop's effective customization (its own or an inherited ULTRA
+   * template), in every language. Mirrors buildReplyKeyboard's btn() so a relabeled button still
+   * matches when tapped (fixes the inherit-template label-drift no-op).
+   */
+  private replyButtonLabelVariants(
+    key: "products" | "orders" | "wallet" | "support" | "warranty" | "language" | "home" | "affiliate",
+    customization?: Record<string, unknown> | null,
+  ): string[] {
+    const l = this.replyKeyboardLabels;
+    const variants = new Set<string>(Object.values(l[key]));
+    const emojis = (customization?.buttonEmojis && typeof customization.buttonEmojis === "object")
+      ? (customization.buttonEmojis as Record<string, string>) : {};
+    const labels = (customization?.buttonLabels && typeof customization.buttonLabels === "object")
+      ? (customization.buttonLabels as Record<string, Record<string, string>>) : {};
+    for (const lang of ["vi", "en", "th"] as const) {
+      const emoji = emojis[key] ?? l[key][lang].split(" ")[0];
+      const label = labels[key]?.[lang] ?? l[key][lang].split(" ").slice(1).join(" ");
+      variants.add(`${emoji} ${label}`);
+    }
+    return [...variants];
+  }
+
   constructor(
     @Inject(PrismaService)
     private readonly prisma: PrismaService,
@@ -343,14 +367,20 @@ export class TelegramBotService {
     if (message?.from?.id && message?.text && !message.text.startsWith("/")) {
       // Handle reply keyboard button taps (both vi & en)
       const msgText = String(message.text || "").trim();
-      const allProductLabels = Object.values(this.replyKeyboardLabels.products);
-      const allOrderLabels = Object.values(this.replyKeyboardLabels.orders);
-      const allWalletLabels = Object.values(this.replyKeyboardLabels.wallet);
-      const allSupportLabels = Object.values(this.replyKeyboardLabels.support);
-      const allWarrantyLabels = Object.values(this.replyKeyboardLabels.warranty);
-      const allHomeLabels = Object.values(this.replyKeyboardLabels.home);
-      const allLanguageLabels = Object.values(this.replyKeyboardLabels.language);
-      const allAffiliateLabels = Object.values(this.replyKeyboardLabels.affiliate);
+      // Accept BOTH the built-in labels and this shop's effective custom labels (its own or an
+      // inherited ULTRA template) so a relabeled reply-keyboard button still routes on tap.
+      const replyCust = await this.resolveEffectiveCustomization(
+        shopId,
+        (shop.botConfig?.customizationJson as Record<string, unknown> | null) ?? null,
+      );
+      const allProductLabels = this.replyButtonLabelVariants("products", replyCust);
+      const allOrderLabels = this.replyButtonLabelVariants("orders", replyCust);
+      const allWalletLabels = this.replyButtonLabelVariants("wallet", replyCust);
+      const allSupportLabels = this.replyButtonLabelVariants("support", replyCust);
+      const allWarrantyLabels = this.replyButtonLabelVariants("warranty", replyCust);
+      const allHomeLabels = this.replyButtonLabelVariants("home", replyCust);
+      const allLanguageLabels = this.replyButtonLabelVariants("language", replyCust);
+      const allAffiliateLabels = this.replyButtonLabelVariants("affiliate", replyCust);
 
       if (allProductLabels.includes(msgText as any)) {
         await this.clearPendingQuantitySelection(shopId, String(message.from?.id || ""));
