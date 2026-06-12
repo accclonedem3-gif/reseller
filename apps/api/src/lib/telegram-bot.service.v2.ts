@@ -1423,13 +1423,17 @@ export class TelegramBotService {
       }
       const groupRows = this.chunkButtons(
         customGroups.map((g) => {
-          // Categories always show the 📁 folder marker for everyone — never the stored text icon
-          // (often a leftover word/label) and never a premium custom-emoji id (blank for non-premium).
+          // Premium viewer + the category has a custom-emoji id → show that cusid; everyone else
+          // (non-premium, or no cusid) → 📁 folder. Never the stored text `icon` (often a leftover
+          // word/label that duplicated the name). Cloned categories have cusid stripped → always 📁.
+          const groupAny = g as typeof g & { iconCustomEmojiId?: string | null };
+          const useCustom = isPremium && Boolean(groupAny.iconCustomEmojiId);
           const count = groupCounts.get(g.id) || 0;
           const btn: Record<string, string> = {
-            text: `📁 ${g.name} (${count})`,
+            text: `${useCustom ? "" : "📁 "}${g.name} (${count})`,
             callback_data: `catalog:custom:${g.id}:0`,
           };
+          if (useCustom && groupAny.iconCustomEmojiId) btn.icon_custom_emoji_id = groupAny.iconCustomEmojiId;
           return btn;
         }),
         categoryCols,
