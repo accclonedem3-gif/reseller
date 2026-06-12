@@ -1445,6 +1445,21 @@ export class TelegramBotService {
         categoryCols,
       );
 
+      // Paginate the ungrouped products so the keyboard never exceeds Telegram's reply_markup size
+      // limit (category buttons + nav are shown on every page; ungrouped products fill the rest).
+      const ungroupedRows = [
+        ...ungrouped.map((item) => [productBtn(item)]),
+        ...outOfStockShown.filter((item) => !item.groupId).map((item) => [productBtn(item)]),
+      ];
+      const cgRefreshRow = [this.buildRefreshBtn(custData, language, "home:products")];
+      const cgNavRows = this.buildCatalogNavButtons(custData, language);
+      const cgFixedBytes =
+        [...groupRows, cgRefreshRow, ...cgNavRows].reduce(
+          (s, r) => s + r.reduce((x, b) => x + this.inlineBtnBytes(b as Record<string, unknown>), 0),
+          0,
+        ) + 220; // reserve for the page-nav row
+      const cgPages = this.paginateProductRows(ungroupedRows, cgFixedBytes);
+      const cgIdx = Math.min(Math.max(0, page), cgPages.length - 1);
       await this.editOrSend(
         token,
         chatId,
@@ -1453,10 +1468,10 @@ export class TelegramBotService {
         {
           inline_keyboard: [
             ...groupRows,
-            ...ungrouped.map((item) => [productBtn(item)]),
-            ...outOfStockShown.filter((item) => !item.groupId).map((item) => [productBtn(item)]),
-            [this.buildRefreshBtn(custData, language, "home:products")],
-            ...this.buildCatalogNavButtons(custData, language),
+            ...(cgPages[cgIdx] ?? []),
+            ...this.buildCatalogPageNav(cgIdx, cgPages.length, language),
+            cgRefreshRow,
+            ...cgNavRows,
           ],
         },
         actions,
@@ -1505,6 +1520,18 @@ export class TelegramBotService {
       }
     }
 
+    const flatRefreshRow = [this.buildRefreshBtn(custData, language, "home:products")];
+    const flatNavRows = this.buildCatalogNavButtons(custData, language);
+    const flatFixedBytes =
+      [flatRefreshRow, ...flatNavRows].reduce(
+        (s, r) => s + r.reduce((x, b) => x + this.inlineBtnBytes(b as Record<string, unknown>), 0),
+        0,
+      ) + 220; // reserve for the page-nav row
+    const flatPages = this.paginateProductRows(
+      allPageItems.map((item) => [productBtn(item)]),
+      flatFixedBytes,
+    );
+    const flatIdx = Math.min(Math.max(0, page), flatPages.length - 1);
     await this.editOrSend(
       token,
       chatId,
@@ -1512,9 +1539,10 @@ export class TelegramBotService {
       lines.join("\n"),
       {
         inline_keyboard: [
-          ...allPageItems.map((item) => [productBtn(item)]),
-          [this.buildRefreshBtn(custData, language, "home:products")],
-          ...this.buildCatalogNavButtons(custData, language),
+          ...(flatPages[flatIdx] ?? []),
+          ...this.buildCatalogPageNav(flatIdx, flatPages.length, language),
+          flatRefreshRow,
+          ...flatNavRows,
         ],
       },
       actions,
@@ -7282,6 +7310,56 @@ export class TelegramBotService {
         navBtn("support", "supportShort", "home:support"),
       ],
     ];
+  }
+
+  /** Rough serialized byte size of one inline-keyboard button (for markup-size budgeting). */
+  private inlineBtnBytes(btn: Record<string, unknown>): number {
+    return JSON.stringify(btn).length + 4; // + array/comma overhead
+  }
+
+  /**
+   * Split product-button rows into pages so each page's full inline keyboard stays under Telegram's
+   * reply_markup size limit ("reply markup is too long"). Packs GREEDILY — a page fills up, then
+   * overflows to the next — so it auto-adapts to heavier premium buttons (which carry an
+   * icon_custom_emoji_id, ~+43 bytes each) vs lighter non-premium ones. `fixedBytes` = bytes used by
+   * rows shown on EVERY page (category buttons + nav + a reserve for the page-nav row).
+   */
+  private paginateProductRows(
+    rows: Record<string, string>[][],
+    fixedBytes: number,
+  ): Record<string, string>[][][] {
+    const MARKUP_BUDGET = 3500; // conservative; whole keyboard kept well under Telegram's limit
+    const MAX_ROWS = 60; // hard count safety (Telegram's ~100-button ceiling)
+    const budget = Math.max(600, MARKUP_BUDGET - fixedBytes);
+    const pages: Record<string, string>[][][] = [];
+    let cur: Record<string, string>[][] = [];
+    let used = 0;
+    for (const row of rows) {
+      const rb = row.reduce((s, b) => s + this.inlineBtnBytes(b), 0);
+      if (cur.length > 0 && (used + rb > budget || cur.length >= MAX_ROWS)) {
+        pages.push(cur);
+        cur = [];
+        used = 0;
+      }
+      cur.push(row);
+      used += rb;
+    }
+    pages.push(cur);
+    return pages.length > 0 ? pages : [[]];
+  }
+
+  /** Prev / page-indicator / Next row for a paginated catalog (callback catalog:page:N). Empty if 1 page. */
+  private buildCatalogPageNav(page: number, totalPages: number, language: BotLanguage): Record<string, string>[][] {
+    if (totalPages <= 1) return [];
+    const row: Record<string, string>[] = [];
+    if (page > 0) {
+      row.push({ text: language === "en" ? "◀️ Prev" : language === "th" ? "◀️ ก่อนหน้า" : "◀️ Trước", callback_data: `catalog:page:${page - 1}` });
+    }
+    row.push({ text: `${page + 1}/${totalPages}`, callback_data: `catalog:page:${page}` });
+    if (page < totalPages - 1) {
+      row.push({ text: language === "en" ? "Next ▶️" : language === "th" ? "ถัดไป ▶️" : "Sau ▶️", callback_data: `catalog:page:${page + 1}` });
+    }
+    return [row];
   }
 
   private buildRefreshBtn(
