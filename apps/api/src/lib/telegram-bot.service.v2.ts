@@ -1423,14 +1423,14 @@ export class TelegramBotService {
       }
       const groupRows = this.chunkButtons(
         customGroups.map((g) => {
-          // Same model as products: a TEXT icon is always on standby (resolveProductEmoji over the
-          // category name — Veo3→🎬, ChatGPT→✨, unknown→🛍️), so categories never go blank. A premium
+          // Categories use the 📁 folder as their standby text icon (matches the category header
+          // "📁 <name>"), so a non-premium viewer always sees the folder — never blank. A premium
           // viewer with a custom-emoji id on the category gets the cusid bling instead (text stripped
           // to avoid a double icon). Never renders the stored text `icon` (leftover word/label).
           const groupAny = g as typeof g & { iconCustomEmojiId?: string | null };
           const useCustom = isPremium && Boolean(groupAny.iconCustomEmojiId);
           const count = groupCounts.get(g.id) || 0;
-          const textIcon = this.resolveProductEmoji(g.name);
+          const textIcon = "📁";
           const btn: Record<string, string> = {
             text: `${useCustom ? "" : `${textIcon} `}${g.name} (${count})`,
             callback_data: `catalog:custom:${g.id}:0`,
