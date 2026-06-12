@@ -82,6 +82,15 @@ export class InternalSourceController {
     return this.internalSourceService.setInheritTemplate(user, body.enabled === true);
   }
 
+  // "Đồng bộ giao diện bot": one-press clone of the ULTRA source's categories + bot template into
+  // the PRO shop's own data (premium custom-emoji ids stripped → text icons).
+  @Post("source/connections/current/clone-interface")
+  @UseGuards(JwtAuthGuard, SellerCapabilitiesGuard)
+  @RequireSellerCapabilities("source_internal_use")
+  cloneBotInterface(@CurrentUser() user: AuthenticatedUser) {
+    return this.internalSourceService.cloneBotInterfaceFromUpstream(user);
+  }
+
   @Get("source/connections/current/inherited-structure")
   @UseGuards(JwtAuthGuard, SellerCapabilitiesGuard)
   @RequireSellerCapabilities("source_internal_use")

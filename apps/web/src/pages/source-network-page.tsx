@@ -495,25 +495,25 @@ export function SourceNetworkPage() {
     onError: (e) => showToast({ tone: "error", message: getApiErrorMessage(e, t.toastError) }),
   });
 
-  const inheritTemplateMutation = useMutation({
-    mutationFn: async (enabled: boolean) => api.post("/source/connections/current/inherit-template", { enabled }),
-    onMutate: async (enabled: boolean) => {
-      await queryClient.cancelQueries({ queryKey: ["source-network", "current-connection"] });
-      const prev = queryClient.getQueryData(["source-network", "current-connection"]);
-      queryClient.setQueryData(["source-network", "current-connection"], (old: any) =>
-        old ? { ...old, inheritSourceTemplate: enabled } : old,
-      );
-      return { prev };
+  const cloneInterfaceMutation = useMutation({
+    mutationFn: async () =>
+      (
+        await api.post<{ ok: boolean; groupsCloned: number; productsMapped: number }>(
+          "/source/connections/current/clone-interface",
+        )
+      ).data,
+    onSuccess: async (res) => {
+      showToast({
+        tone: "success",
+        message: `Đã đồng bộ giao diện bot từ nguồn (+${res?.groupsCloned ?? 0} danh mục).`,
+      });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["source-network", "current-connection"] }),
+        queryClient.invalidateQueries({ queryKey: ["source-products", "catalog"] }),
+        queryClient.invalidateQueries({ queryKey: ["source-network", "source-products"] }),
+      ]);
     },
-    onError: (e, _enabled, ctx: any) => {
-      if (ctx?.prev !== undefined) {
-        queryClient.setQueryData(["source-network", "current-connection"], ctx.prev);
-      }
-      showToast({ tone: "error", message: getApiErrorMessage(e, t.toastError) });
-    },
-    onSettled: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["source-network", "current-connection"] });
-    },
+    onError: (e) => showToast({ tone: "error", message: getApiErrorMessage(e, t.toastError) }),
   });
 
   // Inherited-template override editor (rename/reorder/hide categories + reorder products).
@@ -1175,31 +1175,34 @@ export function SourceNetworkPage() {
                 </button>
               </div>
 
-              {/* Inherit source template toggle */}
+              {/* Đồng bộ giao diện bot — one-press clone of the source's categories + bot template */}
               <div
                 className="mt-3 flex items-center justify-between gap-3 rounded-xl px-4 py-3"
                 style={{ background: "var(--inp)", border: "1px solid var(--bd)" }}
               >
                 <div>
                   <p className="text-[12px] font-black" style={{ color: "var(--tx)" }}>
-                    Dùng bố cục · danh mục · template của nguồn
+                    Đồng bộ giao diện bot
                   </p>
                   <p className="text-[11px]" style={{ color: "var(--tx-f)" }}>
-                    Bot hiển thị danh mục, thứ tự sản phẩm và giao diện giống shop ULTRA nguồn. Giá vẫn theo giá của bạn. Tắt = dùng bố cục riêng.
+                    Copy danh mục + giao diện (welcome, nhãn nút) từ nguồn ULTRA về shop của bạn. Giá vẫn theo giá của bạn. Icon dùng dạng chữ (không cần Telegram Premium).
                   </p>
                 </div>
                 <button
                   type="button"
-                  disabled={inheritTemplateMutation.isPending}
-                  onClick={() => inheritTemplateMutation.mutate(!currentConnection.inheritSourceTemplate)}
-                  className="relative h-6 w-11 shrink-0 rounded-full transition disabled:opacity-40"
-                  style={{ background: currentConnection.inheritSourceTemplate ? "rgb(249,115,22)" : "var(--bd)" }}
-                  aria-pressed={!!currentConnection.inheritSourceTemplate}
+                  disabled={cloneInterfaceMutation.isPending}
+                  onClick={() => {
+                    if (
+                      confirm(
+                        "Đồng bộ giao diện bot? Sẽ copy danh mục + giao diện từ nguồn ULTRA về shop (thêm danh mục mới, merge giao diện).",
+                      )
+                    )
+                      cloneInterfaceMutation.mutate();
+                  }}
+                  className="shrink-0 rounded-xl px-4 py-2 text-[12px] font-black transition hover:opacity-80 disabled:opacity-40"
+                  style={{ background: "rgb(249,115,22)", color: "#fff" }}
                 >
-                  <span
-                    className="absolute top-0.5 h-5 w-5 rounded-full bg-white transition-all"
-                    style={{ left: currentConnection.inheritSourceTemplate ? "22px" : "2px" }}
-                  />
+                  {cloneInterfaceMutation.isPending ? "Đang đồng bộ..." : "Đồng bộ giao diện"}
                 </button>
               </div>
 

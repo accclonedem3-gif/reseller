@@ -273,6 +273,139 @@ export class InternalSourceService {
     return { ok: true };
   }
 
+  /**
+   * Drop every premium custom-emoji-id field from a bot customizationJson so a NON-premium bot
+   * shows the plain text labels/emojis instead of invisible premium icons. Keeps the text
+   * counterparts (buttonEmojis, labelEmojis, buttonLabels, welcomeMessage, ...).
+   */
+  private stripPremiumEmojiIds(json: unknown): Record<string, unknown> {
+    if (!json || typeof json !== "object" || Array.isArray(json)) return {};
+    const c = JSON.parse(JSON.stringify(json)) as Record<string, unknown>;
+    delete c.buttonEmojiIds;
+    delete c.labelEmojiIds;
+    delete c.messageEmojiIds;
+    delete c.outOfStockEmojiId;
+    const fam = c.productDefaultsByFamily;
+    if (fam && typeof fam === "object" && !Array.isArray(fam)) {
+      for (const v of Object.values(fam as Record<string, unknown>)) {
+        if (v && typeof v === "object") (v as Record<string, unknown>).customEmojiId = null;
+      }
+    }
+    return c;
+  }
+
+  /**
+   * "Đồng bộ giao diện bot": one-press CLONE of the upstream ULTRA source's bot interface into the
+   * PRO shop's OWN data. ADDS the ULTRA's catalog categories (skips names the PRO already has),
+   * maps the PRO's synced products into them, and MERGES the ULTRA's bot customization over the
+   * PRO's — STRIPPING every premium custom-emoji id (the ULTRA is premium; those don't render for
+   * the PRO's customers, so categories/buttons fall back to text icons). Turns off live-inherit so
+   * the PRO then renders its own materialised data.
+   */
+  async cloneBotInterfaceFromUpstream(user: AuthenticatedUser) {
+    const shop = await this.shopsService.getSellerShop(user.id);
+    const conn = await this.prisma.downstreamSourceConnection.findFirst({
+      where: { downstreamShopId: shop.id, status: DownstreamSourceConnectionStatus.ACTIVE },
+      select: { id: true, upstreamShopId: true },
+    });
+    if (!conn) {
+      throw new NotFoundException("No active source connection.");
+    }
+
+    const [upstreamGroups, upstreamOverrides, proGroups, proProducts, upstreamBc, proBc] = await Promise.all([
+      this.prisma.shopCatalogGroup.findMany({
+        where: { shopId: conn.upstreamShopId },
+        orderBy: [{ position: "asc" }, { createdAt: "asc" }],
+      }),
+      this.prisma.sellerProductOverride.findMany({
+        where: { shopId: conn.upstreamShopId },
+        select: { sourceProductId: true, groupId: true },
+      }),
+      this.prisma.shopCatalogGroup.findMany({ where: { shopId: shop.id }, select: { id: true, name: true } }),
+      this.prisma.sourceProduct.findMany({ where: { shopId: shop.id }, select: { id: true, externalProductId: true } }),
+      this.prisma.botConfig.findUnique({ where: { shopId: conn.upstreamShopId }, select: { customizationJson: true } }),
+      this.prisma.botConfig.findUnique({ where: { shopId: shop.id }, select: { customizationJson: true } }),
+    ]);
+
+    // ULTRA product → group layout. Keyed by the ULTRA SourceProduct id, which equals the PRO
+    // product's externalProductId (set by syncCatalog).
+    const layout = new Map<string, string | null>();
+    for (const o of upstreamOverrides) layout.set(o.sourceProductId, o.groupId);
+
+    // MERGE: ULTRA customization (cusids stripped) wins per-key; keep PRO-only keys.
+    const strippedUpstreamCust = this.stripPremiumEmojiIds(upstreamBc?.customizationJson);
+    const existingProCust =
+      proBc?.customizationJson && typeof proBc.customizationJson === "object" && !Array.isArray(proBc.customizationJson)
+        ? (proBc.customizationJson as Record<string, unknown>)
+        : {};
+    const mergedCust = { ...existingProCust, ...strippedUpstreamCust };
+
+    let groupsCloned = 0;
+    let productsMapped = 0;
+    await this.prisma.$transaction(async (tx) => {
+      // ADD clone: create ULTRA groups the PRO doesn't already have (match by name), build
+      // oldUpstreamGroupId -> proGroupId so products can be mapped to existing OR new groups.
+      const idMap = new Map<string, string>();
+      const proByName = new Map<string, string>();
+      for (const g of proGroups) proByName.set(g.name.trim().toLowerCase(), g.id);
+      let nextPos = proGroups.length;
+      for (const g of upstreamGroups) {
+        const key = g.name.trim().toLowerCase();
+        const existingId = proByName.get(key);
+        if (existingId) {
+          idMap.set(g.id, existingId);
+          continue;
+        }
+        const created = await tx.shopCatalogGroup.create({
+          data: {
+            shopId: shop.id,
+            name: g.name,
+            position: nextPos++,
+            icon: (g.icon && g.icon.trim()) || "📁",
+            iconCustomEmojiId: null,
+          },
+        });
+        idMap.set(g.id, created.id);
+        proByName.set(key, created.id);
+        groupsCloned++;
+      }
+
+      // Map PRO products into the cloned/matched groups (grouped updateMany).
+      const byGroup = new Map<string, string[]>();
+      for (const p of proProducts) {
+        const upstreamGroupId = layout.get(p.externalProductId) ?? null;
+        const proGroupId = upstreamGroupId ? idMap.get(upstreamGroupId) : undefined;
+        if (!proGroupId) continue;
+        const arr = byGroup.get(proGroupId) ?? [];
+        arr.push(p.id);
+        byGroup.set(proGroupId, arr);
+      }
+      for (const [groupId, ids] of byGroup) {
+        const res = await tx.sellerProductOverride.updateMany({
+          where: { shopId: shop.id, sellerId: shop.sellerId, sourceProductId: { in: ids } },
+          data: { groupId },
+        });
+        productsMapped += res.count;
+      }
+
+      // MERGE the (stripped) ULTRA customization onto the PRO's own bot config.
+      if (upstreamBc?.customizationJson) {
+        await tx.botConfig.updateMany({
+          where: { shopId: shop.id },
+          data: { customizationJson: mergedCust as Prisma.InputJsonValue },
+        });
+      }
+
+      // Materialised now → stop live-inherit so the PRO renders its OWN data.
+      await tx.downstreamSourceConnection.update({
+        where: { id: conn.id },
+        data: { inheritSourceTemplate: false, templateOverridesJson: Prisma.DbNull },
+      });
+    });
+
+    return { ok: true, groupsCloned, productsMapped };
+  }
+
   /** Structure for the override editor: ULTRA categories + the PRO's (effective) products + saved overrides. */
   async getInheritedStructure(user: AuthenticatedUser) {
     const shop = await this.shopsService.getSellerShop(user.id);
