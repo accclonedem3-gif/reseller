@@ -7363,33 +7363,24 @@ export class TelegramBotService {
   }
 
   /**
-   * Split product-button rows into pages so each page's full inline keyboard stays under Telegram's
-   * reply_markup size limit ("reply markup is too long"). Packs GREEDILY — a page fills up, then
-   * overflows to the next — so it auto-adapts to heavier premium buttons (which carry an
-   * icon_custom_emoji_id, ~+43 bytes each) vs lighter non-premium ones. `fixedBytes` = bytes used by
-   * rows shown on EVERY page (category buttons + nav + a reserve for the page-nav row).
+   * Pagination is OFF: all products are shown on a SINGLE page (no Prev/Next). We only split as a
+   * last-resort hard guard when the product-row count would push the keyboard past Telegram's
+   * ~100-button inline-keyboard ceiling (which would make Telegram reject the whole markup).
+   * Byte-heaviness (premium cusid buttons, ~+43 bytes each) is handled at SEND time: the client
+   * strips the custom-emoji ids and retries if Telegram says the reply markup is too long — so a
+   * heavy catalog degrades to text icons rather than paginating. `_fixedBytes` kept for the caller
+   * signature but no longer used.
    */
   private paginateProductRows(
     rows: Record<string, string>[][],
-    fixedBytes: number,
+    _fixedBytes: number,
   ): Record<string, string>[][][] {
-    const MARKUP_BUDGET = 3500; // conservative; whole keyboard kept well under Telegram's limit
-    const MAX_ROWS = 60; // hard count safety (Telegram's ~100-button ceiling)
-    const budget = Math.max(600, MARKUP_BUDGET - fixedBytes);
+    const MAX_ROWS = 70; // hard count safety: keep total buttons (categories + products + nav) < ~100
+    if (rows.length <= MAX_ROWS) return [rows];
     const pages: Record<string, string>[][][] = [];
-    let cur: Record<string, string>[][] = [];
-    let used = 0;
-    for (const row of rows) {
-      const rb = row.reduce((s, b) => s + this.inlineBtnBytes(b), 0);
-      if (cur.length > 0 && (used + rb > budget || cur.length >= MAX_ROWS)) {
-        pages.push(cur);
-        cur = [];
-        used = 0;
-      }
-      cur.push(row);
-      used += rb;
+    for (let i = 0; i < rows.length; i += MAX_ROWS) {
+      pages.push(rows.slice(i, i + MAX_ROWS));
     }
-    pages.push(cur);
     return pages.length > 0 ? pages : [[]];
   }
 
