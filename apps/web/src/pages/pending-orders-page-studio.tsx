@@ -413,7 +413,7 @@ export function PendingOrdersPageStudio() {
                             title={isCompleting ? t.processing : t.confirmDone}
                             disabled={isBusy}
                             onClick={() => completeMutation.mutate(order.id)}
-                            className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[12px] font-bold uppercase transition-all hover:opacity-90 disabled:pointer-events-none disabled:opacity-30"
+                            className="flex items-center gap-1.5 whitespace-nowrap shrink-0 rounded-lg px-3 py-1.5 text-[12px] font-bold uppercase transition-all hover:opacity-90 disabled:pointer-events-none disabled:opacity-30"
                             style={{ backgroundColor: "rgba(34,197,94,0.15)", color: "rgb(22,163,74)" }}
                           >
                             <CheckCircle2 className="h-3.5 w-3.5" />
@@ -427,7 +427,7 @@ export function PendingOrdersPageStudio() {
                               if (!window.confirm(t.confirmCancelMsg(order.orderCode))) return;
                               cancelMutation.mutate(order.id);
                             }}
-                            className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[12px] font-bold uppercase transition-all hover:opacity-90 disabled:pointer-events-none disabled:opacity-30"
+                            className="flex items-center gap-1.5 whitespace-nowrap shrink-0 rounded-lg px-3 py-1.5 text-[12px] font-bold uppercase transition-all hover:opacity-90 disabled:pointer-events-none disabled:opacity-30"
                             style={{ backgroundColor: "rgba(244,63,94,0.15)", color: "rgb(225,29,72)" }}
                           >
                             <XCircle className="h-3.5 w-3.5" />
