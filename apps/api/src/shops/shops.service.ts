@@ -1736,6 +1736,87 @@ export class ShopsService {
     }
   }
 
+  /** Map a single SourceProduct (with its overrides) to the catalog-item shape used by bot + UI. */
+  private mapCatalogProduct(product: Prisma.SourceProductGetPayload<{ include: { overrides: true } }>) {
+    const override = product.overrides[0];
+    const metadata =
+      product.metadataJson && typeof product.metadataJson === "object" && !Array.isArray(product.metadataJson)
+        ? (product.metadataJson as Record<string, unknown>)
+        : {};
+    const isManual =
+      String(product.providerName || "").toLowerCase() === "manual" || metadata.manual === true;
+
+    return {
+      id: product.id,
+      sourceProductId: product.externalProductId,
+      providerName: product.providerName,
+      sourceName: product.sourceName,
+      displayName: override?.displayName || product.sourceRawName || product.sourceName,
+      description: product.sourceDescription,
+      sourcePrice: decimalToNumber(product.sourcePrice),
+      salePrice: decimalToNumber(override?.salePrice || product.sourcePrice),
+      available: product.available,
+      soldCount: product.soldCount,
+      totalCount: product.totalCount,
+      enabled: override?.enabled ?? true,
+      hidden: override?.hidden ?? false,
+      hiddenVi: override?.hiddenVi ?? false,
+      hiddenEn: override?.hiddenEn ?? false,
+      salePriceUsd: override?.salePriceUsd ? decimalToNumber(override.salePriceUsd) : null,
+      promoText: override?.promoText || null,
+      isManual,
+      isShared: metadata.shared === true,
+      sharedContent: typeof metadata.sharedContent === "string" ? metadata.sharedContent : null,
+      usageInstructions: typeof metadata.usageInstructions === "string" ? metadata.usageInstructions : null,
+      deliveryText:
+        typeof metadata.deliveryText === "string" ? metadata.deliveryText : null,
+      deliveryFormatHint:
+        typeof metadata.deliveryFormatHint === "string" ? metadata.deliveryFormatHint : null,
+      internalSourceEnabled: product.internalSourceEnabled,
+      internalSourcePrice: product.internalSourcePrice
+        ? decimalToNumber(product.internalSourcePrice)
+        : null,
+      productFamily: product.productFamily?.toLowerCase() || null,
+      productFamilyOther: product.productFamilyOther || null,
+      productPackage: (product as any).productPackage || null,
+      accountType: product.accountType?.toLowerCase() || null,
+      accountTypeOther: product.accountTypeOther || null,
+      durationType: product.durationType?.toLowerCase() || null,
+      durationTypeOther: product.durationTypeOther || null,
+      sourceDeliveryMode: product.sourceDeliveryMode?.toLowerCase() || null,
+      warrantyPolicy: product.warrantyPolicy?.toLowerCase() || null,
+      // Batch lifetime (see SourceProduct.accLifetimeDays comment). Surface to the seller
+      // UI so the product edit form can prefill the value and show when the clock started.
+      accLifetimeDays: (product as any).accLifetimeDays ?? null,
+      accBatchStartedAt: (product as any).accBatchStartedAt ?? null,
+      productIcon: product.productIcon || null,
+      iconCustomEmojiId: product.iconCustomEmojiId || null,
+      iconOutOfStockEmojiId: product.iconOutOfStockEmojiId || null,
+      imageUrl: product.imageUrl || null,
+      syncedAt: product.syncedAt,
+      groupId: override?.groupId ?? null,
+      position: override?.position ?? 0,
+      createdAt: product.createdAt,
+      promoType: (product as any).promoType || null,
+      promoBuyN: (product as any).promoBuyN ?? null,
+      promoGetM: (product as any).promoGetM ?? null,
+      promoBulkMinQty: (product as any).promoBulkMinQty ?? null,
+      promoBulkDiscountPct: (product as any).promoBulkDiscountPct ? decimalToNumber((product as any).promoBulkDiscountPct) : null,
+      promoStartAt: (product as any).promoStartAt ?? null,
+      promoEndAt: (product as any).promoEndAt ?? null,
+      promoBannerUrl: (product as any).promoBannerUrl ?? null,
+    };
+  }
+
+  /** One mapped catalog item by id — avoids loading the WHOLE catalog just to show one product. */
+  async getCatalogItemForShop(shopId: string, sourceProductId: string) {
+    const product = await this.prisma.sourceProduct.findFirst({
+      where: { id: sourceProductId, shopId },
+      include: { overrides: true },
+    });
+    return product ? this.mapCatalogProduct(product) : null;
+  }
+
   async getCatalogViewForShop(shopId: string, sortByAvailable = true, applyInheritedTemplate = false) {
     const products = await this.prisma.sourceProduct.findMany({
       where: { shopId },
@@ -1747,76 +1828,7 @@ export class ShopsService {
         : [{ createdAt: "asc" }],
     });
 
-    const mapped = products.map((product) => {
-      const override = product.overrides[0];
-      const metadata =
-        product.metadataJson && typeof product.metadataJson === "object" && !Array.isArray(product.metadataJson)
-          ? (product.metadataJson as Record<string, unknown>)
-          : {};
-      const isManual =
-        String(product.providerName || "").toLowerCase() === "manual" || metadata.manual === true;
-
-      return {
-        id: product.id,
-        sourceProductId: product.externalProductId,
-        providerName: product.providerName,
-        sourceName: product.sourceName,
-        displayName: override?.displayName || product.sourceRawName || product.sourceName,
-        description: product.sourceDescription,
-        sourcePrice: decimalToNumber(product.sourcePrice),
-        salePrice: decimalToNumber(override?.salePrice || product.sourcePrice),
-        available: product.available,
-        soldCount: product.soldCount,
-        totalCount: product.totalCount,
-        enabled: override?.enabled ?? true,
-        hidden: override?.hidden ?? false,
-        hiddenVi: override?.hiddenVi ?? false,
-        hiddenEn: override?.hiddenEn ?? false,
-        salePriceUsd: override?.salePriceUsd ? decimalToNumber(override.salePriceUsd) : null,
-        promoText: override?.promoText || null,
-        isManual,
-        isShared: metadata.shared === true,
-        sharedContent: typeof metadata.sharedContent === "string" ? metadata.sharedContent : null,
-        usageInstructions: typeof metadata.usageInstructions === "string" ? metadata.usageInstructions : null,
-        deliveryText:
-          typeof metadata.deliveryText === "string" ? metadata.deliveryText : null,
-        deliveryFormatHint:
-          typeof metadata.deliveryFormatHint === "string" ? metadata.deliveryFormatHint : null,
-        internalSourceEnabled: product.internalSourceEnabled,
-        internalSourcePrice: product.internalSourcePrice
-          ? decimalToNumber(product.internalSourcePrice)
-          : null,
-        productFamily: product.productFamily?.toLowerCase() || null,
-        productFamilyOther: product.productFamilyOther || null,
-        productPackage: (product as any).productPackage || null,
-        accountType: product.accountType?.toLowerCase() || null,
-        accountTypeOther: product.accountTypeOther || null,
-        durationType: product.durationType?.toLowerCase() || null,
-        durationTypeOther: product.durationTypeOther || null,
-        sourceDeliveryMode: product.sourceDeliveryMode?.toLowerCase() || null,
-        warrantyPolicy: product.warrantyPolicy?.toLowerCase() || null,
-        // Batch lifetime (see SourceProduct.accLifetimeDays comment). Surface to the seller
-        // UI so the product edit form can prefill the value and show when the clock started.
-        accLifetimeDays: (product as any).accLifetimeDays ?? null,
-        accBatchStartedAt: (product as any).accBatchStartedAt ?? null,
-        productIcon: product.productIcon || null,
-        iconCustomEmojiId: product.iconCustomEmojiId || null,
-        iconOutOfStockEmojiId: product.iconOutOfStockEmojiId || null,
-        imageUrl: product.imageUrl || null,
-        syncedAt: product.syncedAt,
-        groupId: override?.groupId ?? null,
-        position: override?.position ?? 0,
-        createdAt: product.createdAt,
-        promoType: (product as any).promoType || null,
-        promoBuyN: (product as any).promoBuyN ?? null,
-        promoGetM: (product as any).promoGetM ?? null,
-        promoBulkMinQty: (product as any).promoBulkMinQty ?? null,
-        promoBulkDiscountPct: (product as any).promoBulkDiscountPct ? decimalToNumber((product as any).promoBulkDiscountPct) : null,
-        promoStartAt: (product as any).promoStartAt ?? null,
-        promoEndAt: (product as any).promoEndAt ?? null,
-        promoBannerUrl: (product as any).promoBannerUrl ?? null,
-      };
-    });
+    const mapped = products.map((product) => this.mapCatalogProduct(product));
     if (applyInheritedTemplate) {
       await this.applyInheritedLayout(shopId, mapped);
     }

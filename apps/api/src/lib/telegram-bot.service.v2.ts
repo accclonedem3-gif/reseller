@@ -4841,8 +4841,7 @@ export class TelegramBotService {
     sourceProductId: string,
     language: BotLanguage = "vi",
   ) {
-    const products = await this.shopsService.getCatalogViewForShop(shopId, false);
-    const product = products.find((item) => item.id === sourceProductId);
+    const product = await this.shopsService.getCatalogItemForShop(shopId, sourceProductId);
 
     if (!product || product.hidden || !product.enabled) {
       throw new Error(
