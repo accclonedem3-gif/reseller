@@ -116,20 +116,20 @@ function WelcomeOverlay({ tier, onDismiss }: { tier: string; onDismiss: () => vo
             {isPro ? <Zap className="h-9 w-9 text-[#07131e]" /> : <Crown className="h-9 w-9 text-white" />}
           </div>
         </div>
-        <h2 className="text-[1.6rem] font-black leading-tight text-white">Chào mừng đến với <span className={isPro ? "text-emerald-300" : "text-violet-300"}>{tierLabel}!</span></h2>
-        <p className="mt-2 text-sm leading-6 text-slate-400">{`Gói ${tierLabel} đã được kích hoạt. Bắt đầu vận hành thôi!`}</p>
+        <h2 className="text-[1.6rem] font-black leading-tight" style={{ color: "var(--tx)" }}>Chào mừng đến với <span style={{ color: isPro ? (isDark ? "#6ee7b7" : "#059669") : (isDark ? "#c4b5fd" : "#7c3aed") }}>{tierLabel}!</span></h2>
+        <p className="mt-2 text-sm leading-6" style={{ color: "var(--tx-m)" }}>{`Gói ${tierLabel} đã được kích hoạt. Bắt đầu vận hành thôi!`}</p>
         <div className="mt-5 space-y-2.5 text-left">
           {features.map((f) => (
             <div key={f} className="flex items-center gap-2.5">
               <div className={cn("flex h-5 w-5 shrink-0 items-center justify-center rounded-full", isPro ? "bg-emerald-500/20 text-emerald-300" : "bg-violet-500/20 text-violet-300")}><Check className="h-3 w-3 stroke-[2.5]" /></div>
-              <span className="text-sm text-slate-300">{f}</span>
+              <span className="text-sm" style={{ color: "var(--tx)" }}>{f}</span>
             </div>
           ))}
         </div>
         <div className="mt-6 h-1 overflow-hidden rounded-full bg-white/[0.08]">
           <div className={cn("h-full rounded-full", isPro ? "bg-emerald-400" : "bg-violet-400")} style={{ width: barShrunk ? "0%" : "100%", transition: barShrunk ? "width 5000ms linear" : "none" }} />
         </div>
-        <p className="mt-2 text-xs text-slate-600">Tự động đóng sau vài giây</p>
+        <p className="mt-2 text-xs" style={{ color: "var(--tx-f)" }}>Tự động đóng sau vài giây</p>
       </div>
     </div>,
     document.body,
