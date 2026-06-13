@@ -45,6 +45,10 @@ class OrdersQueryDto {
 
   @IsOptional()
   @IsString()
+  search?: string;
+
+  @IsOptional()
+  @IsString()
   downstreamSellerId?: string;
 
   @IsOptional()

@@ -280,6 +280,7 @@ type DownstreamItem = {
 type SourceOrderItem = {
   id: string;
   orderCode: string;
+  downstreamOrderCode: string | null;
   downstreamSellerName: string;
   productName: string;
   quantity: number;
@@ -450,6 +451,7 @@ export function ProAnalyticsPage() {
   const queryClient = useQueryClient();
   const [period, setPeriod] = useState<Period>("month");
   const [orderStatus, setOrderStatus] = useState("");
+  const [orderSearch, setOrderSearch] = useState("");
   const [orderPage, setOrderPage] = useState(1);
   const [warrantyPage, setWarrantyPage] = useState(1);
   const [warrantyProductId, setWarrantyProductId] = useState("");
@@ -483,10 +485,10 @@ export function ProAnalyticsPage() {
   });
 
   const ordersQuery = useQuery({
-    queryKey: ["pro-analytics-orders", orderStatus, orderPage],
+    queryKey: ["pro-analytics-orders", orderStatus, orderSearch, orderPage],
     queryFn: () =>
       api.get<OrdersResponse>("/pro/analytics/orders", {
-        params: { status: orderStatus || undefined, page: orderPage, limit: 20 },
+        params: { status: orderStatus || undefined, search: orderSearch.trim() || undefined, page: orderPage, limit: 20 },
       }).then((r) => r.data),
   });
 
@@ -861,16 +863,25 @@ export function ProAnalyticsPage() {
       <TableWrap
         title={t.ordersTitle}
         right={
-          <select
-            value={orderStatus}
-            onChange={(e) => { setOrderStatus(e.target.value); setOrderPage(1); }}
-            className="rounded-[10px] px-3 py-1.5 text-xs font-medium focus:outline-none"
-            style={{ background: "var(--inp)", border: "1px solid var(--bd)", color: "var(--tx-m)" }}
-          >
-            {ORDER_STATUSES_LIST.map((s) => (
-              <option key={s} value={s}>{ORDER_STATUS_LABELS[s]}</option>
-            ))}
-          </select>
+          <div className="flex items-center gap-2">
+            <input
+              value={orderSearch}
+              onChange={(e) => { setOrderSearch(e.target.value); setOrderPage(1); }}
+              placeholder="Tìm mã đơn (ISO/ORD) · sản phẩm · PRO"
+              className="w-60 rounded-[10px] px-3 py-1.5 text-xs focus:outline-none"
+              style={{ background: "var(--inp)", border: "1px solid var(--bd)", color: "var(--tx)" }}
+            />
+            <select
+              value={orderStatus}
+              onChange={(e) => { setOrderStatus(e.target.value); setOrderPage(1); }}
+              className="rounded-[10px] px-3 py-1.5 text-xs font-medium focus:outline-none"
+              style={{ background: "var(--inp)", border: "1px solid var(--bd)", color: "var(--tx-m)" }}
+            >
+              {ORDER_STATUSES_LIST.map((s) => (
+                <option key={s} value={s}>{ORDER_STATUS_LABELS[s]}</option>
+              ))}
+            </select>
+          </div>
         }
       >
         {ordersQuery.isLoading ? (
@@ -890,7 +901,12 @@ export function ProAnalyticsPage() {
               <tbody>
                 {ordersQuery.data.items.map((o) => (
                   <tr key={o.id} style={{ borderBottom: "1px solid var(--bd)" }}>
-                    <td className="px-4 py-3 font-mono text-xs" style={{ color: "var(--tx-m)" }}>{o.orderCode}</td>
+                    <td className="px-4 py-3 font-mono text-xs" style={{ color: "var(--tx-m)" }}>
+                      <div>{o.orderCode}</div>
+                      {o.downstreamOrderCode && (
+                        <div className="text-[10px] mt-0.5" style={{ color: "var(--tx-f)" }}>PRO: {o.downstreamOrderCode}</div>
+                      )}
+                    </td>
                     <td className="px-4 py-3" style={{ color: "var(--tx-m)" }}>{o.downstreamSellerName}</td>
                     <td className="px-4 py-3" style={{ color: "var(--tx-m)" }}>{o.productName}</td>
                     <td className="px-4 py-3 text-right font-semibold text-emerald-400">{formatCurrency(o.totalAmount)}</td>

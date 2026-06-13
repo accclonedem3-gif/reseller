@@ -188,6 +188,7 @@ export class ProAnalyticsService {
     user: AuthenticatedUser,
     filters: {
       status?: InternalSourceOrderStatus;
+      search?: string;
       downstreamSellerId?: string;
       dateFrom?: string;
       dateTo?: string;
@@ -202,6 +203,17 @@ export class ProAnalyticsService {
 
     const where: Record<string, unknown> = { upstreamShopId: shop.id };
     if (filters.status) where.status = filters.status;
+    const search = (filters.search || "").trim();
+    if (search) {
+      // Match the source order code (ISO-…), the downstream PRO order code (ORD-…), the product
+      // name, or the downstream seller name — so ULTRA can look up an order by whatever it has.
+      where.OR = [
+        { sourceOrderCode: { contains: search, mode: "insensitive" } },
+        { downstreamOrderCode: { contains: search, mode: "insensitive" } },
+        { sourceProduct: { is: { sourceName: { contains: search, mode: "insensitive" } } } },
+        { downstreamSeller: { is: { displayName: { contains: search, mode: "insensitive" } } } },
+      ];
+    }
     if (filters.downstreamSellerId) where.downstreamSellerId = filters.downstreamSellerId;
     if (filters.dateFrom || filters.dateTo) {
       const range: Record<string, Date> = {};
