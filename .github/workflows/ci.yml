@@ -61,11 +61,14 @@ jobs:
           printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
           ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
-          tar -czf reseller-deploy.tar.gz \
+          # Write the tarball OUTSIDE the repo dir, otherwise creating it inside '.'
+          # changes the directory mid-read and tar aborts with "file changed as we read it" (exit 1).
+          TARBALL="${RUNNER_TEMP:-/tmp}/reseller-deploy.tar.gz"
+          tar -czf "$TARBALL" \
             --exclude='./.git' --exclude='./node_modules' \
             --exclude='./.env' --exclude='./.env.local' --exclude='./.env.bot-test' --exclude='./.env.bot-test.local' \
             --exclude='./apps/web/dist' --exclude='./apps/api/dist' --exclude='./apps/worker/dist' --exclude='./packages/shared/dist' \
-            --exclude='./.turbo' --exclude='./.tmp*' --exclude='./reseller-deploy.tar.gz' --exclude='*.log' \
-            .
-          scp -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new reseller-deploy.tar.gz "$DEPLOY_USER@$DEPLOY_HOST:/tmp/reseller-deploy.tar.gz"
+            --exclude='./.turbo' --exclude='./.tmp*' --exclude='*.log' \
+            . || { rc=$?; [ "$rc" -eq 1 ] && echo "tar: benign warnings, continuing" || exit "$rc"; }
+          scp -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new "$TARBALL" "$DEPLOY_USER@$DEPLOY_HOST:/tmp/reseller-deploy.tar.gz"
           ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new "$DEPLOY_USER@$DEPLOY_HOST" 'cd /opt/reseller-platform && tar -xzf /tmp/reseller-deploy.tar.gz && bash scripts/deploy-remote.sh && rm -f /tmp/reseller-deploy.tar.gz'
