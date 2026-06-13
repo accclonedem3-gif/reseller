@@ -448,6 +448,7 @@ export function SourceNetworkPage() {
   const [topupAmount, setTopupAmount] = useState("10000");
   const [alertInputs, setAlertInputs] = useState<Record<string, { threshold: string; enabled: boolean }>>({});
   const [popupConn, setPopupConn] = useState<SourceConnection | null>(null);
+  const [popupOrderSearch, setPopupOrderSearch] = useState("");
 
   const canUseInternalSource    = hasSellerCapability(session, "source_internal_use");
   const canManageInternalSource = hasSellerCapability(session, "source_internal_manage");
@@ -743,7 +744,7 @@ export function SourceNetworkPage() {
                         alignItems: "center",
                         borderTop: idx === 0 ? "none" : "1px solid var(--bd)",
                       }}
-                      onClick={() => setPopupConn(conn)}
+                      onClick={() => { setPopupConn(conn); setPopupOrderSearch(""); }}
                     >
                       <div className="min-w-0 mb-2 sm:mb-0">
                         <p className="text-sm font-bold" style={{ color: "var(--tx)" }}>
@@ -826,6 +827,15 @@ export function SourceNetworkPage() {
           {/* Order history popup */}
           {popupConn && (() => {
             const connOrders = sourceOrders.filter((o) => o.connection.id === popupConn.id);
+            const q = popupOrderSearch.trim().toLowerCase();
+            const filteredOrders = q
+              ? connOrders.filter((o) =>
+                  (o.orderCode || "").toLowerCase().includes(q) ||
+                  (o.downstreamOrderCode || "").toLowerCase().includes(q) ||
+                  (o.product?.sourceName || "").toLowerCase().includes(q) ||
+                  (o.endCustomer?.telegramUsername || "").toLowerCase().includes(q) ||
+                  [o.endCustomer?.firstName, o.endCustomer?.lastName].filter(Boolean).join(" ").toLowerCase().includes(q))
+              : connOrders;
             return createPortal(
               <div
                 className="fixed inset-0 z-[80] flex items-center justify-center p-4"
@@ -833,7 +843,7 @@ export function SourceNetworkPage() {
                 onClick={() => setPopupConn(null)}
               >
                 <div
-                  className="w-full max-w-4xl max-h-[80vh] flex flex-col rounded-2xl overflow-hidden"
+                  className="w-full max-w-6xl max-h-[88vh] flex flex-col rounded-2xl overflow-hidden"
                   style={{ background: "var(--surface)", border: "1px solid var(--bd)" }}
                   onClick={(e) => e.stopPropagation()}
                 >
@@ -853,21 +863,30 @@ export function SourceNetworkPage() {
                           : ""}
                       </p>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => setPopupConn(null)}
-                      className="flex h-8 w-8 items-center justify-center rounded-xl transition hover:opacity-70"
-                      style={{ background: "var(--inp)", border: "1px solid var(--bd)", color: "var(--tx-f)" }}
-                    >
-                      <X className="h-4 w-4" />
-                    </button>
+                    <div className="flex items-center gap-2">
+                      <input
+                        value={popupOrderSearch}
+                        onChange={(e) => setPopupOrderSearch(e.target.value)}
+                        placeholder="Tìm mã đơn / sản phẩm / khách"
+                        className="w-56 rounded-[10px] px-3 py-1.5 text-xs focus:outline-none"
+                        style={{ background: "var(--inp)", border: "1px solid var(--bd)", color: "var(--tx)" }}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setPopupConn(null)}
+                        className="flex h-8 w-8 items-center justify-center rounded-xl transition hover:opacity-70"
+                        style={{ background: "var(--inp)", border: "1px solid var(--bd)", color: "var(--tx-f)" }}
+                      >
+                        <X className="h-4 w-4" />
+                      </button>
+                    </div>
                   </div>
 
                   {/* Popup body */}
                   <div className="overflow-y-auto">
-                    {connOrders.length === 0 ? (
+                    {filteredOrders.length === 0 ? (
                       <p className="px-5 py-10 text-center text-sm" style={{ color: "var(--tx-f)" }}>
-                        Chưa có đơn sỉ nào.
+                        {q ? "Không tìm thấy đơn khớp." : "Chưa có đơn sỉ nào."}
                       </p>
                     ) : (
                       <table className="w-full text-sm">
@@ -885,7 +904,7 @@ export function SourceNetworkPage() {
                           </tr>
                         </thead>
                         <tbody>
-                          {connOrders.map((order) => {
+                          {filteredOrders.map((order) => {
                             const ec = order.endCustomer;
                             const ecLabel = ec
                               ? ec.telegramUsername
