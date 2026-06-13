@@ -897,7 +897,12 @@ export function SourceNetworkPage() {
                             return (
                               <tr key={order.id} style={{ borderBottom: "1px solid var(--bd)" }}>
                                 <td className="px-4 py-3 font-mono text-xs" style={{ color: "var(--tx-m)" }}>
-                                  {order.orderCode}
+                                  <div>{order.orderCode}</div>
+                                  {order.downstreamOrderCode && (
+                                    <div className="text-[10px] mt-0.5" style={{ color: "var(--tx-f)" }}>
+                                      PRO: {order.downstreamOrderCode}
+                                    </div>
+                                  )}
                                 </td>
                                 <td className="px-4 py-3" style={{ color: "var(--tx-m)" }}>
                                   {order.product.sourceName}
