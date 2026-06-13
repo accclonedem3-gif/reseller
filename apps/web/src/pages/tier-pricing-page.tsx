@@ -6,6 +6,7 @@ import { Check, X, Copy, CheckCircle2, Loader2 } from "lucide-react";
 import { api } from "@/lib/api";
 import { formatCurrency } from "@/lib/format";
 import { useToast } from "@/components/ui/toast";
+import { useAuth } from "@/auth/auth-provider";
 
 type PlanKey = "monthly" | "quarterly" | "semi_annual" | "annual";
 type TierKey = "pro" | "ultra";
@@ -68,6 +69,7 @@ export function TierPricingPage() {
   const { showToast } = useToast();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const { refreshSession } = useAuth();
   const [billingCycle, setBillingCycle] = useState<PlanKey>("annual");
   const [modalTier, setModalTier] = useState<TierKey | null>(null);
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethodKey>("PAYOS");
@@ -111,11 +113,13 @@ export function TierPricingPage() {
       });
       return data;
     },
-    onSuccess: (data) => {
+    onSuccess: async (data) => {
       if (data.paidFromWallet) {
         queryClient.invalidateQueries({ queryKey: ["tier-quote"] });
         const tier = modalTier;
         closeModal();
+        // Refresh the stored session so the new tier takes effect immediately (no re-login needed).
+        await refreshSession();
         if (tier) navigate(`/?welcome=${tier}`);
       } else {
         setPaymentResponse(data);
@@ -137,6 +141,8 @@ export function TierPricingPage() {
           queryClient.invalidateQueries({ queryKey: ["tier-quote"] });
           const tier = modalTier;
           closeModal();
+          // Bank payment confirmed → refresh session so the upgraded/renewed tier shows instantly.
+          await refreshSession();
           if (tier) navigate(`/?welcome=${tier}`);
         }
       } catch {}
