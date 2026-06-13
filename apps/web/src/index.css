@@ -355,6 +355,17 @@ body {
 :root:not(.dark) .page-stage .text-slate-400 { color: var(--tx-m) !important; }
 :root:not(.dark) .page-stage .text-slate-500 { color: var(--tx-f) !important; }
 
+/* Neutral slate text → readable in light mode EVERYWHERE, including modals/overlays rendered via
+   createPortal (they sit outside .page-stage, so the scoped rules above never reach them — that's
+   why portal text looked faint/wrong in light mode). text-white is intentionally NOT broadened here
+   to avoid flipping white labels on coloured buttons. */
+:root:not(.dark) .text-slate-50,
+:root:not(.dark) .text-slate-100 { color: var(--tx) !important; }
+:root:not(.dark) .text-slate-200,
+:root:not(.dark) .text-slate-300,
+:root:not(.dark) .text-slate-400 { color: var(--tx-m) !important; }
+:root:not(.dark) .text-slate-500 { color: var(--tx-f) !important; }
+
 /* Missing border-white opacities */
 :root:not(.dark) .border-white\/8  { border-color: var(--bd) !important; }
 :root:not(.dark) .border-white\/10 { border-color: var(--bd) !important; }
