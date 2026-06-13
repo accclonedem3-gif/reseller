@@ -331,15 +331,25 @@ export class TelegramBotService {
     const callbackQuery = update.callback_query;
     const message = update.message;
 
+    // Ack the button tap IMMEDIATELY (stops Telegram's loading spinner) before the rest of the
+    // per-update DB work, so taps feel instant. catalog:custom answers later with its own alert.
+    if (
+      callbackQuery?.id &&
+      callbackQuery.message?.chat?.id &&
+      !String(callbackQuery.data || "").startsWith("catalog:custom:")
+    ) {
+      await this.answerCallback(outboundToken, callbackQuery.id, actions);
+    }
+
     this.cleanupExpiredPendingSelections();
 
     await this.ensureTelegramCustomerSeen(shop, message, callbackQuery);
 
     // "Bling" (custom-emoji) is attempted whenever a button has a cusid configured — only a premium
     // owner can pick custom emoji, so that IS the premium signal — UNLESS this bot self-learned it
-    // can't actually emit them. `canBling` is that safety override (false → force text icons),
-    // threaded into every render below alongside the per-button cusid check.
-    const canBling = await this.resolveCanBling(shopId);
+    // can't actually emit them (cusidEmitOk === false → force text icons). Read from the already-
+    // loaded botConfig (no extra query) and threaded into every render below.
+    const canBling = shop.botConfig?.cusidEmitOk !== false;
 
     // Auto-issue source key for every user of an ULTRA bot (1 key per chatId, forever)
     if (shop.seller.tier === SellerTier.ULTRA) {
@@ -713,10 +723,6 @@ export class TelegramBotService {
       const messageId = callbackQuery.message?.message_id;
       const telegramUserId = String(callbackQuery.from?.id || "");
       const callbackLanguage = await this.getCustomerLanguage(shopId, telegramUserId);
-
-      if (chatId && callbackQuery.id && !data.startsWith("catalog:custom:")) {
-        await this.answerCallback(outboundToken, callbackQuery.id, actions);
-      }
 
       if (data === "home:menu") {
         await this.clearPendingQuantitySelection(shopId, telegramUserId);
