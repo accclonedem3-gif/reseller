@@ -338,7 +338,7 @@ export function AppShellPrime({ children }: { children: ReactNode }) {
                         className={cn("size-5 min-w-[20px] shrink-0 transition-colors", active ? "text-orange-500" : "group-hover:text-orange-400")}
                       />
                       {!collapsed && (
-                        <span className={cn("flex-1 text-[13px] font-bold tracking-tight transition-colors", active ? "text-orange-50" : "group-hover:text-[var(--tx)]")}>
+                        <span className={cn("flex-1 text-[13px] font-bold tracking-tight transition-colors", !active && "group-hover:text-[var(--tx)]")} style={active ? { color: "var(--s-act-tx)" } : undefined}>
                           {item.label}
                         </span>
                       )}
