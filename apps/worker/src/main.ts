@@ -664,7 +664,12 @@ async function sendDeliveredOrderMessages(input) {
     const totalPriceText = formatVndMoney(input.amount, input.language);
     const buyMoreLabel = input.language === "en" ? "🛍️ Buy more" : input.language === "th" ? "🛍️ ซื้อต่อ" : "🛍️ Mua tiếp";
     const warrantyLabel = input.language === "en" ? "🛡️ Warranty" : input.language === "th" ? "🛡️ การรับประกัน" : "🛡️ Bảo hành";
-    const invoiceResult = await (0, server_1.sendInvoiceMessages)({
+    // NOTE: invoice (message-text <tg-emoji>) and catalog (inline-button icon_custom_emoji_id)
+    // are SEPARATE Telegram capabilities — an invoice cusid failure does NOT mean the bot can't
+    // do button bling. So we DO NOT write cusidEmitOk from here (that would wrongly kill the
+    // catalog/home bling that shares the flag). We only READ it as a conservative pre-strip hint;
+    // sendInvoiceMessages also strips-and-retries on any failure so the buyer always gets the account.
+    await (0, server_1.sendInvoiceMessages)({
         botToken: input.botToken,
         chatId: input.chatId,
         template,
@@ -686,14 +691,6 @@ async function sendDeliveredOrderMessages(input) {
         warrantyButton: { text: warrantyLabel, callback_data: "warranty:start" },
         canEmitCusid: cusidEmitOk,
     }).catch(() => undefined);
-    // Self-learn: if cusid had to be stripped for the invoice to go through, this bot is
-    // non-premium and can't emit custom emoji — remember it so future deliveries (and the
-    // catalog/home bling path that shares this flag) skip the doomed first attempt.
-    if (invoiceResult && invoiceResult.strippedCusid && cusidEmitOk && input.shopId) {
-        await prisma.botConfig
-            .updateMany({ where: { shopId: input.shopId }, data: { cusidEmitOk: false } })
-            .catch(() => undefined);
-    }
 }
 function createRedisConnection() {
     const connection = new ioredis_1.default(REDIS_URL, {
