@@ -53,6 +53,13 @@ const CONFIG_SCHEMA: Array<{
     description: "Hiển thị khi tạo yêu cầu bảo hành mới.",
     type: "textarea",
   },
+  {
+    key: "warranty.check.proxies",
+    label: "Proxy auto-check bảo hành (grok/veo)",
+    description:
+      "Mỗi dòng 1 proxy — worker xoay vòng khi check tài khoản sống/chết. Định dạng: scheme://user:pass@host:port (vd http://user:pass@1.2.3.4:8000) hoặc host:port:user:pass. Để trống = chạy bằng IP server (dễ bị ban; nếu bật WARRANTY_REQUIRE_PROXY thì auto-check sẽ KHÔNG chạy khi không có proxy).",
+    type: "textarea",
+  },
 ];
 
 function getApiErrorMessage(error: unknown) {
