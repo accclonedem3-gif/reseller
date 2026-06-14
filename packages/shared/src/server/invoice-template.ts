@@ -343,35 +343,100 @@ export interface SendInvoiceOptions {
   data: InvoiceRenderData;
   warrantyButton?: { text: string; callback_data: string } | null;
   buyMoreButton?: { text: string; callback_data: string } | null;
+  /**
+   * Whether this bot can emit custom-emoji (tg-emoji) entities. Non-premium bots cannot —
+   * Telegram rejects the WHOLE message with CUSTOM_EMOJI_INVALID. Default true. When false,
+   * cusid is stripped up-front (skips the doomed first attempt). Regardless of this flag, a
+   * failed cusid send is retried with cusid stripped so the buyer always receives the invoice.
+   */
+  canEmitCusid?: boolean;
 }
 
-export async function sendInvoiceMessages(opts: SendInvoiceOptions): Promise<void> {
+export interface SendInvoiceResult {
+  /** The invoice (or at least the account list) reached the buyer. */
+  sent: boolean;
+  /** Custom-emoji entities had to be stripped for the message to go through (bot can't emit cusid). */
+  strippedCusid: boolean;
+}
+
+/** Strip `<tg-emoji emoji-id="X">FB</tg-emoji>` down to its fallback `FB` (for non-premium bots). */
+function stripCustomEmojiHtml(html: string): string {
+  return html.replace(/<tg-emoji\b[^>]*>([\s\S]*?)<\/tg-emoji>/gi, "$1");
+}
+
+/**
+ * Send an HTML message resiliently. If it carries custom-emoji entities and the bot can't emit
+ * them (known up-front, or discovered on a 400), retry with those stripped to plain fallback
+ * chars so a non-premium bot's buyer still gets the message. Never throws.
+ */
+async function sendHtmlResilient(
+  botToken: string,
+  chatId: string | number,
+  text: string,
+  extra: Record<string, unknown>,
+  canEmitCusid: boolean,
+): Promise<SendInvoiceResult> {
+  const hasCusid = /<tg-emoji\b/i.test(text);
+  if (hasCusid && !canEmitCusid) {
+    try {
+      await telegramSendMessage(botToken, chatId, stripCustomEmojiHtml(text), extra);
+      return { sent: true, strippedCusid: true };
+    } catch {
+      return { sent: false, strippedCusid: true };
+    }
+  }
+  try {
+    await telegramSendMessage(botToken, chatId, text, extra);
+    return { sent: true, strippedCusid: false };
+  } catch {
+    if (!hasCusid) return { sent: false, strippedCusid: false };
+    try {
+      await telegramSendMessage(botToken, chatId, stripCustomEmojiHtml(text), extra);
+      return { sent: true, strippedCusid: true };
+    } catch {
+      return { sent: false, strippedCusid: false };
+    }
+  }
+}
+
+export async function sendInvoiceMessages(opts: SendInvoiceOptions): Promise<SendInvoiceResult> {
   const { botToken, chatId, template, data, warrantyButton, buyMoreButton } = opts;
+  const canEmitCusid = opts.canEmitCusid !== false;
   const threshold = Math.max(1, template.inlineThreshold || 5);
   const inlineKb: any[][] = [];
   if (buyMoreButton) inlineKb.push([buyMoreButton]);
   if (warrantyButton) inlineKb.push([warrantyButton]);
   const replyMarkup = inlineKb.length > 0 ? { inline_keyboard: inlineKb } : undefined;
+  const lang = data.language ?? "vi";
 
   if (data.accountList.length <= threshold) {
     const text = renderInvoiceInlineHtml(template, data);
-    await telegramSendMessage(botToken, chatId, text, {
+    const res = await sendHtmlResilient(botToken, chatId, text, {
       parse_mode: "HTML",
       ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
-    }).catch(() => undefined);
-    return;
+    }, canEmitCusid);
+    if (!res.sent) {
+      // Last-ditch: a bare plain-text message (no HTML, no cusid) so the buyer still gets
+      // their account even if the formatted invoice failed for any reason.
+      const plain = `${LABELS[lang].accountListHeading}:\n${data.accountList.join("\n")}`;
+      await telegramSendMessage(botToken, chatId, plain, {
+        ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
+      }).catch(() => undefined);
+    }
+    return res;
   }
 
   const caption = renderInvoiceCaptionHtml(template, data);
-  await telegramSendMessage(botToken, chatId, caption, {
+  const res = await sendHtmlResilient(botToken, chatId, caption, {
     parse_mode: "HTML",
     ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
-  }).catch(() => undefined);
+  }, canEmitCusid);
 
   const fileText = renderAccountsFileText(data);
   const filename = `${(data.orderCode || "order").replace(/[^A-Za-z0-9_-]+/g, "_")}.txt`;
   const buf = Buffer.from(fileText, "utf-8");
   await telegramSendDocument(botToken, chatId, buf, filename).catch(() => undefined);
+  return res;
 }
 
 export function buildSampleInvoiceData(overrides?: Partial<InvoiceRenderData>): InvoiceRenderData {

@@ -633,17 +633,19 @@ function splitDeliveredAccountList(deliveredText) {
 async function sendDeliveredOrderMessages(input) {
     let shopCust = null;
     let shopName = input.shopName || null;
+    let cusidEmitOk = true;
     if (input.shopId) {
         try {
             const shopCfg = await prisma.shop.findUnique({
                 where: { id: input.shopId },
                 select: {
                     name: true,
-                    botConfig: { select: { customizationJson: true } },
+                    botConfig: { select: { customizationJson: true, cusidEmitOk: true } },
                 },
             });
             if (shopCfg) {
                 shopCust = shopCfg.botConfig?.customizationJson || null;
+                if (shopCfg.botConfig?.cusidEmitOk === false) cusidEmitOk = false;
                 if (!shopName) shopName = shopCfg.name || null;
             }
         } catch { /* ignore */ }
@@ -662,7 +664,7 @@ async function sendDeliveredOrderMessages(input) {
     const totalPriceText = formatVndMoney(input.amount, input.language);
     const buyMoreLabel = input.language === "en" ? "🛍️ Buy more" : input.language === "th" ? "🛍️ ซื้อต่อ" : "🛍️ Mua tiếp";
     const warrantyLabel = input.language === "en" ? "🛡️ Warranty" : input.language === "th" ? "🛡️ การรับประกัน" : "🛡️ Bảo hành";
-    await (0, server_1.sendInvoiceMessages)({
+    const invoiceResult = await (0, server_1.sendInvoiceMessages)({
         botToken: input.botToken,
         chatId: input.chatId,
         template,
@@ -682,7 +684,16 @@ async function sendDeliveredOrderMessages(input) {
         },
         buyMoreButton: { text: buyMoreLabel, callback_data: "home:products" },
         warrantyButton: { text: warrantyLabel, callback_data: "warranty:start" },
+        canEmitCusid: cusidEmitOk,
     }).catch(() => undefined);
+    // Self-learn: if cusid had to be stripped for the invoice to go through, this bot is
+    // non-premium and can't emit custom emoji — remember it so future deliveries (and the
+    // catalog/home bling path that shares this flag) skip the doomed first attempt.
+    if (invoiceResult && invoiceResult.strippedCusid && cusidEmitOk && input.shopId) {
+        await prisma.botConfig
+            .updateMany({ where: { shopId: input.shopId }, data: { cusidEmitOk: false } })
+            .catch(() => undefined);
+    }
 }
 function createRedisConnection() {
     const connection = new ioredis_1.default(REDIS_URL, {
