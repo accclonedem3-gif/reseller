@@ -2,6 +2,40 @@ import axios from "axios";
 import { createHmac } from "node:crypto";
 
 const PAYOS_API_URL = "https://api-merchant.payos.vn/v2/payment-requests";
+const PAYOS_TIMEOUT_MS = Math.max(5000, Number(process.env.PAYOS_HTTP_TIMEOUT_MS || 20000));
+const PAYOS_MAX_ATTEMPTS = 3;
+
+/**
+ * Bounded retry for TRANSIENT PayOS failures (mirrors the Telegram client). PayOS occasionally
+ * lags past the timeout; a single try with no retry surfaces that as a hard error.
+ * - 5xx / 429 → PayOS did NOT process the request → always safe to retry.
+ * - timeout / network (ECONNABORTED, no response) → AMBIGUOUS (request may have landed). Only retry
+ *   when `retryOnNetwork` is true — safe for idempotent GET (status check), NOT for the create-link
+ *   POST (retrying could hit "orderCode already exists" if the first request actually went through).
+ * 4xx / business errors are deterministic → never retried.
+ */
+async function payosRequestWithRetry<T>(
+  doRequest: () => Promise<T>,
+  opts: { retryOnNetwork: boolean },
+): Promise<T> {
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= PAYOS_MAX_ATTEMPTS; attempt++) {
+    try {
+      return await doRequest();
+    } catch (err) {
+      lastErr = err;
+      const e = err as { response?: { status?: number }; code?: string };
+      const status = e?.response?.status;
+      const isServer5xx = typeof status === "number" && status >= 500;
+      const isRateLimited = status === 429;
+      const isNetworkOrTimeout = e?.code === "ECONNABORTED" || !e?.response;
+      const transient = isServer5xx || isRateLimited || (opts.retryOnNetwork && isNetworkOrTimeout);
+      if (attempt >= PAYOS_MAX_ATTEMPTS || !transient) throw err;
+      await new Promise((r) => setTimeout(r, Math.min(500 * 2 ** (attempt - 1), 3000)));
+    }
+  }
+  throw lastErr;
+}
 
 export interface PayOSCredentials {
   clientId: string;
@@ -101,25 +135,29 @@ export async function createPayOSPaymentLink(
     credentials.checksumKey,
   );
 
-  const response = await axios.post(
-    PAYOS_API_URL,
-    {
-      orderCode: input.orderCode,
-      amount: input.amount,
-      description: input.description,
-      returnUrl: input.returnUrl,
-      cancelUrl: input.cancelUrl,
-      expiredAt: input.expiredAt,
-      signature,
-    },
-    {
-      headers: {
-        "x-client-id": credentials.clientId,
-        "x-api-key": credentials.apiKey,
-        "Content-Type": "application/json",
-      },
-      timeout: 10000,
-    },
+  const response = await payosRequestWithRetry(
+    () =>
+      axios.post(
+        PAYOS_API_URL,
+        {
+          orderCode: input.orderCode,
+          amount: input.amount,
+          description: input.description,
+          returnUrl: input.returnUrl,
+          cancelUrl: input.cancelUrl,
+          expiredAt: input.expiredAt,
+          signature,
+        },
+        {
+          headers: {
+            "x-client-id": credentials.clientId,
+            "x-api-key": credentials.apiKey,
+            "Content-Type": "application/json",
+          },
+          timeout: PAYOS_TIMEOUT_MS,
+        },
+      ),
+    { retryOnNetwork: false }, // POST: don't retry on timeout — could duplicate the orderCode
   );
 
   const data = response.data?.data;
@@ -154,16 +192,20 @@ export async function getPayOSPaymentLinkStatus(
   credentials: PayOSCredentials,
   id: string | number,
 ): Promise<PaymentLinkStatusResult> {
-  const response = await axios.get(
-    `${PAYOS_API_URL}/${encodeURIComponent(String(id))}`,
-    {
-      headers: {
-        "x-client-id": credentials.clientId,
-        "x-api-key": credentials.apiKey,
-        "Content-Type": "application/json",
-      },
-      timeout: 10000,
-    },
+  const response = await payosRequestWithRetry(
+    () =>
+      axios.get(
+        `${PAYOS_API_URL}/${encodeURIComponent(String(id))}`,
+        {
+          headers: {
+            "x-client-id": credentials.clientId,
+            "x-api-key": credentials.apiKey,
+            "Content-Type": "application/json",
+          },
+          timeout: PAYOS_TIMEOUT_MS,
+        },
+      ),
+    { retryOnNetwork: true }, // GET status is idempotent → safe to retry on timeout/network too
   );
 
   const data = response.data?.data;
