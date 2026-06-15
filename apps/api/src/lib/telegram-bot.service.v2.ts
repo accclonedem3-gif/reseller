@@ -1986,7 +1986,10 @@ export class TelegramBotService {
     const providers = await this.getAvailablePaymentProviders(shopId);
     const hasUsdt = providers.includes(PaymentProvider.USDT_TRC20);
     const hasVnd = providers.some((p) =>
-      p === PaymentProvider.PAYOS || p === PaymentProvider.MOCK,
+      p === PaymentProvider.PAYOS ||
+      p === PaymentProvider.PAY2S ||
+      p === PaymentProvider.WEB2M ||
+      p === PaymentProvider.MOCK,
     );
 
     // If only one option, skip selection and go straight to amount
