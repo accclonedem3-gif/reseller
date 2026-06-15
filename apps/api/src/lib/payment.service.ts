@@ -585,7 +585,7 @@ export class PaymentService {
    * List PENDING Web2m payments for a shop within a time window.
    */
   async listPendingWeb2mPayments(shopId: string, since: Date) {
-    const [txRows, depositRows] = await Promise.all([
+    const [txRows, depositRows, topupRows] = await Promise.all([
       this.prisma.paymentTransaction.findMany({
         where: {
           provider: PaymentProvider.WEB2M,
@@ -612,6 +612,20 @@ export class PaymentService {
         },
         take: 200,
       }),
+      // Customer wallet top-ups — same gap as PAY2S: without this the WEB2M bank webhook only
+      // matched orders + seller deposits, so a wallet top-up never auto-credited.
+      this.prisma.customerWalletTopup.findMany({
+        where: {
+          provider: PaymentProvider.WEB2M,
+          status: "PENDING",
+          createdAt: { gte: since },
+        },
+        select: {
+          externalOrderCode: true,
+          amount: true,
+        },
+        take: 200,
+      }),
     ]);
     return [
       ...txRows.map((r) => ({
@@ -622,6 +636,11 @@ export class PaymentService {
       ...depositRows.map((d) => ({
         externalOrderCode: d.externalOrderCode!,
         amount: d.amount,
+        orderCode: null,
+      })),
+      ...topupRows.map((t) => ({
+        externalOrderCode: t.externalOrderCode,
+        amount: t.amount,
         orderCode: null,
       })),
     ];
@@ -740,7 +759,7 @@ export class PaymentService {
     const normalized = content.toUpperCase().replace(/[^A-Z0-9]/g, "");
     if (!normalized) return null;
 
-    const [pendingTx, pendingDeposits] = await Promise.all([
+    const [pendingTx, pendingDeposits, pendingTopups] = await Promise.all([
       this.prisma.paymentTransaction.findMany({
         where: {
           provider: PaymentProvider.PAY2S,
@@ -760,11 +779,23 @@ export class PaymentService {
         orderBy: { createdAt: "desc" },
         take: 100,
       }),
+      // Customer wallet top-ups (bot wallet) — without this the bank-balance webhook only matched
+      // orders + seller deposits, so a PAY2S wallet top-up never auto-credited via the balance hook.
+      this.prisma.customerWalletTopup.findMany({
+        where: {
+          provider: PaymentProvider.PAY2S,
+          status: "PENDING",
+        },
+        select: { externalOrderCode: true, amount: true },
+        orderBy: { createdAt: "desc" },
+        take: 100,
+      }),
     ]);
 
     const candidates = [
       ...pendingTx.map((p) => ({ externalOrderCode: p.externalOrderCode, amount: p.amount })),
       ...pendingDeposits.map((d) => ({ externalOrderCode: d.externalOrderCode!, amount: d.amount })),
+      ...pendingTopups.map((t) => ({ externalOrderCode: t.externalOrderCode, amount: t.amount })),
     ];
 
     for (const p of candidates) {
