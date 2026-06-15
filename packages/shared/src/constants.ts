@@ -26,6 +26,24 @@ export const JOBS = {
 
 export const API_PREFIX = "api/v1";
 
+/**
+ * Restock-notification de-dup. A single restock can be detected by several independent paths
+ * (worker periodic sync, ULTRA→PRO cascade, internal-source push, manual stock upload, direct
+ * product update) and each would broadcast "📢 Thông báo nhập kho!" — causing duplicate spam.
+ * Before sending, every path claims a per-(shop, product, available) key in Redis (SET NX PX);
+ * only the first claim within the TTL window broadcasts. Keyed by `available` so a genuine LARGER
+ * restock (e.g. 612→1000) still notifies, and a flapping feed re-reporting the same level does not.
+ * Worker and API MUST use this exact key + TTL so they de-dup across processes.
+ */
+export const RESTOCK_NOTI_DEDUP_TTL_MS = 600_000; // 10 minutes
+export function restockNotiDedupKey(
+  shopId: string,
+  sourceProductId: string,
+  available: number,
+): string {
+  return `restock-noti:${shopId}:${sourceProductId}:${available}`;
+}
+
 export const SYSTEM_CONFIG_KEYS = {
   warrantyCheckConcurrency: "warranty.check.concurrency",
   // Số account check song song TRONG 1 job (1 đơn nhiều acc). Worker đọc hot mỗi job — đổi

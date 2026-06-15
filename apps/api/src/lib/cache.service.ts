@@ -152,6 +152,26 @@ export class CacheService implements OnModuleDestroy {
     }
   }
 
+  /**
+   * One-shot claim for idempotency/de-dup (SET key 1 PX ttl NX). Returns true if THIS caller
+   * claimed the key first (→ proceed), false if it was already claimed within the TTL window
+   * (→ skip). The key is left to expire on its own (not a lock — no release).
+   * FAIL-OPEN: Redis down / circuit open / error → returns true (do the action rather than
+   * silently drop it).
+   */
+  async claimOnce(key: string, ttlMs: number): Promise<boolean> {
+    if (this.circuitOpen()) return true;
+    try {
+      const res = await this.redis.set(key, "1", "PX", Math.max(1000, Math.floor(ttlMs)), "NX");
+      this.recordSuccess();
+      return res === "OK";
+    } catch (err) {
+      this.recordFailure();
+      this.logger.warn(`claimOnce(${key}) failed: ${(err as Error).message}`);
+      return true; // fail-open
+    }
+  }
+
   /** Token-safe release: only deletes the key if we still own it (avoids dropping a lock that
    * already expired and was re-acquired by another holder). No-op for the fail-open sentinel. */
   async releaseLock(key: string, token: string | null): Promise<void> {

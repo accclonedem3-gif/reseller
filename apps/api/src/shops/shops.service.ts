@@ -6,7 +6,7 @@ import {
   NotFoundException,
 } from "@nestjs/common";
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { API_PREFIX } from "@reseller/shared";
+import { API_PREFIX, RESTOCK_NOTI_DEDUP_TTL_MS, restockNotiDedupKey } from "@reseller/shared";
 import {
   Prisma,
   ProviderKind,
@@ -1151,6 +1151,22 @@ export class ShopsService {
     };
   }
 
+  /**
+   * Claims the right to broadcast a restock notification for (shop, product, available) — true for
+   * the first caller within the de-dup window, false after. Shared (same Redis key) by the worker
+   * and every API notify path so one restock fans out exactly one message. Fail-open if Redis down.
+   */
+  async claimRestockNotification(
+    shopId: string,
+    sourceProductId: string,
+    available: number,
+  ): Promise<boolean> {
+    return this.cache.claimOnce(
+      restockNotiDedupKey(shopId, sourceProductId, available),
+      RESTOCK_NOTI_DEDUP_TTL_MS,
+    );
+  }
+
   async notifyCatalogStockUpdates(
     shopId: string,
     encryptedBotToken: string | null,
@@ -1208,6 +1224,19 @@ export class ShopsService {
       return btn;
     };
 
+    // De-dup: claim each (product, available) restock once per window so the same event fanned
+    // out by multiple paths (this sync, the worker, the ULTRA→PRO cascade, internal-source push,
+    // a manual upload) broadcasts exactly one message instead of a burst of identical ones.
+    const freshNotifications: CatalogStockNotification[] = [];
+    for (const item of notifications) {
+      if (await this.claimRestockNotification(shopId, item.sourceProductId, item.available)) {
+        freshNotifications.push(item);
+      }
+    }
+    if (freshNotifications.length === 0) {
+      return 0;
+    }
+
     for (const customer of customers) {
       const lang = customer.preferredLanguage === "en" ? "en" : customer.preferredLanguage === "th" ? "th" : "vi";
       const labelAdded = lang === "en" ? "Added" : lang === "th" ? "เพิ่ม" : "Thêm";
@@ -1217,7 +1246,7 @@ export class ShopsService {
         ? `<tg-emoji emoji-id="${msgEmojiIds["stockAdded"]}">➕</tg-emoji>`
         : "➕";
 
-      for (const item of notifications) {
+      for (const item of freshNotifications) {
         const product = productById.get(item.sourceProductId);
         const iconEmojiId = product?.iconCustomEmojiId ?? null;
         const productNameLine = iconEmojiId

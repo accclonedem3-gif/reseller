@@ -1114,16 +1114,23 @@ async function syncCatalogForShop(shopId) {
             });
         }
     }
-    if (shop.providerConfig.providerKind === "INTERNAL") {
-        // Stale = products not from the internal upstream feed. EXCLUDE "manual" — seller-created
-        // products are never in any upstream feed, so without this they'd get disabled/hidden +
-        // available=0 on every sync the moment they're created.
+    // Stale = products NOT in the current internal upstream feed. EXCLUDE "manual" (seller-created,
+    // never in any feed). CRITICAL: also exclude any product whose externalProductId IS in the feed
+    // we just fetched. The old code reset EVERY non-internal_pro product unconditionally, so an
+    // internal product carrying any other providerName got available=0 + enabled=false + hidden=true
+    // on EVERY sync → the worker re-synced available back next tick → "+1 / Tồn 1" restock spam every
+    // ~60s AND "Sản phẩm không khả dụng" at checkout. Never disable something we just synced.
+    // Guard on a non-empty feed so a transient empty/failed upstream fetch doesn't nuke the catalog.
+    if (shop.providerConfig.providerKind === "INTERNAL" && products.length > 0) {
+        const fetchedIds = new Set(products.map((p) => p.externalId));
         const staleProducts = await prisma.sourceProduct.findMany({
             where: { shopId: shop.id, providerName: { notIn: ["internal_pro", "manual"] } },
-            select: { id: true, soldCount: true },
+            select: { id: true, externalProductId: true },
         });
-        if (staleProducts.length > 0) {
-            const allStaleIds = staleProducts.map((p) => p.id);
+        const allStaleIds = staleProducts
+            .filter((p) => !fetchedIds.has(p.externalProductId))
+            .map((p) => p.id);
+        if (allStaleIds.length > 0) {
             await prisma.sourceProduct.updateMany({ where: { id: { in: allStaleIds } }, data: { available: 0 } });
             await prisma.sellerProductOverride.updateMany({ where: { shopId: shop.id, sourceProductId: { in: allStaleIds } }, data: { enabled: false, hidden: true } });
         }
@@ -1196,10 +1203,32 @@ async function notifyCatalogStockUpdates(shopId, encryptedBotToken, notification
         if (custEmojiId) btn.icon_custom_emoji_id = custEmojiId;
         return btn;
     };
+    // De-dup: claim each (product, available) restock once per window (SAME Redis key + TTL as the
+    // API, via @reseller/shared) so the worker's periodic re-sync — or any other path — doesn't
+    // re-broadcast a restock that was already sent. This is the real fix for the "nhập kho" spam:
+    // the per-sync delta check re-fired whenever `available` looked like it rose from 0 again.
+    const freshNotifications = [];
+    for (const item of notifications) {
+        let claimed = true;
+        try {
+            if (globalRedis) {
+                const res = await globalRedis.set(server_1.restockNotiDedupKey(shopId, item.sourceProductId, item.available), "1", "PX", server_1.RESTOCK_NOTI_DEDUP_TTL_MS, "NX");
+                claimed = res === "OK";
+            }
+        }
+        catch {
+            claimed = true; // fail-open: notify rather than silently drop
+        }
+        if (claimed)
+            freshNotifications.push(item);
+    }
+    if (freshNotifications.length === 0) {
+        return 0;
+    }
     let sentCount = 0;
     for (const customer of customers) {
         const lang = customer.preferredLanguage === "en" ? "en" : customer.preferredLanguage === "th" ? "th" : "vi";
-        for (const item of notifications) {
+        for (const item of freshNotifications) {
             const product = productById.get(item.sourceProductId);
             if (!product) continue;
             const displayName = item.displayName || "";

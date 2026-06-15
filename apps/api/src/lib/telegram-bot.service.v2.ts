@@ -4511,10 +4511,26 @@ export class TelegramBotService {
     const productByExternalId = new Map(
       catalog.map((item) => [item.sourceProductId, item]),
     );
+
+    // De-dup: claim each (product, available) restock once per window — keyed by sourceProductId
+    // (shared with the worker + sync notify paths) so a restock already broadcast by another path
+    // isn't re-sent here. Collapses the "Thông báo nhập kho" burst.
+    const claimedUpdates: typeof updates = [];
+    for (const update of updates) {
+      const product = productByExternalId.get(update.externalProductId);
+      if (!product) continue;
+      if (await this.shopsService.claimRestockNotification(shopId, product.sourceProductId, update.available)) {
+        claimedUpdates.push(update);
+      }
+    }
+    if (claimedUpdates.length === 0) {
+      return 0;
+    }
+
     let sentCount = 0;
 
     for (const customer of customers) {
-      for (const update of updates) {
+      for (const update of claimedUpdates) {
         const product = productByExternalId.get(update.externalProductId);
 
         const customerLang = this.normalizeLanguage(customer.preferredLanguage);
