@@ -37,6 +37,7 @@ import {
 import type { ProviderBalanceResult, ProviderProduct } from "@reseller/shared/server";
 
 import { AppConfigService } from "../config/app-config.service";
+import { CacheService } from "../lib/cache.service";
 import { PrismaService } from "../db/prisma.service";
 import { OkxPersonalApiService } from "../lib/okx-personal-api.service";
 import { decimalToNumber, slugify, toDecimal } from "../lib/utils";
@@ -76,6 +77,8 @@ export class ShopsService {
     private readonly config: AppConfigService,
     @Inject(forwardRef(() => OkxPersonalApiService))
     private readonly okxApi: OkxPersonalApiService,
+    @Inject(CacheService)
+    private readonly cache: CacheService,
   ) {}
 
   async verifyOkxPersonal(
@@ -764,6 +767,21 @@ export class ShopsService {
   }
 
   async syncCatalogForShop(shopId: string) {
+    // Per-shop catalog-sync mutex (shared key + protocol with the worker). Without it, concurrent
+    // syncs — source→downstream cascade fan-out, the worker scheduler, connect-time + manual
+    // triggers — each read `available` before any of them persists and re-fire the SAME restock
+    // notification ("Thông báo nhập kho" spam). We wait briefly so a requested sync still runs once
+    // the in-flight one finishes — by then the persisted `available` makes the delta 0 → no dup.
+    const lockKey = `worker:catalog-sync:scheduled:${shopId}`;
+    const lockToken = await this.cache.acquireLock(lockKey, 120_000, 10_000);
+    try {
+      return await this.syncCatalogForShopInner(shopId);
+    } finally {
+      await this.cache.releaseLock(lockKey, lockToken);
+    }
+  }
+
+  private async syncCatalogForShopInner(shopId: string) {
     const shop = await this.prisma.shop.findUnique({
       where: { id: shopId },
       include: {

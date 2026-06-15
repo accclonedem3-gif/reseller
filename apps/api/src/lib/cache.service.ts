@@ -118,6 +118,55 @@ export class CacheService implements OnModuleDestroy {
     }
   }
 
+  // Sentinel returned by acquireLock when Redis is unavailable — caller proceeds UNLOCKED
+  // (fail-open). releaseLock treats it as a no-op.
+  private static readonly DEGRADED_LOCK_TOKEN = "__degraded__";
+
+  /**
+   * Distributed mutex via `SET key token PX ttl NX` — same key/protocol the worker uses, so the
+   * API and worker mutually exclude on the same resource. Returns a unique token on success.
+   *
+   * `maxWaitMs > 0` → retry (every 200ms) until acquired or the deadline passes, then returns
+   * `null` (held by someone else). `maxWaitMs = 0` → single attempt (skip-if-locked).
+   *
+   * FAIL-OPEN: if the Redis circuit is open or a command errors, returns a sentinel token so the
+   * caller proceeds without the lock (a rare duplicate beats blocking every caller while Redis is
+   * down). Always release in a finally with the returned token.
+   */
+  async acquireLock(key: string, ttlMs: number, maxWaitMs = 0): Promise<string | null> {
+    if (this.circuitOpen()) return CacheService.DEGRADED_LOCK_TOKEN;
+    const token = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    const deadline = Date.now() + Math.max(0, maxWaitMs);
+    for (;;) {
+      try {
+        const res = await this.redis.set(key, token, "PX", Math.max(1000, Math.floor(ttlMs)), "NX");
+        this.recordSuccess();
+        if (res === "OK") return token;
+      } catch (err) {
+        this.recordFailure();
+        this.logger.warn(`acquireLock(${key}) failed: ${(err as Error).message}`);
+        return CacheService.DEGRADED_LOCK_TOKEN; // fail-open
+      }
+      if (Date.now() >= deadline) return null;
+      await new Promise((r) => setTimeout(r, 200));
+    }
+  }
+
+  /** Token-safe release: only deletes the key if we still own it (avoids dropping a lock that
+   * already expired and was re-acquired by another holder). No-op for the fail-open sentinel. */
+  async releaseLock(key: string, token: string | null): Promise<void> {
+    if (!token || token === CacheService.DEGRADED_LOCK_TOKEN) return;
+    if (this.circuitOpen()) return;
+    try {
+      const current = await this.redis.get(key);
+      if (current === token) await this.redis.del(key);
+      this.recordSuccess();
+    } catch (err) {
+      this.recordFailure();
+      this.logger.warn(`releaseLock(${key}) failed: ${(err as Error).message}`);
+    }
+  }
+
   /**
    * Cache-aside with single-flight dedupe. If multiple callers hit the same key
    * within the TTL window and the value is missing, only one runs the loader.
