@@ -413,6 +413,12 @@ export class ShopsService {
         ? (dto.paymentProvider as any)
         : undefined;
 
+      // Plain (non-encrypted) payment fields: the bot-config form sends `null` for a field the
+      // seller cleared, and OMITS the field entirely on partial saves (e.g. the notify toggle).
+      // `?? undefined` collapsed both to undefined → Prisma skipped → a cleared UID/address kept
+      // its old value. Distinguish them: undefined (omitted) = keep, null (cleared) = wipe.
+      const setOrKeep = (v: string | null | undefined) => (v === undefined ? undefined : v);
+
       await tx.paymentConfig.upsert({
         where: { shopId: shop.id },
         update: {
@@ -440,13 +446,13 @@ export class ShopsService {
           pay2sSecretKeyEncrypted: dto.pay2sSecretKey
             ? encryptSecret(dto.pay2sSecretKey, encryptionKey)
             : undefined,
-          pay2sBankAccount: dto.pay2sBankAccount ?? undefined,
-          pay2sBankId: dto.pay2sBankId ?? undefined,
+          pay2sBankAccount: setOrKeep(dto.pay2sBankAccount),
+          pay2sBankId: setOrKeep(dto.pay2sBankId),
           pay2sWebhookTokenEncrypted: dto.pay2sWebhookToken
             ? encryptSecret(dto.pay2sWebhookToken, encryptionKey)
             : undefined,
-          web2mAccountNumber: dto.web2mAccountNumber ?? undefined,
-          web2mBankCode: dto.web2mBankCode ?? undefined,
+          web2mAccountNumber: setOrKeep(dto.web2mAccountNumber),
+          web2mBankCode: setOrKeep(dto.web2mBankCode),
           web2mPasswordEncrypted: dto.web2mPassword
             ? encryptSecret(dto.web2mPassword, encryptionKey)
             : undefined,
@@ -456,11 +462,11 @@ export class ShopsService {
           web2mAccessTokenEncrypted: dto.web2mAccessToken
             ? encryptSecret(dto.web2mAccessToken, encryptionKey)
             : undefined,
-          binanceUid: dto.binanceUid ?? undefined,
-          okxUid: dto.okxUid ?? undefined,
-          usdtTrc20Address: dto.usdtTrc20Address ?? undefined,
-          usdtBep20Address: dto.usdtBep20Address ?? undefined,
-          usdtSolanaAddress: dto.usdtSolanaAddress ?? undefined,
+          binanceUid: setOrKeep(dto.binanceUid),
+          okxUid: setOrKeep(dto.okxUid),
+          usdtTrc20Address: setOrKeep(dto.usdtTrc20Address),
+          usdtBep20Address: setOrKeep(dto.usdtBep20Address),
+          usdtSolanaAddress: setOrKeep(dto.usdtSolanaAddress),
           usdtVndRateOverride,
           binancePersonalApiKeyEncrypted: dto.binancePersonalApiKey
             ? encryptSecret(dto.binancePersonalApiKey, encryptionKey)
