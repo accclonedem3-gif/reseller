@@ -25,7 +25,9 @@ import {
   SetBotTokenDto,
   SetProductDefaultDto,
   TestInvoiceDto,
+  TestRestockDto,
   UpdateInvoiceTemplateDto,
+  UpdateRestockTemplateDto,
   UpdateTemplateCustomizationDto,
   UploadMediaUrlDto,
 } from "./admin-template.dto";
@@ -151,5 +153,26 @@ export class AdminTemplateController {
     @Body() body: TestInvoiceDto,
   ) {
     return this.service.testInvoice(user, body);
+  }
+
+  @Get("restock-template")
+  getRestockTemplate(@CurrentUser() user: AuthenticatedUser) {
+    return this.service.getRestockTemplate(user);
+  }
+
+  @Put("restock-template")
+  updateRestockTemplate(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() body: UpdateRestockTemplateDto,
+  ) {
+    return this.service.updateRestockTemplate(user, body);
+  }
+
+  @Post("restock-template/test")
+  testRestock(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() body: TestRestockDto,
+  ) {
+    return this.service.testRestock(user, body);
   }
 }

@@ -27,6 +27,8 @@ import {
   isMockBotToken,
   isMockBuyerKey,
   maskSecret,
+  renderRestockHtml,
+  resolveRestockTemplate,
   telegramDeleteWebhook,
   telegramGetMe,
   telegramSendMessage,
@@ -1167,6 +1169,31 @@ export class ShopsService {
     );
   }
 
+  /** Admin template shop's customizationJson (isTemplate=true), memoized 60s. Source of the
+   * inherited restock template. Returns null if the template shop / config is missing. */
+  private async getAdminCustomizationCached(): Promise<Record<string, any> | null> {
+    const cached = this.cache.memoGet<Record<string, any> | null>("admin:tpl:cust");
+    if (cached !== null) return cached;
+    const adminShop = await this.prisma.shop.findFirst({
+      where: { isTemplate: true },
+      select: { botConfig: { select: { customizationJson: true } } },
+    });
+    const cust = (adminShop?.botConfig?.customizationJson as Record<string, any>) ?? null;
+    this.cache.memoSet("admin:tpl:cust", cust, 60);
+    return cust;
+  }
+
+  /** Resolve the restock template for a shop (shop override > admin template > defaults). Public so
+   * the bot service's upload-restock path shares the exact same resolution as the sync path. */
+  async resolveRestockTemplateForShop(shopId: string) {
+    const shopCfg = await this.prisma.botConfig.findFirst({
+      where: { shopId },
+      select: { customizationJson: true },
+    });
+    const shopCust = (shopCfg?.customizationJson as Record<string, any>) ?? null;
+    return resolveRestockTemplate(shopCust, await this.getAdminCustomizationCached());
+  }
+
   async notifyCatalogStockUpdates(
     shopId: string,
     encryptedBotToken: string | null,
@@ -1211,8 +1238,6 @@ export class ShopsService {
     const custLabels = (custJson["buttonLabels"] && typeof custJson["buttonLabels"] === "object") ? custJson["buttonLabels"] as Record<string, Record<string, string>> : {};
     const custEmojiIds = (custJson["buttonEmojiIds"] && typeof custJson["buttonEmojiIds"] === "object") ? custJson["buttonEmojiIds"] as Record<string, string> : {};
 
-    const msgEmojiIds = (custJson["messageEmojiIds"] && typeof custJson["messageEmojiIds"] === "object") ? custJson["messageEmojiIds"] as Record<string, string> : {};
-
     const buildBtn = (key: string, fallbackEmoji: string, fallbackVi: string, fallbackEn: string, fallbackTh: string, cbData: string, lang: string) => {
       const custLabel = custLabels[key]?.[lang];
       const custEmoji = custEmojis[key];
@@ -1237,36 +1262,28 @@ export class ShopsService {
       return 0;
     }
 
+    const restockTemplate = resolveRestockTemplate(custJson, await this.getAdminCustomizationCached());
+
     for (const customer of customers) {
       const lang = customer.preferredLanguage === "en" ? "en" : customer.preferredLanguage === "th" ? "th" : "vi";
-      const labelAdded = lang === "en" ? "Added" : lang === "th" ? "เพิ่ม" : "Thêm";
-      const labelStock = lang === "en" ? "Current stock" : lang === "th" ? "สต็อกปัจจุบัน" : "Tồn kho hiện tại";
-      const headerLine = lang === "en" ? "📢 Restock notification!" : lang === "th" ? "📢 แจ้งเตือนสินค้าเข้าใหม่!" : "📢 Thông báo nhập kho!";
-      const addedIcon = msgEmojiIds["stockAdded"]
-        ? `<tg-emoji emoji-id="${msgEmojiIds["stockAdded"]}">➕</tg-emoji>`
-        : "➕";
 
       for (const item of freshNotifications) {
         const product = productById.get(item.sourceProductId);
-        const iconEmojiId = product?.iconCustomEmojiId ?? null;
-        const productNameLine = iconEmojiId
-          ? `<tg-emoji emoji-id="${iconEmojiId}">📦</tg-emoji> ${item.displayName}`
-          : `📦 ${item.displayName}`;
         const cbData = `buy:${item.sourceProductId}`;
-        const useHtml = !!(iconEmojiId || msgEmojiIds["stockAdded"]);
+        const rendered = renderRestockHtml(restockTemplate, {
+          productName: item.displayName,
+          addedQuantity: item.addedQuantity,
+          available: item.available,
+          productIconCustomEmojiId: product?.iconCustomEmojiId ?? null,
+          language: lang,
+        });
 
         await telegramSendMessage(
           token,
           customer.telegramChatId,
-          [
-            headerLine,
-            "",
-            productNameLine,
-            `${addedIcon} ${labelAdded}: ${item.addedQuantity}`,
-            `📦 ${labelStock}: ${item.available}`,
-          ].join("\n"),
+          rendered.text,
           {
-            parse_mode: useHtml ? "HTML" : undefined,
+            parse_mode: rendered.hasHtml ? "HTML" : undefined,
             reply_markup: {
               inline_keyboard: [[
                 buildBtn("buyNow", "🛒", "Mua ngay", "Buy now", "ซื้อเลย", cbData, lang),
@@ -1277,7 +1294,7 @@ export class ShopsService {
       }
     }
 
-    return notifications.length * customers.length;
+    return freshNotifications.length * customers.length;
   }
 
   private normalizeSourceWebhookProducts(body: Record<string, unknown>) {

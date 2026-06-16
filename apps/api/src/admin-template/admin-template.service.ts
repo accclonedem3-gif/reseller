@@ -22,13 +22,19 @@ import {
 import bcrypt from "bcryptjs";
 import {
   DEFAULT_INVOICE_TEMPLATE,
+  DEFAULT_RESTOCK_TEMPLATE,
   buildSampleInvoiceData,
   buildSampleInvoiceDataLarge,
+  buildSampleRestockData,
   decryptSecret,
   encryptSecret,
+  renderRestockHtml,
   resolveInvoiceTemplate,
+  resolveRestockTemplate,
   sendInvoiceMessages,
+  telegramSendMessage,
   type InvoiceTemplateConfig,
+  type RestockTemplateConfig,
 } from "@reseller/shared/server";
 
 import { AppConfigService } from "../config/app-config.service";
@@ -41,7 +47,9 @@ import type {
   ResetShopCustomizationDto,
   SetProductDefaultDto,
   TestInvoiceDto,
+  TestRestockDto,
   UpdateInvoiceTemplateDto,
+  UpdateRestockTemplateDto,
   UpdateTemplateCustomizationDto,
   UploadMediaUrlDto,
 } from "./admin-template.dto";
@@ -584,6 +592,76 @@ export class AdminTemplateService {
     const adminCust = (adminTpl?.botConfig?.customizationJson as Record<string, any>) ?? null;
     const shopCust = (shopCfg?.customizationJson as Record<string, any>) ?? null;
     return resolveInvoiceTemplate(shopCust, adminCust);
+  }
+
+  // ── Restock ("Thông báo nhập kho") template — same admin-edit + global-inherit model as invoice ──
+
+  /** Admin: read the current restock template (with defaults merged). */
+  async getRestockTemplate(user: AuthenticatedUser) {
+    await this.assertSuperAdmin(user);
+    const shop = await this.findTemplateShop();
+    const cust = (shop.botConfig?.customizationJson as Record<string, any>) ?? {};
+    return {
+      defaults: DEFAULT_RESTOCK_TEMPLATE,
+      template: resolveRestockTemplate(null, cust),
+      raw: cust.restockTemplate ?? null,
+    };
+  }
+
+  /** Admin: update the restock template inside customizationJson.restockTemplate. */
+  async updateRestockTemplate(user: AuthenticatedUser, dto: UpdateRestockTemplateDto) {
+    await this.assertSuperAdmin(user);
+    const shop = await this.findTemplateShop();
+    if (!shop.botConfig) {
+      throw new BadRequestException("BotConfig missing for template shop.");
+    }
+    const cust = ((shop.botConfig.customizationJson as Record<string, any>) ?? {}) as Record<string, any>;
+    cust.restockTemplate = dto.template ?? null;
+    await this.prisma.botConfig.update({
+      where: { id: shop.botConfig.id },
+      data: { customizationJson: cust as Prisma.InputJsonValue },
+    });
+    return { success: true };
+  }
+
+  /** Admin: send a sample restock notification using the admin template to a Telegram chat. */
+  async testRestock(user: AuthenticatedUser, dto: TestRestockDto) {
+    await this.assertSuperAdmin(user);
+    const shop = await this.findTemplateShop();
+    if (!shop.botConfig?.telegramBotTokenEncrypted) {
+      throw new BadRequestException("Admin template chưa có bot token. Hãy set bot token trước.");
+    }
+    const token = decryptSecret(shop.botConfig.telegramBotTokenEncrypted, this.config.encryptionKey);
+    if (!token) {
+      throw new BadRequestException("Không decrypt được bot token admin template.");
+    }
+    const chatId = (dto?.telegramChatId || "").trim() || (shop.botConfig.ownerTelegramUserId || "").trim();
+    if (!chatId) {
+      throw new BadRequestException("Cần truyền telegramChatId hoặc set ownerTelegramUserId cho admin template.");
+    }
+    const cust = (shop.botConfig.customizationJson as Record<string, any>) ?? {};
+    const template = resolveRestockTemplate(null, cust);
+    const sample = buildSampleRestockData();
+    const rendered = renderRestockHtml(template, sample);
+    await telegramSendMessage(token, chatId, rendered.text, {
+      parse_mode: rendered.hasHtml ? "HTML" : undefined,
+      reply_markup: { inline_keyboard: [[{ text: "🛒 Mua ngay", callback_data: "home:products" }]] },
+    });
+    return { success: true, sentTo: chatId };
+  }
+
+  /** Resolve restock template for a shopId: shop override > admin template > defaults. */
+  async resolveRestockTemplateForShop(shopId: string): Promise<RestockTemplateConfig> {
+    const [adminTpl, shopCfg] = await Promise.all([
+      this.findTemplateShopOrNull(),
+      this.prisma.botConfig.findFirst({
+        where: { shopId },
+        select: { customizationJson: true },
+      }),
+    ]);
+    const adminCust = (adminTpl?.botConfig?.customizationJson as Record<string, any>) ?? null;
+    const shopCust = (shopCfg?.customizationJson as Record<string, any>) ?? null;
+    return resolveRestockTemplate(shopCust, adminCust);
   }
 
   /**

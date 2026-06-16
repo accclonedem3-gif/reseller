@@ -78,3 +78,14 @@ export class TestInvoiceDto {
   @IsString()
   mode?: "small" | "large";
 }
+
+export class UpdateRestockTemplateDto {
+  @IsObject()
+  template!: Record<string, any>;
+}
+
+export class TestRestockDto {
+  @IsOptional()
+  @IsString()
+  telegramChatId?: string;
+}

@@ -1230,25 +1230,24 @@ async function notifyCatalogStockUpdates(shopId, encryptedBotToken, notification
     if (freshNotifications.length === 0) {
         return 0;
     }
+    // Restock body from the admin-configurable template (shop override > admin template > default).
+    const restockTemplate = (0, server_1.resolveRestockTemplate)(custJson, await getAdminTemplateCustomizationCached());
     let sentCount = 0;
     for (const customer of customers) {
         const lang = customer.preferredLanguage === "en" ? "en" : customer.preferredLanguage === "th" ? "th" : "vi";
         for (const item of freshNotifications) {
             const product = productById.get(item.sourceProductId);
             if (!product) continue;
-            const displayName = item.displayName || "";
-            const productNameLine = product.iconCustomEmojiId
-                ? `<tg-emoji emoji-id="${product.iconCustomEmojiId}">📦</tg-emoji> ${displayName}`
-                : `📦 ${displayName}`;
-            const headerLine = lang === "en" ? "📢 Restock notification!" : lang === "th" ? "📢 แจ้งเตือนสินค้าเข้าใหม่!" : "📢 Thông báo nhập kho!";
-            const addedIcon = msgEmojiIds.stockAdded ? `<tg-emoji emoji-id="${msgEmojiIds.stockAdded}">➕</tg-emoji>` : "➕";
-            const addedLabel = lang === "en" ? "Added" : lang === "th" ? "เพิ่ม" : "Thêm";
-            const addedLine = `${addedIcon} ${addedLabel}: ${item.addedQuantity}`;
-            const stockLine = lang === "en" ? `📦 Current stock: ${item.available}` : lang === "th" ? `📦 สต็อกปัจจุบัน: ${item.available}` : `📦 Tồn kho hiện tại: ${item.available}`;
             const cbData = `buy:${item.sourceProductId}`;
-            const useHtml = !!(product.iconCustomEmojiId || msgEmojiIds.stockAdded);
-            await (0, server_1.telegramSendMessage)(token, customer.telegramChatId, [headerLine, "", productNameLine, addedLine, stockLine].join("\n"), {
-                parse_mode: useHtml ? "HTML" : undefined,
+            const rendered = (0, server_1.renderRestockHtml)(restockTemplate, {
+                productName: item.displayName || "",
+                addedQuantity: item.addedQuantity,
+                available: item.available,
+                productIconCustomEmojiId: product.iconCustomEmojiId ?? null,
+                language: lang,
+            });
+            await (0, server_1.telegramSendMessage)(token, customer.telegramChatId, rendered.text, {
+                parse_mode: rendered.hasHtml ? "HTML" : undefined,
                 reply_markup: {
                     inline_keyboard: [[
                         buildBtn("buyNow", "🛒", "Mua ngay", "Buy now", "ซื้อเลย", cbData, lang),

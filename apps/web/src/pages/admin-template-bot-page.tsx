@@ -4,6 +4,7 @@ import { Check, Plus, Save, Trash2, Upload, X } from "lucide-react";
 
 import { useToast } from "@/components/ui/toast";
 import { InvoiceTemplateEditor, type InvoiceTemplate } from "@/components/dashboard/invoice-template-editor";
+import { RestockTemplateEditor, type RestockTemplate } from "@/components/dashboard/restock-template-editor";
 import { ProductFamilyManager } from "@/components/dashboard/product-family-manager";
 import { api } from "@/lib/api";
 import { useProductFamilyOptions } from "@/hooks/use-product-families";
@@ -285,6 +286,63 @@ export function AdminTemplateBotPage() {
     onError: (err) => showToast({ tone: "error", message: getErrMsg(err, "Gửi test thất bại.") }),
   });
 
+  const restockQuery = useQuery<{ defaults: RestockTemplate; template: RestockTemplate; raw: RestockTemplate | null }>({
+    queryKey: ["admin-template", "restock"],
+    queryFn: async () => (await api.get("/admin-template/restock-template")).data,
+    retry: false,
+    enabled: !!tplQuery.data?.botConfig,
+  });
+
+  const [restockDraft, setRestockDraft] = useState<RestockTemplate | null>(null);
+  useEffect(() => {
+    if (restockQuery.data?.template) {
+      setRestockDraft(restockQuery.data.template);
+    }
+  }, [restockQuery.data?.template]);
+
+  const saveRestockMutation = useMutation({
+    mutationFn: async (tpl: RestockTemplate) =>
+      (await api.put("/admin-template/restock-template", { template: tpl })).data,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["admin-template", "restock"] });
+      showToast({ tone: "success", message: "Đã lưu mẫu thông báo nhập kho." });
+    },
+    onError: (err) => showToast({ tone: "error", message: getErrMsg(err, "Không lưu được mẫu nhập kho.") }),
+  });
+
+  const resetRestockMutation = useMutation({
+    mutationFn: async () =>
+      (await api.put("/admin-template/restock-template", { template: null })).data,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["admin-template", "restock"] });
+      showToast({ tone: "success", message: "Đã đặt lại mẫu nhập kho về mặc định." });
+    },
+    onError: (err) => showToast({ tone: "error", message: getErrMsg(err, "Không đặt lại được.") }),
+  });
+
+  const testRestockMutation = useMutation({
+    mutationFn: async () => {
+      const LS_KEY = "admin_invoice_test_chat_id";
+      let chatId = localStorage.getItem(LS_KEY) || "";
+      if (!chatId) {
+        const input = window.prompt(
+          "Nhập Telegram User ID / Chat ID để nhận tin test\n(lấy từ @userinfobot — vd: 5513106881)\nLưu lại cho lần sau:",
+          "",
+        );
+        if (!input || !input.trim()) {
+          throw new Error("Đã huỷ — chưa nhập chat ID.");
+        }
+        chatId = input.trim();
+        localStorage.setItem(LS_KEY, chatId);
+      }
+      return (await api.post("/admin-template/restock-template/test", { telegramChatId: chatId })).data;
+    },
+    onSuccess: (data: any) => {
+      showToast({ tone: "success", message: `Đã gửi thử thông báo nhập kho đến chat ${data?.sentTo || "admin"}.` });
+    },
+    onError: (err) => showToast({ tone: "error", message: getErrMsg(err, "Gửi thử thất bại.") }),
+  });
+
   const resetTestChatId = () => {
     localStorage.removeItem("admin_invoice_test_chat_id");
     showToast({ tone: "info", message: "Đã xoá chat ID test. Lần test tiếp theo sẽ hỏi lại." });
@@ -560,6 +618,37 @@ export function AdminTemplateBotPage() {
             onSendTest={(mode) => testInvoiceMutation.mutate(mode)}
             isSaving={saveInvoiceMutation.isPending}
             isTesting={testInvoiceMutation.isPending}
+            hint="Test sẽ gửi đến chat của bot admin template (cần set Telegram User ID chủ bot trước)."
+          />
+        ) : null}
+      </div>
+
+      {/* Restock notification template */}
+      <div className="rounded-2xl p-5" style={{ background: "var(--surface)", border: "1px solid var(--bd)" }}>
+        <div className="mb-3 flex items-start justify-between gap-3">
+          <div>
+            <h2 className="text-[16px] font-black" style={{ color: "var(--tx)" }}>📢 Mẫu thông báo nhập kho</h2>
+            <p className="text-[12px]" style={{ color: "var(--tx-f)" }}>
+              Header/footer + icon + nhãn dòng cho tin "Thông báo nhập kho". Mọi bot inherit từ đây.
+            </p>
+          </div>
+        </div>
+        {restockQuery.isPending ? (
+          <p className="text-[12px]" style={{ color: "var(--tx-f)" }}>Đang tải mẫu nhập kho...</p>
+        ) : restockDraft ? (
+          <RestockTemplateEditor
+            value={restockDraft}
+            defaults={restockQuery.data?.defaults as RestockTemplate}
+            onChange={setRestockDraft}
+            onSave={() => saveRestockMutation.mutate(restockDraft)}
+            onReset={() => {
+              if (window.confirm("Đặt lại mẫu thông báo nhập kho về mặc định hệ thống?")) {
+                resetRestockMutation.mutate();
+              }
+            }}
+            onSendTest={() => testRestockMutation.mutate()}
+            isSaving={saveRestockMutation.isPending}
+            isTesting={testRestockMutation.isPending}
             hint="Test sẽ gửi đến chat của bot admin template (cần set Telegram User ID chủ bot trước)."
           />
         ) : null}

@@ -11,6 +11,7 @@ import {
   telegramSendPhotoBuffer,
   telegramSendVideo,
   isVideoUrl,
+  renderRestockHtml,
   type PayOSBankInfo,
 } from "@reseller/shared/server";
 import { DownstreamSourceConnectionStatus, PaymentProvider, PaymentStatus, PaymentTransactionStatus, Prisma, SellerTier } from "@prisma/client";
@@ -4505,7 +4506,8 @@ export class TelegramBotService {
       custLabels: (shopCustNotif?.buttonLabels && typeof shopCustNotif.buttonLabels === "object") ? shopCustNotif.buttonLabels as Record<string, Record<string, string>> : {},
       custEmojiIds: (shopCustNotif?.buttonEmojiIds && typeof shopCustNotif.buttonEmojiIds === "object") ? shopCustNotif.buttonEmojiIds as Record<string, string> : {},
     };
-    const msgEmojiIdsNotif = (shopCustNotif?.messageEmojiIds && typeof shopCustNotif.messageEmojiIds === "object") ? shopCustNotif.messageEmojiIds as Record<string, string> : {};
+    // Restock message body comes from the admin-configurable template (shop override > admin > default).
+    const restockTemplate = await this.shopsService.resolveRestockTemplateForShop(shopId);
     // Bling (cusid) is gated on the shop OWNER's premium — same for every recipient of this broadcast.
     const canBlingNotif = await this.resolveCanBling(shopId);
     const productByExternalId = new Map(
@@ -4543,36 +4545,25 @@ export class TelegramBotService {
         if (customerLang === "en" && product.hiddenEn) continue;
 
         const productName = this.localizeProductName(product.displayName || update.displayName, customerLang);
-        const productNameLine = product.iconCustomEmojiId
-          ? `<tg-emoji emoji-id="${product.iconCustomEmojiId}">📦</tg-emoji> ${productName}`
-          : `📦 ${productName}`;
-        const addedIcon = msgEmojiIdsNotif["stockAdded"]
-          ? `<tg-emoji emoji-id="${msgEmojiIdsNotif["stockAdded"]}">➕</tg-emoji>`
-          : "➕";
-        const addedLabel = customerLang === "en" ? "Added" : customerLang === "th" ? "เพิ่ม" : "Thêm";
-        const useHtml = !!(product.iconCustomEmojiId || msgEmojiIdsNotif["stockAdded"]);
+        const rendered = renderRestockHtml(restockTemplate, {
+          productName,
+          addedQuantity: update.addedQuantity,
+          available: update.available,
+          productIconCustomEmojiId: product.iconCustomEmojiId ?? null,
+          language: customerLang,
+        });
 
         await this.sendText(
           token,
           customer.telegramChatId,
-          [
-            customerLang === "en" ? "📢 Restock notification!" : customerLang === "th" ? "📢 แจ้งเตือนสินค้าเข้าใหม่!" : "📢 Thông báo nhập kho!",
-            "",
-            productNameLine,
-            `${addedIcon} ${addedLabel}: ${update.addedQuantity}`,
-            customerLang === "en"
-              ? `📦 Current stock: ${update.available}`
-              : customerLang === "th"
-                ? `📦 สต็อกปัจจุบัน: ${update.available}`
-                : `📦 Tồn kho hiện tại: ${update.available}`,
-          ].join("\n"),
+          rendered.text,
           [],
           {
             inline_keyboard: [
               [this.buildNavTextBtn(custDataNotif, "buyNow", "buyNow", `buy:${product.id}`, customerLang, canBlingNotif)],
             ],
           },
-          useHtml ? "HTML" : undefined,
+          rendered.hasHtml ? "HTML" : undefined,
         ).catch(() => undefined);
 
         sentCount += 1;
