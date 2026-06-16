@@ -1078,7 +1078,12 @@ async function syncCatalogForShop(shopId) {
                 hidden: false,
             },
         });
-        const nextAvailable = product.available;
+        // Use the SAME hidden-adjusted value we persist below (line ~1015/1033) as the restock
+        // baseline. The API sync already does this (shops.service); the worker copy used the RAW
+        // product.available, so a HIDDEN upstream product with stock>0 persisted available=0 but
+        // computed addedQuantity from raw 1 → "+1 / Tồn 1" restock spam every sync + "không khả
+        // dụng" at checkout (persisted 0). A hidden product now yields nextAvailable=0 → no notify.
+        const nextAvailable = product.hidden ? 0 : product.available;
         const previousAvailable = previous?.available;
         let addedQuantity = 0;
         if (previous &&
