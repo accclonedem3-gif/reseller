@@ -53,6 +53,16 @@ const GROUPS: Array<{ title: string; keys: KeyDef[] }> = [
       { key: "paid", emoji: "✅", label: { vi: "Tôi đã thanh toán", en: "I've paid", th: "ฉันชำระแล้ว" } },
     ],
   },
+  {
+    title: "Khác (điều hướng / xác nhận)",
+    keys: [
+      { key: "back", emoji: "⬅️", label: { vi: "Quay lại", en: "Back", th: "กลับ" } },
+      { key: "contactAdmin", emoji: "💬", label: { vi: "Liên hệ admin", en: "Contact admin", th: "ติดต่อแอดมิน" } },
+      { key: "openCheckout", emoji: "💳", label: { vi: "Mở trang thanh toán", en: "Open payment page", th: "เปิดหน้าชำระเงิน" } },
+      { key: "retry", emoji: "🔄", label: { vi: "Thử lại", en: "Retry", th: "ลองใหม่" } },
+      { key: "txHash", emoji: "🧾", label: { vi: "Gửi TX hash", en: "Send TX hash", th: "ส่ง TX hash" } },
+    ],
+  },
 ];
 
 interface Props {

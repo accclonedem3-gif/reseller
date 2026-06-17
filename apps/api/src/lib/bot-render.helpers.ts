@@ -441,7 +441,12 @@ export class BotRenderHelpers {
       | "payBinance"
       | "payUsdt"
       | "paid"
-      | "buyNow",
+      | "buyNow"
+      | "back"
+      | "contactAdmin"
+      | "openCheckout"
+      | "retry"
+      | "txHash",
     language: BotLanguage,
   ) {
     const labels: Record<string, { vi: string; en: string; th: string }> = {
@@ -465,6 +470,11 @@ export class BotRenderHelpers {
       payUsdt:      { vi: "Thanh toán USDT (TRC20)",          en: "Pay with USDT (TRC20)",      th: "ชำระด้วย USDT (TRC20)" },
       paid:         { vi: "✅ Tôi đã thanh toán",             en: "✅ I've paid",               th: "✅ ฉันชำระแล้ว" },
       buyNow:       { vi: "🛒 Mua ngay",                    en: "🛒 Buy now",                  th: "🛒 ซื้อเลย" },
+      back:         { vi: "⬅️ Quay lại",                     en: "⬅️ Back",                     th: "⬅️ กลับ" },
+      contactAdmin: { vi: "💬 Liên hệ admin",                en: "💬 Contact admin",            th: "💬 ติดต่อแอดมิน" },
+      openCheckout: { vi: "💳 Mở trang thanh toán",          en: "💳 Open payment page",        th: "💳 เปิดหน้าชำระเงิน" },
+      retry:        { vi: "🔄 Thử lại",                      en: "🔄 Retry",                    th: "🔄 ลองใหม่" },
+      txHash:       { vi: "🧾 Gửi TX hash",                  en: "🧾 Send TX hash",             th: "🧾 ส่ง TX hash" },
     };
 
     return labels[key]?.[language] ?? labels[key]?.["en"] ?? key;

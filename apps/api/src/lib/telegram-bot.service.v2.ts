@@ -1046,15 +1046,7 @@ export class TelegramBotService {
               ].join("\n"),
               actions,
               {
-                inline_keyboard: [[{
-                  text:
-                    callbackLanguage === "en"
-                      ? "⬅️ Back to products"
-                      : callbackLanguage === "th"
-                        ? "⬅️ กลับไปยังสินค้า"
-                        : "⬅️ Quay lại sản phẩm",
-                  callback_data: "home:products",
-                }]],
+                inline_keyboard: [[this.navBtn("back", callbackLanguage, "home:products")]],
               },
             ).catch(() => undefined);
           }
@@ -1267,7 +1259,7 @@ export class TelegramBotService {
       await this.sendText(token, chatId,
         language === "en" ? "⚠️ Could not load products. Please try again." : "⚠️ Không tải được sản phẩm. Vui lòng thử lại.",
         actions,
-        { inline_keyboard: [[{ text: language === "en" ? "🔄 Retry" : "🔄 Thử lại", callback_data: "home:products" }, { text: language === "en" ? "🏠 Home" : "🏠 Trang chủ", callback_data: "home:menu" }]] },
+        { inline_keyboard: [[{ text: this.buttonLabel("retry", language), callback_data: "home:products" }, { text: language === "en" ? "🏠 Home" : "🏠 Trang chủ", callback_data: "home:menu" }]] },
       ).catch(() => undefined);
       throw err;
     }
@@ -1983,7 +1975,7 @@ export class TelegramBotService {
       lines.join("\n"),
       {
         inline_keyboard: [
-          [{ text: language === "en" ? "⬅️ Back to wallet" : language === "th" ? "⬅️ กลับกระเป๋าเงิน" : "⬅️ Quay lại ví", callback_data: "home:wallet" }],
+          [{ text: this.buttonLabel("back", language), callback_data: "home:wallet" }],
         ],
       },
       actions,
@@ -2051,7 +2043,7 @@ export class TelegramBotService {
             { text: "🏦 VND (chuyển khoản)", callback_data: "wallet:topup:vnd" },
             { text: "💲 USDT (TRC20)", callback_data: "wallet:topup:usd" },
           ],
-          [{ text: language === "en" ? "⬅️ Back to wallet" : language === "th" ? "⬅️ กลับกระเป๋าเงิน" : "⬅️ Quay lại ví", callback_data: "home:wallet" }],
+          [{ text: this.buttonLabel("back", language), callback_data: "home:wallet" }],
         ],
       },
       actions,
@@ -2088,7 +2080,7 @@ export class TelegramBotService {
       actions,
       {
         inline_keyboard: [
-          [{ text: language === "en" ? "⬅️ Back" : language === "th" ? "⬅️ กลับ" : "⬅️ Quay lại", callback_data: "wallet:topup" }],
+          [{ text: this.buttonLabel("back", language), callback_data: "wallet:topup" }],
         ],
       },
     );
@@ -2233,7 +2225,7 @@ export class TelegramBotService {
     const isPremiumBuy = await this.resolveCanBling(shopId);
     const baseInlineKeyboard = this.buildPostPaymentInlineKeyboard(created, language, hasQr ? false : isPublicCheckoutUrl, custDataBuy, isPremiumBuy);
     const inlineKeyboard = created.isManualNoDelivery && shop.supportTelegram
-      ? [[{ text: language === "en" ? "💬 Contact admin" : language === "th" ? "💬 ติดต่อแอดมิน" : "💬 Liên hệ admin", url: `https://t.me/${shop.supportTelegram.replace(/^@/, "")}` }], ...baseInlineKeyboard]
+      ? [[{ text: this.buttonLabel("contactAdmin", language), url: `https://t.me/${shop.supportTelegram.replace(/^@/, "")}` }], ...baseInlineKeyboard]
       : baseInlineKeyboard;
 
     if (qrBuffer || qrFallbackUrl) {
@@ -2353,7 +2345,7 @@ export class TelegramBotService {
       {
         inline_keyboard: [
           ...(created.isManualNoDelivery && supportTelegram
-            ? [[{ text: language === "en" ? "💬 Contact admin" : language === "th" ? "💬 ติดต่อแอดมิน" : "💬 Liên hệ admin", url: `https://t.me/${supportTelegram.replace(/^@/, "")}` }]]
+            ? [[{ text: this.buttonLabel("contactAdmin", language), url: `https://t.me/${supportTelegram.replace(/^@/, "")}` }]]
             : []),
           [
             this.buildNavTextBtn(custDataWalletBuy, "orders", "history", "home:history", language),
@@ -2410,7 +2402,7 @@ export class TelegramBotService {
 
     if (isPublicCheckoutUrl) {
       inlineKeyboard.push([{
-        text: language === "en" ? "💳 Open payment page" : language === "th" ? "💳 เปิดหน้าชำระเงิน" : "💳 Mở trang thanh toán",
+        text: this.buttonLabel("openCheckout", language),
         url: created.checkoutUrl,
       }]);
     }
@@ -2421,7 +2413,7 @@ export class TelegramBotService {
 
     if (created.manualCrypto?.provider === "USDT_TRC20") {
       inlineKeyboard.push([{
-        text: language === "en" ? "🧾 Send TX hash" : language === "th" ? "🧾 ส่ง TX hash" : "🧾 Gửi TX hash",
+        text: this.buttonLabel("txHash", language),
         callback_data: `txhash:submit:${created.manualCrypto.note}`,
       }]);
     }
@@ -2527,7 +2519,7 @@ export class TelegramBotService {
       {
         inline_keyboard: [
           ...options.map((provider) => [buildPayBtn(provider)]),
-          [{ text: language === "en" ? "⬅️ Back to products" : language === "th" ? "⬅️ กลับไปยังสินค้า" : "⬅️ Quay lại sản phẩm", callback_data: "home:products" }],
+          [{ text: this.buttonLabel("back", language), callback_data: "home:products" }],
         ],
       },
     );
@@ -2618,7 +2610,7 @@ export class TelegramBotService {
         ].join("\n"),
         actions,
         {
-          inline_keyboard: [[{ text: language === "en" ? "⬅️ Back to products" : language === "th" ? "⬅️ กลับไปยังสินค้า" : "⬅️ Quay lại sản phẩm", callback_data: "home:products" }]],
+          inline_keyboard: [[{ text: this.buttonLabel("back", language), callback_data: "home:products" }]],
         },
       ).catch(() => undefined);
     }
@@ -4034,7 +4026,7 @@ export class TelegramBotService {
         {
           inline_keyboard: [
             [{
-              text: language === "en" ? "🧾 Try TX hash again" : language === "th" ? "🧾 ลองส่ง TX hash อีกครั้ง" : "🧾 Gửi lại TX hash",
+              text: this.buttonLabel("txHash", language),
               callback_data: pending.isTopup ? `txhash:topup:${pending.externalOrderCode}` : `txhash:submit:${pending.externalOrderCode}`,
             }],
             [{ text: pending.isTopup ? (language === "en" ? "💳 View wallet" : language === "th" ? "💳 ดูกระเป๋าเงิน" : "💳 Xem ví") : this.buttonLabel("history", language), callback_data: pending.isTopup ? "home:wallet" : "home:history" }],
@@ -4154,7 +4146,7 @@ export class TelegramBotService {
         ].join("\n"),
         actions,
         {
-          inline_keyboard: [[{ text: language === "en" ? "⬅️ Back to products" : language === "th" ? "⬅️ กลับไปยังสินค้า" : "⬅️ Quay lại sản phẩm", callback_data: "home:products" }]],
+          inline_keyboard: [[{ text: this.buttonLabel("back", language), callback_data: "home:products" }]],
         },
       ).catch(() => undefined);
     }
@@ -4249,13 +4241,13 @@ export class TelegramBotService {
         inline_keyboard: [
           ...(this.isPublicCheckoutUrl(created.topup.checkoutUrl)
             ? [[{
-              text: language === "en" ? "💳 Open payment page" : language === "th" ? "💳 เปิดหน้าชำระเงิน" : "💳 Mở trang thanh toán",
+              text: this.buttonLabel("openCheckout", language),
               url: created.topup.checkoutUrl,
             }]]
             : []),
           ...(isUsdt
             ? [[{
-              text: language === "en" ? "🧾 Send TX hash" : language === "th" ? "🧾 ส่ง TX hash" : "🧾 Gửi TX hash",
+              text: this.buttonLabel("txHash", language),
               callback_data: `txhash:topup:${created.topup.externalOrderCode}`,
             }]]
             : []),
@@ -6067,7 +6059,7 @@ export class TelegramBotService {
 
     if (this.isPublicCheckoutUrl(checkoutUrl || "")) {
       inlineKeyboard.push([{
-        text: language === "en" ? "💳 Open payment page" : language === "th" ? "💳 เปิดหน้าชำระเงิน" : "💳 Mở trang thanh toán",
+        text: this.buttonLabel("openCheckout", language),
         url: checkoutUrl,
       }]);
     }
@@ -7119,7 +7111,12 @@ export class TelegramBotService {
       | "payBinance"
       | "payUsdt"
       | "paid"
-      | "buyNow",
+      | "buyNow"
+      | "back"
+      | "contactAdmin"
+      | "openCheckout"
+      | "retry"
+      | "txHash",
     language: BotLanguage,
   ): string {
     const def = this.render.buttonLabel(key, language);
