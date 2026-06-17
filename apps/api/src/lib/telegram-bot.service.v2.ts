@@ -1,4 +1,5 @@
 import axios from "axios";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { Inject, Injectable, Logger, NotFoundException } from "@nestjs/common";
 import {
   decryptSecret,
@@ -129,6 +130,13 @@ export class TelegramBotService {
       matcher: (product) => /\byoutube\b/i.test(`${product.displayName} ${product.sourceName}`),
     },
   ];
+
+  // Per-update render context (resolved shop customization + bling capability). Set once via
+  // enterWith() at the top of handleIncomingUpdate so buttonLabel()/navBtn() apply the admin's
+  // function-button customization (label/emoji/cusid) everywhere WITHOUT threading custData
+  // through every message-builder. Each update is its own async context, so no cross-shop leak;
+  // when unset (calls outside an update, e.g. broadcasts) the helpers fall back to defaults.
+  private readonly btnCtx = new AsyncLocalStorage<{ cust: Record<string, unknown>; canBling: boolean }>();
 
   // Reply keyboard button labels (must match exactly in handleIncomingUpdate)
   private readonly replyKeyboardLabels = {
@@ -352,6 +360,14 @@ export class TelegramBotService {
     // loaded botConfig (no extra query) and threaded into every render below.
     const canBling = shop.botConfig?.cusidEmitOk !== false;
 
+    // Make the resolved customization + bling capability available to buttonLabel()/navBtn() for
+    // the rest of this update, so EVERY nav/footer/confirmation button reflects the admin's
+    // function-button customization (label/emoji/cusid) — not just the catalog/buy/pay buttons.
+    this.btnCtx.enterWith({
+      cust: await this.resolveCustomization((shop.botConfig?.customizationJson as Record<string, unknown> | null) ?? null),
+      canBling,
+    });
+
     // Auto-issue source key for every user of an ULTRA bot (1 key per chatId, forever)
     if (shop.seller.tier === SellerTier.ULTRA) {
       const autoChatId = message?.chat?.id ?? callbackQuery?.message?.chat?.id;
@@ -436,7 +452,7 @@ export class TelegramBotService {
           actions,
           {
             inline_keyboard: [
-              [{ text: this.buttonLabel("home", messageLanguage), callback_data: "home:menu" }],
+              [this.navBtn("home", messageLanguage, "home:menu")],
             ],
           },
         );
@@ -788,8 +804,8 @@ export class TelegramBotService {
             check.message,
             {
               inline_keyboard: [
-                [{ text: this.buttonLabel("history", callbackLanguage), callback_data: "home:history" }],
-                [{ text: this.buttonLabel("home", callbackLanguage), callback_data: "home:menu" }],
+                [this.navBtn("history", callbackLanguage, "home:history")],
+                [this.navBtn("home", callbackLanguage, "home:menu")],
               ],
             },
             actions,
@@ -857,12 +873,12 @@ export class TelegramBotService {
           {
             inline_keyboard: [
               [
-                { text: this.buttonLabel("products", callbackLanguage), callback_data: "home:products" },
-                { text: this.buttonLabel("home", callbackLanguage), callback_data: "home:menu" },
+                this.navBtn("products", callbackLanguage, "home:products"),
+                this.navBtn("home", callbackLanguage, "home:menu"),
               ],
               [
-                { text: this.buttonLabel("history", callbackLanguage), callback_data: "home:history" },
-                { text: this.buttonLabel("wallet", callbackLanguage), callback_data: "home:wallet" },
+                this.navBtn("history", callbackLanguage, "home:history"),
+                this.navBtn("wallet", callbackLanguage, "home:wallet"),
               ],
             ],
           },
@@ -877,12 +893,12 @@ export class TelegramBotService {
           {
             inline_keyboard: [
               [
-                { text: this.buttonLabel("home", callbackLanguage), callback_data: "home:menu" },
-                { text: this.buttonLabel("productsShort", callbackLanguage), callback_data: "home:products" },
+                this.navBtn("home", callbackLanguage, "home:menu"),
+                this.navBtn("productsShort", callbackLanguage, "home:products"),
               ],
               [
-                { text: this.buttonLabel("history", callbackLanguage), callback_data: "home:history" },
-                { text: this.buttonLabel("wallet", callbackLanguage), callback_data: "home:wallet" },
+                this.navBtn("history", callbackLanguage, "home:history"),
+                this.navBtn("wallet", callbackLanguage, "home:wallet"),
               ],
             ],
           },
@@ -1373,8 +1389,8 @@ export class TelegramBotService {
         {
           inline_keyboard: [
             [
-              { text: this.buttonLabel("home", language), callback_data: "home:menu" },
-              { text: this.buttonLabel("supportShort", language), callback_data: "home:support" },
+              this.navBtn("home", language, "home:menu"),
+              this.navBtn("supportShort", language, "home:support"),
             ],
           ],
         },
@@ -3170,7 +3186,7 @@ export class TelegramBotService {
             ? "⚠️ ไม่พบคำสั่งชำระเงินนี้"
             : "⚠️ Không tìm thấy lệnh thanh toán này.",
         {
-          inline_keyboard: [[{ text: this.buttonLabel("history", language), callback_data: "home:history" }]],
+          inline_keyboard: [[this.navBtn("history", language, "home:history")]],
         },
         actions,
       );
@@ -3188,7 +3204,7 @@ export class TelegramBotService {
             ? "⚠️ คำสั่งชำระเงินนี้ไม่ใช่ของบัญชี Telegram ของคุณ"
             : "⚠️ Lệnh thanh toán này không thuộc tài khoản Telegram của bạn.",
         {
-          inline_keyboard: [[{ text: this.buttonLabel("history", language), callback_data: "home:history" }]],
+          inline_keyboard: [[this.navBtn("history", language, "home:history")]],
         },
         actions,
       );
@@ -3206,7 +3222,7 @@ export class TelegramBotService {
             ? "⚠️ มีเพียงคำสั่งซื้อ USDT TRC20 เท่านั้นที่รับการยืนยันด้วย tx hash ที่นี่"
             : "⚠️ Chỉ đơn USDT TRC20 mới nhận xác nhận bằng tx hash ở đây.",
         {
-          inline_keyboard: [[{ text: this.buttonLabel("history", language), callback_data: "home:history" }]],
+          inline_keyboard: [[this.navBtn("history", language, "home:history")]],
         },
         actions,
       );
@@ -3224,7 +3240,7 @@ export class TelegramBotService {
             ? `✅ คำสั่งซื้อ ${payment.order.orderCode} ชำระเงินแล้ว`
             : `✅ Đơn ${payment.order.orderCode} đã được xác nhận thanh toán rồi.`,
         {
-          inline_keyboard: [[{ text: this.buttonLabel("history", language), callback_data: "home:history" }]],
+          inline_keyboard: [[this.navBtn("history", language, "home:history")]],
         },
         actions,
       );
@@ -3275,8 +3291,8 @@ export class TelegramBotService {
       ].join("\n"),
       {
         inline_keyboard: [
-          [{ text: this.buttonLabel("history", language), callback_data: "home:history" }],
-          [{ text: this.buttonLabel("home", language), callback_data: "home:menu" }],
+          [this.navBtn("history", language, "home:history")],
+          [this.navBtn("home", language, "home:menu")],
         ],
       },
       actions,
@@ -3306,7 +3322,7 @@ export class TelegramBotService {
         chatId,
         messageId,
         language === "en" ? "⚠️ Wallet topup not found." : language === "th" ? "⚠️ ไม่พบรายการเติมเงิน" : "⚠️ Không tìm thấy lệnh nạp ví này.",
-        { inline_keyboard: [[{ text: this.buttonLabel("home", language), callback_data: "home:wallet" }]] },
+        { inline_keyboard: [[this.navBtn("home", language, "home:wallet")]] },
         actions,
       );
       return;
@@ -3318,7 +3334,7 @@ export class TelegramBotService {
         chatId,
         messageId,
         language === "en" ? "⚠️ This topup does not belong to your account." : language === "th" ? "⚠️ รายการนี้ไม่ใช่ของบัญชีคุณ" : "⚠️ Lệnh nạp này không thuộc tài khoản của bạn.",
-        { inline_keyboard: [[{ text: this.buttonLabel("home", language), callback_data: "home:wallet" }]] },
+        { inline_keyboard: [[this.navBtn("home", language, "home:wallet")]] },
         actions,
       );
       return;
@@ -3330,7 +3346,7 @@ export class TelegramBotService {
         chatId,
         messageId,
         language === "en" ? "✅ This topup has already been confirmed." : language === "th" ? "✅ รายการเติมเงินนี้ได้รับการยืนยันแล้ว" : "✅ Lệnh nạp này đã được xác nhận rồi.",
-        { inline_keyboard: [[{ text: this.buttonLabel("home", language), callback_data: "home:wallet" }]] },
+        { inline_keyboard: [[this.navBtn("home", language, "home:wallet")]] },
         actions,
       );
       return;
@@ -3360,8 +3376,8 @@ export class TelegramBotService {
       ].join("\n"),
       {
         inline_keyboard: [
-          [{ text: this.buttonLabel("home", language), callback_data: "home:wallet" }],
-          [{ text: this.buttonLabel("home", language), callback_data: "home:menu" }],
+          [this.navBtn("home", language, "home:wallet")],
+          [this.navBtn("home", language, "home:menu")],
         ],
       },
       actions,
@@ -3408,8 +3424,8 @@ export class TelegramBotService {
       ].join("\n"),
       {
         inline_keyboard: [
-          [{ text: this.buttonLabel("history", language), callback_data: "home:history" }],
-          [{ text: this.buttonLabel("home", language), callback_data: "home:menu" }],
+          [this.navBtn("history", language, "home:history")],
+          [this.navBtn("home", language, "home:menu")],
         ],
       },
       actions,
@@ -3462,9 +3478,9 @@ export class TelegramBotService {
         actions,
         {
           inline_keyboard: [
-            [{ text: this.buttonLabel("history", language), callback_data: "home:history" }],
-            [{ text: this.buttonLabel("warranty", language), callback_data: "warranty:start" }],
-            [{ text: this.buttonLabel("home", language), callback_data: "home:menu" }],
+            [this.navBtn("history", language, "home:history")],
+            [this.navBtn("warranty", language, "warranty:start")],
+            [this.navBtn("home", language, "home:menu")],
           ],
         },
       );
@@ -3534,7 +3550,7 @@ export class TelegramBotService {
           chatId,
           messageId,
           this.warrantySubmitErrorText(error, language),
-          { inline_keyboard: [[{ text: this.buttonLabel("home", language), callback_data: "home:menu" }]] },
+          { inline_keyboard: [[this.navBtn("home", language, "home:menu")]] },
           actions,
         );
         return;
@@ -3626,7 +3642,7 @@ export class TelegramBotService {
       ].join("\n"),
       {
         inline_keyboard: [
-          [{ text: this.buttonLabel("home", language), callback_data: "home:menu" }],
+          [this.navBtn("home", language, "home:menu")],
         ],
       },
       actions,
@@ -3661,7 +3677,7 @@ export class TelegramBotService {
             : "Vui lòng nhập username cần bảo hành, cách nhau bởi dấu (;).",
         {
           inline_keyboard: [
-            [{ text: this.buttonLabel("home", language), callback_data: "home:menu" }],
+            [this.navBtn("home", language, "home:menu")],
           ],
         },
         actions,
@@ -3689,7 +3705,7 @@ export class TelegramBotService {
         Number(message.chat?.id || 0),
         undefined,
         this.warrantySubmitErrorText(error, language),
-        { inline_keyboard: [[{ text: this.buttonLabel("home", language), callback_data: "home:menu" }]] },
+        { inline_keyboard: [[this.navBtn("home", language, "home:menu")]] },
         actions,
       );
       return true;
@@ -3764,9 +3780,9 @@ export class TelegramBotService {
       actions,
       {
         inline_keyboard: [
-          [{ text: this.buttonLabel("history", language), callback_data: "home:history" }],
-          [{ text: this.buttonLabel("warranty", language), callback_data: "warranty:start" }],
-          [{ text: this.buttonLabel("home", language), callback_data: "home:menu" }],
+          [this.navBtn("history", language, "home:history")],
+          [this.navBtn("warranty", language, "warranty:start")],
+          [this.navBtn("home", language, "home:menu")],
         ],
       },
     );
@@ -3903,7 +3919,7 @@ export class TelegramBotService {
           {
             inline_keyboard: [
               [{ text: language === "en" ? "💳 View wallet" : language === "th" ? "💳 ดูกระเป๋าเงิน" : "💳 Xem ví", callback_data: "home:wallet" }],
-              [{ text: this.buttonLabel("home", language), callback_data: "home:menu" }],
+              [this.navBtn("home", language, "home:menu")],
             ],
           },
         );
@@ -3996,8 +4012,8 @@ export class TelegramBotService {
         {
           inline_keyboard: [
             [
-              { text: this.buttonLabel("history", language), callback_data: "home:history" },
-              { text: this.buttonLabel("productsShort", language), callback_data: "home:products" },
+              this.navBtn("history", language, "home:history"),
+              this.navBtn("productsShort", language, "home:products"),
             ],
           ],
         },
@@ -4245,7 +4261,7 @@ export class TelegramBotService {
             : []),
           [
             { text: language === "en" ? "💳 View wallet" : language === "th" ? "💳 ดูกระเป๋าเงิน" : "💳 Xem ví", callback_data: "home:wallet" },
-            { text: this.buttonLabel("home", language), callback_data: "home:menu" },
+            this.navBtn("home", language, "home:menu"),
           ],
         ],
       };
@@ -5542,7 +5558,7 @@ export class TelegramBotService {
             ? `🤝 <b>โปรแกรมแนะนำเพื่อน</b>\n\nโปรแกรมแนะนำเพื่อนยังไม่ได้เปิดใช้งานในร้านนี้`
             : `🤝 <b>Chương trình Affiliate</b>\n\nChương trình affiliate chưa được kích hoạt tại shop này.`;
       await this.editOrSend(token, chatId, messageId, text, {
-        inline_keyboard: [[{ text: this.buttonLabel("home", language), callback_data: "home:menu" }]],
+        inline_keyboard: [[this.navBtn("home", language, "home:menu")]],
       }, actions, "HTML");
       return;
     }
@@ -5595,7 +5611,7 @@ export class TelegramBotService {
     ];
 
     await this.editOrSend(token, chatId, messageId, lines.filter(Boolean).join("\n"), {
-      inline_keyboard: [[{ text: this.buttonLabel("home", language), callback_data: "home:menu" }]],
+      inline_keyboard: [[this.navBtn("home", language, "home:menu")]],
     }, actions, "HTML");
   }
 
@@ -6057,8 +6073,8 @@ export class TelegramBotService {
     }
 
     inlineKeyboard.push([
-      { text: this.buttonLabel("history", language), callback_data: "home:history" },
-      { text: this.buttonLabel("home", language), callback_data: "home:menu" },
+      this.navBtn("history", language, "home:history"),
+      this.navBtn("home", language, "home:menu"),
     ]);
 
     return { inline_keyboard: inlineKeyboard };
@@ -7064,7 +7080,7 @@ export class TelegramBotService {
     ];
 
     if (variant !== "onboarding") {
-      inlineKeyboard.push([{ text: this.buttonLabel("home", language), callback_data: "home:menu" }]);
+      inlineKeyboard.push([this.navBtn("home", language, "home:menu")]);
     }
 
     // For onboarding we also attach the reply keyboard so it appears after language selection
@@ -7105,8 +7121,48 @@ export class TelegramBotService {
       | "paid"
       | "buyNow",
     language: BotLanguage,
-  ) {
-    return this.render.buttonLabel(key, language);
+  ): string {
+    const def = this.render.buttonLabel(key, language);
+    const store = this.btnCtx.getStore();
+    if (!store) return def;
+    const cust = store.cust;
+    const labels = (cust?.buttonLabels && typeof cust.buttonLabels === "object") ? cust.buttonLabels as Record<string, Record<string, string>> : {};
+    const emojis = (cust?.buttonEmojis && typeof cust.buttonEmojis === "object") ? cust.buttonEmojis as Record<string, string> : {};
+    const sp = def.split(" ");
+    const defEmoji = sp[0] ?? "";
+    const defLabel = sp.slice(1).join(" ");
+    const emoji = emojis[key]?.trim() || defEmoji;
+    const label = labels[key]?.[language] || defLabel;
+    return `${emoji} ${label}`.trim();
+  }
+
+  /** Full inline nav button (text + premium cusid) honouring the shop's function-button
+   *  customization from btnCtx. Drop-in for `{ text: this.buttonLabel(key,lang), callback_data }`
+   *  so the same button also gets the custom-emoji icon when the bot can emit it. */
+  private navBtn(
+    key: Parameters<typeof this.buttonLabel>[0],
+    language: BotLanguage,
+    cbData: string,
+  ): { text: string; callback_data: string; icon_custom_emoji_id?: string } {
+    const def = this.render.buttonLabel(key, language);
+    const sp = def.split(" ");
+    const defEmoji = sp[0] ?? "";
+    const defLabel = sp.slice(1).join(" ");
+    const store = this.btnCtx.getStore();
+    const cust = store?.cust ?? {};
+    const labels = (cust?.buttonLabels && typeof cust.buttonLabels === "object") ? cust.buttonLabels as Record<string, Record<string, string>> : {};
+    const emojis = (cust?.buttonEmojis && typeof cust.buttonEmojis === "object") ? cust.buttonEmojis as Record<string, string> : {};
+    const emojiIds = (cust?.buttonEmojiIds && typeof cust.buttonEmojiIds === "object") ? cust.buttonEmojiIds as Record<string, string> : {};
+    const label = labels[key]?.[language] || defLabel;
+    const cusid = emojiIds[key]?.trim();
+    const useCusid = Boolean(store?.canBling) && Boolean(cusid);
+    const emoji = emojis[key]?.trim() || defEmoji;
+    const btn: { text: string; callback_data: string; icon_custom_emoji_id?: string } = {
+      text: useCusid ? label : `${emoji} ${label}`.trim(),
+      callback_data: cbData,
+    };
+    if (useCusid && cusid) btn.icon_custom_emoji_id = cusid;
+    return btn;
   }
 
   private buildSupportText(

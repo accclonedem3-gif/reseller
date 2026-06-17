@@ -26,6 +26,7 @@ import {
   SetProductDefaultDto,
   TestInvoiceDto,
   TestRestockDto,
+  UpdateButtonsDto,
   UpdateInvoiceTemplateDto,
   UpdateRestockTemplateDto,
   UpdateTemplateCustomizationDto,
@@ -174,5 +175,18 @@ export class AdminTemplateController {
     @Body() body: TestRestockDto,
   ) {
     return this.service.testRestock(user, body);
+  }
+
+  @Get("buttons")
+  getButtons(@CurrentUser() user: AuthenticatedUser) {
+    return this.service.getButtons(user);
+  }
+
+  @Put("buttons")
+  updateButtons(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() body: UpdateButtonsDto,
+  ) {
+    return this.service.updateButtons(user, body);
   }
 }

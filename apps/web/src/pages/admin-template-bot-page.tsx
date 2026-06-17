@@ -5,6 +5,7 @@ import { Check, Plus, Save, Trash2, Upload, X } from "lucide-react";
 import { useToast } from "@/components/ui/toast";
 import { InvoiceTemplateEditor, type InvoiceTemplate } from "@/components/dashboard/invoice-template-editor";
 import { RestockTemplateEditor, type RestockTemplate } from "@/components/dashboard/restock-template-editor";
+import { ButtonsEditor, type ButtonsConfig } from "@/components/dashboard/buttons-editor";
 import { ProductFamilyManager } from "@/components/dashboard/product-family-manager";
 import { api } from "@/lib/api";
 import { useProductFamilyOptions } from "@/hooks/use-product-families";
@@ -343,6 +344,44 @@ export function AdminTemplateBotPage() {
     onError: (err) => showToast({ tone: "error", message: getErrMsg(err, "Gửi thử thất bại.") }),
   });
 
+  const buttonsQuery = useQuery<ButtonsConfig>({
+    queryKey: ["admin-template", "buttons"],
+    queryFn: async () => (await api.get("/admin-template/buttons")).data,
+    retry: false,
+    enabled: !!tplQuery.data?.botConfig,
+  });
+
+  const [buttonsDraft, setButtonsDraft] = useState<ButtonsConfig | null>(null);
+  useEffect(() => {
+    if (buttonsQuery.data) {
+      setButtonsDraft({
+        labels: buttonsQuery.data.labels ?? {},
+        emojis: buttonsQuery.data.emojis ?? {},
+        emojiIds: buttonsQuery.data.emojiIds ?? {},
+      });
+    }
+  }, [buttonsQuery.data]);
+
+  const saveButtonsMutation = useMutation({
+    mutationFn: async (cfg: ButtonsConfig) =>
+      (await api.put("/admin-template/buttons", cfg)).data,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["admin-template", "buttons"] });
+      showToast({ tone: "success", message: "Đã lưu nút chức năng." });
+    },
+    onError: (err) => showToast({ tone: "error", message: getErrMsg(err, "Không lưu được nút chức năng.") }),
+  });
+
+  const resetButtonsMutation = useMutation({
+    mutationFn: async () =>
+      (await api.put("/admin-template/buttons", { labels: {}, emojis: {}, emojiIds: {} })).data,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["admin-template", "buttons"] });
+      showToast({ tone: "success", message: "Đã đặt lại nút chức năng về mặc định." });
+    },
+    onError: (err) => showToast({ tone: "error", message: getErrMsg(err, "Không đặt lại được.") }),
+  });
+
   const resetTestChatId = () => {
     localStorage.removeItem("admin_invoice_test_chat_id");
     showToast({ tone: "info", message: "Đã xoá chat ID test. Lần test tiếp theo sẽ hỏi lại." });
@@ -650,6 +689,31 @@ export function AdminTemplateBotPage() {
             isSaving={saveRestockMutation.isPending}
             isTesting={testRestockMutation.isPending}
             hint="Test sẽ gửi đến chat của bot admin template (cần set Telegram User ID chủ bot trước)."
+          />
+        ) : null}
+      </div>
+
+      {/* Function buttons */}
+      <div className="rounded-2xl p-5" style={{ background: "var(--surface)", border: "1px solid var(--bd)" }}>
+        <div className="mb-3">
+          <h2 className="text-[16px] font-black" style={{ color: "var(--tx)" }}>🔘 Nút chức năng</h2>
+          <p className="text-[12px]" style={{ color: "var(--tx-f)" }}>
+            Nhãn / emoji / custom emoji ID cho từng nút (menu, mua hàng, thanh toán). Mọi bot inherit từ đây.
+          </p>
+        </div>
+        {buttonsQuery.isPending ? (
+          <p className="text-[12px]" style={{ color: "var(--tx-f)" }}>Đang tải nút chức năng...</p>
+        ) : buttonsDraft ? (
+          <ButtonsEditor
+            value={buttonsDraft}
+            onChange={setButtonsDraft}
+            onSave={() => saveButtonsMutation.mutate(buttonsDraft)}
+            onReset={() => {
+              if (window.confirm("Xoá hết tuỳ chỉnh nút và về nhãn/emoji mặc định?")) {
+                resetButtonsMutation.mutate();
+              }
+            }}
+            isSaving={saveButtonsMutation.isPending}
           />
         ) : null}
       </div>

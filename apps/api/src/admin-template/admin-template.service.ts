@@ -48,6 +48,7 @@ import type {
   SetProductDefaultDto,
   TestInvoiceDto,
   TestRestockDto,
+  UpdateButtonsDto,
   UpdateInvoiceTemplateDto,
   UpdateRestockTemplateDto,
   UpdateTemplateCustomizationDto,
@@ -662,6 +663,40 @@ export class AdminTemplateService {
     const adminCust = (adminTpl?.botConfig?.customizationJson as Record<string, any>) ?? null;
     const shopCust = (shopCfg?.customizationJson as Record<string, any>) ?? null;
     return resolveRestockTemplate(shopCust, adminCust);
+  }
+
+  // ── Function buttons — labels/emojis/cusid live in customizationJson and the admin template's
+  //    botConfig is isGlobalDefault=true, so every shop deep-merges them (shop overrides win). ──
+
+  /** Admin: read the function-button customization from the template shop. */
+  async getButtons(user: AuthenticatedUser) {
+    await this.assertSuperAdmin(user);
+    const shop = await this.findTemplateShop();
+    const cust = (shop.botConfig?.customizationJson as Record<string, any>) ?? {};
+    return {
+      labels: (cust.buttonLabels as Record<string, Record<string, string>>) ?? {},
+      emojis: (cust.buttonEmojis as Record<string, string>) ?? {},
+      emojiIds: (cust.buttonEmojiIds as Record<string, string>) ?? {},
+    };
+  }
+
+  /** Admin: update buttonLabels/buttonEmojis/buttonEmojiIds inside the template customizationJson
+   *  (merged keys only — leaves invoiceTemplate/restockTemplate/welcomeMessage/etc. untouched). */
+  async updateButtons(user: AuthenticatedUser, dto: UpdateButtonsDto) {
+    await this.assertSuperAdmin(user);
+    const shop = await this.findTemplateShop();
+    if (!shop.botConfig) {
+      throw new BadRequestException("BotConfig missing for template shop.");
+    }
+    const cust = ((shop.botConfig.customizationJson as Record<string, any>) ?? {}) as Record<string, any>;
+    if (dto.labels !== undefined) cust.buttonLabels = dto.labels;
+    if (dto.emojis !== undefined) cust.buttonEmojis = dto.emojis;
+    if (dto.emojiIds !== undefined) cust.buttonEmojiIds = dto.emojiIds;
+    await this.prisma.botConfig.update({
+      where: { id: shop.botConfig.id },
+      data: { customizationJson: cust as Prisma.InputJsonValue },
+    });
+    return { success: true };
   }
 
   /**

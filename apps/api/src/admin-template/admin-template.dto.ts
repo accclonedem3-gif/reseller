@@ -89,3 +89,17 @@ export class TestRestockDto {
   @IsString()
   telegramChatId?: string;
 }
+
+export class UpdateButtonsDto {
+  @IsOptional()
+  @IsObject()
+  labels?: Record<string, Record<string, string>>;
+
+  @IsOptional()
+  @IsObject()
+  emojis?: Record<string, string>;
+
+  @IsOptional()
+  @IsObject()
+  emojiIds?: Record<string, string>;
+}
