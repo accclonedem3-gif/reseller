@@ -351,6 +351,7 @@ export function AdminTemplateBotPage() {
     enabled: !!tplQuery.data?.botConfig,
   });
 
+  const [tab, setTab] = useState<"config" | "products" | "invoice" | "restock" | "buttons">("config");
   const [buttonsDraft, setButtonsDraft] = useState<ButtonsConfig | null>(null);
   useEffect(() => {
     if (buttonsQuery.data) {
@@ -422,6 +423,27 @@ export function AdminTemplateBotPage() {
         </p>
       </div>
 
+      <div className="sticky top-0 z-10 -mx-1 flex flex-wrap gap-2 rounded-2xl p-2" style={{ background: "var(--surface)", border: "1px solid var(--bd)" }}>
+        {([
+          ["config", "⚙️ Cấu hình"],
+          ["products", "📦 Sản phẩm mặc định"],
+          ["invoice", "📄 Hóa đơn"],
+          ["restock", "📢 Nhập kho"],
+          ["buttons", "🔘 Nút chức năng"],
+        ] as const).map(([k, lbl]) => (
+          <button
+            key={k}
+            type="button"
+            onClick={() => setTab(k)}
+            className="rounded-xl px-3 py-2 text-[13px] font-black transition"
+            style={tab === k ? { background: "rgb(16,185,129)", color: "#fff" } : { background: "var(--inp)", border: "1px solid var(--bd)", color: "var(--tx-m)" }}
+          >
+            {lbl}
+          </button>
+        ))}
+      </div>
+
+      {tab === "config" && (<>
       {/* Bot Token */}
       <div className="rounded-2xl p-5" style={{ background: "var(--surface)", border: "1px solid var(--bd)" }}>
         <div className="flex items-center justify-between">
@@ -483,6 +505,9 @@ export function AdminTemplateBotPage() {
         </p>
       </div>
 
+      </>)}
+
+      {tab === "products" && (<>
       {/* Product family catalog (admin-managed) */}
       <ProductFamilyManager />
 
@@ -631,6 +656,9 @@ export function AdminTemplateBotPage() {
         </div>
       </div>
 
+      </>)}
+
+      {tab === "invoice" && (<>
       {/* Invoice template */}
       <div className="rounded-2xl p-5" style={{ background: "var(--surface)", border: "1px solid var(--bd)" }}>
         <div className="mb-3 flex items-start justify-between gap-3">
@@ -662,6 +690,9 @@ export function AdminTemplateBotPage() {
         ) : null}
       </div>
 
+      </>)}
+
+      {tab === "restock" && (<>
       {/* Restock notification template */}
       <div className="rounded-2xl p-5" style={{ background: "var(--surface)", border: "1px solid var(--bd)" }}>
         <div className="mb-3 flex items-start justify-between gap-3">
@@ -693,6 +724,9 @@ export function AdminTemplateBotPage() {
         ) : null}
       </div>
 
+      </>)}
+
+      {tab === "buttons" && (<>
       {/* Function buttons */}
       <div className="rounded-2xl p-5" style={{ background: "var(--surface)", border: "1px solid var(--bd)" }}>
         <div className="mb-3">
@@ -717,6 +751,7 @@ export function AdminTemplateBotPage() {
           />
         ) : null}
       </div>
+      </>)}
     </div>
   );
 }
