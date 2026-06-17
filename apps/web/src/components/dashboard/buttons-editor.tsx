@@ -39,6 +39,7 @@ const GROUPS: Array<{ title: string; keys: KeyDef[] }> = [
     title: "Mua hàng",
     keys: [
       { key: "buyNow", emoji: "🛒", label: { vi: "Mua ngay", en: "Buy now", th: "ซื้อเลย" } },
+      { key: "refresh", emoji: "🔄", label: { vi: "Làm mới", en: "Refresh", th: "รีเฟรช" } },
       { key: "viewAll", emoji: "⬅️", label: { vi: "Xem tất cả", en: "All products", th: "สินค้าทั้งหมด" } },
       { key: "buyOther", emoji: "⬅️", label: { vi: "Chọn sản phẩm khác", en: "Choose another product", th: "เลือกสินค้าอื่น" } },
     ],
