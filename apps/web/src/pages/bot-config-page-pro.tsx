@@ -559,6 +559,9 @@ export function BotConfigPage() {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["bot-config"] }),
         queryClient.invalidateQueries({ queryKey: ["shop"] }),
+        // Switching to a canboso key disables the ULTRA connection server-side — refetch so the
+        // Source-key box drops the "đổi key ULTRA" placeholder and shows the masked canboso key.
+        queryClient.invalidateQueries({ queryKey: ["seller-source-connection"] }),
       ]);
     },
     onError: (error) => showToast({ tone: "error", message: getApiErrorMessage(error, t.toastFallbackError) }),

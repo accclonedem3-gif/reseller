@@ -8,6 +8,7 @@ import {
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { API_PREFIX, RESTOCK_NOTI_DEDUP_TTL_MS, restockNotiDedupKey } from "@reseller/shared";
 import {
+  DownstreamSourceConnectionStatus,
   Prisma,
   ProviderKind,
   SellerTier,
@@ -408,6 +409,24 @@ export class ShopsService {
           connectionStatus: "PENDING",
         },
       });
+
+      // Reconcile stale ULTRA connections. A live ULTRA link always coincides with
+      // providerKind=INTERNAL + internalSourceConnectionId set (see seller-source-connection.service).
+      // So if this shop is now on an EXTERNAL (canboso) source with no internalSourceConnectionId but
+      // still has an ACTIVE DownstreamSourceConnection, that row is stale — disable it. Otherwise the
+      // bot-config UI keeps reading it as "connected to ULTRA" and shows the "đổi key ULTRA"
+      // placeholder instead of the saved canboso buyer key. Runs on every save, so it also heals the
+      // already-switched shops that were left inconsistent before this fix (no re-paste needed).
+      const pcAfter = await tx.providerConfig.findUnique({
+        where: { shopId: shop.id },
+        select: { providerKind: true, internalSourceConnectionId: true },
+      });
+      if (pcAfter && pcAfter.providerKind === ProviderKind.EXTERNAL && !pcAfter.internalSourceConnectionId) {
+        await tx.downstreamSourceConnection.updateMany({
+          where: { downstreamShopId: shop.id, status: DownstreamSourceConnectionStatus.ACTIVE },
+          data: { status: DownstreamSourceConnectionStatus.DISABLED },
+        });
+      }
 
       const explicitProvider = dto.paymentProvider && ["PAYOS", "PAY2S", "WEB2M", "BINANCE_PAY", "MOCK", "BINANCE", "OKX", "USDT_TRC20"].includes(dto.paymentProvider)
         ? (dto.paymentProvider as any)
