@@ -13,6 +13,7 @@ import {
 } from "@nestjs/common";
 import { Request } from "express";
 import { verifyPay2sIpnSignature, verifyPayOSWebhook } from "@reseller/shared/server";
+import { SkipThrottle } from "@nestjs/throttler";
 
 import { AppConfigService } from "../config/app-config.service";
 import { CustomerWalletService } from "../customer-wallet/customer-wallet.service";
@@ -25,6 +26,10 @@ import { UpgradeService } from "../upgrade/upgrade.service";
 import { TiersService } from "../tiers/tiers.service";
 import { WalletService } from "../wallet/wallet.service";
 
+// Payment-provider IPNs (PayOS / Pay2s / Web2m / BinancePay) are signature-verified and can arrive
+// in bursts from a single provider IP — a per-IP throttle here would drop legitimate callbacks and
+// lose payment confirmations. Exempt the whole controller; signature checks are the real gate.
+@SkipThrottle()
 @Controller("webhooks")
 export class WebhooksController {
   private readonly logger = new Logger(WebhooksController.name);

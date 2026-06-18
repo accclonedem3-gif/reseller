@@ -45,6 +45,7 @@ import {
   PendingConnectionTopupInput,
 } from "./bot-session.store";
 import { BotRenderHelpers, BotLanguage } from "./bot-render.helpers";
+import { CacheService } from "./cache.service";
 import { decimalToNumber, formatCurrency } from "./utils";
 
 const BIN_TO_BANK: Record<string, string> = {
@@ -251,7 +252,41 @@ export class TelegramBotService {
     private readonly sessions: BotSessionStore,
     @Inject(BotRenderHelpers)
     private readonly render: BotRenderHelpers,
+    @Inject(CacheService)
+    private readonly cache: CacheService,
   ) {}
+
+  // Anti-abuse flood control thresholds (per shop+Telegram user, Redis fixed windows).
+  // Humans never reach these; scripts/floods do. Short window drops bursts; the long window
+  // detects sustained scripting and auto-blacklists.
+  private static readonly FLOOD_SHORT_WINDOW_SEC = 10;
+  private static readonly FLOOD_SHORT_LIMIT = 20;
+  private static readonly FLOOD_LONG_WINDOW_SEC = 60;
+  private static readonly FLOOD_BAN_LIMIT = 120;
+
+  /**
+   * Per-(shop, user) flood gate backed by Redis fixed-window counters.
+   * Returns "ok" to proceed, "throttled" to silently drop this burst update, or "banned" when the
+   * user has been spamming long enough to auto-blacklist. FAIL-OPEN: a degraded Redis returns
+   * count 0 → "ok", so a Redis blip never blocks legitimate users.
+   */
+  private async enforceFloodControl(
+    shopId: string,
+    telegramUserId: string,
+  ): Promise<"ok" | "throttled" | "banned"> {
+    const shortCount = await this.cache.incrWithWindow(
+      `flood:s:${shopId}:${telegramUserId}`,
+      TelegramBotService.FLOOD_SHORT_WINDOW_SEC,
+    );
+    if (shortCount === 0) return "ok"; // Redis degraded → fail open
+    const longCount = await this.cache.incrWithWindow(
+      `flood:l:${shopId}:${telegramUserId}`,
+      TelegramBotService.FLOOD_LONG_WINDOW_SEC,
+    );
+    if (longCount > TelegramBotService.FLOOD_BAN_LIMIT) return "banned";
+    if (shortCount > TelegramBotService.FLOOD_SHORT_LIMIT) return "throttled";
+    return "ok";
+  }
 
   private _globalDefaultCust: { data: Record<string, unknown> | null; ts: number } | null = null;
 
@@ -353,6 +388,24 @@ export class TelegramBotService {
     this.cleanupExpiredPendingSelections();
 
     await this.ensureTelegramCustomerSeen(shop, message, callbackQuery);
+
+    // Anti-abuse flood control — a single Telegram user hammering the bot (script / L7 flood) is
+    // throttled per (shop, user) on Redis windows. Sustained spam auto-blacklists them; the
+    // blacklist check below then drops every further update cheaply. Runs before the heavy render
+    // work so floods cost almost nothing.
+    const floodUserId = String(message?.from?.id || callbackQuery?.from?.id || "");
+    if (floodUserId) {
+      const verdict = await this.enforceFloodControl(shopId, floodUserId);
+      if (verdict === "banned") {
+        await this.prisma.customer.updateMany({
+          where: { shopId, telegramUserId: floodUserId },
+          data: { blacklisted: true },
+        });
+      }
+      if (verdict !== "ok") {
+        return { ok: true, actions };
+      }
+    }
 
     // Admin lock — the "Khóa" button (admin/ctv/:id/lock) sets User/Seller.status=DISABLED +
     // Shop.status=SUSPENDED. When locked, the bot stops serving entirely and only tells the

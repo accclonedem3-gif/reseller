@@ -13,6 +13,7 @@ import type { Request } from "express";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { decryptSecret, verifyInternalRequestSignature } from "@reseller/shared/server";
+import { SkipThrottle } from "@nestjs/throttler";
 
 import { AppConfigService } from "../config/app-config.service";
 import { PrismaService } from "../db/prisma.service";
@@ -21,6 +22,10 @@ import { toDecimal } from "../lib/utils";
 import { WarrantyService } from "../warranty/warranty.service";
 import { WalletService } from "../wallet/wallet.service";
 
+// Internal endpoints are token/signature-authed and driven by our own worker — the bot polling
+// loop hits /internal/telegram/process for EVERY update from a single IP, so a per-IP throttle
+// here would throttle the whole platform. Exempt the entire controller.
+@SkipThrottle()
 @Controller("internal")
 export class InternalController {
   private readonly internalRequestMaxSkewMs = 5 * 60 * 1000;

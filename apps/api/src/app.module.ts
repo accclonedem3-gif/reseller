@@ -1,7 +1,7 @@
 import { MiddlewareConsumer, Module, NestModule, RequestMethod } from "@nestjs/common";
 import { JwtModule } from "@nestjs/jwt";
-import { Reflector } from "@nestjs/core";
-import { ThrottlerModule } from "@nestjs/throttler";
+import { APP_GUARD, Reflector } from "@nestjs/core";
+import { ThrottlerGuard, ThrottlerModule } from "@nestjs/throttler";
 
 import { AuthController } from "./auth/auth.controller";
 import { AuthService } from "./auth/auth.service";
@@ -128,6 +128,10 @@ import { MailService } from "./lib/mail.service";
     AdminProductFamilyController,
   ],
   providers: [
+    // Global L7 rate limit (default 100 req/min/IP from ThrottlerModule.forRoot). Per-route
+    // @Throttle still overrides (e.g. login 5/min); @SkipThrottle exempts internal + webhook
+    // routes so the worker/payment-IPN traffic never throttles itself.
+    { provide: APP_GUARD, useClass: ThrottlerGuard },
     AppConfigService,
     PrismaService,
     QueueService,

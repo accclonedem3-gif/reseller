@@ -1,0 +1,89 @@
+# =============================================================================
+# nginx anti-DDoS / rate-limit example for the reseller platform API
+# -----------------------------------------------------------------------------
+# This is the ONLY layer that meaningfully blunts volumetric (L3/L4) and crude
+# L7 floods — the Node app can only do per-IP / per-user app-rate-limiting.
+#
+# Apply on the VPS:  /etc/nginx/conf.d/  (the http{} zones) +  your server{} block.
+#   sudo cp nginx-anti-ddos.conf.example /etc/nginx/conf.d/anti-ddos.conf   # http{} zones only
+#   # then paste the location snippets into your existing server{} for the API host
+#   sudo nginx -t && sudo systemctl reload nginx
+# =============================================================================
+
+# ---- http{} context : define the shared-memory rate/conn zones --------------
+# Keyed on $binary_remote_addr = the REAL client IP. If Cloudflare is in front,
+# enable the real_ip block below first so this key is the visitor, not Cloudflare.
+
+# General API traffic: ~10 req/s sustained per IP, burst 20.
+limit_req_zone  $binary_remote_addr  zone=api_rl:10m   rate=10r/s;
+# Login / auth: very tight (brute-force). The app also throttles these (5/min).
+limit_req_zone  $binary_remote_addr  zone=auth_rl:10m  rate=1r/s;
+# Concurrent connections per IP (slow-loris / connection floods).
+limit_conn_zone $binary_remote_addr  zone=api_conn:10m;
+
+limit_req_status  429;
+limit_conn_status 429;
+
+# ---- (optional) Cloudflare real-IP : put visitor IP back into remote_addr ----
+# Uncomment if the API host is proxied through Cloudflare (orange cloud). Keep the
+# CF ranges current: https://www.cloudflare.com/ips/
+# set_real_ip_from 173.245.48.0/20;
+# set_real_ip_from 103.21.244.0/22;
+# set_real_ip_from 104.16.0.0/13;
+# set_real_ip_from 104.24.0.0/14;
+# set_real_ip_from 172.64.0.0/13;
+# set_real_ip_from 131.0.72.0/22;
+# ... (add the full IPv4 + IPv6 lists) ...
+# real_ip_header CF-Connecting-IP;
+
+# =============================================================================
+# server{} context : paste these into your API host's server block
+# =============================================================================
+#
+# server {
+#     listen 443 ssl http2;
+#     server_name api.altivoxai.com;
+#     ... ssl_certificate / etc ...
+#
+#     # Cap request body so a single POST can't be used to exhaust memory/disk.
+#     client_max_body_size 8m;
+#     client_body_timeout  15s;
+#     client_header_timeout 15s;
+#     send_timeout 20s;
+#
+#     # Payment IPNs + our worker callbacks must NOT be rate-limited (lost callback
+#     # = lost payment). They are signature/token-verified at the app layer.
+#     location ~ ^/api/v1/(webhooks|internal)/ {
+#         proxy_pass http://127.0.0.1:3000;
+#         proxy_set_header Host              $host;
+#         proxy_set_header X-Real-IP         $remote_addr;
+#         proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+#         proxy_set_header X-Forwarded-Proto $scheme;
+#     }
+#
+#     # Tight bucket for auth (login / register / refresh / forgot-password).
+#     location ~ ^/api/v1/auth/ {
+#         limit_req  zone=auth_rl burst=5 nodelay;
+#         limit_conn api_conn 10;
+#         proxy_pass http://127.0.0.1:3000;
+#         proxy_set_header Host              $host;
+#         proxy_set_header X-Real-IP         $remote_addr;
+#         proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+#         proxy_set_header X-Forwarded-Proto $scheme;
+#     }
+#
+#     # Everything else: general API bucket.
+#     location / {
+#         limit_req  zone=api_rl burst=20 nodelay;
+#         limit_conn api_conn 20;
+#         proxy_pass http://127.0.0.1:3000;
+#         proxy_set_header Host              $host;
+#         proxy_set_header X-Real-IP         $remote_addr;
+#         proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+#         proxy_set_header X-Forwarded-Proto $scheme;
+#     }
+# }
+#
+# NOTE: the app sets `trust proxy = 1`, so it reads the FIRST X-Forwarded-For
+# entry as the client IP. Make sure nginx sets X-Forwarded-For (above) and that
+# nginx is the only hop in front of the app (or adjust the trust-proxy count).

@@ -215,6 +215,28 @@ export class CacheService implements OnModuleDestroy {
     return p;
   }
 
+  /**
+   * Atomic fixed-window counter for rate limiting / flood control. Increments `key` and, on the
+   * first hit of a new window, sets its TTL to `windowSeconds`. Returns the current count in the
+   * window. FAIL-OPEN: circuit open / Redis error → returns 0 so a Redis blip never blocks legit
+   * traffic (callers treat 0 as "not limited").
+   */
+  async incrWithWindow(key: string, windowSeconds: number): Promise<number> {
+    if (this.circuitOpen()) return 0;
+    try {
+      const count = await this.redis.incr(key);
+      if (count === 1) {
+        await this.redis.expire(key, Math.max(1, Math.floor(windowSeconds)));
+      }
+      this.recordSuccess();
+      return count;
+    } catch (err) {
+      this.recordFailure();
+      this.logger.warn(`incrWithWindow(${key}) failed: ${(err as Error).message}`);
+      return 0;
+    }
+  }
+
   /** Process-local memo with TTL. Use for tiny hot config-style reads (no cross-instance coherence). */
   memoGet<T>(key: string): T | null {
     const entry = this.mem.get(key);

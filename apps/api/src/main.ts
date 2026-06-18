@@ -62,6 +62,10 @@ async function bootstrap() {
   }
 
   app.use(helmet());
+  // Behind nginx → trust the first proxy hop so req.ip resolves to the real client IP (from
+  // X-Forwarded-For) instead of the proxy's. The global ThrottlerGuard keys on req.ip, so without
+  // this every request would share nginx's IP and the rate limit would apply to ALL clients at once.
+  app.getHttpAdapter().getInstance().set("trust proxy", 1);
   // rawBody is preserved automatically via NestFactory rawBody:true option above.
   // The built-in body-parser will handle JSON; do NOT add a second json() middleware
   // or it will break the rawBody buffer that Binance Pay webhook verification depends on.
