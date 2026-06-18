@@ -1,5 +1,5 @@
 import { Inject, Injectable, NotFoundException } from "@nestjs/common";
-import { OrderStatus, Prisma, SellerTier, UserRole, UserStatus } from "@prisma/client";
+import { OrderStatus, Prisma, SellerTier, UserRole, UserStatus, WalletLedgerType } from "@prisma/client";
 import { decryptSecret, isMockBotToken, telegramSetCommands } from "@reseller/shared/server";
 
 import { AppConfigService } from "../config/app-config.service";
@@ -201,6 +201,84 @@ export class AdminService {
       orderCount: u.seller?._count.orders ?? 0,
       customerCount: u.seller?._count.customers ?? 0,
     }));
+  }
+
+  /**
+   * Leaderboard of sellers who referred the most other sellers, with how many of those referrals
+   * are still on a paid (active) tier and the total affiliate commission they have earned.
+   */
+  async getTopReferrers(limit = 50) {
+    const now = new Date();
+
+    const [totalGroups, activeGroups, commissionGroups] = await Promise.all([
+      this.prisma.seller.groupBy({
+        by: ["referredBySellerId"],
+        where: { referredBySellerId: { not: null } },
+        _count: { _all: true },
+      }),
+      this.prisma.seller.groupBy({
+        by: ["referredBySellerId"],
+        where: {
+          referredBySellerId: { not: null },
+          tier: { not: SellerTier.FREE },
+          tierExpiresAt: { gt: now },
+        },
+        _count: { _all: true },
+      }),
+      this.prisma.walletLedger.groupBy({
+        by: ["sellerId"],
+        where: {
+          type: { in: [WalletLedgerType.AFFILIATE_LEVEL_1, WalletLedgerType.AFFILIATE_LEVEL_2] },
+        },
+        _sum: { amount: true },
+      }),
+    ]);
+
+    const totalMap = new Map(totalGroups.map((g) => [g.referredBySellerId as string, g._count._all]));
+    const activeMap = new Map(activeGroups.map((g) => [g.referredBySellerId as string, g._count._all]));
+    const commissionMap = new Map(commissionGroups.map((g) => [g.sellerId, decimalToNumber(g._sum.amount)]));
+
+    // Candidate referrers = anyone who referred someone OR earned affiliate commission.
+    const referrerIds = new Set<string>();
+    for (const g of totalGroups) if (g.referredBySellerId) referrerIds.add(g.referredBySellerId);
+    for (const g of commissionGroups) if (decimalToNumber(g._sum.amount) > 0) referrerIds.add(g.sellerId);
+
+    if (referrerIds.size === 0) return [];
+
+    const sellers = await this.prisma.seller.findMany({
+      where: { id: { in: [...referrerIds] } },
+      select: {
+        id: true,
+        displayName: true,
+        tier: true,
+        referralCode: true,
+        user: { select: { email: true } },
+      },
+    });
+    const sellerMap = new Map(sellers.map((s) => [s.id, s]));
+
+    const rows = [...referrerIds].map((id) => {
+      const s = sellerMap.get(id);
+      return {
+        sellerId: id,
+        displayName: s?.displayName ?? null,
+        email: s?.user?.email ?? null,
+        tier: s?.tier ? s.tier.toLowerCase() : null,
+        referralCode: s?.referralCode ?? null,
+        referredCount: totalMap.get(id) ?? 0,
+        activeReferredCount: activeMap.get(id) ?? 0,
+        commissionVnd: commissionMap.get(id) ?? 0,
+      };
+    });
+
+    rows.sort(
+      (a, b) =>
+        b.referredCount - a.referredCount ||
+        b.activeReferredCount - a.activeReferredCount ||
+        b.commissionVnd - a.commissionVnd,
+    );
+
+    return rows.slice(0, limit);
   }
 
   async updateSellerTier(userId: string, tier: SellerTier) {

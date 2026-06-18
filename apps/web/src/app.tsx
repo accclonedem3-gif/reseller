@@ -4,6 +4,7 @@ import { useAuth } from "@/auth/auth-provider";
 import { AppShellPrime } from "@/components/layout/app-shell-prime";
 import { AdminCtvPage } from "@/pages/admin-ctv-page";
 import { AdminOverviewPage } from "@/pages/admin-overview-page";
+import { AdminTopReferrersPage } from "@/pages/admin-top-referrers-page";
 import { AdminOrdersPage } from "@/pages/admin-orders-page";
 import { AdminWithdrawsPage } from "@/pages/admin-withdraws-page";
 import { AdminDiscountCodesPage } from "@/pages/admin-discount-codes-page";
@@ -122,6 +123,7 @@ export function App() {
         <Route element={<AdminOnlyLayout />}>
           <Route path="/admin" element={<AdminOverviewPage />} />
           <Route path="/admin/ctv" element={<AdminCtvPage />} />
+          <Route path="/admin/top-referrers" element={<AdminTopReferrersPage />} />
           <Route path="/admin/orders" element={<AdminOrdersPage />} />
           <Route path="/admin/withdraws" element={<AdminWithdrawsPage />} />
           <Route path="/admin/discount-codes" element={<AdminDiscountCodesPage />} />

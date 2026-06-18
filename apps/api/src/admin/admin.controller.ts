@@ -59,6 +59,11 @@ export class AdminController {
     return this.adminService.getRecentSellers(10);
   }
 
+  @Get("top-referrers")
+  getTopReferrers(@Query("limit") limit?: string) {
+    return this.adminService.getTopReferrers(limit ? parseInt(limit) : 50);
+  }
+
   @Get("sellers")
   listSellers(@Query() query: ListSellersQueryDto) {
     return this.adminService.listSellers({

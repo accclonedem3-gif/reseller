@@ -354,6 +354,27 @@ export class TelegramBotService {
 
     await this.ensureTelegramCustomerSeen(shop, message, callbackQuery);
 
+    // Admin lock — the "Khóa" button (admin/ctv/:id/lock) sets User/Seller.status=DISABLED +
+    // Shop.status=SUSPENDED. When locked, the bot stops serving entirely and only tells the
+    // customer it is locked. Polling stays on (webhookStatus untouched) so this reply still sends.
+    if (shop.seller?.status === "DISABLED" || shop.status === "SUSPENDED") {
+      const lockChatId = message?.chat?.id ?? callbackQuery?.message?.chat?.id;
+      if (lockChatId) {
+        const lockLang = await this.getCustomerLanguage(
+          shopId,
+          String(message?.from?.id || callbackQuery?.from?.id || ""),
+        );
+        const lockMsg =
+          lockLang === "en"
+            ? "🔒 This bot has been locked. Please contact the admin."
+            : lockLang === "th"
+              ? "🔒 บอทนี้ถูกล็อก กรุณาติดต่อแอดมิน"
+              : "🔒 Bot đã bị khóa. Vui lòng liên hệ admin.";
+        await this.sendText(outboundToken, lockChatId, lockMsg, actions);
+      }
+      return { ok: true, actions };
+    }
+
     // "Bling" (custom-emoji) is attempted whenever a button has a cusid configured — only a premium
     // owner can pick custom emoji, so that IS the premium signal — UNLESS this bot self-learned it
     // can't actually emit them (cusidEmitOk === false → force text icons). Read from the already-
@@ -2167,6 +2188,30 @@ export class TelegramBotService {
     );
   }
 
+  /**
+   * When the seller's plan has lapsed to FREE, customers can still browse the catalog but cannot
+   * create orders. Returns true (and notifies the customer) when ordering is blocked, so callers
+   * should `return` immediately. Covers every order-creation path (handleBuy + handleBuyWithWallet).
+   */
+  private async blockIfFreeTier(
+    shopId: string,
+    token: string,
+    chatId: string | number,
+    language: BotLanguage,
+    actions: unknown[],
+  ): Promise<boolean> {
+    const shop = await this.shopsService.getSellerShopByShopId(shopId);
+    if (shop.seller?.tier !== SellerTier.FREE) return false;
+    const msg =
+      language === "en"
+        ? "⚠️ This shop is temporarily not accepting orders. Please contact the shop/admin."
+        : language === "th"
+          ? "⚠️ ขณะนี้ร้านยังไม่รับคำสั่งซื้อ กรุณาติดต่อร้าน/แอดมิน"
+          : "⚠️ Shop hiện tạm ngưng nhận đơn. Vui lòng liên hệ shop/admin.";
+    await this.sendText(token, chatId, msg, actions);
+    return true;
+  }
+
   private async handleBuy(
     shopId: string,
     token: string,
@@ -2183,6 +2228,8 @@ export class TelegramBotService {
     paymentProvider?: PaymentProvider,
     language: BotLanguage = "vi",
   ) {
+    if (await this.blockIfFreeTier(shopId, token, customer.telegramChatId, language, actions)) return;
+
     await this.clearPendingQuantitySelection(shopId, customer.telegramUserId);
     await this.clearPendingPaymentSelection(shopId, customer.telegramUserId);
     await this.clearPendingTxHashSubmission(shopId, customer.telegramUserId);
@@ -2273,6 +2320,8 @@ export class TelegramBotService {
     actions: unknown[],
     language: BotLanguage = "vi",
   ) {
+    if (await this.blockIfFreeTier(shopId, token, customer.telegramChatId, language, actions)) return;
+
     await this.clearPendingQuantitySelection(shopId, customer.telegramUserId);
     await this.clearPendingPaymentSelection(shopId, customer.telegramUserId);
     await this.clearPendingTxHashSubmission(shopId, customer.telegramUserId);
