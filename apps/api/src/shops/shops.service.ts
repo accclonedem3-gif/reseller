@@ -419,13 +419,24 @@ export class ShopsService {
       // already-switched shops that were left inconsistent before this fix (no re-paste needed).
       const pcAfter = await tx.providerConfig.findUnique({
         where: { shopId: shop.id },
-        select: { providerKind: true, internalSourceConnectionId: true },
+        select: { providerKind: true, internalSourceConnectionId: true, baseUrl: true },
       });
       if (pcAfter && pcAfter.providerKind === ProviderKind.EXTERNAL && !pcAfter.internalSourceConnectionId) {
         await tx.downstreamSourceConnection.updateMany({
           where: { downstreamShopId: shop.id, status: DownstreamSourceConnectionStatus.ACTIVE },
           data: { status: DownstreamSourceConnectionStatus.DISABLED },
         });
+        // ULTRA-connect set baseUrl to our own internal buyer API (`<appPublicUrl>/api/v1`). After
+        // switching to canboso the FE keeps echoing that stale URL back, so provider calls hit our
+        // internal endpoint (expects an isk_ key) and reject the canboso tgb_ key with 400
+        // "Buyer key không hợp lệ". Reset a leaked internal baseUrl to the external provider default.
+        const internalBase = `${String(this.config.appPublicUrl || "").replace(/\/$/, "")}/api/v1`;
+        if (pcAfter.baseUrl && pcAfter.baseUrl.replace(/\/$/, "") === internalBase) {
+          await tx.providerConfig.update({
+            where: { shopId: shop.id },
+            data: { baseUrl: this.config.providerBaseUrl },
+          });
+        }
       }
 
       const explicitProvider = dto.paymentProvider && ["PAYOS", "PAY2S", "WEB2M", "BINANCE_PAY", "MOCK", "BINANCE", "OKX", "USDT_TRC20"].includes(dto.paymentProvider)
