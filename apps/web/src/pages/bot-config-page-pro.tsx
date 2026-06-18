@@ -531,9 +531,19 @@ export function BotConfigPage() {
   }, [configQuery.data]);
 
   const saveMutation = useMutation({
-    mutationFn: async () => api.put("/bot-config", buildBotConfigPayload(form)),
+    mutationFn: async () => {
+      const payload = buildBotConfigPayload(form);
+      // The Source-key box is driven by `sourceKeyInput`, which can desync from
+      // `form.providerBuyerKey` (the form re-seeds providerBuyerKey="" on every configQuery
+      // refetch — e.g. window focus after copying the key from the canboso bot). Persist the
+      // value actually shown in the box so a typed canboso buyer key isn't dropped on save.
+      const sk = sourceKeyInput.trim();
+      if (sk && !sk.startsWith("isk_")) payload.providerBuyerKey = sk;
+      return api.put("/bot-config", payload);
+    },
     onSuccess: async () => {
       showToast({ tone: "success", message: t.toastSaveSuccess });
+      setSourceKeyInput("");
       setForm((current) => ({
         ...current,
         botToken: "",
