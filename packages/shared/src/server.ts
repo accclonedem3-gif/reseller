@@ -8,6 +8,7 @@ export * from "./server/web2m";
 export * from "./server/telegram";
 export * from "./server/invoice-template";
 export * from "./server/restock-template";
+export * from "./server/schedule";
 export * from "./server/mock";
 export * from "./server/internal-auth";
 export * from "./server/warranty";

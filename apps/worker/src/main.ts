@@ -2365,19 +2365,8 @@ async function reconcilePendingInternalSourceOrders() {
     }
 }
 function computeNextRunAt(sendTime, frequency, repeatDay) {
-    const [h, m] = sendTime.split(":").map(Number);
-    const now = new Date();
-    if (frequency === "weekly") {
-        const targetDay = repeatDay ?? 1;
-        const currentDay = now.getDay();
-        let daysUntil = (targetDay - currentDay + 7) % 7;
-        const candidate = new Date(now.getFullYear(), now.getMonth(), now.getDate() + daysUntil, h, m, 0, 0);
-        if (candidate <= now) daysUntil += 7;
-        return new Date(now.getFullYear(), now.getMonth(), now.getDate() + daysUntil, h, m, 0, 0);
-    }
-    const next = new Date(now.getFullYear(), now.getMonth(), now.getDate(), h, m, 0, 0);
-    if (next <= now) next.setDate(next.getDate() + 1);
-    return next;
+    // Vietnam wall-clock (UTC+7) — this process runs UTC, so the old local-time math fired 7h late.
+    return server_1.computeNextVnRunAt(sendTime, frequency, repeatDay);
 }
 async function sweepScheduledBroadcasts(broadcastQueue) {
     const now = new Date();
