@@ -1,7 +1,7 @@
-import { useRef, useState } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Calendar, Image as ImageIcon, RefreshCw, RotateCcw, Send, Trash2, X } from "lucide-react";
+import { Calendar, Copy, Eye, Image as ImageIcon, Pencil, RefreshCw, RotateCcw, Send, Trash2, X } from "lucide-react";
 
 import { api } from "@/lib/api";
 import { useToast } from "@/components/ui/toast";
@@ -16,6 +16,25 @@ function fmtDate(dateStr: string) {
   const dd = String(d.getDate()).padStart(2, "0");
   const mo = String(d.getMonth() + 1).padStart(2, "0");
   return `${hh}:${mm} · ${dd}/${mo}`;
+}
+
+// Stored scheduledAt is a UTC instant for a Vietnam wall-clock — render it back to VN wall-clock
+// for an <input type="datetime-local"> value.
+function toVnDatetimeLocal(iso: string) {
+  if (!iso) return "";
+  const d = new Date(new Date(iso).getTime() + 7 * 60 * 60 * 1000);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())}T${p(d.getUTCHours())}:${p(d.getUTCMinutes())}`;
+}
+
+function IconBtn({ title, onClick, disabled, color, children }: { title: string; onClick: () => void; disabled?: boolean; color?: string; children: ReactNode }) {
+  return (
+    <button type="button" title={title} disabled={disabled} onClick={onClick}
+      className="rounded-lg p-1.5 transition hover:opacity-70 disabled:opacity-40"
+      style={{ background: "var(--surface)", border: "1px solid var(--bd)", color: color || "var(--tx-f)" }}>
+      {children}
+    </button>
+  );
 }
 
 function statusChip(status: string) {
@@ -110,10 +129,11 @@ function BroadcastPreviewPopup({ item, onClose }: { item: any; onClose: () => vo
   );
 }
 
-function BroadcastCard({ item, onRetry, onResend, retrying }: { item: any; onRetry: () => void; onResend: () => void; retrying: boolean }) {
+function BroadcastCard({ item, onRetry, onResend, onEdit, onCopy, retrying }: { item: any; onRetry: () => void; onResend: () => void; onEdit: () => void; onCopy: () => void; retrying: boolean }) {
   const [showFailed, setShowFailed] = useState(false);
   const [showPreview, setShowPreview] = useState(false);
   const chip = statusChip(item.status);
+  const isScheduled = String(item.status).toUpperCase() === "SCHEDULED";
 
   return (
     <div className="rounded-2xl p-4" style={{ background: "var(--inp)", border: "1px solid var(--bd)" }}>
@@ -161,21 +181,19 @@ function BroadcastCard({ item, onRetry, onResend, retrying }: { item: any; onRet
           )}
         </div>
         <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() => setShowPreview(true)}
-            className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[11px] font-black transition hover:opacity-80"
-            style={{ background: "var(--surface)", border: "1px solid var(--bd)", color: "var(--tx-f)" }}>
-            Xem
-          </button>
-          <button
-            type="button"
-            disabled={retrying || item.status === "SENDING"}
-            onClick={item.failedCount > 0 ? onRetry : onResend}
-            className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[11px] font-black transition hover:opacity-80 disabled:opacity-40"
-            style={{ background: "rgba(52,211,153,0.1)", border: "1px solid rgba(52,211,153,0.25)", color: "rgb(52,211,153)" }}>
-            <RotateCcw className="h-3 w-3" /> Đăng lại
-          </button>
+          <IconBtn title="Xem" onClick={() => setShowPreview(true)}><Eye className="h-3.5 w-3.5" /></IconBtn>
+          {isScheduled && <IconBtn title="Sửa" onClick={onEdit}><Pencil className="h-3.5 w-3.5" /></IconBtn>}
+          <IconBtn title="Copy (tạo bản mới)" onClick={onCopy}><Copy className="h-3.5 w-3.5" /></IconBtn>
+          {!isScheduled && (
+            <button
+              type="button"
+              disabled={retrying || item.status === "SENDING"}
+              onClick={item.failedCount > 0 ? onRetry : onResend}
+              className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[11px] font-black transition hover:opacity-80 disabled:opacity-40"
+              style={{ background: "rgba(52,211,153,0.1)", border: "1px solid rgba(52,211,153,0.25)", color: "rgb(52,211,153)" }}>
+              <RotateCcw className="h-3 w-3" /> {item.failedCount > 0 ? "Gửi lại lỗi" : "Đăng lại"}
+            </button>
+          )}
         </div>
       </div>
       {showFailed && <FailedRecipientsPanel broadcastId={item.id} />}
@@ -186,7 +204,46 @@ function BroadcastCard({ item, onRetry, onResend, retrying }: { item: any; onRet
 
 // ─── ScheduleCard ────────────────────────────────────────────────────────────
 
-function ScheduleCard({ item, onToggle, onDelete, toggling, deleting }: { item: any; onToggle: () => void; onDelete: () => void; toggling: boolean; deleting: boolean }) {
+function scheduleFreqText(item: any) {
+  return `${item.frequency === "daily" ? "Hằng ngày" : `Hằng tuần · ${["CN", "T2", "T3", "T4", "T5", "T6", "T7"][item.repeatDay ?? 1]}`} · ${item.sendTime}`;
+}
+
+function SchedulePreviewPopup({ item, onClose }: { item: any; onClose: () => void }) {
+  return createPortal(
+    <>
+      <div className="fixed inset-0 z-[80]" style={{ background: "rgba(0,0,0,0.55)" }} onClick={onClose} />
+      <div className="fixed left-1/2 top-1/2 z-[81] w-full max-w-md -translate-x-1/2 -translate-y-1/2 rounded-2xl shadow-2xl" style={{ background: "var(--surface)", border: "1px solid var(--bd)" }}>
+        <div className="flex items-center justify-between px-5 py-4" style={{ borderBottom: "1px solid var(--bd)" }}>
+          <div className="flex items-center gap-2">
+            <div className="flex h-8 w-8 items-center justify-center rounded-xl" style={{ background: "rgba(167,139,250,0.12)" }}>
+              <Calendar className="h-3.5 w-3.5 text-violet-400" />
+            </div>
+            <div>
+              <p className="text-[13px] font-black" style={{ color: "var(--tx)" }}>{item.title || "Lịch gửi tự động"}</p>
+              <p className="text-[11px]" style={{ color: "var(--tx-f)" }}>{scheduleFreqText(item)}</p>
+            </div>
+          </div>
+          <button type="button" onClick={onClose} className="rounded-lg p-1.5 transition hover:opacity-70" style={{ color: "var(--tx-f)" }}>
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+        {item.imageUrl && <img src={item.imageUrl} alt="" className="max-h-48 w-full object-cover" />}
+        <div className="px-5 py-4">
+          <p className="whitespace-pre-wrap text-[13px] leading-relaxed" style={{ color: "var(--tx)" }}>{item.message}</p>
+          <div className="mt-3 flex flex-wrap gap-3 text-[11px]" style={{ color: "var(--tx-f)" }}>
+            <span>{item.isActive ? "🟢 Đang bật" : "⚪ Đã tắt"}</span>
+            {item.lastRunAt && <span>Chạy lần cuối: {fmtDate(item.lastRunAt)}</span>}
+            {item.nextRunAt && <span>Lần kế: {fmtDate(item.nextRunAt)}</span>}
+          </div>
+        </div>
+      </div>
+    </>,
+    document.body,
+  );
+}
+
+function ScheduleCard({ item, onToggle, onDelete, onEdit, onCopy, toggling, deleting }: { item: any; onToggle: () => void; onDelete: () => void; onEdit: () => void; onCopy: () => void; toggling: boolean; deleting: boolean }) {
+  const [showPreview, setShowPreview] = useState(false);
   return (
     <div className="rounded-2xl p-4" style={{ background: "var(--inp)", border: "1px solid var(--bd)" }}>
       <div className="flex items-start gap-3">
@@ -196,27 +253,27 @@ function ScheduleCard({ item, onToggle, onDelete, toggling, deleting }: { item: 
         <div className="min-w-0 flex-1">
           <div className="flex items-start justify-between gap-2">
             <p className="text-[13px] font-black" style={{ color: "var(--tx)" }}>{item.title || "Lịch gửi tự động"}</p>
-            <div className="flex shrink-0 items-center gap-2">
-              <button type="button" disabled={toggling} onClick={onToggle}
-                className="flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] font-black transition hover:opacity-80 disabled:opacity-40"
-                style={{ background: item.isActive ? "rgba(52,211,153,0.12)" : "var(--surface)", border: `1px solid ${item.isActive ? "rgba(52,211,153,0.3)" : "var(--bd)"}`, color: item.isActive ? "rgb(52,211,153)" : "var(--tx-f)" }}>
-                <span className={`h-1.5 w-1.5 rounded-full ${item.isActive ? "bg-emerald-400" : "bg-slate-500"}`} />
-                {item.isActive ? "Đang bật" : "Đã tắt"}
-              </button>
-              <button type="button" disabled={deleting} onClick={onDelete}
-                className="rounded-lg p-1.5 transition hover:opacity-70 disabled:opacity-40"
-                style={{ color: "var(--tx-f)" }}>
-                <Trash2 className="h-3.5 w-3.5" />
-              </button>
-            </div>
+            <button type="button" disabled={toggling} onClick={onToggle}
+              className="flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] font-black transition hover:opacity-80 disabled:opacity-40"
+              style={{ background: item.isActive ? "rgba(52,211,153,0.12)" : "var(--surface)", border: `1px solid ${item.isActive ? "rgba(52,211,153,0.3)" : "var(--bd)"}`, color: item.isActive ? "rgb(52,211,153)" : "var(--tx-f)" }}>
+              <span className={`h-1.5 w-1.5 rounded-full ${item.isActive ? "bg-emerald-400" : "bg-slate-500"}`} />
+              {item.isActive ? "Đang bật" : "Đã tắt"}
+            </button>
           </div>
           <p className="mt-0.5 line-clamp-2 text-[12px]" style={{ color: "var(--tx-f)" }}>{item.message}</p>
           <p className="mt-1 text-[11px]" style={{ color: "var(--tx-f)" }}>
-            {item.frequency === "daily" ? "Hằng ngày" : `Hằng tuần · ${["CN","T2","T3","T4","T5","T6","T7"][item.repeatDay ?? 1]}`} · {item.sendTime}
+            {scheduleFreqText(item)}
             {item.lastRunAt && ` · Chạy lần cuối: ${fmtDate(item.lastRunAt)}`}
           </p>
+          <div className="mt-2.5 flex items-center gap-2">
+            <IconBtn title="Xem" onClick={() => setShowPreview(true)}><Eye className="h-3.5 w-3.5" /></IconBtn>
+            <IconBtn title="Sửa" onClick={onEdit}><Pencil className="h-3.5 w-3.5" /></IconBtn>
+            <IconBtn title="Copy (tạo bản mới)" onClick={onCopy}><Copy className="h-3.5 w-3.5" /></IconBtn>
+            <IconBtn title="Xoá" onClick={onDelete} disabled={deleting} color="rgb(248,113,113)"><Trash2 className="h-3.5 w-3.5" /></IconBtn>
+          </div>
         </div>
       </div>
+      {showPreview && <SchedulePreviewPopup item={item} onClose={() => setShowPreview(false)} />}
     </div>
   );
 }
@@ -248,6 +305,8 @@ export function BroadcastsPage() {
   const [frequency, setFrequency] = useState("daily");
   const [repeatDay, setRepeatDay] = useState(1);
   const [uploadingImage, setUploadingImage] = useState(false);
+  // When set, the composer edits an existing record (save → PUT) instead of creating a new one.
+  const [editing, setEditing] = useState<{ type: "schedule" | "broadcast"; id: string } | null>(null);
 
   const broadcastsQuery = useQuery({
     queryKey: ["broadcasts"],
@@ -276,7 +335,38 @@ export function BroadcastsPage() {
   function resetForm() {
     setTitle(""); setMessage(""); setImageUrl("");
     setScheduledAt(""); setSendTime("09:00"); setFrequency("daily"); setRepeatDay(1);
+    setEditing(null);
     if (fileInputRef.current) fileInputRef.current.value = "";
+  }
+
+  function loadIntoComposer(item: any, kind: "schedule" | "broadcast") {
+    setTitle(item.title || "");
+    setMessage(item.message || "");
+    setImageUrl(item.imageUrl || "");
+    if (kind === "schedule") {
+      setMode("recurring");
+      setSendTime(item.sendTime || "09:00");
+      setFrequency(item.frequency || "daily");
+      setRepeatDay(item.repeatDay ?? 1);
+    } else if (String(item.status).toUpperCase() === "SCHEDULED" && item.scheduledAt) {
+      setMode("scheduled");
+      setScheduledAt(toVnDatetimeLocal(item.scheduledAt));
+    } else {
+      setMode("immediate");
+    }
+    if (typeof window !== "undefined") window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  function handleEdit(item: any, kind: "schedule" | "broadcast") {
+    loadIntoComposer(item, kind);
+    setEditing({ type: kind, id: item.id });
+    showToast({ message: "Đang sửa — bấm Cập nhật để lưu", tone: "success" });
+  }
+
+  function handleCopy(item: any, kind: "schedule" | "broadcast") {
+    loadIntoComposer(item, kind);
+    setEditing(null);
+    showToast({ message: "Đã copy nội dung vào trình soạn", tone: "success" });
   }
 
   async function handleImageFile(file: File) {
@@ -312,6 +402,35 @@ export function BroadcastsPage() {
     onError: (err: any) => showToast({ message: err?.response?.data?.message || "Lỗi", tone: "error" }),
   });
 
+  const updateMutation = useMutation({
+    mutationFn: async () => {
+      if (!editing) return;
+      if (editing.type === "schedule") {
+        return api.put(`/broadcasts/schedules/${editing.id}`, {
+          title,
+          message,
+          imageUrl,
+          sendTime,
+          frequency,
+          repeatDay: frequency === "weekly" ? repeatDay : undefined,
+        });
+      }
+      return api.put(`/broadcasts/${editing.id}`, {
+        title,
+        message,
+        imageUrl,
+        scheduledAt: scheduledAt || undefined,
+      });
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["broadcasts"] });
+      void queryClient.invalidateQueries({ queryKey: ["broadcasts", "schedules"] });
+      showToast({ message: "Đã cập nhật", tone: "success" });
+      resetForm();
+    },
+    onError: (err: any) => showToast({ message: err?.response?.data?.message || "Lỗi cập nhật", tone: "error" }),
+  });
+
   const retryMutation = useMutation({
     mutationFn: async (id: string) => api.post(`/broadcasts/${id}/retry`),
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["broadcasts"] }),
@@ -330,11 +449,15 @@ export function BroadcastsPage() {
     onError: (err: any) => showToast({ message: err?.response?.data?.message || "Lỗi", tone: "error" }),
   });
 
-  const canSubmit = message.trim().length > 0 && !createMutation.isPending &&
+  const isEditing = Boolean(editing);
+  const busy = createMutation.isPending || updateMutation.isPending;
+
+  const canSubmit = message.trim().length > 0 && !busy &&
     (mode !== "scheduled" || Boolean(scheduledAt));
 
-  const submitLabel = createMutation.isPending
+  const submitLabel = busy
     ? "Đang xử lý..."
+    : isEditing ? "Cập nhật"
     : mode === "recurring" ? "Lưu & bật tự động"
     : mode === "scheduled" ? "Lên lịch gửi"
     : "Gửi ngay";
@@ -390,13 +513,27 @@ export function BroadcastsPage() {
             <h2 className="text-base font-black" style={{ color: "var(--tx)" }}>Soạn & gửi broadcast</h2>
           </div>
 
+          {/* Editing banner */}
+          {isEditing && (
+            <div className="mb-4 flex items-center justify-between gap-2 rounded-2xl px-4 py-3" style={{ background: "rgba(167,139,250,0.1)", border: "1px solid rgba(167,139,250,0.3)" }}>
+              <p className="text-[12px] font-black" style={{ color: "rgb(167,139,250)" }}>
+                ✏️ Đang sửa {editing?.type === "schedule" ? "lịch gửi tự động" : "broadcast đã lên lịch"}
+              </p>
+              <button type="button" onClick={resetForm}
+                className="rounded-lg px-2.5 py-1 text-[11px] font-black transition hover:opacity-80"
+                style={{ background: "var(--surface)", border: "1px solid var(--bd)", color: "var(--tx-f)" }}>
+                Huỷ sửa
+              </button>
+            </div>
+          )}
+
           {/* Mode selector */}
           <div className="grid grid-cols-3 gap-2 mb-5">
             {MODES.map(({ key, icon: Icon, label, desc }) => {
               const active = mode === key;
               return (
-                <button key={key} type="button" onClick={() => setMode(key)}
-                  className="rounded-2xl p-4 text-left transition hover:opacity-90"
+                <button key={key} type="button" disabled={isEditing} onClick={() => !isEditing && setMode(key)}
+                  className="rounded-2xl p-4 text-left transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
                   style={{ background: active ? "rgba(249,115,22,0.08)" : "var(--inp)", border: `1.5px solid ${active ? "rgb(249,115,22)" : "var(--bd)"}` }}>
                   <Icon className={`h-4 w-4 mb-2 ${active ? "text-orange-400" : ""}`} style={!active ? { color: "var(--tx-f)" } : undefined} />
                   <p className="text-[13px] font-black" style={{ color: active ? "rgb(249,115,22)" : "var(--tx)" }}>{label}</p>
@@ -519,7 +656,7 @@ export function BroadcastsPage() {
 
           {/* Submit */}
           <div className="mt-5 flex items-center gap-2">
-            <button type="button" disabled={!canSubmit} onClick={() => createMutation.mutate()}
+            <button type="button" disabled={!canSubmit} onClick={() => (isEditing ? updateMutation.mutate() : createMutation.mutate())}
               className="flex flex-1 items-center justify-center gap-2 rounded-xl py-3 text-[13px] font-black transition hover:opacity-80 disabled:opacity-40"
               style={{ background: "rgb(249,115,22)", color: "#fff" }}>
               <Send className="h-4 w-4" /> {submitLabel}
@@ -566,6 +703,8 @@ export function BroadcastsPage() {
               <ScheduleCard key={s.id} item={s}
                 onToggle={() => toggleMutation.mutate(s.id)}
                 onDelete={() => deleteMutation.mutate(s.id)}
+                onEdit={() => handleEdit(s, "schedule")}
+                onCopy={() => handleCopy(s, "schedule")}
                 toggling={toggleMutation.isPending}
                 deleting={deleteMutation.isPending}
               />
@@ -586,7 +725,10 @@ export function BroadcastsPage() {
                   setMessage(item.message || "");
                   setImageUrl(item.imageUrl || "");
                   setMode("immediate");
+                  setEditing(null);
                 }}
+                onEdit={() => handleEdit(item, "broadcast")}
+                onCopy={() => handleCopy(item, "broadcast")}
                 retrying={retryMutation.isPending}
               />
             ))}

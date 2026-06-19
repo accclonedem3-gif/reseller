@@ -9,7 +9,7 @@ import { JwtAuthGuard } from "../common/guards/jwt-auth.guard";
 import { SellerCapabilitiesGuard } from "../common/guards/seller-capabilities.guard";
 import type { AuthenticatedUser } from "../types";
 
-import { CreateBroadcastDto } from "./broadcasts.dto";
+import { CreateBroadcastDto, UpdateBroadcastScheduleDto, UpdateScheduledBroadcastDto } from "./broadcasts.dto";
 import { BroadcastsService } from "./broadcasts.service";
 
 @Controller("broadcasts")
@@ -40,6 +40,17 @@ export class BroadcastsController {
     return this.broadcastsService.listSchedules(user);
   }
 
+  @Put("schedules/:id")
+  @UseGuards(SellerCapabilitiesGuard)
+  @RequireSellerCapabilities("broadcast_manage")
+  updateSchedule(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param("id") id: string,
+    @Body() body: UpdateBroadcastScheduleDto,
+  ) {
+    return this.broadcastsService.updateSchedule(user, id, body);
+  }
+
   @Put("schedules/:id/toggle")
   @UseGuards(SellerCapabilitiesGuard)
   @RequireSellerCapabilities("broadcast_manage")
@@ -58,6 +69,17 @@ export class BroadcastsController {
     @Param("id") id: string,
   ) {
     return this.broadcastsService.deleteSchedule(user, id);
+  }
+
+  @Put(":id")
+  @UseGuards(SellerCapabilitiesGuard)
+  @RequireSellerCapabilities("broadcast_manage")
+  updateScheduledBroadcast(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param("id") id: string,
+    @Body() body: UpdateScheduledBroadcastDto,
+  ) {
+    return this.broadcastsService.updateScheduledBroadcast(user, id, body);
   }
 
   @Get(":id/failed")

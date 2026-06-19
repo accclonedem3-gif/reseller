@@ -11,7 +11,7 @@ import { QueueService } from "../lib/queue.service";
 import { ShopsService } from "../shops/shops.service";
 import type { AuthenticatedUser } from "../types";
 
-import type { CreateBroadcastDto } from "./broadcasts.dto";
+import type { CreateBroadcastDto, UpdateBroadcastScheduleDto, UpdateScheduledBroadcastDto } from "./broadcasts.dto";
 
 @Injectable()
 export class BroadcastsService {
@@ -104,6 +104,60 @@ export class BroadcastsService {
     return this.prisma.broadcastSchedule.findMany({
       where: { shopId: shop.id },
       orderBy: { createdAt: "desc" },
+    });
+  }
+
+  async updateSchedule(user: AuthenticatedUser, scheduleId: string, dto: UpdateBroadcastScheduleDto) {
+    const shop = await this.shopsService.getSellerShop(user.id);
+    const schedule = await this.prisma.broadcastSchedule.findFirst({
+      where: { id: scheduleId, shopId: shop.id },
+    });
+    if (!schedule) throw new BadRequestException("Schedule not found.");
+
+    const sendTime = dto.sendTime ?? schedule.sendTime;
+    const frequency = dto.frequency ?? schedule.frequency;
+    const repeatDay = frequency === "weekly" ? (dto.repeatDay ?? schedule.repeatDay ?? 1) : null;
+
+    return this.prisma.broadcastSchedule.update({
+      where: { id: scheduleId },
+      data: {
+        ...(dto.title !== undefined ? { title: dto.title || null } : {}),
+        ...(dto.message !== undefined ? { message: dto.message } : {}),
+        ...(dto.imageUrl !== undefined ? { imageUrl: dto.imageUrl || null } : {}),
+        sendTime,
+        frequency,
+        repeatDay,
+        // Keep the next fire in sync with the new timing (Vietnam wall-clock).
+        ...(schedule.isActive ? { nextRunAt: computeNextVnRunAt(sendTime, frequency, repeatDay) } : {}),
+      },
+    });
+  }
+
+  async updateScheduledBroadcast(user: AuthenticatedUser, broadcastId: string, dto: UpdateScheduledBroadcastDto) {
+    const shop = await this.shopsService.getSellerShop(user.id);
+    const broadcast = await this.prisma.broadcast.findFirst({
+      where: { id: broadcastId, shopId: shop.id },
+    });
+    if (!broadcast) throw new BadRequestException("Broadcast not found.");
+    if (broadcast.status !== "SCHEDULED") {
+      throw new BadRequestException("Chỉ sửa được broadcast đang chờ lên lịch.");
+    }
+
+    let scheduledAt: Date | undefined;
+    if (dto.scheduledAt !== undefined) {
+      const parsed = parseVnWallClock(dto.scheduledAt);
+      if (!parsed) throw new BadRequestException("Invalid scheduledAt.");
+      scheduledAt = parsed;
+    }
+
+    return this.prisma.broadcast.update({
+      where: { id: broadcastId },
+      data: {
+        ...(dto.title !== undefined ? { title: dto.title || null } : {}),
+        ...(dto.message !== undefined ? { message: dto.message } : {}),
+        ...(dto.imageUrl !== undefined ? { imageUrl: dto.imageUrl || null } : {}),
+        ...(scheduledAt ? { scheduledAt } : {}),
+      },
     });
   }
 
