@@ -4,6 +4,15 @@ import {
   DEFAULT_PROVIDER_BASE_URL,
   DEFAULT_PROVIDER_NAME,
 } from "../constants";
+import {
+  isRoboticvnBaseUrl,
+  fetchRoboticvnProducts,
+  fetchRoboticvnBalance,
+  purchaseFromRoboticvn,
+  fetchRoboticvnOrderStatus,
+} from "./roboticvn";
+
+export { isRoboticvnBaseUrl } from "./roboticvn";
 
 export interface ProviderCredentials {
   baseUrl?: string;
@@ -215,6 +224,9 @@ export async function verifyProviderConnection(credentials: ProviderCredentials)
 export async function fetchProviderProducts(
   credentials: ProviderCredentials,
 ): Promise<ProviderProduct[]> {
+  if (isRoboticvnBaseUrl(credentials.baseUrl)) {
+    return fetchRoboticvnProducts(credentials);
+  }
   if (!credentials.buyerKey) {
     throw new Error("Provider buyer key is missing.");
   }
@@ -258,6 +270,9 @@ export async function fetchProviderProducts(
 export async function fetchProviderBalance(
   credentials: ProviderCredentials,
 ): Promise<ProviderBalanceResult> {
+  if (isRoboticvnBaseUrl(credentials.baseUrl)) {
+    return fetchRoboticvnBalance(credentials);
+  }
   if (!credentials.buyerKey) {
     throw new Error("Provider buyer key is missing.");
   }
@@ -304,6 +319,9 @@ export async function purchaseFromProvider(
   credentials: ProviderCredentials,
   input: ProviderPurchaseInput,
 ): Promise<ProviderPurchaseResult> {
+  if (isRoboticvnBaseUrl(credentials.baseUrl)) {
+    return purchaseFromRoboticvn(credentials, input);
+  }
   if (!credentials.buyerKey) {
     throw new Error("Provider buyer key is missing.");
   }
@@ -386,6 +404,9 @@ export async function fetchProviderOrderStatus(
   credentials: ProviderCredentials,
   input: ProviderOrderStatusInput,
 ): Promise<ProviderOrderStatusResult> {
+  if (isRoboticvnBaseUrl(credentials.baseUrl)) {
+    return fetchRoboticvnOrderStatus(credentials, input);
+  }
   if (!credentials.buyerKey) {
     throw new Error("Provider buyer key is missing.");
   }

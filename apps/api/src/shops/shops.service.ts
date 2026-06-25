@@ -27,6 +27,7 @@ import {
   getMockTelegramBotInfo,
   isMockBotToken,
   isMockBuyerKey,
+  isRoboticvnBaseUrl,
   maskSecret,
   renderRestockHtml,
   resolveRestockTemplate,
@@ -377,11 +378,16 @@ export class ShopsService {
         },
       });
 
+      const resolvedProviderBaseUrl = dto.providerBaseUrl || this.config.providerBaseUrl;
+      const resolvedProviderName = isRoboticvnBaseUrl(resolvedProviderBaseUrl)
+        ? "roboticvn"
+        : this.config.providerName;
+
       await tx.providerConfig.upsert({
         where: { shopId: shop.id },
         update: {
-          providerName: this.config.providerName,
-          baseUrl: dto.providerBaseUrl || this.config.providerBaseUrl,
+          providerName: resolvedProviderName,
+          baseUrl: resolvedProviderBaseUrl,
           ...(dto.providerBuyerKey
             ? {
                 buyerKeyEncrypted: encryptSecret(dto.providerBuyerKey, encryptionKey),
@@ -397,8 +403,8 @@ export class ShopsService {
         },
         create: {
           shopId: shop.id,
-          providerName: this.config.providerName,
-          baseUrl: dto.providerBaseUrl || this.config.providerBaseUrl,
+          providerName: resolvedProviderName,
+          baseUrl: resolvedProviderBaseUrl,
           buyerKeyEncrypted: dto.providerBuyerKey
             ? encryptSecret(dto.providerBuyerKey, encryptionKey)
             : "",
