@@ -2364,6 +2364,123 @@ async function reconcilePendingInternalSourceOrders() {
         }
     }
 }
+// Roboticvn (EXTERNAL) orders whose delivery was delayed (manual-provision products,
+// or briefly out-of-stock) land in PAID_WAITING_STOCK with the roboticvn order id stored
+// in internalSourceOrderCode (order_xxx). roboticvn has no webhook, so we poll the order
+// here and deliver once the source fulfils it. We re-check STATUS only — never re-purchase
+// (roboticvn has no idempotency key; a second POST /orders would double-charge the wallet).
+async function reconcilePendingRoboticvnOrders() {
+    const orders = await prisma.order.findMany({
+        where: {
+            status: "PAID_WAITING_STOCK",
+            internalSourceOrderCode: { startsWith: "order_" },
+        },
+        include: {
+            customer: true,
+            shop: { include: { botConfig: true, providerConfig: true } },
+            sourceProduct: true,
+        },
+        orderBy: { createdAt: "asc" },
+        take: 20,
+    });
+    for (const order of orders) {
+        const providerConfig = order.shop.providerConfig;
+        if (!providerConfig) {
+            continue;
+        }
+        const buyerKey = (0, server_1.decryptSecret)(providerConfig.buyerKeyEncrypted, process.env.APP_ENCRYPTION_KEY || "change-me-32-byte-key");
+        if (!buyerKey) {
+            continue;
+        }
+        // Guard: only roboticvn (routed by apk_ key prefix or host) — never touch a canboso order.
+        if (!(0, server_1.isRoboticvnProvider)({ baseUrl: providerConfig.baseUrl, buyerKey })) {
+            continue;
+        }
+        try {
+            const result = await (0, server_1.fetchProviderOrderStatus)({
+                baseUrl: providerConfig.baseUrl,
+                buyerKey,
+                providerName: providerConfig.providerName,
+            }, {
+                orderId: order.internalSourceOrderCode,
+            });
+            if (!(result.status === "delivered" && result.deliveredText)) {
+                continue; // still pending / not ready — leave for the next sweep
+            }
+            const deliveredAt = new Date();
+            await prisma.$transaction(async (tx) => {
+                await tx.order.update({
+                    where: { id: order.id },
+                    data: {
+                        status: "DELIVERED",
+                        deliveredAccountText: result.deliveredText,
+                        deliveredAt,
+                        internalSourceOrderCode: result.providerOrderCode || order.internalSourceOrderCode || undefined,
+                        failureReason: null,
+                    },
+                });
+                await tx.orderEvent.create({
+                    data: {
+                        orderId: order.id,
+                        eventType: "upstream_purchase_success",
+                        payloadJson: {
+                            deliveredText: result.deliveredText,
+                            providerOrderCode: result.providerOrderCode || order.internalSourceOrderCode || null,
+                            note: "roboticvn delayed delivery reconciled",
+                        },
+                    },
+                });
+                await tx.sourceProduct.update({
+                    where: { id: order.sourceProductId },
+                    data: {
+                        soldCount: { increment: order.quantity },
+                        available: order.sourceProduct.available === null
+                            ? undefined
+                            : { decrement: order.quantity },
+                    },
+                });
+            });
+            await snapshotWarrantyForDeliveredOrder(order.id);
+            await creditAffiliateCommission(order.id).catch(() => undefined);
+            const botToken = (0, server_1.decryptSecret)(order.shop.botConfig?.telegramBotTokenEncrypted, process.env.APP_ENCRYPTION_KEY || "change-me-32-byte-key");
+            const sourceMetadata = order.sourceProduct?.metadataJson &&
+                typeof order.sourceProduct.metadataJson === "object" &&
+                !Array.isArray(order.sourceProduct.metadataJson)
+                ? order.sourceProduct.metadataJson
+                : {};
+            const customerLanguage = normalizeLanguage(order.customer?.preferredLanguage);
+            if (botToken &&
+                !(String(process.env.MOCK_TELEGRAM_MODE || "false") === "true" &&
+                    (0, server_1.isMockBotToken)(botToken))) {
+                await deleteQrMessage(botToken, order);
+                await sendDeliveredOrderMessages({
+                    botToken,
+                    shopId: order.shopId,
+                    productIcon: order.sourceProduct?.productIcon,
+                    productIconCustomEmojiId: order.sourceProduct?.iconCustomEmojiId,
+                    chatId: order.customer.telegramChatId,
+                    orderCode: order.orderCode,
+                    productName: order.productNameSnapshot,
+                    quantity: order.quantity,
+                    amount: order.totalSaleAmount,
+                    deliveredText: result.deliveredText,
+                    deliveredAt,
+                    language: customerLanguage,
+                    sourceDescription: order.sourceProduct?.sourceDescription,
+                    metadata: sourceMetadata,
+                    warrantyPolicy: order.warrantyPolicySnapshot || order.sourceProduct?.warrantyPolicy,
+                    shop: {
+                        supportTelegram: order.shop.supportTelegram,
+                        supportZalo: order.shop.supportZalo,
+                    },
+                });
+            }
+        }
+        catch (error) {
+            console.error(`[worker] Roboticvn order reconcile failed for ${order.orderCode}:`, formatError(error));
+        }
+    }
+}
 function computeNextRunAt(sendTime, frequency, repeatDay) {
     // Vietnam wall-clock (UTC+7) — this process runs UTC, so the old local-time math fired 7h late.
     return server_1.computeNextVnRunAt(sendTime, frequency, repeatDay);
@@ -3977,6 +4094,11 @@ async function bootstrap() {
     setInterval(() => {
         void reconcilePendingInternalSourceOrders().catch((error) => {
             console.error("[worker] Internal source order sweep failed:", formatError(error));
+        });
+    }, INTERNAL_SOURCE_ORDER_SWEEP_INTERVAL_MS);
+    setInterval(() => {
+        void reconcilePendingRoboticvnOrders().catch((error) => {
+            console.error("[worker] Roboticvn order sweep failed:", formatError(error));
         });
     }, INTERNAL_SOURCE_ORDER_SWEEP_INTERVAL_MS);
     setInterval(() => {
