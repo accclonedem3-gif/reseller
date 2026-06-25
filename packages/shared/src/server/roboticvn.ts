@@ -293,7 +293,6 @@ export async function purchaseFromRoboticvn(
   const api = client(credentials, Math.min(20000, overallTimeout));
 
   let orderId = "";
-  let orderDisplayId = "";
   try {
     const { data } = await api.post("/orders", {
       items: [{ variant_id: input.productId, quantity: input.quantity }],
@@ -301,7 +300,6 @@ export async function purchaseFromRoboticvn(
       payment_method: "wallet",
     });
     orderId = String(data?.data?.order_id || "").trim();
-    orderDisplayId = String(data?.data?.order_display_id || "").trim();
     if (!orderId) {
       return {
         success: false,
@@ -336,8 +334,12 @@ export async function purchaseFromRoboticvn(
           deliveredText,
           outOfStock: false,
           pending: !deliveredText,
-          providerOrderId: orderId,
-          providerOrderCode: orderDisplayId || null,
+          // providerOrderId is null on purpose: the worker writes it into
+          // Order.internalSourceOrderId, a UNIQUE FK to internal_source_orders.
+          // A roboticvn order id (order_xxx) is NOT a row there → FK violation.
+          // Keep the ref in providerOrderCode (plain string column) instead.
+          providerOrderId: null,
+          providerOrderCode: orderId,
           rawPayload: data,
           message: deliveredText ? undefined : "Order completed but delivery is empty.",
         };
@@ -347,8 +349,8 @@ export async function purchaseFromRoboticvn(
           success: false,
           deliveredText: null,
           outOfStock: false,
-          providerOrderId: orderId,
-          providerOrderCode: orderDisplayId || null,
+          providerOrderId: null,
+          providerOrderCode: orderId,
           message: `Roboticvn order ${lastStatus}.`,
           rawPayload: data,
         };
@@ -364,8 +366,8 @@ export async function purchaseFromRoboticvn(
     deliveredText: null,
     outOfStock: false,
     pending: true,
-    providerOrderId: orderId,
-    providerOrderCode: orderDisplayId || null,
+    providerOrderId: null,
+    providerOrderCode: orderId,
     message: `Roboticvn order still ${lastStatus}; will reconcile.`,
   };
 }
@@ -396,7 +398,6 @@ export async function fetchRoboticvnOrderStatus(
   try {
     const { data } = await api.get(`/orders/${encodeURIComponent(orderId)}`);
     const status = String(data?.data?.status || "").trim().toLowerCase();
-    const displayId = String(data?.data?.display_id || "").trim() || null;
 
     if (status === "completed") {
       const deliveredText = await fetchDelivery(api, orderId);
@@ -406,8 +407,9 @@ export async function fetchRoboticvnOrderStatus(
         status: deliveredText ? "delivered" : "completed",
         deliveredText,
         failureReason: null,
-        providerOrderId: orderId,
-        providerOrderCode: displayId,
+        // null on purpose — see note in purchaseFromRoboticvn (FK to internal_source_orders).
+        providerOrderId: null,
+        providerOrderCode: orderId,
         pending: !deliveredText,
         outOfStock: false,
         rawPayload: data,
@@ -420,8 +422,8 @@ export async function fetchRoboticvnOrderStatus(
       status,
       deliveredText: null,
       failureReason: failed ? `Roboticvn order ${status}.` : null,
-      providerOrderId: orderId,
-      providerOrderCode: displayId,
+      providerOrderId: null,
+      providerOrderCode: orderId,
       pending: !failed,
       outOfStock: false,
       rawPayload: data,
@@ -432,8 +434,8 @@ export async function fetchRoboticvnOrderStatus(
       status: null,
       deliveredText: null,
       failureReason: errorMessage(error),
-      providerOrderId: orderId,
-      providerOrderCode: null,
+      providerOrderId: null,
+      providerOrderCode: orderId,
       pending: false,
       outOfStock: false,
       rawPayload: axios.isAxiosError(error) ? error.response?.data : null,
