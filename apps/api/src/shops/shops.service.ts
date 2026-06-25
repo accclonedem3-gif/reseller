@@ -28,6 +28,7 @@ import {
   isMockBotToken,
   isMockBuyerKey,
   isRoboticvnBaseUrl,
+  isRoboticvnKey,
   maskSecret,
   renderRestockHtml,
   resolveRestockTemplate,
@@ -378,10 +379,18 @@ export class ShopsService {
         },
       });
 
-      const resolvedProviderBaseUrl = dto.providerBaseUrl || this.config.providerBaseUrl;
-      const resolvedProviderName = isRoboticvnBaseUrl(resolvedProviderBaseUrl)
-        ? "roboticvn"
-        : this.config.providerName;
+      // The bot-config UI has no baseUrl field. Detect the provider from the key
+      // the seller pastes: `apk_` = roboticvn → force its API base + name. Otherwise
+      // fall back to the (canboso) default. Routing also re-checks the key prefix at
+      // call time, so an already-saved apk_ key still works even before a re-save.
+      const incomingBuyerKey = (dto.providerBuyerKey || "").trim();
+      const resolvedProviderBaseUrl = isRoboticvnKey(incomingBuyerKey)
+        ? "https://api.roboticvn.com"
+        : dto.providerBaseUrl || this.config.providerBaseUrl;
+      const resolvedProviderName =
+        isRoboticvnKey(incomingBuyerKey) || isRoboticvnBaseUrl(resolvedProviderBaseUrl)
+          ? "roboticvn"
+          : this.config.providerName;
 
       await tx.providerConfig.upsert({
         where: { shopId: shop.id },

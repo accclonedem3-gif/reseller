@@ -5,14 +5,14 @@ import {
   DEFAULT_PROVIDER_NAME,
 } from "../constants";
 import {
-  isRoboticvnBaseUrl,
+  isRoboticvnProvider,
   fetchRoboticvnProducts,
   fetchRoboticvnBalance,
   purchaseFromRoboticvn,
   fetchRoboticvnOrderStatus,
 } from "./roboticvn";
 
-export { isRoboticvnBaseUrl } from "./roboticvn";
+export { isRoboticvnBaseUrl, isRoboticvnKey, isRoboticvnProvider } from "./roboticvn";
 
 export interface ProviderCredentials {
   baseUrl?: string;
@@ -224,7 +224,7 @@ export async function verifyProviderConnection(credentials: ProviderCredentials)
 export async function fetchProviderProducts(
   credentials: ProviderCredentials,
 ): Promise<ProviderProduct[]> {
-  if (isRoboticvnBaseUrl(credentials.baseUrl)) {
+  if (isRoboticvnProvider(credentials)) {
     return fetchRoboticvnProducts(credentials);
   }
   if (!credentials.buyerKey) {
@@ -270,7 +270,7 @@ export async function fetchProviderProducts(
 export async function fetchProviderBalance(
   credentials: ProviderCredentials,
 ): Promise<ProviderBalanceResult> {
-  if (isRoboticvnBaseUrl(credentials.baseUrl)) {
+  if (isRoboticvnProvider(credentials)) {
     return fetchRoboticvnBalance(credentials);
   }
   if (!credentials.buyerKey) {
@@ -319,7 +319,7 @@ export async function purchaseFromProvider(
   credentials: ProviderCredentials,
   input: ProviderPurchaseInput,
 ): Promise<ProviderPurchaseResult> {
-  if (isRoboticvnBaseUrl(credentials.baseUrl)) {
+  if (isRoboticvnProvider(credentials)) {
     return purchaseFromRoboticvn(credentials, input);
   }
   if (!credentials.buyerKey) {
@@ -404,7 +404,7 @@ export async function fetchProviderOrderStatus(
   credentials: ProviderCredentials,
   input: ProviderOrderStatusInput,
 ): Promise<ProviderOrderStatusResult> {
-  if (isRoboticvnBaseUrl(credentials.baseUrl)) {
+  if (isRoboticvnProvider(credentials)) {
     return fetchRoboticvnOrderStatus(credentials, input);
   }
   if (!credentials.buyerKey) {

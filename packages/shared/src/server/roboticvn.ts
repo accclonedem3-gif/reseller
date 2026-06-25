@@ -35,6 +35,20 @@ export function isRoboticvnBaseUrl(baseUrl?: string | null): boolean {
   return /(^|\/\/|\.)roboticvn\.com/i.test(String(baseUrl || ""));
 }
 
+// roboticvn API keys are prefixed `apk_`; canboso buyer keys use `tgb_`.
+// The key prefix is the source of truth for routing — the bot-config UI has no
+// baseUrl field, so a roboticvn shop is identified by its key alone.
+export function isRoboticvnKey(buyerKey?: string | null): boolean {
+  return /^apk_/i.test(String(buyerKey || "").trim());
+}
+
+export function isRoboticvnProvider(credentials: {
+  baseUrl?: string | null;
+  buyerKey?: string | null;
+}): boolean {
+  return isRoboticvnBaseUrl(credentials.baseUrl) || isRoboticvnKey(credentials.buyerKey);
+}
+
 function getTimeout(credentials: ProviderCredentials, fallback = 15000) {
   const timeout = Number(credentials.timeoutMs || fallback);
   return Number.isFinite(timeout) && timeout > 0 ? timeout : fallback;
@@ -44,7 +58,11 @@ function client(credentials: ProviderCredentials, perRequestTimeout?: number): A
   if (!credentials.buyerKey) {
     throw new Error("Roboticvn API key (x-api-key) is missing.");
   }
-  const base = String(credentials.baseUrl || DEFAULT_BASE_URL).replace(/\/+$/, "");
+  // Routing here is by key prefix, so a stale/wrong baseUrl (e.g. left at the
+  // canboso default because the UI has no baseUrl field) must NOT leak through.
+  // Only honour baseUrl when it actually points at roboticvn; else use default.
+  const raw = String(credentials.baseUrl || "").replace(/\/+$/, "");
+  const base = isRoboticvnBaseUrl(raw) ? raw : DEFAULT_BASE_URL;
   // Endpoints live under /api/v2. Accept a baseUrl with or without that suffix.
   const baseURL = /\/api\/v2$/i.test(base) ? base : `${base}/api/v2`;
   return axios.create({
