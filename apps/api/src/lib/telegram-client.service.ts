@@ -64,6 +64,46 @@ export class TelegramClientService {
     };
   }
 
+  // Telegram requires icon_custom_emoji_id to be a valid int64 number string. A single bad value
+  // (non-digit, empty, or overflow) makes Telegram reject the WHOLE sendMessage/editMessageText
+  // ("Field icon_custom_emoji_id must be a valid Number") → the catch then strips ALL bling. So we
+  // drop only the INVALID ids here before sending: valid cusids keep their bling, the bad button
+  // just falls back to its text icon, and the message goes through. One bad row never kills the page.
+  private static isValidCusid(id: unknown): boolean {
+    const s = String(id ?? "").trim();
+    if (!/^\d{1,19}$/.test(s)) return false;
+    try {
+      const n = BigInt(s);
+      return n > 0n && n <= 9223372036854775807n;
+    } catch {
+      return false;
+    }
+  }
+
+  sanitizeInlineEmojiIds(markup: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
+    if (!markup?.inline_keyboard || !Array.isArray(markup.inline_keyboard)) return markup;
+    const dropped: string[] = [];
+    const inline_keyboard = (markup.inline_keyboard as unknown[][]).map((row) =>
+      Array.isArray(row)
+        ? row.map((btn) => {
+            if (btn && typeof btn === "object" && "icon_custom_emoji_id" in (btn as object)) {
+              const b = btn as Record<string, unknown>;
+              if (!TelegramClientService.isValidCusid(b.icon_custom_emoji_id)) {
+                dropped.push(String(b.icon_custom_emoji_id ?? ""));
+                const { icon_custom_emoji_id: _drop, ...rest } = b;
+                return rest;
+              }
+            }
+            return btn;
+          })
+        : row,
+    );
+    if (dropped.length > 0) {
+      console.error("[bling] dropped invalid icon_custom_emoji_id:", JSON.stringify(dropped));
+    }
+    return { ...markup, inline_keyboard };
+  }
+
   async editOrSend(
     token: string,
     chatId: number,
@@ -98,6 +138,7 @@ export class TelegramClientService {
       return mockResult;
     }
 
+    replyMarkup = this.sanitizeInlineEmojiIds(replyMarkup);
     return telegramSendMessage(token, chatId, text, {
       reply_markup: replyMarkup,
       ...(parseMode ? { parse_mode: parseMode } : {}),
@@ -172,6 +213,7 @@ export class TelegramClientService {
       return;
     }
 
+    replyMarkup = this.sanitizeInlineEmojiIds(replyMarkup) ?? replyMarkup;
     await telegramEditMessageText(token, chatId, messageId, text, {
       reply_markup: replyMarkup,
       ...(parseMode ? { parse_mode: parseMode } : {}),
