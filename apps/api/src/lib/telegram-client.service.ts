@@ -103,7 +103,17 @@ export class TelegramClientService {
       ...(parseMode ? { parse_mode: parseMode } : {}),
       ...(entities && entities.length > 0 ? { entities } : {}),
     }).catch(async (err: unknown) => {
-      if (replyMarkup && this.hasInlineEmojiIds(replyMarkup)) {
+      if (!(replyMarkup && this.hasInlineEmojiIds(replyMarkup))) throw err;
+      // Send failed and the markup carries custom emoji. Retry once WITH the emoji (covers transient
+      // errors so the bling isn't lost); only if that also fails do we strip and self-learn the bot
+      // can't emit custom emoji. Previously any first-try error stripped the bling immediately.
+      try {
+        return await telegramSendMessage(token, chatId, text, {
+          reply_markup: replyMarkup,
+          ...(parseMode ? { parse_mode: parseMode } : {}),
+          ...(entities && entities.length > 0 ? { entities } : {}),
+        });
+      } catch {
         const res = await telegramSendMessage(token, chatId, text, {
           reply_markup: this.stripInlineEmojiIds(replyMarkup),
           ...(parseMode ? { parse_mode: parseMode } : {}),
@@ -111,7 +121,6 @@ export class TelegramClientService {
         await onCusidStripped?.();
         return res;
       }
-      throw err;
     });
   }
 
@@ -166,13 +175,25 @@ export class TelegramClientService {
     await telegramEditMessageText(token, chatId, messageId, text, {
       reply_markup: replyMarkup,
       ...(parseMode ? { parse_mode: parseMode } : {}),
-    }).catch(async () => {
-      const stripped = this.hasInlineEmojiIds(replyMarkup);
-      await telegramSendMessage(token, chatId, text, {
-        reply_markup: stripped ? this.stripInlineEmojiIds(replyMarkup) : replyMarkup,
+    }).catch(async (err: unknown) => {
+      // Content is byte-identical (e.g. re-tapping the same nav button) — the current message already
+      // shows this view WITH its bling, so do nothing rather than resend a stripped duplicate.
+      if (String((err as Error)?.message || "").toLowerCase().includes("not modified")) return;
+      // The edit itself failed (message too old / not editable / transient). Resend — but KEEP the
+      // custom emoji; only strip if Telegram actually rejects the emoji on the resend. Previously we
+      // stripped on EVERY edit failure, which silently killed the catalog bling on unrelated errors.
+      const hasEmoji = this.hasInlineEmojiIds(replyMarkup);
+      const opts = (markup: Record<string, unknown> | undefined) => ({
+        reply_markup: markup,
         ...(parseMode ? { parse_mode: parseMode } : {}),
       });
-      if (stripped) await onCusidStripped?.();
+      try {
+        await telegramSendMessage(token, chatId, text, opts(replyMarkup));
+      } catch (err2) {
+        if (!hasEmoji) throw err2;
+        await telegramSendMessage(token, chatId, text, opts(this.stripInlineEmojiIds(replyMarkup)));
+        await onCusidStripped?.();
+      }
     });
   }
 
