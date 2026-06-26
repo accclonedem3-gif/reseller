@@ -71,9 +71,14 @@ export class InternalSourceApiController {
     private readonly internalSourceService: InternalSourceService,
   ) {}
 
-  @ApiOperation({ summary: "Get product catalog", description: "Returns all products enabled for internal source ordering. Also updates `lastCatalogSyncAt` on the connection." })
+  @ApiOperation({
+    summary: "Get product catalog",
+    description:
+      "Returns products the source shop has enabled for internal-source ordering. Works with the API key alone — no prior connection or top-up required. An empty `products` array means the source has not enabled any product for internal source yet (or all enabled products are out of stock).",
+  })
   @ApiResponse({ status: 200, description: "Product list" })
-  @ApiResponse({ status: 401, description: "Missing or invalid X-Source-Api-Key" })
+  @ApiResponse({ status: 401, description: "Missing X-Source-Api-Key header" })
+  @ApiResponse({ status: 403, description: "Key is invalid / expired / revoked, or its connection is not active" })
   @Get("catalog")
   async getCatalog(@Req() req: Request) {
     const { apiKey, connection } = req.internalSourceContext!;
@@ -122,9 +127,14 @@ export class InternalSourceApiController {
     };
   }
 
-  @ApiOperation({ summary: "Get connection balance", description: "Returns the current wallet balance for this downstream connection." })
+  @ApiOperation({
+    summary: "Get balance",
+    description:
+      "Returns the spendable wallet balance bound to this API key (the buyer's wallet in the source shop). Works with the API key alone. `connectionId` is null until the key has been used at least once (the connection is created lazily on first use).",
+  })
   @ApiResponse({ status: 200, description: "Balance info" })
-  @ApiResponse({ status: 401, description: "Missing or invalid X-Source-Api-Key" })
+  @ApiResponse({ status: 401, description: "Missing X-Source-Api-Key header" })
+  @ApiResponse({ status: 403, description: "Key is invalid / expired / revoked, or its connection is not active" })
   @Get("balance")
   async getBalance(@Req() req: Request) {
     const { connection } = req.internalSourceContext!;
@@ -150,11 +160,16 @@ export class InternalSourceApiController {
     };
   }
 
-  @ApiOperation({ summary: "Create a source order", description: "Deducts balance from the connection and fulfills the order. Returns the fulfilled account credentials." })
+  @ApiOperation({
+    summary: "Create a source order",
+    description:
+      "Debits the buyer's wallet and fulfills the order. Requires a funded wallet (top up via the source bot first). Response body carries a `success` flag: on success `{ success: true, deliveredText, orderCode }`; if the source is out of stock the order is auto-refunded and returns `{ success: false, refunded: true, message }`.",
+  })
   @ApiBody({ type: CreateInternalSourceOrderDto })
-  @ApiResponse({ status: 201, description: "Order created and fulfilled" })
+  @ApiResponse({ status: 201, description: "Order processed (check `success` in the body — delivered, or auto-refunded if out of stock)" })
   @ApiResponse({ status: 400, description: "Insufficient balance, invalid quantity, or product unavailable" })
-  @ApiResponse({ status: 401, description: "Missing or invalid X-Source-Api-Key" })
+  @ApiResponse({ status: 401, description: "Missing X-Source-Api-Key header" })
+  @ApiResponse({ status: 403, description: "Key invalid/expired/revoked, no connection assigned, connection not active, or wallet balance is 0 (top up first)" })
   @ApiResponse({ status: 404, description: "Product not found or not enabled for internal source" })
   @Post("orders")
   async createOrder(
@@ -326,8 +341,9 @@ export class InternalSourceApiController {
   @ApiOperation({ summary: "Get order by code", description: "Retrieve status and delivery details of a source order using its order code." })
   @ApiParam({ name: "code", description: "Source order code returned from POST /orders", example: "SRC-20260427-ABCD" })
   @ApiResponse({ status: 200, description: "Order details" })
-  @ApiResponse({ status: 401, description: "Missing or invalid X-Source-Api-Key" })
-  @ApiResponse({ status: 404, description: "Order not found or does not belong to this connection" })
+  @ApiResponse({ status: 401, description: "Missing X-Source-Api-Key header" })
+  @ApiResponse({ status: 403, description: "Key is invalid / expired / revoked, or its connection is not active" })
+  @ApiResponse({ status: 404, description: "Order not found or does not belong to this key" })
   @Get("orders/:code")
   async getOrderByCode(@Req() req: Request, @Param("code") code: string) {
     const { connection } = req.internalSourceContext!;
