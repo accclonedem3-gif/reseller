@@ -2,6 +2,7 @@ import {
   BadRequestException,
   Body,
   Controller,
+  ForbiddenException,
   Get,
   Inject,
   NotFoundException,
@@ -75,16 +76,22 @@ export class InternalSourceApiController {
   @ApiResponse({ status: 401, description: "Missing or invalid X-Source-Api-Key" })
   @Get("catalog")
   async getCatalog(@Req() req: Request) {
-    const { connection } = req.internalSourceContext!;
+    const { apiKey, connection } = req.internalSourceContext!;
 
-    await this.prisma.downstreamSourceConnection.update({
-      where: { id: connection.id },
-      data: { lastCatalogSyncAt: new Date() },
-    });
+    // Without a downstream connection, the upstream shop is still resolvable from
+    // the key itself (the key is scoped to the ULTRA seller's shop).
+    const upstreamShopId = connection?.upstreamShopId ?? apiKey.shopId;
+
+    if (connection) {
+      await this.prisma.downstreamSourceConnection.update({
+        where: { id: connection.id },
+        data: { lastCatalogSyncAt: new Date() },
+      });
+    }
 
     const products = await this.prisma.sourceProduct.findMany({
       where: {
-        shopId: connection.upstreamShopId,
+        shopId: upstreamShopId,
         internalSourceEnabled: true,
         OR: [
           { available: null },
@@ -122,7 +129,7 @@ export class InternalSourceApiController {
   async getBalance(@Req() req: Request) {
     const { connection } = req.internalSourceContext!;
     let balance = 0;
-    if (connection.downstreamTelegramChatId) {
+    if (connection?.downstreamTelegramChatId) {
       const wallet = await this.prisma.customerWallet.findFirst({
         where: {
           customer: {
@@ -136,10 +143,10 @@ export class InternalSourceApiController {
     }
     return {
       success: true,
-      connectionId: connection.id,
+      connectionId: connection?.id ?? null,
       balance,
-      currency: connection.currency,
-      updatedAt: connection.updatedAt,
+      currency: connection?.currency ?? "VND",
+      updatedAt: connection?.updatedAt ?? null,
     };
   }
 
@@ -155,6 +162,10 @@ export class InternalSourceApiController {
     @Body() dto: CreateInternalSourceOrderDto,
   ) {
     const { apiKey, connection } = req.internalSourceContext!;
+
+    if (!connection) {
+      throw new ForbiddenException("Source API key has no downstream connection assigned.");
+    }
 
     const product = await this.prisma.sourceProduct.findFirst({
       where: {
@@ -320,6 +331,10 @@ export class InternalSourceApiController {
   @Get("orders/:code")
   async getOrderByCode(@Req() req: Request, @Param("code") code: string) {
     const { connection } = req.internalSourceContext!;
+
+    if (!connection) {
+      throw new NotFoundException("Source order not found.");
+    }
 
     const order = await this.prisma.internalSourceOrder.findFirst({
       where: {

@@ -72,6 +72,12 @@ export class SellerSourceConnectionService {
       throw new BadRequestException("You cannot connect your shop to its own source key.");
     }
 
+    if (apiKey.connection && apiKey.connection.downstreamShopId == null) {
+      throw new BadRequestException(
+        "This key is bound to a bot wallet (customer source key) and cannot be used as a dashboard shop connection.",
+      );
+    }
+
     if (
       apiKey.connection &&
       apiKey.connection.downstreamShopId !== downstreamShop.id
@@ -746,10 +752,12 @@ export class SellerSourceConnectionService {
     if (!connection) {
       return { error: "Connection record not found.", connectionId: shop.providerConfig.internalSourceConnectionId };
     }
-    const downstreamBotConfig = await this.prisma.botConfig.findUnique({
-      where: { shopId: connection.downstreamShopId },
-      select: { ownerTelegramUserId: true, telegramBotUsername: true },
-    });
+    const downstreamBotConfig = connection.downstreamShopId
+      ? await this.prisma.botConfig.findUnique({
+          where: { shopId: connection.downstreamShopId },
+          select: { ownerTelegramUserId: true, telegramBotUsername: true },
+        })
+      : null;
     const candidateChatIds = Array.from(new Set([
       connection.downstreamTelegramChatId,
       downstreamBotConfig?.ownerTelegramUserId,

@@ -1159,10 +1159,11 @@ async function syncCatalogForShop(shopId) {
     }
     if (shop.providerConfig.providerKind !== "INTERNAL" && shop.seller?.tier === "ULTRA") {
         const downstreamConnections = await prisma.downstreamSourceConnection.findMany({
-            where: { upstreamShopId: shop.id, status: "ACTIVE" },
+            where: { upstreamShopId: shop.id, status: "ACTIVE", downstreamShopId: { not: null } },
             select: { downstreamShopId: true },
         });
         for (const conn of downstreamConnections) {
+            if (!conn.downstreamShopId) continue;
             await enqueueCatalogSyncJob(globalSyncQueue, globalRedis, conn.downstreamShopId).catch(() => undefined);
         }
     }

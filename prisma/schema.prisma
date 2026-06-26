@@ -1025,8 +1025,10 @@ model DownstreamSourceConnection {
   id                       String                           @id @default(cuid())
   upstreamSellerId         String                           @map("upstream_seller_id")
   upstreamShopId           String                           @map("upstream_shop_id")
-  downstreamSellerId       String                           @map("downstream_seller_id")
-  downstreamShopId         String                           @map("downstream_shop_id")
+  // Nullable for customer-bound (canboso-style) connections: a key issued to a bot
+  // customer who tops up a wallet in the upstream shop has NO downstream seller/shop.
+  downstreamSellerId       String?                          @map("downstream_seller_id")
+  downstreamShopId         String?                          @map("downstream_shop_id")
   apiKeyId                 String?                          @unique @map("api_key_id")
   downstreamTelegramChatId String?                          @map("downstream_telegram_chat_id")
   status                   DownstreamSourceConnectionStatus @default(PENDING)
@@ -1040,8 +1042,8 @@ model DownstreamSourceConnection {
   updatedAt                DateTime                         @updatedAt @map("updated_at")
   upstreamSeller           Seller                           @relation("UpstreamSellerConnections", fields: [upstreamSellerId], references: [id], onDelete: Cascade)
   upstreamShop             Shop                             @relation("UpstreamShopConnections", fields: [upstreamShopId], references: [id], onDelete: Cascade)
-  downstreamSeller         Seller                           @relation("DownstreamSellerConnections", fields: [downstreamSellerId], references: [id], onDelete: Cascade)
-  downstreamShop           Shop                             @relation("DownstreamShopConnections", fields: [downstreamShopId], references: [id], onDelete: Cascade)
+  downstreamSeller         Seller?                          @relation("DownstreamSellerConnections", fields: [downstreamSellerId], references: [id], onDelete: Cascade)
+  downstreamShop           Shop?                            @relation("DownstreamShopConnections", fields: [downstreamShopId], references: [id], onDelete: Cascade)
   apiKey                   InternalSourceApiKey?            @relation(fields: [apiKeyId], references: [id], onDelete: SetNull)
   providerConfig           ProviderConfig?
   ledgers                  InternalSourceLedger[]
@@ -1078,8 +1080,10 @@ model InternalSourceOrder {
   apiKeyId             String                     @map("api_key_id")
   upstreamSellerId     String                     @map("upstream_seller_id")
   upstreamShopId       String                     @map("upstream_shop_id")
-  downstreamSellerId   String                     @map("downstream_seller_id")
-  downstreamShopId     String                     @map("downstream_shop_id")
+  // Nullable for customer-bound (canboso-style) source orders placed via API key
+  // by a bot customer who has no downstream seller/shop of their own.
+  downstreamSellerId   String?                    @map("downstream_seller_id")
+  downstreamShopId     String?                    @map("downstream_shop_id")
   sourceProductId      String                     @map("source_product_id")
   sourceOrderCode      String                     @unique @map("source_order_code")
   downstreamOrderCode  String?                    @map("downstream_order_code")
@@ -1098,8 +1102,8 @@ model InternalSourceOrder {
   apiKey               InternalSourceApiKey       @relation(fields: [apiKeyId], references: [id], onDelete: Restrict)
   upstreamSeller       Seller                     @relation("InternalSourceOrderUpstreamSeller", fields: [upstreamSellerId], references: [id], onDelete: Cascade)
   upstreamShop         Shop                       @relation("InternalSourceOrderUpstreamShop", fields: [upstreamShopId], references: [id], onDelete: Cascade)
-  downstreamSeller     Seller                     @relation("InternalSourceOrderDownstreamSeller", fields: [downstreamSellerId], references: [id], onDelete: Cascade)
-  downstreamShop       Shop                       @relation("InternalSourceOrderDownstreamShop", fields: [downstreamShopId], references: [id], onDelete: Cascade)
+  downstreamSeller     Seller?                    @relation("InternalSourceOrderDownstreamSeller", fields: [downstreamSellerId], references: [id], onDelete: Cascade)
+  downstreamShop       Shop?                      @relation("InternalSourceOrderDownstreamShop", fields: [downstreamShopId], references: [id], onDelete: Cascade)
   sourceProduct        SourceProduct              @relation(fields: [sourceProductId], references: [id], onDelete: Restrict)
   downstreamOrder      Order?
   events               InternalSourceOrderEvent[]

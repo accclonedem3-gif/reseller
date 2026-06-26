@@ -401,8 +401,8 @@ type InternalSourceOrder = {
   createdAt: string;
   deliveredAt: string | null;
   product: { id: string; sourceName: string; providerName: string };
-  downstreamSeller: { id: string; displayName: string };
-  downstreamShop: { id: string; name: string; slug: string };
+  downstreamSeller: { id: string; displayName: string } | null;
+  downstreamShop: { id: string; name: string; slug: string } | null;
   connection: { id: string; balance: number; currency: string };
   endCustomer: {
     telegramUsername: string | null;

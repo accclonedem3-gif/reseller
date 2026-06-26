@@ -2027,10 +2027,12 @@ export class ShopsService {
       });
       if (!connection) throw new BadRequestException("Internal source connection not found.");
 
-      const downstreamBotConfig = await this.prisma.botConfig.findUnique({
-        where: { shopId: connection.downstreamShopId },
-        select: { ownerTelegramUserId: true },
-      });
+      const downstreamBotConfig = connection.downstreamShopId
+        ? await this.prisma.botConfig.findUnique({
+            where: { shopId: connection.downstreamShopId },
+            select: { ownerTelegramUserId: true },
+          })
+        : null;
 
       const candidateChatIds = Array.from(new Set([
         connection.downstreamTelegramChatId,

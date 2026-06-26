@@ -173,9 +173,9 @@ export class InternalSourceApiKeyService {
             id: key.connection.id,
             status: key.connection.status,
             downstreamSellerId: key.connection.downstreamSellerId,
-            downstreamSellerName: key.connection.downstreamSeller.displayName,
+            downstreamSellerName: key.connection.downstreamSeller?.displayName ?? null,
             downstreamShopId: key.connection.downstreamShopId,
-            downstreamShopName: key.connection.downstreamShop.name,
+            downstreamShopName: key.connection.downstreamShop?.name ?? null,
             balance: walletBalanceMap.get(key.connection.id) ?? 0,
             currency: key.connection.currency,
           }

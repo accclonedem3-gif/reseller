@@ -124,9 +124,9 @@ export class InternalSourceService {
             id: key.connection.id,
             status: key.connection.status.toLowerCase(),
             downstreamSellerId: key.connection.downstreamSellerId,
-            downstreamSellerName: key.connection.downstreamSeller.displayName,
+            downstreamSellerName: key.connection.downstreamSeller?.displayName ?? null,
             downstreamShopId: key.connection.downstreamShopId,
-            downstreamShopName: key.connection.downstreamShop.name,
+            downstreamShopName: key.connection.downstreamShop?.name ?? null,
             balance: walletBalanceMap.get(key.connection.id) ?? 0,
             currency: key.connection.currency,
           }
@@ -675,6 +675,12 @@ export class InternalSourceService {
 
     this.assertApiKeyUsable(resolvedKey);
 
+    if (resolvedKey.connection && resolvedKey.connection.downstreamShopId == null) {
+      throw new BadRequestException(
+        "This key is bound to a bot wallet (customer source key) and cannot be used as a dashboard shop connection.",
+      );
+    }
+
     if (
       resolvedKey.connection &&
       resolvedKey.connection.downstreamShopId !== downstreamShop.id
@@ -940,6 +946,13 @@ export class InternalSourceService {
       throw new BadRequestException("Delivered source orders cannot be failed.");
     }
 
+    if (
+      order.status === InternalSourceOrderStatus.FAILED ||
+      order.status === InternalSourceOrderStatus.CANCELED
+    ) {
+      throw new BadRequestException("Source order is already closed.");
+    }
+
     await this.failInternalSourceOrder(
       {
         id: order.id,
@@ -1037,7 +1050,7 @@ export class InternalSourceService {
       usdtBalance: 0,
       updatedAt: connection.updatedAt.toISOString(),
       requester: {
-        name: connection.downstreamSeller.displayName,
+        name: connection.downstreamSeller?.displayName ?? connection.downstreamTelegramChatId ?? "Khách",
         chatId: connection.id,
       },
       botSource: "internal_pro",
@@ -1327,9 +1340,34 @@ export class InternalSourceService {
       throw new NotFoundException("Internal source order not found.");
     }
 
+    // Defensive: fulfillment (and its refund branches) must run at most once per order.
+    // If the order is no longer PENDING it has already been processed — return its
+    // current shape instead of re-running delivery/refund.
+    if (order.status !== InternalSourceOrderStatus.PENDING) {
+      return {
+        success: order.status === InternalSourceOrderStatus.DELIVERED,
+        outOfStock: false,
+        pending:
+          order.status === InternalSourceOrderStatus.PENDING_STOCK ||
+          order.status === InternalSourceOrderStatus.PENDING_MANUAL,
+        rawResponse: {
+          success: order.status === InternalSourceOrderStatus.DELIVERED,
+          orderId: order.id,
+          orderCode: order.sourceOrderCode,
+          deliveredText: order.deliveredAccountText ?? undefined,
+          message: order.failureReason ?? undefined,
+        },
+      };
+    }
+
     const sourceMetadata = this.asRecord(order.sourceProduct.metadataJson);
     const deliveryEntries = this.readManualDeliveryEntries(sourceMetadata);
     const isManualProduct = this.isManualProduct(order.sourceProduct);
+
+    // Customer-bound (canboso-style) orders have NO downstream shop and therefore no
+    // worker reconciler watching them. If they can't be fulfilled synchronously we
+    // must refund immediately instead of parking money in PENDING_* indefinitely.
+    const isCustomerBound = order.downstreamShopId == null;
 
     if (isManualProduct) {
       if (deliveryEntries.length >= order.quantity) {
@@ -1398,6 +1436,10 @@ export class InternalSourceService {
         nextStatus === InternalSourceOrderStatus.PENDING_STOCK
           ? "Replacement stock is not enough right now."
           : "This source product is waiting for manual processing.";
+
+      if (isCustomerBound) {
+        return this.refundCustomerBoundUnfulfilled(order, message);
+      }
 
       await this.prisma.$transaction(async (tx) => {
         await tx.internalSourceOrder.update({
@@ -1523,6 +1565,13 @@ export class InternalSourceService {
     }
 
     if (purchaseResult.outOfStock || purchaseResult.pending) {
+      if (isCustomerBound) {
+        return this.refundCustomerBoundUnfulfilled(
+          order,
+          purchaseResult.message || "Source stock is not enough right now.",
+        );
+      }
+
       await this.prisma.$transaction(async (tx) => {
         await tx.internalSourceOrder.update({
           where: { id: order.id },
@@ -1576,6 +1625,34 @@ export class InternalSourceService {
     };
   }
 
+  /**
+   * Customer-bound (canboso-style) order that could not be fulfilled synchronously:
+   * refund the wallet and mark FAILED right away (no downstream reconciler exists for
+   * these). Returns a clean out-of-stock response shape for the REST caller.
+   */
+  private async refundCustomerBoundUnfulfilled(
+    order: { id: string; connectionId: string; totalAmount: Prisma.Decimal; sourceOrderCode: string },
+    message: string,
+  ) {
+    await this.failInternalSourceOrder(
+      { id: order.id, connectionId: order.connectionId, totalAmount: order.totalAmount },
+      message,
+      true,
+    );
+    return {
+      success: false,
+      outOfStock: true,
+      pending: false,
+      rawResponse: {
+        success: false,
+        refunded: true,
+        orderId: order.id,
+        orderCode: order.sourceOrderCode,
+        message,
+      },
+    };
+  }
+
   private async failInternalSourceOrder(
     order: {
       id: string;
@@ -1586,6 +1663,24 @@ export class InternalSourceService {
     refundBalance: boolean,
   ) {
     await this.prisma.$transaction(async (tx) => {
+      // Idempotency guard: lock the row and bail if it's already closed, so a refund
+      // can never be applied twice (e.g. auto-refund during fulfillment followed by an
+      // owner mark-failed on the same order).
+      await tx.$queryRaw(
+        Prisma.sql`SELECT id FROM internal_source_orders WHERE id = ${order.id} FOR UPDATE`,
+      );
+      const current = await tx.internalSourceOrder.findUnique({
+        where: { id: order.id },
+        select: { status: true },
+      });
+      if (
+        !current ||
+        current.status === InternalSourceOrderStatus.FAILED ||
+        current.status === InternalSourceOrderStatus.CANCELED
+      ) {
+        return;
+      }
+
       await tx.internalSourceOrder.update({
         where: { id: order.id },
         data: {
@@ -1637,11 +1732,43 @@ export class InternalSourceService {
             });
           }
           await tx.$queryRaw(Prisma.sql`SELECT id FROM customer_wallets WHERE id = ${cWallet.id} FOR UPDATE`);
+
+          // Reverse the ORIGINAL debit split symmetrically. The order may have been
+          // paid partly from spend-only commissionBalance (splitWalletDebit spends
+          // commission first). Recover how much came from each bucket from the
+          // SPEND_ORDER ledger row; fall back to all-to-main if it's absent (e.g.
+          // legacy orders) so behaviour is unchanged for cash-only orders.
+          const spendRow = await tx.customerWalletLedger.findFirst({
+            where: {
+              type: "SPEND_ORDER",
+              referenceType: "internal_source_order",
+              referenceId: order.id,
+            },
+            orderBy: { createdAt: "desc" },
+          });
+          let fromMain = refundAmount;
+          let fromCommission = 0;
+          if (spendRow) {
+            const mainTaken = decimalToNumber(spendRow.balanceBefore) - decimalToNumber(spendRow.balanceAfter);
+            const commissionTaken =
+              decimalToNumber(spendRow.commissionBalanceBefore) - decimalToNumber(spendRow.commissionBalanceAfter);
+            if (mainTaken >= 0 && commissionTaken >= 0 && mainTaken + commissionTaken > 0) {
+              fromMain = mainTaken;
+              fromCommission = commissionTaken;
+            }
+          }
+
+          const commissionBefore = decimalToNumber(cWallet.commissionBalance);
+          const commissionAfter = commissionBefore + fromCommission;
           walletBefore = decimalToNumber(cWallet.balance);
-          walletAfter = walletBefore + refundAmount;
+          walletAfter = walletBefore + fromMain;
+
           await tx.customerWallet.update({
             where: { id: cWallet.id },
-            data: { balance: toDecimal(walletAfter) },
+            data: {
+              balance: toDecimal(walletAfter),
+              ...(fromCommission > 0 ? { commissionBalance: toDecimal(commissionAfter) } : {}),
+            },
           });
           await tx.customerWalletLedger.create({
             data: {
@@ -1651,6 +1778,8 @@ export class InternalSourceService {
               amount: toDecimal(refundAmount),
               balanceBefore: toDecimal(walletBefore),
               balanceAfter: toDecimal(walletAfter),
+              commissionBalanceBefore: toDecimal(commissionBefore),
+              commissionBalanceAfter: toDecimal(commissionAfter),
               referenceType: "internal_source_order",
               referenceId: order.id,
               note: reason ?? "Hoàn tiền đơn nguồn",
@@ -1801,15 +1930,19 @@ export class InternalSourceService {
         sourceName: order.sourceProduct.sourceName,
         providerName: order.sourceProduct.providerName,
       },
-      downstreamSeller: {
-        id: order.downstreamSeller.id,
-        displayName: order.downstreamSeller.displayName,
-      },
-      downstreamShop: {
-        id: order.downstreamShop.id,
-        name: order.downstreamShop.name,
-        slug: order.downstreamShop.slug,
-      },
+      downstreamSeller: order.downstreamSeller
+        ? {
+            id: order.downstreamSeller.id,
+            displayName: order.downstreamSeller.displayName,
+          }
+        : null,
+      downstreamShop: order.downstreamShop
+        ? {
+            id: order.downstreamShop.id,
+            name: order.downstreamShop.name,
+            slug: order.downstreamShop.slug,
+          }
+        : null,
       connection: {
         id: order.connection.id,
         currency: order.connection.currency,

@@ -121,7 +121,9 @@ export class ProAnalyticsService {
     const shop = await this.shopsService.getSellerShop(user.id);
 
     const connections = await this.prisma.downstreamSourceConnection.findMany({
-      where: { upstreamShopId: shop.id },
+      // PRO reseller connections only — customer-bound (canboso-style) API keys have
+      // no downstream seller and are tracked via the upstream shop's own customer list.
+      where: { upstreamShopId: shop.id, downstreamSellerId: { not: null } },
       include: {
         downstreamSeller: { select: { id: true, displayName: true } },
         downstreamShop: { select: { id: true, name: true, slug: true } },
@@ -165,9 +167,9 @@ export class ProAnalyticsService {
         return {
           id: conn.id,
           downstreamSellerId: conn.downstreamSellerId,
-          downstreamSellerName: conn.downstreamSeller.displayName,
-          shopName: conn.downstreamShop.name,
-          shopSlug: conn.downstreamShop.slug,
+          downstreamSellerName: conn.downstreamSeller?.displayName ?? conn.downstreamTelegramChatId ?? "Khách",
+          shopName: conn.downstreamShop?.name ?? "—",
+          shopSlug: conn.downstreamShop?.slug ?? null,
           balance,
           currency: conn.currency,
           status: conn.status,
@@ -244,7 +246,7 @@ export class ProAnalyticsService {
         id: o.id,
         orderCode: o.sourceOrderCode,
         downstreamOrderCode: o.downstreamOrderCode,
-        downstreamSellerName: o.downstreamSeller.displayName,
+        downstreamSellerName: o.downstreamSeller?.displayName ?? "Khách",
         productName: o.sourceProduct.sourceName,
         quantity: o.quantity,
         unitPrice: decimalToNumber(o.unitPrice),
@@ -372,7 +374,7 @@ export class ProAnalyticsService {
         orderCode: c.orderCodeSnapshot,
         productName: c.order.internalSourceOrder?.sourceProduct.sourceName ?? c.productNameSnapshot,
         productIcon: c.order.internalSourceOrder?.sourceProduct.productIcon ?? null,
-        downstreamSeller: c.order.internalSourceOrder?.downstreamSeller.displayName ?? null,
+        downstreamSeller: c.order.internalSourceOrder?.downstreamSeller?.displayName ?? null,
         sourceOrderCode: c.order.internalSourceOrder?.sourceOrderCode ?? null,
         unitPrice: c.order.internalSourceOrder ? decimalToNumber(c.order.internalSourceOrder.unitPrice) : 0,
         sourcePriceSnapshot: c.order.internalSourceOrder ? decimalToNumber(c.order.internalSourceOrder.sourcePriceSnapshot) : 0,

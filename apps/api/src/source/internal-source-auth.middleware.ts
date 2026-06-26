@@ -33,7 +33,7 @@ export type ActiveInternalSourceConnection = NonNullable<ResolvedInternalSourceK
 
 export interface InternalSourceContext {
   apiKey: ResolvedInternalSourceKey;
-  connection: ActiveInternalSourceConnection;
+  connection: ActiveInternalSourceConnection | null;
 }
 
 declare module "express" {
@@ -64,28 +64,44 @@ export class InternalSourceAuthMiddleware implements NestMiddleware {
 
     const apiKey = await this.apiKeyService.validateKey(rawKey);
 
-    if (!apiKey.connection) {
-      throw new ForbiddenException("Source API key has no downstream connection assigned.");
+    // Canboso-style parity: a key issued to a bot customer (carries a telegramChatId)
+    // auto-binds to a connection on first use, pointing at the customer's own wallet
+    // in the upstream shop — no downstream shop/dashboard needed. Keys with no
+    // telegramChatId (e.g. legacy dashboard keys) keep the explicit connect() flow.
+    let connection = apiKey.connection ?? null;
+    if (!connection) {
+      connection = await this.ensureCustomerBoundConnection(apiKey);
     }
 
-    if (apiKey.connection.status !== DownstreamSourceConnectionStatus.ACTIVE) {
+    // A connection that exists must be ACTIVE for any request (read or write).
+    if (connection && connection.status !== DownstreamSourceConnectionStatus.ACTIVE) {
       throw new ForbiddenException("Downstream source connection is not active.");
     }
 
+    // Read-only requests (GET catalog/balance) are fully serviceable from the key
+    // alone (apiKey.shopId is the upstream shop). Only writes (placing orders) need
+    // a funded downstream connection, because they debit a customer wallet.
     const isWriteRequest = req.method === "POST" || req.method === "PUT" || req.method === "PATCH";
     if (isWriteRequest) {
+      if (!connection) {
+        throw new ForbiddenException("Source API key has no downstream connection assigned.");
+      }
+
       let walletBalance = 0;
-      if (apiKey.connection.downstreamTelegramChatId) {
+      if (connection.downstreamTelegramChatId) {
         const wallet = await this.prisma.customerWallet.findFirst({
           where: {
             customer: {
-              shopId: apiKey.connection.upstreamShopId,
-              telegramChatId: apiKey.connection.downstreamTelegramChatId,
+              shopId: connection.upstreamShopId,
+              telegramChatId: connection.downstreamTelegramChatId,
             },
           },
-          select: { balance: true },
+          // Spendable = cash balance + commission. The order debit (splitWalletDebit)
+          // spends commission FIRST, so the gate must count it too or it wrongly
+          // blocks commission-funded (CTV) buyers who can actually pay.
+          select: { balance: true, commissionBalance: true },
         });
-        walletBalance = wallet ? Number(wallet.balance) : 0;
+        walletBalance = wallet ? Number(wallet.balance) + Number(wallet.commissionBalance) : 0;
       }
       if (walletBalance <= 0) {
         throw new ForbiddenException(
@@ -108,14 +124,14 @@ export class InternalSourceAuthMiddleware implements NestMiddleware {
 
     req.internalSourceContext = {
       apiKey,
-      connection: apiKey.connection as ActiveInternalSourceConnection,
+      connection,
     };
 
     this.prisma.internalSourceAccessLog
       .create({
         data: {
           apiKeyId: apiKey.id,
-          connectionId: apiKey.connection.id,
+          connectionId: connection?.id ?? null,
           method: req.method,
           path: req.originalUrl || req.url,
           statusCode: 200,
@@ -127,5 +143,57 @@ export class InternalSourceAuthMiddleware implements NestMiddleware {
       .catch(() => {});
 
     next();
+  }
+
+  /**
+   * Lazily create a customer-bound (canboso-style) connection for a key that has a
+   * telegramChatId but no connection yet. Downstream seller/shop are null — the buyer
+   * is a bot customer whose prepaid wallet lives in the upstream shop, keyed by
+   * downstreamTelegramChatId. Idempotent via the unique apiKeyId; race-safe.
+   */
+  private async ensureCustomerBoundConnection(
+    apiKey: ResolvedInternalSourceKey,
+  ): Promise<ActiveInternalSourceConnection | null> {
+    if (!apiKey.telegramChatId) {
+      return null;
+    }
+
+    const include = {
+      upstreamSeller: true,
+      upstreamShop: true,
+      downstreamSeller: true,
+      downstreamShop: true,
+    } as const;
+
+    const existing = await this.prisma.downstreamSourceConnection.findUnique({
+      where: { apiKeyId: apiKey.id },
+      include,
+    });
+    if (existing) {
+      return existing;
+    }
+
+    try {
+      return await this.prisma.downstreamSourceConnection.create({
+        data: {
+          upstreamSellerId: apiKey.sellerId,
+          upstreamShopId: apiKey.shopId,
+          downstreamSellerId: null,
+          downstreamShopId: null,
+          apiKeyId: apiKey.id,
+          downstreamTelegramChatId: apiKey.telegramChatId,
+          status: DownstreamSourceConnectionStatus.ACTIVE,
+          currency: "VND",
+          label: "Customer-bound (bot wallet)",
+        },
+        include,
+      });
+    } catch {
+      // Concurrent first-use request already created it — re-read and use that row.
+      return this.prisma.downstreamSourceConnection.findUnique({
+        where: { apiKeyId: apiKey.id },
+        include,
+      });
+    }
   }
 }

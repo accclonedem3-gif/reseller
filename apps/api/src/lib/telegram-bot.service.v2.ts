@@ -5486,7 +5486,9 @@ export class TelegramBotService {
     actions: unknown[],
   ) {
     const connections = await this.prisma.downstreamSourceConnection.findMany({
-      where: { upstreamShopId: shop.id },
+      // Only PRO reseller connections here — customer-bound (canboso-style) keys
+      // have no downstream seller and are managed via the customer's own bot wallet.
+      where: { upstreamShopId: shop.id, downstreamSellerId: { not: null } },
       include: {
         apiKey: true,
         downstreamSeller: true,
@@ -5531,7 +5533,7 @@ export class TelegramBotService {
     const connWalletByChatId = new Map(connWallets.map((w) => [w.customer.telegramChatId, decimalToNumber(w.balance)]));
 
     for (const conn of connections) {
-      const name = conn.downstreamSeller?.displayName || conn.downstreamSellerId.slice(0, 8);
+      const name = conn.downstreamSeller?.displayName || conn.downstreamSellerId?.slice(0, 8) || conn.downstreamTelegramChatId || "?";
       const status = conn.status === DownstreamSourceConnectionStatus.ACTIVE ? "✅" : "⏸️";
       const balance = formatCurrency(conn.downstreamTelegramChatId ? (connWalletByChatId.get(conn.downstreamTelegramChatId) ?? 0) : 0);
       const keyHint = conn.apiKey?.keyPrefix ? `${conn.apiKey.keyPrefix}…` : "chưa có key";

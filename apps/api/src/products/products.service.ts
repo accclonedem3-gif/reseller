@@ -996,10 +996,11 @@ export class ProductsService {
 
   private async triggerDownstreamSync(upstreamShopId: string) {
     const connections = await this.prisma.downstreamSourceConnection.findMany({
-      where: { upstreamShopId, status: "ACTIVE" },
+      where: { upstreamShopId, status: "ACTIVE", downstreamShopId: { not: null } },
       select: { downstreamShopId: true },
     });
     for (const conn of connections) {
+      if (!conn.downstreamShopId) continue;
       await this.queueService.addSyncCatalogJob(conn.downstreamShopId);
       this.shopsService.syncCatalogForShop(conn.downstreamShopId).catch(() => {});
     }
