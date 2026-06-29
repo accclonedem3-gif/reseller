@@ -691,6 +691,17 @@ async function sendDeliveredOrderMessages(input) {
         warrantyButton: { text: warrantyLabel, callback_data: "warranty:start" },
         canEmitCusid: cusidEmitOk,
     }).catch(() => undefined);
+    const usageInstructions = input.metadata?.usageInstructions;
+    if (usageInstructions && typeof usageInstructions === "string" && usageInstructions.trim()) {
+        const usageTpl = (0, server_1.resolveUsageInstructionsTemplate)(shopCust, adminCust);
+        await (0, server_1.sendUsageInstructionsMessage)({
+            botToken: input.botToken,
+            chatId: input.chatId,
+            template: usageTpl,
+            instructionsText: usageInstructions.trim(),
+            canEmitCusid: cusidEmitOk,
+        }).catch(() => undefined);
+    }
 }
 function createRedisConnection() {
     const connection = new ioredis_1.default(REDIS_URL, {

@@ -5,6 +5,7 @@ import { Check, Plus, Save, Trash2, Upload, X } from "lucide-react";
 import { useToast } from "@/components/ui/toast";
 import { InvoiceTemplateEditor, type InvoiceTemplate } from "@/components/dashboard/invoice-template-editor";
 import { RestockTemplateEditor, type RestockTemplate } from "@/components/dashboard/restock-template-editor";
+import { UsageInstructionsTemplateEditor, type UsageInstructionsTemplate, DEFAULT_USAGE_INSTRUCTIONS } from "@/components/dashboard/usage-instructions-template-editor";
 import { ButtonsEditor, type ButtonsConfig } from "@/components/dashboard/buttons-editor";
 import { ProductFamilyManager } from "@/components/dashboard/product-family-manager";
 import { api } from "@/lib/api";
@@ -344,6 +345,62 @@ export function AdminTemplateBotPage() {
     onError: (err) => showToast({ tone: "error", message: getErrMsg(err, "Gửi thử thất bại.") }),
   });
 
+  const usageInstrQuery = useQuery<{ defaults: UsageInstructionsTemplate; template: UsageInstructionsTemplate; raw: UsageInstructionsTemplate | null }>({
+    queryKey: ["admin-template", "usage-instructions"],
+    queryFn: async () => (await api.get("/admin-template/usage-instructions-template")).data,
+    retry: false,
+    enabled: !!tplQuery.data?.botConfig,
+  });
+
+  const [usageInstrDraft, setUsageInstrDraft] = useState<UsageInstructionsTemplate | null>(null);
+  useEffect(() => {
+    if (usageInstrQuery.data?.template) {
+      setUsageInstrDraft(usageInstrQuery.data.template);
+    }
+  }, [usageInstrQuery.data?.template]);
+
+  const saveUsageInstrMutation = useMutation({
+    mutationFn: async (tpl: UsageInstructionsTemplate) =>
+      (await api.put("/admin-template/usage-instructions-template", { template: tpl })).data,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["admin-template", "usage-instructions"] });
+      showToast({ tone: "success", message: "Đã lưu mẫu hướng dẫn sử dụng." });
+    },
+    onError: (err) => showToast({ tone: "error", message: getErrMsg(err, "Không lưu được mẫu hướng dẫn.") }),
+  });
+
+  const resetUsageInstrMutation = useMutation({
+    mutationFn: async () =>
+      (await api.put("/admin-template/usage-instructions-template", { template: null })).data,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["admin-template", "usage-instructions"] });
+      setUsageInstrDraft({ ...DEFAULT_USAGE_INSTRUCTIONS });
+      showToast({ tone: "success", message: "Đã đặt lại mẫu hướng dẫn về mặc định." });
+    },
+    onError: (err) => showToast({ tone: "error", message: getErrMsg(err, "Không đặt lại được.") }),
+  });
+
+  const testUsageInstrMutation = useMutation({
+    mutationFn: async () => {
+      const LS_KEY = "admin_invoice_test_chat_id";
+      let chatId = localStorage.getItem(LS_KEY) || "";
+      if (!chatId) {
+        const input = window.prompt(
+          "Nhập Telegram User ID / Chat ID để nhận tin test\n(lấy từ @userinfobot — vd: 5513106881)\nLưu lại cho lần sau:",
+          "",
+        );
+        if (!input || !input.trim()) throw new Error("Đã huỷ — chưa nhập chat ID.");
+        chatId = input.trim();
+        localStorage.setItem(LS_KEY, chatId);
+      }
+      return (await api.post("/admin-template/usage-instructions-template/test", { telegramChatId: chatId })).data;
+    },
+    onSuccess: (data: any) => {
+      showToast({ tone: "success", message: `Đã gửi thử tin hướng dẫn đến chat ${data?.sentTo || "admin"}.` });
+    },
+    onError: (err) => showToast({ tone: "error", message: getErrMsg(err, "Gửi thử thất bại.") }),
+  });
+
   const buttonsQuery = useQuery<ButtonsConfig>({
     queryKey: ["admin-template", "buttons"],
     queryFn: async () => (await api.get("/admin-template/buttons")).data,
@@ -351,7 +408,7 @@ export function AdminTemplateBotPage() {
     enabled: !!tplQuery.data?.botConfig,
   });
 
-  const [tab, setTab] = useState<"config" | "products" | "invoice" | "restock" | "buttons">("config");
+  const [tab, setTab] = useState<"config" | "products" | "invoice" | "restock" | "usage" | "buttons">("config");
   const [buttonsDraft, setButtonsDraft] = useState<ButtonsConfig | null>(null);
   useEffect(() => {
     if (buttonsQuery.data) {
@@ -429,6 +486,7 @@ export function AdminTemplateBotPage() {
           ["products", "📦 Sản phẩm mặc định"],
           ["invoice", "📄 Hóa đơn"],
           ["restock", "📢 Nhập kho"],
+          ["usage", "📖 Hướng dẫn SD"],
           ["buttons", "🔘 Nút chức năng"],
         ] as const).map(([k, lbl]) => (
           <button
@@ -724,6 +782,69 @@ export function AdminTemplateBotPage() {
         ) : null}
       </div>
 
+      </>)}
+
+      {tab === "usage" && (<>
+      {/* Usage instructions template */}
+      <div className="rounded-2xl p-5" style={{ background: "var(--surface)", border: "1px solid var(--bd)" }}>
+        <div className="mb-3 flex items-start justify-between gap-3">
+          <div>
+            <h2 className="text-[16px] font-black" style={{ color: "var(--tx)" }}>📖 Mẫu hướng dẫn sử dụng</h2>
+            <p className="text-[12px]" style={{ color: "var(--tx-f)" }}>
+              Tin riêng gửi sau hóa đơn. Nội dung lấy từ trường "Hướng dẫn sử dụng" mỗi sản phẩm.
+              Chỉ gửi khi sản phẩm có nhập hướng dẫn.
+            </p>
+          </div>
+        </div>
+        {usageInstrQuery.isPending ? (
+          <p className="text-[12px]" style={{ color: "var(--tx-f)" }}>Đang tải mẫu hướng dẫn...</p>
+        ) : usageInstrDraft ? (
+          <>
+            <UsageInstructionsTemplateEditor
+              value={usageInstrDraft}
+              defaults={usageInstrQuery.data?.defaults ?? DEFAULT_USAGE_INSTRUCTIONS}
+              onChange={setUsageInstrDraft}
+            />
+            <div className="mt-4 flex flex-wrap items-center gap-2 border-t pt-4" style={{ borderColor: "var(--bd)" }}>
+              <button
+                type="button"
+                onClick={() => saveUsageInstrMutation.mutate(usageInstrDraft)}
+                disabled={saveUsageInstrMutation.isPending}
+                className="flex items-center gap-1.5 rounded-xl px-4 py-2 text-[12px] font-black transition hover:opacity-90 disabled:opacity-40"
+                style={{ background: "rgb(16,185,129)", color: "#fff" }}
+              >
+                <Save className="h-3.5 w-3.5" />
+                {saveUsageInstrMutation.isPending ? "Đang lưu..." : "Lưu mẫu"}
+              </button>
+              <button
+                type="button"
+                onClick={() => testUsageInstrMutation.mutate()}
+                disabled={testUsageInstrMutation.isPending}
+                className="flex items-center gap-1.5 rounded-xl px-4 py-2 text-[12px] font-black transition hover:opacity-90 disabled:opacity-40"
+                style={{ background: "rgb(56,189,248)", color: "#fff" }}
+              >
+                {testUsageInstrMutation.isPending ? "Đang gửi..." : "Gửi thử"}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (window.confirm("Đặt lại mẫu hướng dẫn về mặc định hệ thống?")) {
+                    resetUsageInstrMutation.mutate();
+                  }
+                }}
+                disabled={resetUsageInstrMutation.isPending}
+                className="rounded-xl px-4 py-2 text-[12px] font-black transition hover:opacity-80 disabled:opacity-40"
+                style={{ background: "var(--inp)", border: "1px solid var(--bd)", color: "var(--tx-f)" }}
+              >
+                Đặt lại mặc định
+              </button>
+              <p className="ml-auto text-[11px]" style={{ color: "var(--tx-f)" }}>
+                Test gửi đến chat admin template. Nội dung thực do từng sản phẩm cung cấp.
+              </p>
+            </div>
+          </>
+        ) : null}
+      </div>
       </>)}
 
       {tab === "buttons" && (<>

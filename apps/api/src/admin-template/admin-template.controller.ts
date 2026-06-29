@@ -26,10 +26,12 @@ import {
   SetProductDefaultDto,
   TestInvoiceDto,
   TestRestockDto,
+  TestUsageInstructionsDto,
   UpdateButtonsDto,
   UpdateInvoiceTemplateDto,
   UpdateRestockTemplateDto,
   UpdateTemplateCustomizationDto,
+  UpdateUsageInstructionsTemplateDto,
   UploadMediaUrlDto,
 } from "./admin-template.dto";
 import { AdminTemplateService } from "./admin-template.service";
@@ -175,6 +177,27 @@ export class AdminTemplateController {
     @Body() body: TestRestockDto,
   ) {
     return this.service.testRestock(user, body);
+  }
+
+  @Get("usage-instructions-template")
+  getUsageInstructionsTemplate(@CurrentUser() user: AuthenticatedUser) {
+    return this.service.getUsageInstructionsTemplate(user);
+  }
+
+  @Put("usage-instructions-template")
+  updateUsageInstructionsTemplate(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() body: UpdateUsageInstructionsTemplateDto,
+  ) {
+    return this.service.updateUsageInstructionsTemplate(user, body);
+  }
+
+  @Post("usage-instructions-template/test")
+  testUsageInstructions(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() body: TestUsageInstructionsDto,
+  ) {
+    return this.service.testUsageInstructions(user, body);
   }
 
   @Get("buttons")

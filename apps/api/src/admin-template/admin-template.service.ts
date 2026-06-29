@@ -23,18 +23,23 @@ import bcrypt from "bcryptjs";
 import {
   DEFAULT_INVOICE_TEMPLATE,
   DEFAULT_RESTOCK_TEMPLATE,
+  DEFAULT_USAGE_INSTRUCTIONS_TEMPLATE,
   buildSampleInvoiceData,
   buildSampleInvoiceDataLarge,
   buildSampleRestockData,
   decryptSecret,
   encryptSecret,
   renderRestockHtml,
+  renderUsageInstructionsHtml,
   resolveInvoiceTemplate,
   resolveRestockTemplate,
+  resolveUsageInstructionsTemplate,
   sendInvoiceMessages,
+  sendUsageInstructionsMessage,
   telegramSendMessage,
   type InvoiceTemplateConfig,
   type RestockTemplateConfig,
+  type UsageInstructionsTemplateConfig,
 } from "@reseller/shared/server";
 
 import { AppConfigService } from "../config/app-config.service";
@@ -48,10 +53,12 @@ import type {
   SetProductDefaultDto,
   TestInvoiceDto,
   TestRestockDto,
+  TestUsageInstructionsDto,
   UpdateButtonsDto,
   UpdateInvoiceTemplateDto,
   UpdateRestockTemplateDto,
   UpdateTemplateCustomizationDto,
+  UpdateUsageInstructionsTemplateDto,
   UploadMediaUrlDto,
 } from "./admin-template.dto";
 
@@ -697,6 +704,58 @@ export class AdminTemplateService {
       data: { customizationJson: cust as Prisma.InputJsonValue },
     });
     return { success: true };
+  }
+
+  /** Admin: read the current usage instructions template (with defaults merged). */
+  async getUsageInstructionsTemplate(user: AuthenticatedUser) {
+    await this.assertSuperAdmin(user);
+    const shop = await this.findTemplateShop();
+    const cust = (shop.botConfig?.customizationJson as Record<string, any>) ?? {};
+    const resolved = resolveUsageInstructionsTemplate(null, cust);
+    return {
+      defaults: DEFAULT_USAGE_INSTRUCTIONS_TEMPLATE,
+      template: resolved,
+      raw: cust.usageInstructionsTemplate ?? null,
+    };
+  }
+
+  /** Admin: update the usage instructions template inside customizationJson.usageInstructionsTemplate. */
+  async updateUsageInstructionsTemplate(user: AuthenticatedUser, dto: UpdateUsageInstructionsTemplateDto) {
+    await this.assertSuperAdmin(user);
+    const shop = await this.findTemplateShop();
+    if (!shop.botConfig) {
+      throw new BadRequestException("BotConfig missing for template shop.");
+    }
+    const cust = ((shop.botConfig.customizationJson as Record<string, any>) ?? {}) as Record<string, any>;
+    cust.usageInstructionsTemplate = dto.template ?? null;
+    await this.prisma.botConfig.update({
+      where: { id: shop.botConfig.id },
+      data: { customizationJson: cust as Prisma.InputJsonValue },
+    });
+    return { success: true };
+  }
+
+  /** Admin: send a sample usage instructions message to a Telegram chat. */
+  async testUsageInstructions(user: AuthenticatedUser, dto: TestUsageInstructionsDto) {
+    await this.assertSuperAdmin(user);
+    const shop = await this.findTemplateShop();
+    if (!shop.botConfig?.telegramBotTokenEncrypted) {
+      throw new BadRequestException("Admin template chưa có bot token. Hãy set bot token trước.");
+    }
+    const token = decryptSecret(shop.botConfig.telegramBotTokenEncrypted, this.config.encryptionKey);
+    if (!token) {
+      throw new BadRequestException("Không decrypt được bot token admin template.");
+    }
+    const chatId = (dto?.telegramChatId || "").trim() || (shop.botConfig.ownerTelegramUserId || "").trim();
+    if (!chatId) {
+      throw new BadRequestException("Cần truyền telegramChatId hoặc set ownerTelegramUserId cho admin template.");
+    }
+    const cust = (shop.botConfig.customizationJson as Record<string, any>) ?? {};
+    const template = resolveUsageInstructionsTemplate(null, cust);
+    const sampleText = (dto?.sampleText || "").trim()
+      || "1. Đăng nhập tại website chính thức\n2. Vào Settings → Account\n3. Nhập thông tin tài khoản vừa nhận\n4. Liên hệ hỗ trợ nếu gặp vấn đề";
+    await sendUsageInstructionsMessage({ botToken: token, chatId, template, instructionsText: sampleText });
+    return { success: true, sentTo: chatId };
   }
 
   /**

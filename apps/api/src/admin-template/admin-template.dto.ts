@@ -90,6 +90,21 @@ export class TestRestockDto {
   telegramChatId?: string;
 }
 
+export class UpdateUsageInstructionsTemplateDto {
+  @IsObject()
+  template!: Record<string, any>;
+}
+
+export class TestUsageInstructionsDto {
+  @IsOptional()
+  @IsString()
+  telegramChatId?: string;
+
+  @IsOptional()
+  @IsString()
+  sampleText?: string;
+}
+
 export class UpdateButtonsDto {
   @IsOptional()
   @IsObject()

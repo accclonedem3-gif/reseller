@@ -12,3 +12,4 @@ export * from "./server/schedule";
 export * from "./server/mock";
 export * from "./server/internal-auth";
 export * from "./server/warranty";
+export * from "./server/usage-instructions-template";
