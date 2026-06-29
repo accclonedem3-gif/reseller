@@ -522,7 +522,7 @@ export class TelegramBotService {
         await this.sendText(
           outboundToken,
           message.chat.id,
-          this.buildSupportText(shop.name, shop.supportTelegram, shop.supportZalo, messageLanguage),
+          this.buildSupportText(shop.name, shop.supportTelegram, shop.supportZalo, messageLanguage, shop.supportNote),
           actions,
           {
             inline_keyboard: [
@@ -963,7 +963,7 @@ export class TelegramBotService {
           outboundToken,
           chatId,
           messageId,
-          this.buildSupportText(shop.name, shop.supportTelegram, shop.supportZalo, callbackLanguage),
+          this.buildSupportText(shop.name, shop.supportTelegram, shop.supportZalo, callbackLanguage, shop.supportNote),
           {
             inline_keyboard: [
               [
@@ -7271,8 +7271,9 @@ export class TelegramBotService {
     supportTelegram: string | null,
     supportZalo: string | null,
     language: BotLanguage = "vi",
+    supportNote?: string | null,
   ) {
-    return this.render.buildSupportText(shopName, supportTelegram, supportZalo, language);
+    return this.render.buildSupportText(shopName, supportTelegram, supportZalo, language, supportNote);
   }
 
   private buildHomeText(

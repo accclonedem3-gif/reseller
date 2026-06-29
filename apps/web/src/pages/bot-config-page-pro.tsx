@@ -281,6 +281,7 @@ type BotConfigForm = {
   providerBuyerKey: string;
   supportTelegram: string;
   supportZalo: string;
+  supportNote: string;
   logoUrl: string;
   sourceNotificationSyncEnabled: boolean;
   priceMarkupPercent: string;
@@ -336,6 +337,7 @@ function buildBotConfigPayload(form: BotConfigForm) {
     ["providerBuyerKey", "providerBuyerKey"],
     ["supportTelegram", "supportTelegram"],
     ["supportZalo", "supportZalo"],
+    ["supportNote", "supportNote"],
     ["logoUrl", "logoUrl"],
     ["paymentProvider", "paymentProvider"],
     ["payosClientId", "payosClientId"],
@@ -395,6 +397,7 @@ function getInitialForm(): BotConfigForm {
     providerBuyerKey: "",
     supportTelegram: "",
     supportZalo: "",
+    supportNote: "",
     logoUrl: "",
     sourceNotificationSyncEnabled: true,
     priceMarkupPercent: "",
@@ -491,6 +494,7 @@ export function BotConfigPage() {
       providerBuyerKey: "",
       supportTelegram: configQuery.data.supportTelegram || "",
       supportZalo: configQuery.data.supportZalo || "",
+      supportNote: (configQuery.data as any).supportNote || "",
       logoUrl: configQuery.data.logoUrl || "",
       sourceNotificationSyncEnabled: configQuery.data.sourceNotificationSyncEnabled ?? true,
       priceMarkupPercent: configQuery.data.priceMarkupPercent != null ? String(configQuery.data.priceMarkupPercent) : "",
@@ -802,6 +806,19 @@ export function BotConfigPage() {
               <Field label={t.fieldZaloSupport}>
                 <Input value={form.supportZalo} onChange={(e) => setForm((c) => ({ ...c, supportZalo: e.target.value }))} placeholder={t.phZalo} />
               </Field>
+              <div className="sm:col-span-2">
+                <Field label="Tin nhắn hỗ trợ tùy chọn" hint="Optional">
+                  <Textarea
+                    className="min-h-[80px]"
+                    value={form.supportNote}
+                    onChange={(e) => setForm((c) => ({ ...c, supportNote: e.target.value }))}
+                    placeholder="VD: Vui lòng cung cấp email đã đặt hàng và ảnh chụp màn hình lỗi để được hỗ trợ nhanh hơn."
+                  />
+                  <p className="mt-1 text-[11px]" style={{ color: "var(--tx-f)" }}>
+                    Hiển thị phía trên thông tin liên hệ Telegram/Zalo khi khách bấm Hỗ trợ.
+                  </p>
+                </Field>
+              </div>
             </div>
             <div className="mt-6 flex justify-end">
               <button type="button" disabled={saveMutation.isPending} onClick={() => saveMutation.mutate()}

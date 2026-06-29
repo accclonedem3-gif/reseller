@@ -461,6 +461,7 @@ model Shop {
   logoUrl                     String?                      @map("logo_url")
   supportTelegram             String?                      @map("support_telegram")
   supportZalo                 String?                      @map("support_zalo")
+  supportNote                 String?                      @map("support_note")
   status                      ShopStatus                   @default(DRAFT)
   storefrontMode              StorefrontMode               @default(TELEGRAM_ONLY) @map("storefront_mode")
   storefrontConfigJson        Json?                        @map("storefront_config_json")

@@ -485,18 +485,22 @@ export class BotRenderHelpers {
     supportTelegram: string | null,
     supportZalo: string | null,
     language: BotLanguage = "vi",
+    supportNote?: string | null,
   ) {
+    const note = supportNote?.trim() || null;
     if (language === "en") {
       return [
         `💬 Support | ${shopName}`,
         "",
+        note ? note : null,
+        note ? "" : null,
         supportTelegram ? `Telegram: ${supportTelegram}` : null,
         supportZalo ? `Zalo: ${supportZalo}` : null,
         !supportTelegram && !supportZalo ? "Please reply right here in this chat — the shop will assist you." : null,
         "",
         "When you need help, please include your order code so support can check faster.",
       ]
-        .filter(Boolean)
+        .filter((l) => l !== null)
         .join("\n");
     }
 
@@ -504,26 +508,30 @@ export class BotRenderHelpers {
       return [
         `💬 ช่วยเหลือ | ${shopName}`,
         "",
+        note ? note : null,
+        note ? "" : null,
         supportTelegram ? `Telegram: ${supportTelegram}` : null,
         supportZalo ? `Zalo: ${supportZalo}` : null,
         !supportTelegram && !supportZalo ? "กรุณาตอบกลับในแชทนี้ ทางร้านจะช่วยเหลือคุณ" : null,
         "",
         "เมื่อต้องการความช่วยเหลือ กรุณาแนบรหัสคำสั่งซื้อเพื่อให้ทีมงานตรวจสอบได้รวดเร็วขึ้น",
       ]
-        .filter(Boolean)
+        .filter((l) => l !== null)
         .join("\n");
     }
 
     return [
       `💬 Hỗ trợ | ${shopName}`,
       "",
+      note ? note : null,
+      note ? "" : null,
       supportTelegram ? `Telegram: ${supportTelegram}` : null,
       supportZalo ? `Zalo: ${supportZalo}` : null,
       !supportTelegram && !supportZalo ? "Bạn cứ nhắn ngay trong khung chat này — shop sẽ hỗ trợ bạn." : null,
       "",
       "Khi cần hỗ trợ, vui lòng gửi kèm mã đơn hàng để được xử lý nhanh hơn.",
     ]
-      .filter(Boolean)
+      .filter((l) => l !== null)
       .join("\n");
   }
 

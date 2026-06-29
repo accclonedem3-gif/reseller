@@ -49,6 +49,11 @@ export class UpdateShopDto {
   supportZalo?: string;
 
   @IsOptional()
+  @ValidateIf((o) => o.supportNote != null)
+  @IsString()
+  supportNote?: string | null;
+
+  @IsOptional()
   @Transform(emptyStringToUndefined)
   @IsUrl()
   logoUrl?: string;
@@ -102,6 +107,11 @@ export class UpdateBotConfigDto {
   @Transform(emptyStringToUndefined)
   @IsString()
   supportZalo?: string;
+
+  @IsOptional()
+  @ValidateIf((o) => o.supportNote != null)
+  @IsString()
+  supportNote?: string | null;
 
   @IsOptional()
   @Transform(emptyStringToUndefined)
