@@ -401,9 +401,9 @@ export class ShopsService {
         update: {
           providerName: resolvedProviderName,
           baseUrl: resolvedProviderBaseUrl,
-          ...(dto.providerBuyerKey
+          ...(incomingBuyerKey
             ? {
-                buyerKeyEncrypted: encryptSecret(dto.providerBuyerKey, encryptionKey),
+                buyerKeyEncrypted: encryptSecret(incomingBuyerKey, encryptionKey),
                 providerKind: ProviderKind.EXTERNAL,
                 internalSourceConnectionId: null,
                 connectionStatus: "PENDING",
@@ -418,8 +418,8 @@ export class ShopsService {
           shopId: shop.id,
           providerName: resolvedProviderName,
           baseUrl: resolvedProviderBaseUrl,
-          buyerKeyEncrypted: dto.providerBuyerKey
-            ? encryptSecret(dto.providerBuyerKey, encryptionKey)
+          buyerKeyEncrypted: incomingBuyerKey
+            ? encryptSecret(incomingBuyerKey, encryptionKey)
             : "",
           providerKind: ProviderKind.EXTERNAL,
           sourceWebhookKey: this.createSourceWebhookKey(),
