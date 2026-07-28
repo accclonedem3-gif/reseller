@@ -440,6 +440,8 @@ export class BotRenderHelpers {
       | "payQR"
       | "payBinance"
       | "payUsdt"
+      | "paySol"
+      | "payTon"
       | "paid"
       | "buyNow"
       | "back"
@@ -468,6 +470,9 @@ export class BotRenderHelpers {
       payQR:        { vi: "💳 Thanh toán QR / Chuyển khoản",  en: "💳 Pay with QR / Bank",      th: "💳 ชำระด้วย QR / โอนเงิน" },
       payBinance:   { vi: "🟡 Thanh toán Binance",            en: "🟡 Pay with Binance",        th: "🟡 ชำระด้วย Binance" },
       payUsdt:      { vi: "Thanh toán USDT (TRC20)",          en: "Pay with USDT (TRC20)",      th: "ชำระด้วย USDT (TRC20)" },
+      paySol:       { vi: "Thanh toán USDT (Solana)",         en: "Pay with USDT (Solana)",     th: "ชำระด้วย USDT (Solana)" },
+      payTon:       { vi: "Thanh toán USDT (TON)",            en: "Pay with USDT (TON)",        th: "ชำระด้วย USDT (TON)" },
+      payPaypal:    { vi: "🅿️ Thanh toán PayPal",             en: "🅿️ Pay with PayPal",         th: "🅿️ ชำระด้วย PayPal" },
       paid:         { vi: "✅ Tôi đã thanh toán",             en: "✅ I've paid",               th: "✅ ฉันชำระแล้ว" },
       buyNow:       { vi: "🛒 Mua ngay",                    en: "🛒 Buy now",                  th: "🛒 ซื้อเลย" },
       back:         { vi: "⬅️ Quay lại",                     en: "⬅️ Back",                     th: "⬅️ กลับ" },

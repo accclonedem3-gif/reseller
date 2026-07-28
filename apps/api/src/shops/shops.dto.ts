@@ -123,6 +123,10 @@ export class UpdateBotConfigDto {
   sourceNotificationSyncEnabled?: boolean;
 
   @IsOptional()
+  @IsBoolean()
+  ownProductsOnly?: boolean;
+
+  @IsOptional()
   @Transform(({ value }) => {
     if (value === null || value === undefined || value === "") return null;
     const n = Number(value);
@@ -211,7 +215,38 @@ export class UpdateBotConfigDto {
   @IsOptional()
   @Transform(emptyStringToUndefined)
   @IsString()
+  paypalClientId?: string;
+
+  @IsOptional()
+  @Transform(emptyStringToUndefined)
+  @IsString()
+  paypalClientSecret?: string;
+
+  @IsOptional()
+  @Transform(emptyStringToUndefined)
+  @IsString()
+  paypalWebhookId?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  paypalEnabled?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  paypalSandbox?: boolean;
+
+  @IsOptional()
+  @IsString()
+  paypalVndRateOverride?: string;
+
+  @IsOptional()
+  @Transform(emptyStringToUndefined)
+  @IsString()
   binanceUid?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  binanceEnabled?: boolean;
 
   @IsOptional()
   @Transform(emptyStringToUndefined)
@@ -219,14 +254,35 @@ export class UpdateBotConfigDto {
   okxUid?: string;
 
   @IsOptional()
+  @IsBoolean()
+  okxEnabled?: boolean;
+
+  @IsOptional()
   @Transform(emptyStringToUndefined)
   @IsString()
   usdtTrc20Address?: string;
 
   @IsOptional()
+  @IsBoolean()
+  usdtTrc20Enabled?: boolean;
+
+  @IsOptional()
   @Transform(emptyStringToUndefined)
   @IsString()
   usdtSolanaAddress?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  usdtSolanaEnabled?: boolean;
+
+  @IsOptional()
+  @Transform(emptyStringToUndefined)
+  @IsString()
+  usdtTonAddress?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  usdtTonEnabled?: boolean;
 
   @IsOptional()
   @IsString()

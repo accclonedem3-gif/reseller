@@ -1,4 +1,14 @@
-import { Body, Controller, Get, Inject, NotFoundException, Param, Post, Req, Res } from "@nestjs/common";
+import {
+  Body,
+  Controller,
+  Get,
+  Inject,
+  NotFoundException,
+  Param,
+  Post,
+  Req,
+  Res,
+} from "@nestjs/common";
 import type { Request, Response } from "express";
 
 import { OrdersService } from "../orders/orders.service";
@@ -61,10 +71,13 @@ export class DevController {
   ) {
     this.ensureDevEndpointEnabled(request);
 
-    const order = await this.ordersService.markPaymentCompleted(externalOrderCode, {
-      mock: true,
+    const order = await this.ordersService.markPaymentCompleted(
       externalOrderCode,
-    });
+      {
+        mock: true,
+        externalOrderCode,
+      },
+    );
 
     response.type("html").send(`
       <html lang="vi">
@@ -155,18 +168,25 @@ export class DevController {
 
     const apiKey = body.apiKey || "TEST_API_KEY";
     const secretKey = body.secretKey || "TEST_SECRET_KEY";
-    const sampleBody = body.sampleBody || JSON.stringify({
-      env: { terminalType: "WEB" },
-      merchantTradeNo: "RSP12345678901234",
-      orderAmount: "1.00",
-      currency: "USDT",
-      description: "Test order",
-      webhookUrl: "https://example.com/webhooks/binancepay",
-    });
+    const sampleBody =
+      body.sampleBody ||
+      JSON.stringify({
+        env: { terminalType: "WEB" },
+        merchantTradeNo: "RSP12345678901234",
+        orderAmount: "1.00",
+        currency: "USDT",
+        description: "Test order",
+        webhookUrl: "https://example.com/webhooks/binancepay",
+      });
 
     const timestamp = String(Date.now());
     const nonce = "TESTNONCE1234567890ABCDEF123456";
-    const signature = this.binancePayService.buildSignature(timestamp, nonce, sampleBody, secretKey);
+    const signature = this.binancePayService.buildSignature(
+      timestamp,
+      nonce,
+      sampleBody,
+      secretKey,
+    );
 
     return {
       ok: true,
@@ -198,8 +218,12 @@ export class DevController {
   ) {
     this.ensureDevEndpointEnabled(request);
 
-    const merchantTradeNo = this.binancePayService.buildMerchantTradeNo(externalOrderCode);
-    const recovered = this.binancePayService.merchantTradeNoToExternalOrderCode(merchantTradeNo);
+    const merchantTradeNo =
+      this.binancePayService.buildMerchantTradeNo(externalOrderCode);
+    const recovered =
+      this.binancePayService.merchantTradeNoToExternalOrderCode(
+        merchantTradeNo,
+      );
 
     return {
       ok: true,
@@ -254,25 +278,10 @@ export class DevController {
     }
   }
 
-  private ensureDevEndpointEnabled(request: Request) {
-    if (this.config.nodeEnv !== "production") {
-      return;
-    }
-
-    const host = String(request.headers.host || "").toLowerCase();
-    const origin = String(request.headers.origin || "").toLowerCase();
-    const referer = String(request.headers.referer || "").toLowerCase();
-    const isLoopback = (value: string) =>
-      value.includes("localhost") ||
-      value.includes("127.0.0.1") ||
-      value.includes("[::1]") ||
-      value.includes("::1");
-    const localRequest = isLoopback(host);
-    const localCaller = !origin && !referer
-      ? true
-      : isLoopback(origin) || isLoopback(referer);
-
-    if (!localRequest || !localCaller) {
+  private ensureDevEndpointEnabled(_request: Request) {
+    // Host/Origin/Referer are attacker-controlled and must never unlock payment simulators.
+    // Production receives an unconditional 404, including requests made locally on the VPS.
+    if (this.config.nodeEnv === "production") {
       throw new NotFoundException("Not found.");
     }
   }

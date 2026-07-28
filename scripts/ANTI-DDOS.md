@@ -1,61 +1,72 @@
-# Anti-DDoS / anti-abuse — what's in place & what you must do on the VPS
+# Anti-DDoS and abuse protection
 
-DDoS defense is layered. Code can only do application-level rate limiting (L7).
-True volumetric floods (L3/L4) are stopped at the edge — **Cloudflare / nginx**.
+DDoS protection is layered. NestJS and nginx reduce HTTP (L7) abuse; a proxied edge provider is
+still required to absorb a large bandwidth (L3/L4) flood before it reaches the VPS.
 
-## 1. App layer (already in the codebase — deployed automatically)
+## Implemented in the repository
 
-| Protection | Where | Limit |
+| Layer | Protection | Default |
 |---|---|---|
-| Bot flood control | `telegram-bot.service.v2.ts` `enforceFloodControl` | 20 msg / 10s per (shop, user) → silently dropped |
-| Bot auto-ban | same | 120 msg / 60s sustained → `customer.blacklisted = true` (every later update dropped) |
-| Global API rate limit | `app.module.ts` `APP_GUARD: ThrottlerGuard` | 100 req / min per real client IP |
-| Login / auth throttle | `auth.controller.ts` `@Throttle` | 5–10 req / min |
-| Warranty public throttle | `warranty-public.controller.ts` | 20–30 req / min |
-| Internal-source API | `internal-source-auth.middleware.ts` | 60 req / min per API key |
-| `helmet` security headers + CORS allowlist | `main.ts` | — |
-| `trust proxy = 1` | `main.ts` | so per-IP limits key on the real client IP behind nginx |
+| NestJS | Distributed global limiter backed by Redis | 100 requests / 60 seconds / route / IP |
+| NestJS | Redis outage fallback | Process-local limiter, retry Redis after 5 seconds |
+| Auth | Login/register/refresh/password-reset decorators | 3-10 requests per configured window |
+| Warranty | Public route throttles + Redis abuse lockout | 20-30 requests/minute; escalating misses |
+| Bot | Per-shop/per-customer flood control | Existing bot thresholds |
+| nginx | General API bucket | 15 requests/second, burst 40, 25 concurrent connections/IP |
+| nginx | Auth bucket | 1 request/second, burst 10, 10 concurrent connections/IP |
+| nginx | Upload bucket | 2 requests/second, burst 5, route-specific 6/21 MB media caps |
+| nginx | Signed webhooks | 30 requests/second, burst 100, finite connection/body/time limits |
+| nginx | Internal worker callbacks | 100 requests/second, burst 200, finite connection/body/time limits |
+| Origin | Node production bind | `127.0.0.1`; nginx is the public entry point |
 
-**Exempt from the global limit** (would otherwise self-throttle): `/api/v1/internal/*`
-(worker bot-polling callbacks) and `/api/v1/webhooks/*` (payment IPNs) — both are
-signature/token verified, which is the real gate.
+Tune the distributed application limiter with:
 
-Unbanning a user: clear the `blacklisted` flag from the bot-users / customers screen.
-
-Tuning the bot thresholds: the `FLOOD_*` constants at the top of `TelegramBotService`.
-
-## 2. nginx layer (you apply this on the VPS — NOT automatic)
-
-See `scripts/nginx-anti-ddos.conf.example`. It adds:
-- `limit_req` (req/s per IP) + `limit_conn` (concurrent conns per IP),
-- a tight bucket for `/auth/`, a general bucket for the rest,
-- **no** limit on `/webhooks/` and `/internal/`,
-- request-size / timeout caps (slow-loris).
-
-```bash
-sudo cp scripts/nginx-anti-ddos.conf.example /etc/nginx/conf.d/anti-ddos.conf
-# paste the location{} snippets into your API server block, then:
-sudo nginx -t && sudo systemctl reload nginx
+```dotenv
+API_RATE_LIMIT_WINDOW_MS=60000
+API_RATE_LIMIT_MAX=100
+API_RATE_LIMIT_BLOCK_MS=60000
 ```
 
-## 3. Cloudflare (the actual volumetric-DDoS defense — strongly recommended)
+The `/internal/*` and `/webhooks/*` controllers remain exempt from Nest's small per-route bucket
+because all shops/providers share worker/provider source IPs. They are signature/token protected
+and now receive separate, high-capacity but finite nginx buckets.
 
-1. Put the API + dashboard domains behind Cloudflare (orange-cloud / proxied).
-2. **SSL/TLS** → Full (strict).
-3. **Security → WAF → Rate limiting rules**: e.g. "more than 100 requests/min from one
-   IP to `/api/*` → Block 1 min". Add a stricter rule for `/api/v1/auth/*`.
-4. **Security → Bots** → enable Bot Fight Mode.
-5. Under attack: **Security → Settings → Security Level = "I'm Under Attack"** (JS challenge).
-6. Lock the origin: firewall the VPS so the API port only accepts Cloudflare IP ranges
-   (https://www.cloudflare.com/ips/) — otherwise attackers bypass Cloudflare by hitting the
-   origin IP directly.
-7. If proxied through Cloudflare, enable the `real_ip` block in the nginx example so nginx
-   and the app see the visitor IP (`CF-Connecting-IP`), not Cloudflare's.
+## Install or update nginx on the VPS
 
-## What this does and does not stop
+The installer backs up the live site, validates with `nginx -t`, restores automatically if
+validation fails, and reloads only after a successful check:
 
-- ✅ A single user/script spamming the bot or an endpoint → throttled / auto-banned.
-- ✅ Credential brute-force on login → throttled (app + nginx + Cloudflare).
-- ✅ Moderate L7 floods → absorbed by nginx + Cloudflare rate limits.
-- ❌ Large volumetric L3/L4 floods → **only** Cloudflare (or a scrubbing provider) absorbs
-  these; the VPS uplink would saturate before Node ever sees the traffic.
+```bash
+bash /opt/reseller-platform/scripts/apply-nginx-security.sh
+```
+
+The production template is `deploy/nginx.reseller-platform.conf`. It also adds request/header/body
+timeouts, hides the nginx version, adds browser security headers, and sandboxes `/uploads/*`.
+
+## Cloudflare and origin firewall (still an infrastructure step)
+
+1. Add the domain to Cloudflare and proxy `@`, `www`, and `api` (orange cloud).
+2. Set SSL/TLS mode to **Full (strict)**.
+3. Enable managed WAF rules and Bot Fight Mode.
+4. Add rate rules for `/api/v1/auth/*` and a broader `/api/*` rule.
+5. Confirm all three DNS records return Cloudflare addresses, not the VPS address.
+6. Add nginx `set_real_ip_from` entries for every current Cloudflare IPv4/IPv6 range and use
+   `real_ip_header CF-Connecting-IP`.
+7. Validate nginx, then change UFW so ports 80/443 accept only Cloudflare ranges. Keep SSH access
+   restricted to a known administrator IP before removing broad HTTP(S) rules.
+
+Do not perform steps 6-7 before Cloudflare proxying is confirmed. Otherwise the site becomes
+unreachable or a spoofable client-IP header defeats all per-IP limits.
+
+## Verification
+
+```bash
+npm run test:rate-limit
+sudo nginx -t
+curl -I https://altivoxai.com
+curl -I https://api.altivoxai.com/api/v1/public/warranty/shop/security-check
+```
+
+These controls mitigate brute force, abusive clients, slow requests and moderate HTTP floods.
+Only Cloudflare or another upstream scrubbing provider can absorb a flood that saturates the VPS
+network link.

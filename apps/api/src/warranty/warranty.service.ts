@@ -5088,6 +5088,7 @@ export class WarrantyService {
       {
         productId: order.sourceProduct.externalProductId,
         quantity: qty,
+        customerEmail: order.customerEmail,
         clientOrderCode: `WRT-${order.orderCode}-${claimNumber}`,
       },
     );
@@ -5624,6 +5625,10 @@ export class WarrantyService {
       {
         productId: sourceOrder.sourceProduct.externalProductId,
         quantity: qty,
+        customerEmail:
+          typeof this.asRecord(sourceOrder.metadataJson).customerEmail === "string"
+            ? String(this.asRecord(sourceOrder.metadataJson).customerEmail)
+            : null,
         clientOrderCode: `WRT-SRC-${sourceOrder.sourceOrderCode}-${claimNumber}`,
       },
     );

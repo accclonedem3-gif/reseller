@@ -1,7 +1,7 @@
 import type { AxiosError } from "axios";
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { BellOff, BellRing, Bot, Cable, Handshake, KeyRound, ScanSearch, ShieldCheck, Store, Wallet } from "lucide-react";
+import { BellOff, BellRing, Bot, Cable, ChevronDown, Handshake, KeyRound, ScanSearch, ShieldCheck, Store, Wallet } from "lucide-react";
 
 import { Field } from "@/components/dashboard/field";
 import { Button } from "@/components/ui/button";
@@ -300,10 +300,22 @@ type BotConfigForm = {
   web2mPassword: string;
   web2mToken: string;
   web2mAccessToken: string;
+  paypalClientId: string;
+  paypalClientSecret: string;
+  paypalWebhookId: string;
+  paypalVndRateOverride: string;
+  paypalEnabled: boolean;
+  paypalSandbox: boolean;
   binanceUid: string;
+  binanceEnabled: boolean;
   okxUid: string;
+  okxEnabled: boolean;
   usdtTrc20Address: string;
+  usdtTrc20Enabled: boolean;
   usdtSolanaAddress: string;
+  usdtSolanaEnabled: boolean;
+  usdtTonAddress: string;
+  usdtTonEnabled: boolean;
   usdtVndRateOverride: string;
   binancePersonalApiKey: string;
   binancePersonalSecretKey: string;
@@ -317,6 +329,8 @@ type BotConfigForm = {
   usdtBep20Address: string;
 };
 
+type ReceivingMethodKey = "binance" | "okx" | "trc20" | "solana" | "ton" | "paypal";
+
 function normalizeOptionalValue(value: string) {
   const trimmed = value.trim();
   return trimmed === "" ? null : trimmed;
@@ -328,7 +342,7 @@ function buildBotConfigPayload(form: BotConfigForm) {
     priceMarkupPercent: form.priceMarkupPercent.trim() === "" ? null : Number(form.priceMarkupPercent),
   };
 
-  const fields: Array<[Exclude<keyof BotConfigForm, "sourceNotificationSyncEnabled" | "binancePayEnabled" | "okxPersonalApiEnabled" | "priceMarkupPercent">, string]> = [
+  const fields: Array<[Exclude<keyof BotConfigForm, "sourceNotificationSyncEnabled" | "binancePayEnabled" | "okxPersonalApiEnabled" | "paypalEnabled" | "paypalSandbox" | "binanceEnabled" | "okxEnabled" | "usdtTrc20Enabled" | "usdtSolanaEnabled" | "usdtTonEnabled" | "priceMarkupPercent">, string]> = [
     ["shopName", "shopName"],
     ["shopTagline", "shopTagline"],
     ["botToken", "botToken"],
@@ -354,10 +368,15 @@ function buildBotConfigPayload(form: BotConfigForm) {
     ["web2mPassword", "web2mPassword"],
     ["web2mToken", "web2mToken"],
     ["web2mAccessToken", "web2mAccessToken"],
+    ["paypalClientId", "paypalClientId"],
+    ["paypalClientSecret", "paypalClientSecret"],
+    ["paypalWebhookId", "paypalWebhookId"],
+    ["paypalVndRateOverride", "paypalVndRateOverride"],
     ["binanceUid", "binanceUid"],
     ["okxUid", "okxUid"],
     ["usdtTrc20Address", "usdtTrc20Address"],
     ["usdtSolanaAddress", "usdtSolanaAddress"],
+    ["usdtTonAddress", "usdtTonAddress"],
     ["binancePersonalApiKey", "binancePersonalApiKey"],
     ["binancePersonalSecretKey", "binancePersonalSecretKey"],
     ["binancePayApiKey", "binancePayApiKey"],
@@ -374,6 +393,13 @@ function buildBotConfigPayload(form: BotConfigForm) {
 
   payload.binancePayEnabled = form.binancePayEnabled;
   payload.okxPersonalApiEnabled = form.okxPersonalApiEnabled;
+  payload.paypalEnabled = form.paypalEnabled;
+  payload.paypalSandbox = form.paypalSandbox;
+  payload.binanceEnabled = form.binanceEnabled;
+  payload.okxEnabled = form.okxEnabled;
+  payload.usdtTrc20Enabled = form.usdtTrc20Enabled;
+  payload.usdtSolanaEnabled = form.usdtSolanaEnabled;
+  payload.usdtTonEnabled = form.usdtTonEnabled;
   payload.usdtVndRateOverride = form.usdtVndRateOverride.trim();
 
   return payload;
@@ -416,10 +442,22 @@ function getInitialForm(): BotConfigForm {
     web2mPassword: "",
     web2mToken: "",
     web2mAccessToken: "",
+    paypalClientId: "",
+    paypalClientSecret: "",
+    paypalWebhookId: "",
+    paypalVndRateOverride: "",
+    paypalEnabled: false,
+    paypalSandbox: true,
     binanceUid: "",
+    binanceEnabled: false,
     okxUid: "",
+    okxEnabled: false,
     usdtTrc20Address: "",
+    usdtTrc20Enabled: false,
     usdtSolanaAddress: "",
+    usdtSolanaEnabled: false,
+    usdtTonAddress: "",
+    usdtTonEnabled: false,
     usdtVndRateOverride: "",
     binancePersonalApiKey: "",
     binancePersonalSecretKey: "",
@@ -460,6 +498,7 @@ export function BotConfigPage() {
   const [simulationOutput, setSimulationOutput] = useState("");
   const [sourceKeyInput, setSourceKeyInput] = useState("");
   const [activeTab, setActiveTab] = useState<"shop" | "bot" | "payment" | "crypto" | "affiliate">("bot");
+  const [expandedReceivingMethod, setExpandedReceivingMethod] = useState<ReceivingMethodKey | null>(null);
   const { showToast } = useToast();
 
   const sourceConnectionQuery = useQuery({
@@ -498,7 +537,9 @@ export function BotConfigPage() {
       logoUrl: configQuery.data.logoUrl || "",
       sourceNotificationSyncEnabled: configQuery.data.sourceNotificationSyncEnabled ?? true,
       priceMarkupPercent: configQuery.data.priceMarkupPercent != null ? String(configQuery.data.priceMarkupPercent) : "",
-      paymentProvider: String((configQuery.data as any).paymentProvider || "PAYOS").toUpperCase(),
+      paymentProvider: ["PAYOS", "PAY2S", "WEB2M"].includes(String((configQuery.data as any).paymentProvider || "").toUpperCase())
+        ? String((configQuery.data as any).paymentProvider).toUpperCase()
+        : "PAYOS",
       payosClientId: "",
       payosApiKey: "",
       payosChecksumKey: "",
@@ -513,10 +554,26 @@ export function BotConfigPage() {
       web2mPassword: "",
       web2mToken: "",
       web2mAccessToken: "",
+      paypalClientId: "",
+      paypalClientSecret: "",
+      paypalWebhookId: (configQuery.data as any).paypalWebhookId || "",
+      paypalVndRateOverride:
+        (configQuery.data as any).paypalVndRateOverride !== null
+        && (configQuery.data as any).paypalVndRateOverride !== undefined
+          ? String((configQuery.data as any).paypalVndRateOverride)
+          : "",
+      paypalEnabled: (configQuery.data as any).paypalEnabled ?? false,
+      paypalSandbox: (configQuery.data as any).paypalSandbox ?? true,
       binanceUid: configQuery.data.binanceUid || "",
+      binanceEnabled: (configQuery.data as any).binanceEnabled ?? false,
       okxUid: configQuery.data.okxUid || "",
+      okxEnabled: (configQuery.data as any).okxEnabled ?? false,
       usdtTrc20Address: configQuery.data.usdtTrc20Address || "",
+      usdtTrc20Enabled: (configQuery.data as any).usdtTrc20Enabled ?? false,
       usdtSolanaAddress: (configQuery.data as any).usdtSolanaAddress || "",
+      usdtSolanaEnabled: (configQuery.data as any).usdtSolanaEnabled ?? false,
+      usdtTonAddress: (configQuery.data as any).usdtTonAddress || "",
+      usdtTonEnabled: (configQuery.data as any).usdtTonEnabled ?? false,
       usdtVndRateOverride:
         configQuery.data.usdtVndRateOverride !== null && configQuery.data.usdtVndRateOverride !== undefined
           ? String(configQuery.data.usdtVndRateOverride)
@@ -555,6 +612,8 @@ export function BotConfigPage() {
         payosClientId: "",
         payosApiKey: "",
         payosChecksumKey: "",
+        paypalClientId: "",
+        paypalClientSecret: "",
         binancePersonalApiKey: "",
         binancePersonalSecretKey: "",
         binancePayApiKey: "",
@@ -570,6 +629,20 @@ export function BotConfigPage() {
     },
     onError: (error) => showToast({ tone: "error", message: getApiErrorMessage(error, t.toastFallbackError) }),
   });
+
+  const toggleReceivingMethod = (method: ReceivingMethodKey) => {
+    const fieldByMethod: Record<ReceivingMethodKey, "binanceEnabled" | "okxEnabled" | "usdtTrc20Enabled" | "usdtSolanaEnabled" | "usdtTonEnabled" | "paypalEnabled"> = {
+      binance: "binanceEnabled",
+      okx: "okxEnabled",
+      trc20: "usdtTrc20Enabled",
+      solana: "usdtSolanaEnabled",
+      ton: "usdtTonEnabled",
+      paypal: "paypalEnabled",
+    };
+    const field = fieldByMethod[method];
+    setForm((current) => ({ ...current, [field]: !current[field] }));
+    setExpandedReceivingMethod(method);
+  };
 
   const verifyTelegramMutation = useMutation({
     mutationFn: async () => api.post("/bot-config/verify-telegram"),
@@ -761,7 +834,7 @@ export function BotConfigPage() {
       {/* Tab nav */}
       <div className="flex gap-1 rounded-2xl p-1" style={{ background: "var(--surface)", border: "1px solid var(--bd)" }}>
         {(["shop", "bot", "payment", "crypto", "affiliate"] as const).map((key) => {
-          const label = { shop: "Shop", bot: "Bot & Nguồn", payment: "Thanh toán", crypto: "Crypto", affiliate: "Affiliate" }[key];
+          const label = { shop: "Shop", bot: "Bot & Nguồn", payment: "Thanh toán", crypto: "USDT", affiliate: "Affiliate" }[key];
           const active = activeTab === key;
           return (
             <button key={key} type="button" onClick={() => setActiveTab(key)}
@@ -908,7 +981,7 @@ export function BotConfigPage() {
           <div>
             {/* Provider selector */}
             <div className="mb-6 rounded-2xl p-4" style={{ background: "var(--inp)", border: "1px solid var(--bd)" }}>
-              <p className="mb-3 text-[11px] font-black uppercase tracking-widest" style={{ color: "var(--tx-f)" }}>Cổng thanh toán VNĐ</p>
+              <p className="mb-3 text-[11px] font-black uppercase tracking-widest" style={{ color: "var(--tx-f)" }}>Cổng thanh toán chính</p>
               <div className="grid gap-2.5 sm:grid-cols-3">
                 {[
                   { key: "PAYOS", label: "PayOS", desc: "Nhanh, tin cậy. Phí cao." },
@@ -1089,6 +1162,7 @@ export function BotConfigPage() {
               </div>
             </div>
             )}
+
           </div>
         )}
 
@@ -1097,34 +1171,106 @@ export function BotConfigPage() {
           <div>
             <div className="mb-5 flex items-center gap-2">
               <div className="flex h-8 w-8 items-center justify-center rounded-xl text-amber-400 font-black text-sm" style={{ background: "rgba(245,158,11,0.12)" }}>$</div>
-              <h2 className="text-base font-black" style={{ color: "var(--tx)" }}>USDT / Crypto</h2>
+              <h2 className="text-base font-black" style={{ color: "var(--tx)" }}>USDT & phương thức nhận tiền</h2>
             </div>
             <div className="mb-4 rounded-2xl px-4 py-3" style={{ background: "rgba(52,211,153,0.06)", border: "1px solid rgba(52,211,153,0.15)" }}>
               <p className="text-[12px]" style={{ color: "rgb(52,211,153)" }}>ⓘ {t.usdtDesc}</p>
             </div>
+            <div className="mb-5 grid gap-3 sm:grid-cols-2">
+              {([
+                { key: "binance", label: "Binance UID", detail: "Nhận USDT qua Binance Pay ID", enabled: form.binanceEnabled },
+                { key: "okx", label: "OKX", detail: "UID và Personal API tự đối soát", enabled: form.okxEnabled },
+                { key: "trc20", label: "USDT TRC20", detail: "Ví USDT mạng TRON", enabled: form.usdtTrc20Enabled },
+                { key: "solana", label: "USDT Solana", detail: "Ví USDT mạng Solana", enabled: form.usdtSolanaEnabled },
+                { key: "ton", label: "USDT TON", detail: "Ví USDT Jetton mạng TON", enabled: form.usdtTonEnabled },
+                { key: "paypal", label: "PayPal", detail: "Checkout USD và tự động giao hàng", enabled: form.paypalEnabled },
+              ] satisfies Array<{ key: ReceivingMethodKey; label: string; detail: string; enabled: boolean }>).map((method) => {
+                const expanded = expandedReceivingMethod === method.key;
+                return (
+                  <div
+                    key={method.key}
+                    className="flex items-center gap-2 rounded-2xl p-2"
+                    style={{
+                      background: expanded ? "rgba(249,115,22,0.06)" : "var(--inp)",
+                      border: `1px solid ${expanded ? "rgba(249,115,22,0.28)" : "var(--bd)"}`,
+                    }}
+                  >
+                    <button
+                      type="button"
+                      aria-expanded={expanded}
+                      onClick={() => setExpandedReceivingMethod(expanded ? null : method.key)}
+                      className="flex min-w-0 flex-1 items-center justify-between gap-3 rounded-xl px-3 py-2 text-left"
+                    >
+                      <span className="min-w-0">
+                        <span className="block text-sm font-black" style={{ color: "var(--tx)" }}>{method.label}</span>
+                        <span className="mt-0.5 block truncate text-[11px]" style={{ color: "var(--tx-f)" }}>{method.detail}</span>
+                      </span>
+                      <ChevronDown
+                        className="h-4 w-4 shrink-0 transition-transform"
+                        style={{ color: "var(--tx-f)", transform: expanded ? "rotate(180deg)" : "rotate(0deg)" }}
+                      />
+                    </button>
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={method.enabled}
+                      aria-label={`${method.enabled ? "Tắt" : "Bật"} ${method.label} trên bot`}
+                      onClick={() => toggleReceivingMethod(method.key)}
+                      className="shrink-0 rounded-xl px-3 py-2 text-[10px] font-black"
+                      style={{
+                        background: method.enabled ? "rgba(34,197,94,0.14)" : "var(--surface)",
+                        border: `1px solid ${method.enabled ? "rgba(34,197,94,0.35)" : "var(--bd)"}`,
+                        color: method.enabled ? "rgb(34,197,94)" : "var(--tx-f)",
+                      }}
+                    >
+                      {method.enabled ? "BẬT" : "TẮT"}
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
             <div className="grid gap-5 sm:grid-cols-2">
+              {expandedReceivingMethod === "binance" && (
               <Field label="Binance UID" hint="Optional">
                 <Input value={form.binanceUid} onChange={(e) => setForm((c) => ({ ...c, binanceUid: e.target.value }))} placeholder={t.phBinanceUid} />
               </Field>
+              )}
+              {expandedReceivingMethod !== null && expandedReceivingMethod !== "paypal" && (
               <Field label={t.fieldUsdtRate} hint="Optional" description={t.usdtRateDesc(configQuery.data?.defaultUsdtVndRate || 26000)}>
                 <Input inputMode="decimal" value={form.usdtVndRateOverride} onChange={(e) => setForm((c) => ({ ...c, usdtVndRateOverride: e.target.value }))} placeholder={String(configQuery.data?.defaultUsdtVndRate || 26000)} />
               </Field>
+              )}
+              {expandedReceivingMethod === "trc20" && (
               <div className="sm:col-span-2">
                 <Field label={t.fieldUsdtAddress} hint="Optional">
                   <Input value={form.usdtTrc20Address} onChange={(e) => setForm((c) => ({ ...c, usdtTrc20Address: e.target.value }))} placeholder={t.phUsdtAddress} />
                 </Field>
               </div>
+              )}
+              {expandedReceivingMethod === "solana" && (
               <div className="sm:col-span-2">
                 <Field label="USDT Solana Address" hint="Optional" description="Địa chỉ ví Solana nhận USDT (SPL). Bot sẽ tự dò giao dịch, không cần khách paste tx hash.">
                   <Input value={form.usdtSolanaAddress} onChange={(e) => setForm((c) => ({ ...c, usdtSolanaAddress: e.target.value }))} placeholder="Ví dụ: 7xKXtg2C...88 ký tự" />
                 </Field>
               </div>
+              )}
+              {expandedReceivingMethod === "ton" && (
+              <div className="sm:col-span-2">
+                <Field label="USDT TON Address" hint="Tự động" description="Địa chỉ ví TON nhận USDT Jetton. Bot đối chiếu đúng master USDT chính thức và tự xác nhận trong 30-60 giây.">
+                  <Input value={form.usdtTonAddress} onChange={(e) => setForm((c) => ({ ...c, usdtTonAddress: e.target.value }))} placeholder="Ví dụ: EQ... hoặc UQ..." />
+                </Field>
+              </div>
+              )}
+              {expandedReceivingMethod === "binance" && (
+              <>
               <Field label="Personal API Key" hint={configQuery.data?.binancePersonalApiKeyMasked ? "Đã mã hoá" : "Optional"}>
                 <Input value={form.binancePersonalApiKey} onChange={(e) => setForm((c) => ({ ...c, binancePersonalApiKey: e.target.value }))} placeholder={configQuery.data?.binancePersonalApiKeyMasked || t.phApiKey} />
               </Field>
               <Field label="Personal Secret Key" hint={configQuery.data?.binancePersonalSecretKeyMasked ? "Đã mã hoá" : "Optional"}>
                 <Input value={form.binancePersonalSecretKey} onChange={(e) => setForm((c) => ({ ...c, binancePersonalSecretKey: e.target.value }))} placeholder={configQuery.data?.binancePersonalSecretKeyMasked || t.phApiKey} />
               </Field>
+              </>
+              )}
             </div>
             {/* Binance Pay Merchant — UI HIDDEN. Field giữ trong form state để không phá payload. */}
             {false && (
@@ -1133,6 +1279,7 @@ export function BotConfigPage() {
             </div>
             )}
 
+            {expandedReceivingMethod === "okx" && (
             <div className="mt-6" style={{ borderTop: "1px solid var(--bd)", paddingTop: 24 }}>
               <div className="mb-3 flex items-center gap-2">
                 <p className="text-[11px] font-black uppercase tracking-widest" style={{ color: "var(--tx-f)" }}>OKX Personal API</p>
@@ -1194,6 +1341,69 @@ export function BotConfigPage() {
                 </div>
               </div>
             </div>
+            )}
+            {expandedReceivingMethod === "paypal" && (
+              <div className="mt-6 rounded-2xl p-5" style={{ background: "var(--inp)", border: "1px solid var(--bd)" }}>
+                <div className="mb-5 rounded-xl px-4 py-3" style={{ background: "rgba(59,130,246,0.06)", border: "1px solid rgba(59,130,246,0.18)" }}>
+                  <p className="text-[12px]" style={{ color: "rgb(96,165,250)" }}>
+                    PayPal nhận USD. Bot ưu tiên giá USD của sản phẩm; nếu chưa có sẽ quy đổi từ VND theo tỷ giá bên dưới.
+                  </p>
+                </div>
+                <div className="grid gap-5 sm:grid-cols-2">
+                  <Field label="Client ID" hint={(configQuery.data as any)?.paypalClientIdMasked ? "Đã mã hóa" : "PayPal Developer → Apps & Credentials"}>
+                    <Input
+                      value={form.paypalClientId}
+                      onChange={(e) => setForm((c) => ({ ...c, paypalClientId: e.target.value }))}
+                      placeholder={(configQuery.data as any)?.paypalClientIdMasked || "PayPal Client ID"}
+                    />
+                  </Field>
+                  <Field label="Client Secret" hint={(configQuery.data as any)?.paypalClientSecretMasked ? "Đã mã hóa" : "Không chia sẻ khóa này"}>
+                    <Input
+                      type="password"
+                      value={form.paypalClientSecret}
+                      onChange={(e) => setForm((c) => ({ ...c, paypalClientSecret: e.target.value }))}
+                      placeholder={(configQuery.data as any)?.paypalClientSecretMasked || "PayPal Client Secret"}
+                    />
+                  </Field>
+                  <Field label="Webhook ID" hint="ID của webhook, không phải Webhook URL">
+                    <Input
+                      value={form.paypalWebhookId}
+                      onChange={(e) => setForm((c) => ({ ...c, paypalWebhookId: e.target.value }))}
+                      placeholder="Ví dụ: 8PT..."
+                    />
+                  </Field>
+                  <Field label="Tỷ giá VND cho 1 USD" hint={`Mặc định ${(configQuery.data as any)?.defaultPaypalVndRate || 26000}`}>
+                    <Input
+                      type="number"
+                      min="1"
+                      step="1"
+                      value={form.paypalVndRateOverride}
+                      onChange={(e) => setForm((c) => ({ ...c, paypalVndRateOverride: e.target.value }))}
+                      placeholder={String((configQuery.data as any)?.defaultPaypalVndRate || 26000)}
+                    />
+                  </Field>
+                </div>
+                <label className="mt-5 flex cursor-pointer items-center gap-3 rounded-xl p-3" style={{ background: "var(--surface)", border: "1px solid var(--bd)" }}>
+                  <input
+                    type="checkbox"
+                    checked={form.paypalSandbox}
+                    onChange={(e) => setForm((c) => ({ ...c, paypalSandbox: e.target.checked }))}
+                  />
+                  <span className="text-[12px] font-bold" style={{ color: "var(--tx)" }}>
+                    Sandbox — bật khi test; tắt để dùng Live credentials và nhận tiền thật
+                  </span>
+                </label>
+                <div className="mt-5 rounded-xl px-4 py-3" style={{ background: "var(--surface)", border: "1px solid var(--bd)" }}>
+                  <p className="text-[11px] font-black uppercase tracking-wider" style={{ color: "var(--tx-f)" }}>Webhook URL của shop</p>
+                  <code className="mt-2 block break-all text-[12px]" style={{ color: "rgb(96,165,250)" }}>
+                    {(configQuery.data as any)?.paypalWebhookUrl || "Lưu cấu hình để lấy URL"}
+                  </code>
+                  <p className="mt-2 text-[11px]" style={{ color: "var(--tx-f)" }}>
+                    Sự kiện: CHECKOUT.ORDER.APPROVED và PAYMENT.CAPTURE.COMPLETED.
+                  </p>
+                </div>
+              </div>
+            )}
             <div className="mt-6 flex justify-end">
               <button type="button" disabled={saveMutation.isPending} onClick={() => saveMutation.mutate()}
                 className="rounded-xl px-4 py-2 text-[12px] font-black transition hover:opacity-80 disabled:opacity-40"

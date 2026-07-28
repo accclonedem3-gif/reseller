@@ -67,6 +67,7 @@ const enumLabelMap: Record<string, string> = {
   payos: "PayOS",
   pay2s: "Pay2s",
   web2m: "Web2m",
+  paypal: "PayPal",
   binance: "Binance",
   okx: "OKX",
   binance_pay: "Binance Pay",

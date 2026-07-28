@@ -65,7 +65,7 @@ function client(credentials: ProviderCredentials, perRequestTimeout?: number): A
   const base = isRoboticvnBaseUrl(raw) ? raw : DEFAULT_BASE_URL;
   // Endpoints live under /api/v2. Accept a baseUrl with or without that suffix.
   const baseURL = /\/api\/v2$/i.test(base) ? base : `${base}/api/v2`;
-  return axios.create({
+  const instance = axios.create({
     baseURL,
     timeout: perRequestTimeout ?? getTimeout(credentials),
     headers: {
@@ -73,6 +73,39 @@ function client(credentials: ProviderCredentials, perRequestTimeout?: number): A
       Accept: "application/json",
     },
   });
+
+  instance.interceptors.response.use(undefined, async (error) => {
+    const config = error.config as any;
+    if (!config) return Promise.reject(error);
+
+    config.__retryCount = config.__retryCount || 0;
+    const status = error.response?.status;
+    
+    // 429 Rate Limit or 5xx server errors
+    const isRetryable = status === 429 || (status && status >= 500 && status <= 599);
+
+    if (isRetryable && config.__retryCount < 4) {
+      config.__retryCount += 1;
+      
+      let delayMs = 1500 * Math.pow(1.5, config.__retryCount - 1);
+      const retryAfter = error.response?.headers?.["retry-after"];
+      if (retryAfter) {
+        const parsed = parseInt(retryAfter, 10);
+        if (!isNaN(parsed) && parsed > 0) {
+          delayMs = parsed * 1000;
+        }
+      }
+      
+      // Add jitter
+      delayMs += Math.random() * 500;
+      await delay(delayMs);
+      
+      return instance(config);
+    }
+    return Promise.reject(error);
+  });
+
+  return instance;
 }
 
 function delay(ms: number) {
@@ -178,6 +211,19 @@ async function runWithConcurrency<T, R>(
   return results;
 }
 
+// Lightweight verify: 1 HTTP request to `/products` list. Skips the N+1 detail
+// fan-out of fetchRoboticvnProducts so `verifyProviderConnection` doesn't trip
+// roboticvn's per-IP rate limit (which returns 401/403, not 429) during rapid
+// re-verify. Enough to confirm the key + baseUrl work.
+export async function verifyRoboticvnCredentials(
+  credentials: ProviderCredentials,
+): Promise<{ ok: boolean; sampleSize: number }> {
+  const api = client(credentials);
+  const { data } = await api.get("/products", { params: { limit: 1, offset: 0 } });
+  const count = Number(data?.meta?.count ?? (Array.isArray(data?.data) ? data.data.length : 0));
+  return { ok: count > 0, sampleSize: count };
+}
+
 export async function fetchRoboticvnProducts(
   credentials: ProviderCredentials,
 ): Promise<ProviderProduct[]> {
@@ -218,6 +264,50 @@ export async function fetchRoboticvnProducts(
   return products;
 }
 
+// ── Single-variant stock check (1 HTTP request) ─────────────
+
+/**
+ * Check whether a specific variant is in stock by fetching only its parent
+ * product detail (`GET /products/{productId}`).  This costs **1 HTTP request**
+ * instead of the N+1 fan-out of `fetchRoboticvnProducts`.
+ *
+ * @param variantId    The externalProductId stored in SourceProduct (= variant.id).
+ * @param productId    The parent product id — stored in SourceProduct.metadataJson.productId
+ *                     when the catalog was synced.  When absent we fall back to the DB
+ *                     `available` field (no HTTP call at all).
+ * @returns `true` if the variant exists, is in stock, and not hidden.
+ *          `false` if it is out of stock or hidden.
+ *          `null` if we could not determine (caller should fail-open).
+ */
+export async function checkRoboticvnVariantStock(
+  credentials: ProviderCredentials,
+  variantId: string,
+  productId?: string | null,
+): Promise<boolean | null> {
+  if (!productId) return null; // can't check without parent product id
+
+  try {
+    const api = client(credentials);
+    const { data } = await api.get(`/products/${encodeURIComponent(productId)}`);
+    const detail = data?.data as RvProductDetail | undefined;
+    if (!detail?.variants?.length) return false;
+
+    const variant = detail.variants.find((v) => String(v.id) === String(variantId));
+    if (!variant) return false;
+    if (variant.in_stock === false) return false;
+    if (
+      variant.available_quantity !== undefined &&
+      variant.available_quantity !== null &&
+      Number(variant.available_quantity) <= 0
+    ) {
+      return false;
+    }
+    return true;
+  } catch {
+    return null; // fail-open
+  }
+}
+
 // ── Balance ──────────────────────────────────────────────────
 
 export async function fetchRoboticvnBalance(
@@ -255,6 +345,13 @@ interface RvDeliveryItem {
   title?: string | null;
 }
 
+interface RvDeliveryResponse {
+  deliveredAccount?: RvDeliveryItem[] | null;
+  delivered_accounts?: RvDeliveryItem[] | null;
+  // Kept as a compatibility fallback for older/alternate response shapes.
+  data?: RvDeliveryItem[] | null;
+}
+
 function formatDelivery(items: RvDeliveryItem[] | undefined): string | null {
   if (!Array.isArray(items) || items.length === 0) return null;
   const lines = items
@@ -268,12 +365,32 @@ function formatDelivery(items: RvDeliveryItem[] | undefined): string | null {
   return lines.length > 0 ? lines.join("\n\n") : null;
 }
 
+function deliveryItems(payload: unknown): RvDeliveryItem[] {
+  if (!payload || typeof payload !== "object") return [];
+
+  const response = payload as RvDeliveryResponse;
+  const snakeCase = Array.isArray(response.delivered_accounts)
+    ? response.delivered_accounts
+    : [];
+  const camelCase = Array.isArray(response.deliveredAccount) ? response.deliveredAccount : [];
+  const legacy = Array.isArray(response.data) ? response.data : [];
+
+  // The v2 schema exposes both names as aliases. Pick one non-empty array so
+  // the same credentials are never delivered twice.
+  if (snakeCase.length > 0) return snakeCase;
+  if (camelCase.length > 0) return camelCase;
+  return legacy;
+}
+
 async function fetchDelivery(api: AxiosInstance, orderId: string): Promise<string | null> {
   try {
     const { data } = await api.get(`/orders/${encodeURIComponent(orderId)}/delivery`);
-    return formatDelivery(data?.data as RvDeliveryItem[]);
-  } catch {
-    return null;
+    return formatDelivery(deliveryItems(data));
+  } catch (error) {
+    if (axios.isAxiosError(error) && [400, 404].includes(Number(error.response?.status))) {
+      return null;
+    }
+    throw error;
   }
 }
 
@@ -290,7 +407,7 @@ export async function purchaseFromRoboticvn(
   input: ProviderPurchaseInput,
 ): Promise<ProviderPurchaseResult> {
   const overallTimeout = getTimeout(credentials, 60000);
-  const api = client(credentials, Math.min(20000, overallTimeout));
+  const api = client(credentials, overallTimeout);
 
   let orderId = "";
   try {
@@ -327,13 +444,15 @@ export async function purchaseFromRoboticvn(
     while (Date.now() < deadline) {
       const { data } = await api.get(`/orders/${encodeURIComponent(orderId)}`);
       lastStatus = String(data?.data?.status || "").trim().toLowerCase();
-      if (lastStatus === "completed") {
-        const deliveredText = await fetchDelivery(api, orderId);
+      // Delivery is the source of truth for fulfilment. Do not require one
+      // exact order-status string: the provider only needs the created order id.
+      const deliveredText = await fetchDelivery(api, orderId);
+      if (deliveredText) {
         return {
-          success: Boolean(deliveredText),
+          success: true,
           deliveredText,
           outOfStock: false,
-          pending: !deliveredText,
+          pending: false,
           // providerOrderId is null on purpose: the worker writes it into
           // Order.internalSourceOrderId, a UNIQUE FK to internal_source_orders.
           // A roboticvn order id (order_xxx) is NOT a row there → FK violation.
@@ -341,7 +460,6 @@ export async function purchaseFromRoboticvn(
           providerOrderId: null,
           providerOrderCode: orderId,
           rawPayload: data,
-          message: deliveredText ? undefined : "Order completed but delivery is empty.",
         };
       }
       if (lastStatus === "failed" || lastStatus === "cancelled") {
@@ -368,7 +486,10 @@ export async function purchaseFromRoboticvn(
     pending: true,
     providerOrderId: null,
     providerOrderCode: orderId,
-    message: `Roboticvn order still ${lastStatus}; will reconcile.`,
+    message:
+      lastStatus === "completed"
+        ? "Roboticvn order completed; delivery is not ready and will reconcile."
+        : `Roboticvn order still ${lastStatus}; will reconcile.`,
   };
 }
 
@@ -398,21 +519,36 @@ export async function fetchRoboticvnOrderStatus(
   try {
     const { data } = await api.get(`/orders/${encodeURIComponent(orderId)}`);
     const status = String(data?.data?.status || "").trim().toLowerCase();
+    const deliveredText = await fetchDelivery(api, orderId);
 
-    if (status === "completed") {
-      const deliveredText = await fetchDelivery(api, orderId);
+    if (deliveredText) {
       return {
-        success: Boolean(deliveredText),
+        success: true,
         // Map to the worker's expected terminal state.
-        status: deliveredText ? "delivered" : "completed",
+        status: "delivered",
         deliveredText,
         failureReason: null,
         // null on purpose — see note in purchaseFromRoboticvn (FK to internal_source_orders).
         providerOrderId: null,
         providerOrderCode: orderId,
-        pending: !deliveredText,
+        pending: false,
         outOfStock: false,
         rawPayload: data,
+      };
+    }
+
+    if (status === "completed") {
+      return {
+        success: false,
+        status: "completed",
+        deliveredText: null,
+        failureReason: null,
+        providerOrderId: null,
+        providerOrderCode: orderId,
+        pending: true,
+        outOfStock: false,
+        rawPayload: data,
+        message: "Roboticvn order completed; delivery is not ready.",
       };
     }
 

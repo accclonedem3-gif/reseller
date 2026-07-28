@@ -11,7 +11,7 @@ import { useAuth } from "@/auth/auth-provider";
 type PlanKey = "monthly" | "quarterly" | "semi_annual" | "annual";
 type TierKey = "pro" | "ultra";
 type PaymentMethodKey = "PAYOS" | "USDT" | "WALLET_BALANCE";
-type UsdtNetwork = "TRC20" | "SOL";
+type UsdtNetwork = "TRC20" | "SOL" | "TON";
 
 type PlanQuote = { plan: PlanKey; label: string; priceVnd: number; originalPriceVnd?: number };
 
@@ -97,7 +97,7 @@ export function TierPricingPage() {
     mutationFn: async () => {
       if (!modalTier) throw new Error("No tier selected");
       const backendMethod = paymentMethod === "USDT"
-        ? (usdtNetwork === "TRC20" ? "USDT_TRC20" : "USDT_SOL")
+        ? (usdtNetwork === "TRC20" ? "USDT_TRC20" : usdtNetwork === "SOL" ? "USDT_SOL" : "USDT_TON")
         : paymentMethod;
       // Single code field — backend tries discount table first, then seller.referralCode.
       // We send it as BOTH so each handler gets a shot:
@@ -520,6 +520,13 @@ function PaymentModal({
                 onClick={() => onChangePaymentMethod("PAYOS")}
               />
               <PaymentMethodOption
+                icon="💎"
+                label="USDT"
+                description="TRC20, Solana hoặc TON"
+                isSelected={paymentMethod === "USDT"}
+                onClick={() => onChangePaymentMethod("USDT")}
+              />
+              <PaymentMethodOption
                 icon="💰"
                 label="Số dư ví"
                 description={insufficientWallet ? "Không đủ — vui lòng nạp thêm" : "Trừ trực tiếp, kích hoạt ngay"}
@@ -529,6 +536,26 @@ function PaymentModal({
                 onClick={() => !insufficientWallet && onChangePaymentMethod("WALLET_BALANCE")}
               />
             </div>
+
+            {paymentMethod === "USDT" && (
+              <div className="mt-3 grid grid-cols-3 gap-2">
+                {(["TRC20", "SOL", "TON"] as const).map((network) => (
+                  <button
+                    key={network}
+                    type="button"
+                    onClick={() => onChangeUsdtNetwork(network)}
+                    className="rounded-xl px-2 py-2.5 text-xs font-semibold transition"
+                    style={{
+                      color: usdtNetwork === network ? "white" : "var(--tx-m)",
+                      background: usdtNetwork === network ? "rgb(99,102,241)" : "var(--inp)",
+                      border: `1px solid ${usdtNetwork === network ? "rgb(99,102,241)" : "var(--bd)"}`,
+                    }}
+                  >
+                    {network === "SOL" ? "Solana" : network}
+                  </button>
+                ))}
+              </div>
+            )}
 
             {/* Summary */}
             <div className="mt-6 rounded-2xl p-4" style={{ background: "var(--inp)" }}>
@@ -630,7 +657,7 @@ function QrPaymentView({ paymentMethod, usdtNetwork, response, onCancel }: {
   const bankInfo = response.bankInfo;
   const address = manualCrypto?.address;
   const usdtAmount = manualCrypto?.usdtAmount;
-  const network = usdtNetwork === "TRC20" ? "TRC20 (Tron)" : "Solana";
+  const network = usdtNetwork === "TRC20" ? "TRC20 (Tron)" : usdtNetwork === "SOL" ? "Solana" : "TON";
 
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 1000);

@@ -18,10 +18,12 @@ export type PendingQuantitySelection = {
   deliveryFormatHint?: string | null;
   iconCustomEmojiId?: string | null;
   promoBanner?: string | null;
+  requiresCustomerEmail?: boolean;
 };
 
 export type PendingWalletTopupSelection = {
   currency: "VND" | "USDT";
+  provider?: "USDT_TRC20" | "USDT_SOL" | "USDT_TON";
   expiresAt: number;
 };
 
@@ -33,6 +35,7 @@ export type PendingPaymentSelection = {
   telegramUsername?: string | null;
   firstName?: string | null;
   lastName?: string | null;
+  customerEmail?: string | null;
   expiresAt: number;
 };
 
@@ -42,7 +45,7 @@ export type PendingTxHashSubmission = {
   allowMockHash: boolean;
   expiresAt: number;
   isTopup?: boolean;
-  provider?: "USDT_TRC20" | "USDT_SOL";
+  provider?: "USDT_TRC20" | "USDT_SOL" | "USDT_TON";
 };
 
 export type PendingBinanceOrderIdSubmission = {

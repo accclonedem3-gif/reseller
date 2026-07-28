@@ -32,7 +32,7 @@ import {
   tierKeyToEnum,
 } from "./tier-pricing";
 
-type PaymentMethodInput = "PAYOS" | "USDT_TRC20" | "USDT_SOL" | "WALLET_BALANCE";
+type PaymentMethodInput = "PAYOS" | "USDT_TRC20" | "USDT_SOL" | "USDT_TON" | "WALLET_BALANCE";
 
 @Injectable()
 export class TiersService {
@@ -252,6 +252,8 @@ export class TiersService {
         ? PaymentProvider.USDT_TRC20
         : args.paymentMethod === "USDT_SOL"
           ? PaymentProvider.USDT_SOL
+          : args.paymentMethod === "USDT_TON"
+            ? PaymentProvider.USDT_TON
           : PaymentProvider.PAYOS;
 
     // Tier payment links live for PAYMENT_EXPIRY_MINUTES so a manual bank transfer

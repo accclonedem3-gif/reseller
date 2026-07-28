@@ -285,6 +285,13 @@ export class SellerSourceConnectionService {
       const wholesalePrice = p.internalSourcePrice != null
         ? decimalToNumber(p.internalSourcePrice)
         : fallbackSalePrice;
+      const upstreamMetadata =
+        p.metadataJson && typeof p.metadataJson === "object" && !Array.isArray(p.metadataJson)
+          ? (p.metadataJson as Record<string, unknown>)
+          : {};
+      const requiresCustomerEmail =
+        upstreamMetadata.requiresCustomerEmail === true ||
+        upstreamMetadata.requires_customer_email === true;
       return ({
       externalId: p.id,
       sourceName: p.sourceName,
@@ -295,7 +302,7 @@ export class SellerSourceConnectionService {
       available: p.available,
       hidden: false,
       isSlotProduct: false,
-      requiresCustomerEmail: false,
+      requiresCustomerEmail,
       requiresSlotMonths: false,
       slotDurations: [],
       quantityFixed: 1,
@@ -314,6 +321,7 @@ export class SellerSourceConnectionService {
         internalSourcePrice: p.internalSourcePrice
           ? decimalToNumber(p.internalSourcePrice)
           : null,
+        requiresCustomerEmail,
         productIcon: p.productIcon ?? null,
         iconCustomEmojiId: p.iconCustomEmojiId ?? null,
         imageUrl: p.imageUrl ?? null,

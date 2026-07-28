@@ -565,10 +565,38 @@ export class ProductsService {
         const addedQty = Math.max(0, newAvailable - Number(product.available));
         if (addedQty > 0) {
           const displayName = dto.displayName ?? product.sourceName ?? product.sourceRawName ?? "";
+          // Sale price snapshot for the restock notification. Prefer the just-updated
+          // override value, then fall back to the seller override / product source price.
+          let priceNum: number | null = null;
+          if (dto.salePrice !== undefined && Number.isFinite(Number(dto.salePrice))) {
+            priceNum = Number(dto.salePrice);
+          } else {
+            const override = await this.prisma.sellerProductOverride.findUnique({
+              where: {
+                sellerId_sourceProductId: {
+                  sellerId: shop.sellerId,
+                  sourceProductId: product.id,
+                },
+              },
+              select: { salePrice: true },
+            });
+            const raw = override?.salePrice != null
+              ? Number(override.salePrice)
+              : product.sourcePrice != null
+                ? Number(product.sourcePrice)
+                : null;
+            if (raw != null && Number.isFinite(raw)) priceNum = raw;
+          }
           this.shopsService.notifyCatalogStockUpdates(
             shop.id,
             shop.botConfig.telegramBotTokenEncrypted,
-            [{ sourceProductId: product.id, displayName, addedQuantity: addedQty, available: newAvailable }],
+            [{
+              sourceProductId: product.id,
+              displayName,
+              addedQuantity: addedQty,
+              available: newAvailable,
+              price: priceNum,
+            }],
           ).catch(() => {});
         }
       }

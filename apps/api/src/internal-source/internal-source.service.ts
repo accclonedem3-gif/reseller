@@ -25,6 +25,10 @@ import { randomBytes } from "node:crypto";
 
 import { AppConfigService } from "../config/app-config.service";
 import { PrismaService } from "../db/prisma.service";
+import {
+  hasValidCustomerEmailList,
+  parseCustomerEmailList,
+} from "../lib/customer-email-list";
 import { decimalToNumber, generateSourceOrderCode, hashValue, splitWalletDebit, toDecimal } from "../lib/utils";
 import { ShopsService } from "../shops/shops.service";
 import { StockAlertService } from "../source/stock-alert.service";
@@ -1105,6 +1109,20 @@ export class InternalSourceService {
       return errorResponse;
     }
 
+    const parsedCustomerEmails = parseCustomerEmailList(payload.customer_email);
+    const customerEmail = parsedCustomerEmails.emails.join("\n") || null;
+    if (
+      this.productRequiresCustomerEmail(product.metadataJson) &&
+      (!hasValidCustomerEmailList(parsedCustomerEmails) || parsedCustomerEmails.emails.length !== quantity)
+    ) {
+      const errorResponse = {
+        success: false,
+        message: "Enter one valid, unique customer email per purchased item.",
+      };
+      await this.recordAccessLog(resolvedKey, requestMeta, 400, payload, errorResponse);
+      return errorResponse;
+    }
+
     const fallbackOverridePrice = product.overrides?.[0]?.salePrice
       ? decimalToNumber(product.overrides[0].salePrice)
       : null;
@@ -1160,7 +1178,7 @@ export class InternalSourceService {
         const split = splitWalletDebit(commissionBefore, balanceBefore, totalAmount);
         const balanceAfter = split.balanceAfter;
         const commissionAfter = split.commissionAfter;
-        const sourceOrderCode = generateSourceOrderCode();
+        const sourceOrderCode = generateSourceOrderCode(payload.client_order_code);
         const order = await tx.internalSourceOrder.create({
           data: {
             connectionId: connection.id,
@@ -1178,7 +1196,7 @@ export class InternalSourceService {
             totalAmount: toDecimal(totalAmount),
             status: InternalSourceOrderStatus.PROCESSING,
             metadataJson: {
-              customerEmail: payload.customer_email || null,
+              customerEmail,
               slotMonths: payload.slot_months || null,
             } as Prisma.InputJsonValue,
           },
@@ -1506,6 +1524,8 @@ export class InternalSourceService {
       {
         productId: order.sourceProduct.externalProductId,
         quantity: order.quantity,
+        customerEmail:
+          typeof sourceMetadata.customerEmail === "string" ? sourceMetadata.customerEmail : null,
         clientOrderCode: order.sourceOrderCode,
       },
     );
@@ -1809,6 +1829,7 @@ export class InternalSourceService {
     discountPercent = 0,
   ) {
     const override = product.overrides.find((item) => item.sellerId === sellerId);
+    const requiresCustomerEmail = this.productRequiresCustomerEmail(product.metadataJson);
     const displayName = override?.displayName || product.sourceName;
     const fallbackSalePrice = override?.salePrice ? decimalToNumber(override.salePrice) : 0;
     const basePrice = product.internalSourcePrice != null
@@ -1832,7 +1853,7 @@ export class InternalSourceService {
       },
       available: product.available,
       isSlotProduct: false,
-      requiresCustomerEmail: false,
+      requiresCustomerEmail,
       requiresSlotMonths: false,
       slotDurations: [],
       quantityFixed: 1,
@@ -2186,6 +2207,11 @@ export class InternalSourceService {
 
     const metadata = this.asRecord(product.metadataJson);
     return metadata.manual === true;
+  }
+
+  private productRequiresCustomerEmail(value: Prisma.JsonValue | null | undefined) {
+    const metadata = this.asRecord(value);
+    return metadata.requiresCustomerEmail === true || metadata.requires_customer_email === true;
   }
 
   private asRecord(value: Prisma.JsonValue | null | undefined) {

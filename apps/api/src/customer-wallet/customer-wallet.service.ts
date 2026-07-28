@@ -144,8 +144,10 @@ export class CustomerWalletService {
     });
 
     const externalOrderCode = generateExternalPaymentCode();
-    const isTrc20 = input.providerOverride === PaymentProvider.USDT_TRC20;
-    const expiresAt = new Date(Date.now() + (isTrc20 ? TOPUP_EXPIRY_TRC20_MS : TOPUP_EXPIRY_MS));
+    const isOnchain = input.providerOverride === PaymentProvider.USDT_TRC20
+      || input.providerOverride === PaymentProvider.USDT_SOL
+      || input.providerOverride === PaymentProvider.USDT_TON;
+    const expiresAt = new Date(Date.now() + (isOnchain ? TOPUP_EXPIRY_TRC20_MS : TOPUP_EXPIRY_MS));
     const payment = await this.paymentService.createPaymentLink({
       shopId: input.shopId,
       externalOrderCode,
@@ -186,7 +188,11 @@ export class CustomerWalletService {
     };
   }
 
-  async markTopupPaid(externalOrderCode: string, rawPayload?: unknown) {
+  async markTopupPaid(
+    externalOrderCode: string,
+    rawPayload?: unknown,
+    options?: { cryptoTxHash?: string | null },
+  ) {
     const topup = await this.prisma.customerWalletTopup.findUnique({
       where: {
         externalOrderCode,
@@ -216,6 +222,17 @@ export class CustomerWalletService {
         balanceAfter: decimalToNumber(topup.wallet.balance),
       };
     }
+
+    // Resolve per-shop USDT rate override (bot display uses this rate; ledger must match).
+    // Read BEFORE the transaction so the tx stays short. paymentConfig is stable during the tx.
+    const paymentConfigForRate = await this.prisma.paymentConfig.findUnique({
+      where: { shopId: topup.shopId },
+      select: { usdtVndRateOverride: true },
+    });
+    const usdtVndRateForTopup = (() => {
+      const override = Number(paymentConfigForRate?.usdtVndRateOverride ?? NaN);
+      return Number.isFinite(override) && override > 0 ? override : USDT_VND_RATE;
+    })();
 
     const result = await this.prisma.$transaction(async (tx) => {
       const currentTopup = await tx.customerWalletTopup.findUnique({
@@ -253,7 +270,8 @@ export class CustomerWalletService {
       const actualAmountUsdt = typeof rawPayloadTyped?.amountUsdt === "number" && Number.isFinite(rawPayloadTyped.amountUsdt as number)
         ? rawPayloadTyped.amountUsdt as number
         : null;
-      const usdtDelta = actualAmountUsdt ?? topupAmount / USDT_VND_RATE;
+      // Ledger must record the SAME rate the bot showed the customer.
+      const usdtDelta = actualAmountUsdt ?? topupAmount / usdtVndRateForTopup;
       const usdtAfter = usdtBefore + usdtDelta;
 
       const updatedWallet = await tx.customerWallet.update({
@@ -321,6 +339,7 @@ export class CustomerWalletService {
         data: {
           status: PaymentTransactionStatus.PAID,
           paidAt: new Date(),
+          cryptoTxHash: options?.cryptoTxHash || undefined,
           rawPayloadJson: rawPayload as Prisma.InputJsonValue,
         },
       });
@@ -343,21 +362,31 @@ export class CustomerWalletService {
         },
       });
       if (connection) {
-        // Record in InternalSourceLedger for audit — wallet is already credited above
+        // Record in InternalSourceLedger for audit — wallet is already credited above.
+        // Must await so the audit row is flushed before the request returns; if the
+        // insert throws we log but do NOT roll back the wallet credit (wallet ledger
+        // is the source of truth, this is a duplicated audit trail).
         const walletAfter = decimalToNumber(result.balanceAfter ?? 0);
         const topupAmount = decimalToNumber(topup.amount);
-        this.prisma.internalSourceLedger.create({
-          data: {
-            connectionId: connection.id,
-            type: InternalSourceLedgerType.TOPUP,
-            amount: topup.amount,
-            balanceBefore: toDecimal(walletAfter - topupAmount),
-            balanceAfter: toDecimal(walletAfter),
-            referenceType: "customer_wallet_topup",
-            referenceId: topup.id,
-            note: "Auto credit from customer wallet top-up in upstream bot",
-          },
-        }).catch(() => undefined);
+        try {
+          await this.prisma.internalSourceLedger.create({
+            data: {
+              connectionId: connection.id,
+              type: InternalSourceLedgerType.TOPUP,
+              amount: topup.amount,
+              balanceBefore: toDecimal(walletAfter - topupAmount),
+              balanceAfter: toDecimal(walletAfter),
+              referenceType: "customer_wallet_topup",
+              referenceId: topup.id,
+              note: "Auto credit from customer wallet top-up in upstream bot",
+            },
+          });
+        } catch (err) {
+          console.error(
+            `[customer-wallet] Failed to record InternalSourceLedger audit for topup ${topup.id}:`,
+            err,
+          );
+        }
       }
     }
 

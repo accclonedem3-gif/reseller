@@ -15,8 +15,8 @@ export class PurchaseTierDto {
   @IsString()
   discountCode?: string;
 
-  @IsEnum(["PAYOS", "WALLET_BALANCE", "USDT_TRC20", "USDT_SOL"])
-  paymentMethod!: "PAYOS" | "WALLET_BALANCE" | "USDT_TRC20" | "USDT_SOL";
+  @IsEnum(["PAYOS", "WALLET_BALANCE", "USDT_TRC20", "USDT_SOL", "USDT_TON"])
+  paymentMethod!: "PAYOS" | "WALLET_BALANCE" | "USDT_TRC20" | "USDT_SOL" | "USDT_TON";
 }
 
 export class SetAutoRenewDto {

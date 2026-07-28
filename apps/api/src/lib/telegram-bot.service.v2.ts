@@ -46,6 +46,18 @@ import {
 } from "./bot-session.store";
 import { BotRenderHelpers, BotLanguage } from "./bot-render.helpers";
 import { CacheService } from "./cache.service";
+import {
+  hasValidCustomerEmailList,
+  parseCustomerEmailList,
+} from "./customer-email-list";
+import { resolveVisiblePaymentProviders } from "./payment-method-visibility";
+import {
+  ORDER_HISTORY_PAGE_SIZE,
+  buildOwnedOrderWhere,
+  isPrivateTelegramChat,
+  resolveOrderHistoryPage,
+  splitTelegramText,
+} from "./telegram-order-history";
 import { decimalToNumber, formatCurrency } from "./utils";
 
 const BIN_TO_BANK: Record<string, string> = {
@@ -386,6 +398,38 @@ export class TelegramBotService {
     }
 
     this.cleanupExpiredPendingSelections();
+
+    const incomingChat = message?.chat || callbackQuery?.message?.chat;
+    const incomingUserId = message?.from?.id || callbackQuery?.from?.id;
+    if (
+      incomingChat?.id &&
+      incomingUserId &&
+      !isPrivateTelegramChat(incomingChat, incomingUserId)
+    ) {
+      const botUsername = String(shop.botConfig?.telegramBotUsername || "")
+        .trim()
+        .replace(/^@/, "");
+      await this.sendText(
+        outboundToken,
+        incomingChat.id,
+        [
+          "🔒 Vì bảo mật tài khoản và thanh toán, bot chỉ hoạt động trong chat riêng.",
+          "Vui lòng mở cuộc trò chuyện riêng với bot để tiếp tục.",
+          "",
+          "For security, orders, wallet and delivered accounts are only available in a private chat.",
+        ].join("\n"),
+        actions,
+        botUsername
+          ? {
+              inline_keyboard: [[{
+                text: "🔐 Mở chat riêng",
+                url: `https://t.me/${botUsername}`,
+              }]],
+            }
+          : undefined,
+      );
+      return { ok: true, actions };
+    }
 
     await this.ensureTelegramCustomerSeen(shop, message, callbackQuery);
 
@@ -833,6 +877,41 @@ export class TelegramBotService {
         await this.clearPendingPaymentSelection(shopId, telegramUserId);
         await this.clearPendingTxHashSubmission(shopId, telegramUserId);
         await this.renderOrderHistory(shopId, outboundToken, chatId, messageId, telegramUserId, actions, callbackLanguage);
+      } else if (/^history:page:\d+$/.test(data)) {
+        await this.clearPendingQuantitySelection(shopId, telegramUserId);
+        await this.clearPendingWalletTopup(shopId, telegramUserId);
+        await this.clearPendingPaymentSelection(shopId, telegramUserId);
+        await this.clearPendingTxHashSubmission(shopId, telegramUserId);
+        const requestedPage = Number(data.slice("history:page:".length));
+        await this.renderOrderHistory(
+          shopId,
+          outboundToken,
+          chatId,
+          messageId,
+          telegramUserId,
+          actions,
+          callbackLanguage,
+          "all",
+          requestedPage,
+        );
+      } else if (data.startsWith("history:order:")) {
+        const [orderId, deliveryPageRaw, historyPageRaw] = data
+          .slice("history:order:".length)
+          .split(":");
+        if (orderId) {
+          await this.renderOrderHistoryDetail(
+            shopId,
+            outboundToken,
+            chatId,
+            messageId,
+            telegramUserId,
+            orderId,
+            Number(deliveryPageRaw || 0),
+            Number(historyPageRaw ?? -1),
+            actions,
+            callbackLanguage,
+          );
+        }
       } else if (data === "home:wallet") {
         await this.clearPendingQuantitySelection(shopId, telegramUserId);
         await this.clearPendingWalletTopup(shopId, telegramUserId);
@@ -929,9 +1008,19 @@ export class TelegramBotService {
         await this.clearPendingWalletTopup(shopId, telegramUserId);
         await this.sessions.setPendingSession('pendingWalletTopups', this.sessions.getPendingQuantityKey(shopId, telegramUserId), {
           currency: "USDT",
+          provider: "USDT_TRC20",
           expiresAt: Date.now() + this.sessions.pendingQuantityTtlMs,
         }, this.sessions.pendingQuantityTtlMs);
         await this.promptWalletTopupAmount(shopId, outboundToken, chatId, telegramUserId, actions, "USDT", undefined, callbackLanguage);
+      } else if (data === "wallet:topup:sol" || data === "wallet:topup:ton") {
+        const provider = data.endsWith(":ton") ? "USDT_TON" : "USDT_SOL";
+        await this.clearPendingWalletTopup(shopId, telegramUserId);
+        await this.sessions.setPendingSession('pendingWalletTopups', this.sessions.getPendingQuantityKey(shopId, telegramUserId), {
+          currency: "USDT",
+          provider,
+          expiresAt: Date.now() + this.sessions.pendingQuantityTtlMs,
+        }, this.sessions.pendingQuantityTtlMs);
+        await this.promptWalletTopupAmount(shopId, outboundToken, chatId, telegramUserId, actions, "USDT", undefined, callbackLanguage, provider);
       } else if (data === "home:language") {
         await this.renderLanguageMenu(outboundToken, chatId, messageId, callbackLanguage, actions);
       } else if (data.startsWith("lang:set:")) {
@@ -1210,7 +1299,7 @@ export class TelegramBotService {
     isPremium = false,
   ) {
     const shop = await this.shopsService.getSellerShopByShopId(shopId);
-    const products = await this.shopsService.getCatalogViewForShop(shopId, false);
+    const products = await this.shopsService.getCatalogViewForShop(shopId, false, false, true);
     const activeProducts = products.filter((item) => item.enabled && !item.hidden);
     const available = activeProducts.filter((item) => item.available === null || item.available > 0);
 
@@ -1384,7 +1473,7 @@ export class TelegramBotService {
     isPremium = false,
   ) {
     const [allCatalog, shopData, customerRecord, downstreamConn, ctvApiKey] = await Promise.all([
-      this.shopsService.getCatalogViewForShop(shopId, false, true),
+      this.shopsService.getCatalogViewForShop(shopId, false, true, true),
       this.shopsService.getSellerShopByShopId(shopId),
       this.prisma.customer.findFirst({
         where: { shopId, telegramChatId: String(chatId) },
@@ -1524,8 +1613,11 @@ export class TelegramBotService {
       for (const p of products) {
         if (p.groupId) groupCounts.set(p.groupId, (groupCounts.get(p.groupId) || 0) + 1);
       }
+      const visibleCustomGroups = shopData.providerConfig?.ownProductsOnly
+        ? customGroups.filter((group) => visibleBase.some((product) => product.groupId === group.id))
+        : customGroups;
       const groupRows = this.chunkButtons(
-        customGroups.map((g) => {
+        visibleCustomGroups.map((g) => {
           // Categories use the 📁 folder as their standby text icon (matches the category header
           // "📁 <name>"), so a non-premium viewer always sees the folder — never blank. A premium
           // viewer with a custom-emoji id on the category gets the cusid bling instead (text stripped
@@ -1662,7 +1754,7 @@ export class TelegramBotService {
     isPremium = false,
   ) {
     const [allProducts, groups, custDataCustom, customerRecordGrp, downstreamConnGrp, ctvApiKeyGrp] = await Promise.all([
-      this.shopsService.getCatalogViewForShop(shopId, false, true),
+      this.shopsService.getCatalogViewForShop(shopId, false, true, true),
       this.shopsService.getCatalogGroupsForShop(shopId, true),
       this.loadCustData(shopId),
       this.prisma.customer.findFirst({
@@ -1767,7 +1859,7 @@ export class TelegramBotService {
     isPremium = false,
   ) {
     const [allProducts, custDataFeatured, customerRecordFt, downstreamConnFt, ctvApiKeyFt] = await Promise.all([
-      this.shopsService.getCatalogViewForShop(shopId, false, true),
+      this.shopsService.getCatalogViewForShop(shopId, false, true, true),
       this.loadCustData(shopId),
       this.prisma.customer.findFirst({
         where: { shopId, telegramChatId: String(chatId) },
@@ -1844,34 +1936,105 @@ export class TelegramBotService {
     telegramUserId: string,
     actions: unknown[],
     language: BotLanguage = "vi",
+    view: "recent" | "all" = "recent",
+    requestedPage = 0,
   ) {
-    const [usdtVndRate, shop, custDataHistory] = await Promise.all([
+    const [usdtVndRate, shop, custDataHistory, customer] = await Promise.all([
       this.getShopUsdtVndRate(shopId),
       this.shopsService.getSellerShopByShopId(shopId),
       this.loadCustData(shopId),
+      this.prisma.customer.findUnique({
+        where: { shopId_telegramUserId: { shopId, telegramUserId } },
+        select: { id: true },
+      }),
     ]);
     const isPro = shop.seller.tier === SellerTier.ULTRA;
+    const orderWhere = {
+      shopId,
+      customerId: customer?.id || "__missing_customer__",
+    };
+    const totalOrders = view === "all"
+      ? await this.prisma.order.count({ where: orderWhere })
+      : 0;
+    const pagination = resolveOrderHistoryPage(
+      view === "all" ? requestedPage : 0,
+      view === "all" ? totalOrders : 0,
+      ORDER_HISTORY_PAGE_SIZE,
+    );
+    const { page, totalPages } = pagination;
     const orders = await this.prisma.order.findMany({
-      where: {
-        shopId,
-        customer: {
-          telegramUserId,
+      where: orderWhere,
+      select: {
+        id: true,
+        orderCode: true,
+        productNameSnapshot: true,
+        quantity: true,
+        totalSaleAmount: true,
+        status: true,
+        paymentStatus: true,
+        createdAt: true,
+        deliveredAccountText: true,
+        paymentTransaction: {
+          select: {
+            provider: true,
+            status: true,
+            externalOrderCode: true,
+          },
         },
       },
-      include: {
-        paymentTransaction: true,
-      },
-      orderBy: {
-        createdAt: "desc",
-      },
-      take: 6,
+      orderBy: [
+        { createdAt: "desc" },
+        { id: "desc" },
+      ],
+      skip: view === "all" ? pagination.skip : undefined,
+      take: pagination.take,
     });
+
+    const paginationButtons: Array<{ text: string; callback_data: string }> = [];
+    if (view === "all" && page > 0) {
+      paginationButtons.push({
+        text: language === "en" ? "⬅️ Previous" : language === "th" ? "⬅️ ก่อนหน้า" : "⬅️ Trang trước",
+        callback_data: `history:page:${page - 1}`,
+      });
+    }
+    if (view === "all" && page + 1 < totalPages) {
+      paginationButtons.push({
+        text: language === "en" ? "Next ➡️" : language === "th" ? "ถัดไป ➡️" : "Trang sau ➡️",
+        callback_data: `history:page:${page + 1}`,
+      });
+    }
+
+    const historyModeButton = view === "recent"
+      ? {
+          text:
+            language === "en"
+              ? "📜 View all purchase history"
+              : language === "th"
+                ? "📜 ดูประวัติการซื้อทั้งหมด"
+                : "📜 Xem toàn bộ lịch sử mua hàng",
+          callback_data: "history:page:0",
+        }
+      : {
+          text:
+            language === "en"
+              ? "🕘 Recent orders"
+              : language === "th"
+                ? "🕘 คำสั่งซื้อล่าสุด"
+                : "🕘 Đơn hàng gần đây",
+          callback_data: "home:history",
+        };
 
     await this.editOrSend(
       token,
       chatId,
       messageId,
-      this.buildOrderHistoryText(orders, language, usdtVndRate),
+      this.buildOrderHistoryText(orders, language, usdtVndRate, {
+        view,
+        page,
+        totalPages,
+        totalOrders,
+        startIndex: view === "all" ? pagination.skip : 0,
+      }),
       {
         inline_keyboard: [
           ...orders
@@ -1890,6 +2053,16 @@ export class TelegramBotService {
                     : `🧾 Gửi TX ${this.shortOrderCode(order.orderCode)}`,
               callback_data: `txhash:submit:${order.paymentTransaction?.externalOrderCode}`,
             }]),
+          ...orders.map((order) => [{
+            text:
+              language === "en"
+                ? `🔍 Details ${this.shortOrderCode(order.orderCode)}`
+                : language === "th"
+                  ? `🔍 รายละเอียด ${this.shortOrderCode(order.orderCode)}`
+                  : `🔍 Chi tiết ${this.shortOrderCode(order.orderCode)}`,
+            callback_data: `history:order:${order.id}:0:${view === "all" ? page : -1}`,
+          }]),
+          ...(paginationButtons.length > 0 ? [paginationButtons] : []),
           [
             this.buildNavTextBtn(custDataHistory, "wallet", "wallet", "home:wallet", language),
             this.buildNavTextBtn(custDataHistory, "products", "productsShort", "home:products", language),
@@ -1902,8 +2075,140 @@ export class TelegramBotService {
             : [[this.buildNavTextBtn(custDataHistory, "home", "home", "home:menu", language)]]),
           [
             this.buildNavTextBtn(custDataHistory, "support", "supportShort", "home:support", language),
-            this.buildNavTextBtn(custDataHistory, "orders", "history", "home:history", language),
+            historyModeButton,
           ],
+        ],
+      },
+      actions,
+    );
+  }
+
+  private async renderOrderHistoryDetail(
+    shopId: string,
+    token: string,
+    chatId: number,
+    messageId: number | undefined,
+    telegramUserId: string,
+    orderId: string,
+    requestedDeliveryPage: number,
+    historyPage: number,
+    actions: unknown[],
+    language: BotLanguage = "vi",
+  ) {
+    const [usdtVndRate, order] = await Promise.all([
+      this.getShopUsdtVndRate(shopId),
+      this.prisma.order.findFirst({
+        where: buildOwnedOrderWhere(shopId, telegramUserId, orderId),
+        select: {
+          id: true,
+          orderCode: true,
+          productNameSnapshot: true,
+          quantity: true,
+          totalSaleAmount: true,
+          status: true,
+          paymentStatus: true,
+          createdAt: true,
+          deliveredAccountText: true,
+        },
+      }),
+    ]);
+    const safeHistoryPage = Number.isFinite(historyPage) && historyPage >= 0
+      ? Math.floor(historyPage)
+      : -1;
+    const backCallback = safeHistoryPage >= 0
+      ? `history:page:${safeHistoryPage}`
+      : "home:history";
+
+    if (!order) {
+      await this.editOrSend(
+        token,
+        chatId,
+        messageId,
+        language === "en"
+          ? "⚠️ Order not found or it does not belong to your Telegram account."
+          : language === "th"
+            ? "⚠️ ไม่พบคำสั่งซื้อหรือคำสั่งซื้อนี้ไม่ใช่ของบัญชี Telegram ของคุณ"
+            : "⚠️ Không tìm thấy đơn hoặc đơn này không thuộc tài khoản Telegram của bạn.",
+        {
+          inline_keyboard: [[{
+            text: language === "en" ? "⬅️ Back to history" : language === "th" ? "⬅️ กลับไปที่ประวัติ" : "⬅️ Về lịch sử",
+            callback_data: backCallback,
+          }]],
+        },
+        actions,
+      );
+      return;
+    }
+
+    const deliveryChunks = splitTelegramText(order.deliveredAccountText);
+    const deliveryPagination = resolveOrderHistoryPage(
+      requestedDeliveryPage,
+      deliveryChunks.length,
+      1,
+    );
+    const deliveryText = deliveryChunks[deliveryPagination.page] || null;
+    const detailLines = [
+      language === "en" ? "🧾 Order details" : language === "th" ? "🧾 รายละเอียดคำสั่งซื้อ" : "🧾 Chi tiết đơn hàng",
+      "",
+      language === "en" ? `Order: ${order.orderCode}` : language === "th" ? `คำสั่งซื้อ: ${order.orderCode}` : `Mã đơn: ${order.orderCode}`,
+      language === "en"
+        ? `Product: ${this.truncateLabel(this.localizeProductName(order.productNameSnapshot, language), 120)}`
+        : language === "th"
+          ? `สินค้า: ${this.truncateLabel(this.localizeProductName(order.productNameSnapshot, language), 120)}`
+          : `Sản phẩm: ${this.truncateLabel(this.localizeProductName(order.productNameSnapshot, language), 120)}`,
+      language === "en" ? `Quantity: ${order.quantity}` : language === "th" ? `จำนวน: ${order.quantity}` : `Số lượng: ${order.quantity}`,
+      language === "en"
+        ? `Amount: ${this.formatBotMoney(decimalToNumber(order.totalSaleAmount), language, usdtVndRate)}`
+        : language === "th"
+          ? `ยอดเงิน: ${this.formatBotMoney(decimalToNumber(order.totalSaleAmount), language, usdtVndRate)}`
+          : `Thành tiền: ${this.formatBotMoney(decimalToNumber(order.totalSaleAmount), language, usdtVndRate)}`,
+      language === "en"
+        ? `Status: ${this.formatCustomerOrderStatus(order.status, order.paymentStatus, language)}`
+        : language === "th"
+          ? `สถานะ: ${this.formatCustomerOrderStatus(order.status, order.paymentStatus, language)}`
+          : `Trạng thái: ${this.formatCustomerOrderStatus(order.status, order.paymentStatus, language)}`,
+      language === "en" ? `Time: ${this.formatDateTime(order.createdAt)}` : language === "th" ? `เวลา: ${this.formatDateTime(order.createdAt)}` : `Thời gian: ${this.formatDateTime(order.createdAt)}`,
+      "",
+      deliveryText
+        ? language === "en"
+          ? `🔐 Delivered account (${deliveryPagination.page + 1}/${deliveryPagination.totalPages}):`
+          : language === "th"
+            ? `🔐 บัญชีที่จัดส่ง (${deliveryPagination.page + 1}/${deliveryPagination.totalPages}):`
+            : `🔐 Tài khoản đã giao (${deliveryPagination.page + 1}/${deliveryPagination.totalPages}):`
+        : language === "en"
+          ? "🔐 No account has been delivered for this order yet."
+          : language === "th"
+            ? "🔐 ยังไม่มีบัญชีที่จัดส่งสำหรับคำสั่งซื้อนี้"
+            : "🔐 Đơn này chưa có tài khoản được giao.",
+      ...(deliveryText ? [deliveryText] : []),
+    ];
+    const detailPaginationButtons: Array<{ text: string; callback_data: string }> = [];
+    if (deliveryText && deliveryPagination.page > 0) {
+      detailPaginationButtons.push({
+        text: language === "en" ? "⬅️ Previous account page" : language === "th" ? "⬅️ หน้าบัญชีก่อนหน้า" : "⬅️ Tài khoản trước",
+        callback_data: `history:order:${order.id}:${deliveryPagination.page - 1}:${safeHistoryPage}`,
+      });
+    }
+    if (deliveryText && deliveryPagination.page + 1 < deliveryPagination.totalPages) {
+      detailPaginationButtons.push({
+        text: language === "en" ? "Next account page ➡️" : language === "th" ? "หน้าบัญชีถัดไป ➡️" : "Tài khoản sau ➡️",
+        callback_data: `history:order:${order.id}:${deliveryPagination.page + 1}:${safeHistoryPage}`,
+      });
+    }
+
+    await this.editOrSend(
+      token,
+      chatId,
+      messageId,
+      detailLines.join("\n"),
+      {
+        inline_keyboard: [
+          ...(detailPaginationButtons.length > 0 ? [detailPaginationButtons] : []),
+          [{
+            text: language === "en" ? "⬅️ Back to history" : language === "th" ? "⬅️ กลับไปที่ประวัติ" : "⬅️ Về lịch sử",
+            callback_data: backCallback,
+          }],
+          [this.navBtn("home", language, "home:menu")],
         ],
       },
       actions,
@@ -2067,7 +2372,12 @@ export class TelegramBotService {
     language: BotLanguage = "vi",
   ) {
     const providers = await this.getAvailablePaymentProviders(shopId);
-    const hasUsdt = providers.includes(PaymentProvider.USDT_TRC20);
+    const cryptoProviders = providers.filter((provider) =>
+      provider === PaymentProvider.USDT_TRC20 ||
+      provider === PaymentProvider.USDT_SOL ||
+      provider === PaymentProvider.USDT_TON,
+    );
+    const hasUsdt = cryptoProviders.length > 0;
     const hasVnd = providers.some((p) =>
       p === PaymentProvider.PAYOS ||
       p === PaymentProvider.PAY2S ||
@@ -2075,13 +2385,34 @@ export class TelegramBotService {
       p === PaymentProvider.MOCK,
     );
 
+    if (!hasVnd && !hasUsdt) {
+      await this.clearPendingWalletTopup(shopId, telegramUserId);
+      await this.editOrSend(
+        token,
+        chatId,
+        messageId,
+        language === "en"
+          ? "This shop has no available wallet top-up method."
+          : language === "th"
+            ? "ร้านค้ายังไม่มีวิธีเติมเงินที่พร้อมใช้งาน"
+            : "Shop chưa có phương thức nạp ví khả dụng.",
+        {
+          inline_keyboard: [[this.navBtn("back", language, "home:wallet")]],
+        },
+        actions,
+      );
+      return;
+    }
+
     // If only one option, skip selection and go straight to amount
-    if (hasUsdt && !hasVnd) {
+    if (cryptoProviders.length === 1 && !hasVnd) {
+      const provider = cryptoProviders[0] as "USDT_TRC20" | "USDT_SOL" | "USDT_TON";
       await this.sessions.setPendingSession('pendingWalletTopups', this.sessions.getPendingQuantityKey(shopId, telegramUserId), {
         currency: "USDT",
+        provider,
         expiresAt: Date.now() + this.sessions.pendingQuantityTtlMs,
       }, this.sessions.pendingQuantityTtlMs);
-      return this.promptWalletTopupAmount(shopId, token, chatId, telegramUserId, actions, "USDT", undefined, language);
+      return this.promptWalletTopupAmount(shopId, token, chatId, telegramUserId, actions, "USDT", undefined, language, provider);
     }
     if (!hasUsdt) {
       await this.sessions.setPendingSession('pendingWalletTopups', this.sessions.getPendingQuantityKey(shopId, telegramUserId), {
@@ -2105,6 +2436,17 @@ export class TelegramBotService {
           ? "💳 เลือกสกุลเงินที่ต้องการเติม:"
           : "💳 Chọn loại tiền muốn nạp:";
     const text = walletNoteTopup ? `${walletNoteTopup}\n\n${promptLine}` : promptLine;
+    const paymentRows: Array<Array<{ text: string; callback_data: string }>> = [];
+    if (hasVnd) paymentRows.push([{ text: "🏦 VND (chuyển khoản)", callback_data: "wallet:topup:vnd" }]);
+    if (providers.includes(PaymentProvider.USDT_TRC20)) {
+      paymentRows.push([{ text: "💲 USDT (TRC20)", callback_data: "wallet:topup:usd" }]);
+    }
+    if (providers.includes(PaymentProvider.USDT_SOL)) {
+      paymentRows.push([{ text: "💎 USDT (Solana)", callback_data: "wallet:topup:sol" }]);
+    }
+    if (providers.includes(PaymentProvider.USDT_TON)) {
+      paymentRows.push([{ text: "💎 USDT (TON)", callback_data: "wallet:topup:ton" }]);
+    }
 
     await this.editOrSend(
       token,
@@ -2113,10 +2455,7 @@ export class TelegramBotService {
       text,
       {
         inline_keyboard: [
-          [
-            { text: "🏦 VND (chuyển khoản)", callback_data: "wallet:topup:vnd" },
-            { text: "💲 USDT (TRC20)", callback_data: "wallet:topup:usd" },
-          ],
+          ...paymentRows,
           [{ text: this.buttonLabel("back", language), callback_data: "home:wallet" }],
         ],
       },
@@ -2133,14 +2472,16 @@ export class TelegramBotService {
     currency: "VND" | "USDT" = "VND",
     leadLine?: string,
     language: BotLanguage = "vi",
+    provider: "USDT_TRC20" | "USDT_SOL" | "USDT_TON" = "USDT_TRC20",
   ) {
     const isUsdt = currency === "USDT";
+    const networkName = provider === "USDT_TON" ? "TON" : provider === "USDT_SOL" ? "Solana" : "TRC20";
     const promptText = isUsdt
       ? (language === "en"
-          ? [leadLine || "💲 Enter USDT amount to top up", "Example: 10 or 5.5", "", "The bot will generate a TRC20 wallet address to send to."].join("\n")
+          ? [leadLine || "💲 Enter USDT amount to top up", "Example: 10 or 5.5", "", `The bot will show the ${networkName} wallet address to send to.`].join("\n")
           : language === "th"
             ? [leadLine || "💲 ระบุจำนวน USDT ที่ต้องการเติม", "ตัวอย่าง: 10 หรือ 5.5", "", "บอทจะสร้างที่อยู่กระเป๋า TRC20 ให้โอนไป"].join("\n")
-            : [leadLine || "💲 Nhập số USDT muốn nạp vào ví", "Ví dụ: 10 hoặc 5.5", "", "Bot sẽ tạo địa chỉ ví TRC20 để bạn chuyển tới."].join("\n"))
+            : [leadLine || "💲 Nhập số USDT muốn nạp vào ví", "Ví dụ: 10 hoặc 5.5", "", `Bot sẽ hiển thị địa chỉ ví ${networkName} để bạn chuyển tới.`].join("\n"))
       : (language === "en"
           ? [leadLine || "🏦 Enter the wallet top-up amount (VND)", "Example: 100000", "", "The bot will create a payment QR/link valid for 5 minutes."].join("\n")
           : language === "th"
@@ -2233,6 +2574,7 @@ export class TelegramBotService {
         deliveryFormatHint: product.deliveryFormatHint ?? null,
         iconCustomEmojiId: product.iconCustomEmojiId ?? null,
         promoBanner: this.getActivePromoBanner(product, language),
+        requiresCustomerEmail: product.requiresCustomerEmail,
       },
       actions,
       undefined,
@@ -2276,6 +2618,7 @@ export class TelegramBotService {
       telegramUsername?: string | null;
       firstName?: string | null;
       lastName?: string | null;
+      customerEmail?: string | null;
     },
     actions: unknown[],
     paymentProvider?: PaymentProvider,
@@ -2296,6 +2639,7 @@ export class TelegramBotService {
       telegramUsername: customer.telegramUsername,
       firstName: customer.firstName,
       lastName: customer.lastName,
+      customerEmail: customer.customerEmail,
       paymentProvider,
     });
 
@@ -2369,6 +2713,7 @@ export class TelegramBotService {
       telegramUsername?: string | null;
       firstName?: string | null;
       lastName?: string | null;
+      customerEmail?: string | null;
     },
     actions: unknown[],
     language: BotLanguage = "vi",
@@ -2388,6 +2733,7 @@ export class TelegramBotService {
       telegramUsername: customer.telegramUsername,
       firstName: customer.firstName,
       lastName: customer.lastName,
+      customerEmail: customer.customerEmail,
     });
 
     const [usdtVndRate, shop, custDataWalletBuy] = await Promise.all([
@@ -2472,8 +2818,11 @@ export class TelegramBotService {
         } | null;
       };
       checkoutUrl: string;
+      paymentProvider?: PaymentProvider | string;
+      providerAmount?: number;
+      providerCurrency?: string;
       manualCrypto?: {
-        provider: "BINANCE" | "OKX" | "USDT_TRC20" | "USDT_SOL";
+        provider: "BINANCE" | "OKX" | "USDT_TRC20" | "USDT_SOL" | "USDT_TON";
         note: string;
         hasPersonalApi?: boolean;
       };
@@ -2490,7 +2839,8 @@ export class TelegramBotService {
     const canInstantVerify =
       Boolean(externalOrderCode) &&
       (paymentProvider === PaymentProvider.PAYOS.toLowerCase() ||
-        paymentProvider === PaymentProvider.BINANCE_PAY.toLowerCase());
+        paymentProvider === PaymentProvider.BINANCE_PAY.toLowerCase() ||
+        paymentProvider === PaymentProvider.PAYPAL.toLowerCase());
 
     // "I've paid"-style buttons: per-viewer so a premium viewer sees the cusid only (text emoji
     // stripped), everyone else sees the text emoji — never a blank button, never a double icon.
@@ -2574,6 +2924,8 @@ export class TelegramBotService {
       if (p === PaymentProvider.OKX) return "payOkx";
       if (p === PaymentProvider.USDT_TRC20) return "payUsdt";
       if (p === PaymentProvider.USDT_SOL) return "paySol";
+      if (p === PaymentProvider.USDT_TON) return "payTon";
+      if (p === PaymentProvider.PAYPAL) return "payPaypal";
       return "payQR";
     };
 
@@ -2606,6 +2958,20 @@ export class TelegramBotService {
       [
         language === "en" ? "Choose payment method:" : language === "th" ? "เลือกวิธีชำระเงิน:" : "Chọn phương thức thanh toán:",
         "",
+        ...(selection.requiresCustomerEmail
+          ? [
+              language === "en"
+                ? `Email count: ${quantity}`
+                : language === "th"
+                  ? `จำนวนอีเมล: ${quantity}`
+                  : `Số email: ${quantity}`,
+              language === "en"
+                ? `Unit price: ${this.formatBotMoneyWithUsdOverride(selection.salePrice, selection.salePriceUsd, language, usdtVndRate)}`
+                : language === "th"
+                  ? `ราคาต่ออีเมล: ${this.formatBotMoneyWithUsdOverride(selection.salePrice, selection.salePriceUsd, language, usdtVndRate)}`
+                  : `Đơn giá/email: ${this.formatBotMoneyWithUsdOverride(selection.salePrice, selection.salePriceUsd, language, usdtVndRate)}`,
+            ]
+          : []),
         language === "en"
           ? `Total: ${this.formatBotMoneyWithUsdOverride(totalAmount, totalUsd, language, usdtVndRate)}`
           : language === "th"
@@ -2663,12 +3029,38 @@ export class TelegramBotService {
     }
 
     try {
+      const isPaymentMethodAvailable = provider === "WALLET"
+        || (await this.getAvailablePaymentProviders(shopId)).includes(provider);
+
+      if (!isPaymentMethodAvailable) {
+        await this.clearPendingPaymentSelection(shopId, telegramUserId);
+        await this.editOrSend(
+          token,
+          chatId,
+          messageId,
+          language === "en"
+            ? "This payment method has just been disabled. Please choose the product again."
+            : language === "th"
+              ? "วิธีชำระเงินนี้ถูกปิดใช้งานแล้ว กรุณาเลือกสินค้าอีกครั้ง"
+              : "Phương thức thanh toán này vừa được tắt. Vui lòng chọn lại sản phẩm.",
+          {
+            inline_keyboard: [[{
+              text: language === "en" ? "Products" : language === "th" ? "สินค้า" : "Sản phẩm",
+              callback_data: "home:products",
+            }]],
+          },
+          actions,
+        );
+        return;
+      }
+
       const customer = {
         telegramUserId: selection.telegramUserId,
         telegramChatId: selection.telegramChatId,
         telegramUsername: selection.telegramUsername,
         firstName: selection.firstName,
         lastName: selection.lastName,
+        customerEmail: selection.customerEmail,
       };
 
       if (provider === "WALLET") {
@@ -2723,42 +3115,37 @@ export class TelegramBotService {
       where: { shopId },
       select: {
         provider: true,
+        payosClientIdEncrypted: true,
+        payosApiKeyEncrypted: true,
+        payosChecksumKeyEncrypted: true,
+        pay2sPartnerCodeEncrypted: true,
+        pay2sAccessKeyEncrypted: true,
+        pay2sSecretKeyEncrypted: true,
+        pay2sBankAccount: true,
+        pay2sBankId: true,
+        web2mAccountNumber: true,
+        web2mBankCode: true,
         binanceUid: true,
+        binanceEnabled: true,
         okxUid: true,
+        okxEnabled: true,
         usdtTrc20Address: true,
+        usdtTrc20Enabled: true,
         usdtSolanaAddress: true,
+        usdtSolanaEnabled: true,
+        usdtTonAddress: true,
+        usdtTonEnabled: true,
         binancePayEnabled: true,
+        paypalEnabled: true,
+        paypalClientIdEncrypted: true,
+        paypalClientSecretEncrypted: true,
+        paypalWebhookId: true,
       },
     });
-    const providers: PaymentProvider[] = [];
-    const primaryProvider =
-      paymentConfig?.provider ||
-      (this.config.paymentMode === "payos" ? PaymentProvider.PAYOS : PaymentProvider.MOCK);
-
-    providers.push(primaryProvider);
-
-    // Binance Pay auto (merchant API) — takes priority over manual UID
-    if (paymentConfig?.binancePayEnabled) {
-      if (!providers.includes(PaymentProvider.BINANCE_PAY)) {
-        providers.push(PaymentProvider.BINANCE_PAY);
-      }
-    } else if (String(paymentConfig?.binanceUid || "").trim()) {
-      providers.push(PaymentProvider.BINANCE);
-    }
-
-    if (String(paymentConfig?.okxUid || "").trim()) {
-      providers.push(PaymentProvider.OKX);
-    }
-
-    if (String(paymentConfig?.usdtTrc20Address || "").trim()) {
-      providers.push(PaymentProvider.USDT_TRC20);
-    }
-
-    if (String(paymentConfig?.usdtSolanaAddress || "").trim()) {
-      providers.push(PaymentProvider.USDT_SOL);
-    }
-
-    return Array.from(new Set(providers));
+    return resolveVisiblePaymentProviders(
+      paymentConfig,
+      this.config.paymentMode === "payos" ? PaymentProvider.PAYOS : PaymentProvider.MOCK,
+    );
   }
 
   private async getAvailablePaymentOptions(
@@ -2789,12 +3176,15 @@ export class TelegramBotService {
     if (normalized === "WALLET") return "WALLET";
     if (normalized === "PAYOS") return PaymentProvider.PAYOS;
     if (normalized === "PAY2S") return PaymentProvider.PAY2S;
+    if (normalized === "WEB2M") return PaymentProvider.WEB2M;
     if (normalized === "MOCK") return PaymentProvider.MOCK;
     if (normalized === "BINANCE") return PaymentProvider.BINANCE;
     if (normalized === "BINANCE_PAY") return PaymentProvider.BINANCE_PAY;
     if (normalized === "OKX") return PaymentProvider.OKX;
     if (normalized === "USDT_TRC20") return PaymentProvider.USDT_TRC20;
     if (normalized === "USDT_SOL") return PaymentProvider.USDT_SOL;
+    if (normalized === "USDT_TON") return PaymentProvider.USDT_TON;
+    if (normalized === "PAYPAL") return PaymentProvider.PAYPAL;
 
     return null;
   }
@@ -2818,6 +3208,12 @@ export class TelegramBotService {
     if (provider === PaymentProvider.USDT_SOL) {
       return language === "en" ? "Pay with USDT (Solana)" : language === "th" ? "ชำระด้วย USDT (Solana)" : "Thanh toán USDT (Solana)";
     }
+    if (provider === PaymentProvider.USDT_TON) {
+      return language === "en" ? "Pay with USDT (TON)" : language === "th" ? "ชำระด้วย USDT (TON)" : "Thanh toán USDT (TON)";
+    }
+    if (provider === PaymentProvider.PAYPAL) {
+      return language === "en" ? "🅿️ Pay with PayPal" : language === "th" ? "🅿️ ชำระด้วย PayPal" : "🅿️ Thanh toán PayPal";
+    }
     if (provider === PaymentProvider.MOCK) {
       return language === "en" ? "💳 Pay with QR / Bank" : language === "th" ? "💳 ชำระด้วย QR / โอนเงิน" : "💳 Thanh toán QR / Chuyển khoản";
     }
@@ -2830,15 +3226,19 @@ export class TelegramBotService {
       order: {
         orderCode: string;
         productName: string;
+        customerEmail?: string | null;
         quantity: number;
         totalSaleAmount: number;
       };
       checkoutUrl: string;
+      paymentProvider?: PaymentProvider | string;
+      providerAmount?: number;
+      providerCurrency?: string;
       manualCrypto?: {
-        provider: "BINANCE" | "OKX" | "USDT_TRC20" | "USDT_SOL";
+        provider: "BINANCE" | "OKX" | "USDT_TRC20" | "USDT_SOL" | "USDT_TON";
         uid?: string | null;
         address?: string | null;
-        network?: "TRC20" | "SOLANA" | null;
+        network?: "TRC20" | "SOLANA" | "TON" | null;
         usdtAmount: number;
         usdtVndRate: number;
         note: string;
@@ -2872,7 +3272,9 @@ export class TelegramBotService {
             `${orderCreatedIcon} Order created`,
             `Order code: ${created.order.orderCode}`,
             `Product: ${productName}`,
-            `Quantity: ${created.order.quantity}`,
+            created.order.customerEmail
+              ? `Email count: ${created.order.quantity}`
+              : `Quantity: ${created.order.quantity}`,
             `Total: ${this.formatBotMoney(created.order.totalSaleAmount, language, usdtVndRate)}`,
           ]
         : language === "th"
@@ -2880,16 +3282,47 @@ export class TelegramBotService {
               `${orderCreatedIcon} สร้างคำสั่งซื้อแล้ว`,
               `รหัสคำสั่งซื้อ: ${created.order.orderCode}`,
               `สินค้า: ${productName}`,
-              `จำนวน: ${created.order.quantity}`,
+              created.order.customerEmail
+                ? `จำนวนอีเมล: ${created.order.quantity}`
+                : `จำนวน: ${created.order.quantity}`,
               `ยอดรวม: ${this.formatBotMoney(created.order.totalSaleAmount, language, usdtVndRate)}`,
             ]
           : [
               `${orderCreatedIcon} Đã tạo đơn hàng`,
               `Mã đơn: ${created.order.orderCode}`,
               `Sản phẩm: ${productName}`,
-              `Số lượng: ${created.order.quantity}`,
+              created.order.customerEmail
+                ? `Số email: ${created.order.quantity}`
+                : `Số lượng: ${created.order.quantity}`,
               `Tổng thanh toán: ${this.formatBotMoney(created.order.totalSaleAmount, language, usdtVndRate)}`,
             ];
+
+    if (
+      created.paymentProvider === PaymentProvider.PAYPAL
+      && created.providerCurrency === "USD"
+      && Number(created.providerAmount || 0) > 0
+    ) {
+      const paypalAmount = Number(created.providerAmount).toFixed(2);
+      return [
+        ...baseLines,
+        "",
+        language === "en"
+          ? "Payment method: 🅿️ PayPal"
+          : language === "th"
+            ? "วิธีชำระเงิน: 🅿️ PayPal"
+            : "Phương thức: 🅿️ PayPal",
+        language === "en"
+          ? `PayPal amount: <code>$${paypalAmount} USD</code>`
+          : language === "th"
+            ? `ยอด PayPal: <code>$${paypalAmount} USD</code>`
+            : `Số tiền PayPal: <code>$${paypalAmount} USD</code>`,
+        language === "en"
+          ? "Open PayPal checkout below. The bot delivers automatically only after the capture is completed."
+          : language === "th"
+            ? "เปิดหน้า PayPal ด้านล่าง บอทจะจัดส่งอัตโนมัติหลังจาก capture สำเร็จเท่านั้น"
+            : "Mở trang PayPal bên dưới. Bot chỉ tự giao hàng sau khi capture hoàn tất.",
+      ];
+    }
 
     // ── Binance Pay auto (merchant API) ──────────────────────────────────────
     if (created.binancePay) {
@@ -2923,7 +3356,8 @@ export class TelegramBotService {
     if (created.manualCrypto) {
       const isTrc20 = created.manualCrypto.provider === "USDT_TRC20";
       const isSol = created.manualCrypto.provider === "USDT_SOL";
-      const isOnchain = isTrc20 || isSol;
+      const isTon = created.manualCrypto.provider === "USDT_TON";
+      const isOnchain = isTrc20 || isSol || isTon;
       const providerName =
         created.manualCrypto.provider === "BINANCE"
           ? "Binance"
@@ -2931,7 +3365,9 @@ export class TelegramBotService {
             ? "OKX"
             : isSol
               ? "USDT (Solana)"
-              : "USDT (TRC20)";
+              : isTon
+                ? "USDT (TON)"
+                : "USDT (TRC20)";
       const receiverLine =
         created.manualCrypto.provider === "BINANCE"
           ? language === "en"
@@ -2956,7 +3392,13 @@ export class TelegramBotService {
             : language === "th"
               ? `ที่อยู่ USDT Solana (แตะเพื่อคัดลอก):\n<code>${created.manualCrypto.address}</code>`
               : `Địa chỉ USDT Solana (chạm để copy):\n<code>${created.manualCrypto.address}</code>`
-          : receiverLine;
+          : isTon
+            ? language === "en"
+              ? `USDT TON address (tap to copy):\n<code>${created.manualCrypto.address}</code>`
+              : language === "th"
+                ? `ที่อยู่ USDT TON (แตะเพื่อคัดลอก):\n<code>${created.manualCrypto.address}</code>`
+                : `Địa chỉ USDT TON (chạm để copy):\n<code>${created.manualCrypto.address}</code>`
+            : receiverLine;
       const networkLine = isTrc20
         ? language === "en"
           ? "Network: TRC20 (Tron)"
@@ -2969,7 +3411,13 @@ export class TelegramBotService {
             : language === "th"
               ? "เครือข่าย: Solana (SPL Token)"
               : "Mạng: Solana (SPL Token)"
-          : null;
+          : isTon
+            ? language === "en"
+              ? "Network: TON (Jetton)"
+              : language === "th"
+                ? "เครือข่าย: TON (Jetton)"
+                : "Mạng: TON (Jetton)"
+            : null;
       const safetyLine = isTrc20
         ? language === "en"
           ? "Only send USDT on the TRC20 network to this address."
@@ -2982,11 +3430,17 @@ export class TelegramBotService {
             : language === "th"
               ? "ส่ง USDT ผ่านเครือข่าย Solana (SPL token) ไปยังที่อยู่นี้เท่านั้น"
               : "Chỉ gửi USDT đúng mạng Solana (SPL token) về địa chỉ này."
-          : language === "en"
-            ? "Please send the order ID or off-chain transaction reference after payment for verification."
-            : language === "th"
-              ? "หลังชำระเงินกรุณาส่ง ID คำสั่งหรือรหัสอ้างอิงธุรกรรมเพื่อยืนยัน"
-              : "Sau khi thanh toán, vui lòng gửi mã đơn hoặc mã giao dịch để xác minh.";
+          : isTon
+            ? language === "en"
+              ? "Only send the official USDT Jetton on TON to this address."
+              : language === "th"
+                ? "ส่งเฉพาะ USDT Jetton อย่างเป็นทางการบน TON ไปยังที่อยู่นี้"
+                : "Chỉ gửi USDT Jetton chính thức trên mạng TON về địa chỉ này."
+            : language === "en"
+              ? "Please send the order ID or off-chain transaction reference after payment for verification."
+              : language === "th"
+                ? "หลังชำระเงินกรุณาส่ง ID คำสั่งหรือรหัสอ้างอิงธุรกรรมเพื่อยืนยัน"
+                : "Sau khi thanh toán, vui lòng gửi mã đơn hoặc mã giao dịch để xác minh.";
       const expiryLine = isOnchain
         ? language === "en"
           ? "⚠️ This payment order will expire in 30 minutes."
@@ -2998,12 +3452,16 @@ export class TelegramBotService {
           : language === "th"
             ? "⚠️ คำสั่งชำระเงินนี้จะหมดอายุใน 5 นาที"
             : "⚠️ Lệnh thanh toán này chỉ duy trì được 5 phút.";
-      const followupLine = (isTrc20 || isSol)
+      const followupLine = isOnchain
         ? language === "en"
-          ? "After transfer, the bot auto-detects within 30-60s. (Optional: paste the tx hash here for faster verification.)"
+          ? isTon
+            ? "After transfer, the bot auto-detects the TON payment within 30-60s."
+            : "After transfer, the bot auto-detects within 30-60s. (Optional: paste the tx hash here for faster verification.)"
           : language === "th"
             ? "หลังโอนเงิน ระบบจะตรวจจับอัตโนมัติภายใน 30-60 วินาที (ทางเลือก: วาง tx hash ที่นี่เพื่อยืนยันเร็วขึ้น)"
-            : "Sau khi chuyển, bot tự dò trong 30-60s. (Tuỳ chọn: dán tx hash vào đây để xác nhận nhanh hơn.)"
+            : isTon
+              ? "Sau khi chuyển, bot tự dò giao dịch TON trong 30-60 giây."
+              : "Sau khi chuyển, bot tự dò trong 30-60s. (Tuỳ chọn: dán tx hash vào đây để xác nhận nhanh hơn.)"
         : null;
       const binanceAutoLine =
         created.manualCrypto.provider === "BINANCE" && created.manualCrypto.hasPersonalApi
@@ -3012,7 +3470,13 @@ export class TelegramBotService {
             : language === "th"
               ? "คำสั่งซื้อนี้ใช้จำนวน USDT เฉพาะ หลังโอนแล้วกด 'ฉันชำระแล้ว' เพื่อให้บอทตรวจสอบประวัติ Binance Pay อัตโนมัติ"
               : "Đơn này được gán số USDT riêng. Sau khi chuyển xong, bấm 'Tôi đã thanh toán' để bot tự kiểm tra lịch sử Binance Pay."
-          : null;
+          : isTon
+            ? language === "en"
+              ? "Scan the QR to copy the address, then choose USDT on the TON network in your wallet and enter the exact amount."
+              : language === "th"
+                ? "สแกน QR เพื่อคัดลอกที่อยู่ จากนั้นเลือก USDT บนเครือข่าย TON และระบุจำนวนให้ตรง"
+                : "Quét QR để lấy địa chỉ ví, sau đó chọn USDT mạng TON và nhập đúng số tiền."
+            : null;
       const okxAutoLine =
         created.manualCrypto.provider === "OKX" && created.manualCrypto.hasPersonalApi
           ? language === "en"
@@ -3024,7 +3488,8 @@ export class TelegramBotService {
       const binanceExactAmountLine =
         ((created.manualCrypto.provider === "BINANCE" && created.manualCrypto.hasPersonalApi)
           || (created.manualCrypto.provider === "OKX" && created.manualCrypto.hasPersonalApi)
-          || isSol)
+          || isSol
+          || isTon)
           ? language === "en"
             ? "Send the exact amount shown below so the system can match your payment safely."
             : language === "th"
@@ -3043,7 +3508,13 @@ export class TelegramBotService {
             : language === "th"
               ? "สแกน QR เพื่อคัดลอกที่อยู่ จากนั้นระบุจำนวนเงินและเลือก USDT บนเครือข่าย Solana ในกระเป๋าเงินของคุณ"
               : "Quét mã QR để lấy địa chỉ ví, sau đó tự nhập số tiền và chọn gửi USDT mạng Solana."
-          : null;
+          : isTon
+            ? language === "en"
+              ? "TON transfers need a small amount of TON in the sending wallet for network fees."
+              : language === "th"
+                ? "การโอนต้องมี TON เล็กน้อยในกระเป๋าผู้ส่งสำหรับค่าธรรมเนียมเครือข่าย"
+                : "Ví gửi cần có một ít TON để trả phí mạng."
+            : null;
       const feeLine = isTrc20
         ? language === "en"
           ? "TRC20 transfers also need enough TRX on the sending wallet for network fees."
@@ -3057,7 +3528,7 @@ export class TelegramBotService {
               ? "การโอน Solana ต้องมี SOL เล็กน้อยในกระเป๋าผู้ส่งสำหรับค่าธรรมเนียม (~0.001 SOL)"
               : "Lệnh chuyển Solana cũng cần một ít SOL trong ví gửi để trả phí mạng (~0.001 SOL)."
           : null;
-      const toleranceLine = isOnchain
+      const toleranceLine = isOnchain && !isTon
         ? language === "en"
           ? `Allowed transfer difference: ${this.formatUsdt(this.config.usdtPaymentTolerance)} USDT`
           : language === "th"
@@ -3100,16 +3571,15 @@ export class TelegramBotService {
     }
 
     // ── PayOS / default ───────────────────────────────────────────────────────
-    const manualNoDeliveryLines: string[] = isManualNoDelivery
+    const manualNoDeliveryLines: string[] = (isManualNoDelivery && (supportTelegram || supportZalo))
       ? [
           language === "en"
-            ? "✅ After payment, send your email to admin to upgrade your account:"
+            ? "✅ Please contact admin if you need support:"
             : language === "th"
-              ? "✅ หลังชำระเงิน กรุณาส่งอีเมลให้แอดมินเพื่ออัปเกรดบัญชี:"
-              : "✅ Sau khi thanh toán, gửi email của bạn cho admin để được nâng cấp chính chủ:",
+              ? "✅ กรุณาติดต่อแอดมินหากต้องการความช่วยเหลือ:"
+              : "✅ Vui lòng liên hệ admin nếu cần hỗ trợ:",
           ...(supportTelegram ? [`Telegram: ${supportTelegram}`] : []),
           ...(supportZalo ? [`Zalo: ${supportZalo}`] : []),
-          ...(!supportTelegram && !supportZalo ? [language === "en" ? "Please contact the shop admin." : language === "th" ? "กรุณาติดต่อแอดมินร้าน" : "Vui lòng liên hệ admin shop."] : []),
         ]
       : [];
 
@@ -3130,20 +3600,19 @@ export class TelegramBotService {
         : language === "th"
           ? "สแกน QR หรือเปิดหน้าชำระเงินเพื่อทำการโอนเงิน"
           : "Quét mã QR hoặc mở trang thanh toán để hoàn tất chuyển khoản.",
+      language === "en"
+        ? "The system will process automatically after your transfer succeeds."
+        : language === "th"
+          ? "ระบบจะดำเนินการอัตโนมัติหลังจากโอนเงินสำเร็จ"
+          : "Hệ thống sẽ tự xử lý khi bạn chuyển khoản thành công.",
+      language === "en"
+        ? "⚠️ Please make sure the transfer description (content) is exactly correct."
+        : language === "th"
+          ? "⚠️ กรุณากรอกเนื้อหาการโอนเงินให้ถูกต้อง"
+          : "⚠️ Hãy đảm bảo bạn điền đúng nội dung chuyển khoản.",
       ...(manualNoDeliveryLines.length > 0
         ? ["", ...manualNoDeliveryLines]
-        : [
-            language === "en"
-              ? "The system will process automatically after your transfer succeeds."
-              : language === "th"
-                ? "ระบบจะดำเนินการอัตโนมัติหลังจากโอนเงินสำเร็จ"
-                : "Hệ thống sẽ tự xử lý khi bạn chuyển khoản thành công.",
-            language === "en"
-              ? "⚠️ Please make sure the transfer description (content) is exactly correct."
-              : language === "th"
-                ? "⚠️ กรุณากรอกเนื้อหาการโอนเงินให้ถูกต้อง"
-                : "⚠️ Hãy đảm bảo bạn điền đúng nội dung chuyển khoản.",
-          ]),
+        : []),
       ...bankLines,
     ];
   }
@@ -4154,37 +4623,113 @@ export class TelegramBotService {
       return false;
     }
 
-    const quantity = this.parseQuantityMessage(message.text, selection.maxQuantity);
+    let quantity: number;
+    let customerEmail: string | null = null;
 
-    if (!quantity) {
-      const usdtVndRate = await this.getShopUsdtVndRate(shopId);
-      await this.sendQuantityReplyPrompt(
-        shopId,
-        token,
-        String(message.chat.id || telegramUserId),
-        telegramUserId,
-        selection,
-        actions,
-        this.buildInvalidQuantityText(selection.maxQuantity, language),
-        language,
-        usdtVndRate,
-      );
-      return true;
+    if (selection.requiresCustomerEmail) {
+      const parsed = parseCustomerEmailList(message.text);
+      const exceedsStock =
+        selection.maxQuantity !== null && parsed.nonEmptyLineCount > selection.maxQuantity;
+
+      if (!hasValidCustomerEmailList(parsed) || exceedsStock) {
+        let errorText: string;
+        if (parsed.nonEmptyLineCount === 0) {
+          errorText = language === "en"
+            ? "❌ Please enter at least one email."
+            : language === "th"
+              ? "❌ กรุณากรอกอีเมลอย่างน้อยหนึ่งรายการ"
+              : "❌ Vui lòng nhập ít nhất một email.";
+        } else if (parsed.invalidLineNumbers.length > 0) {
+          const lines = parsed.invalidLineNumbers.join(", ");
+          errorText = language === "en"
+            ? `❌ Invalid email on line(s): ${lines}.`
+            : language === "th"
+              ? `❌ อีเมลไม่ถูกต้องในบรรทัด: ${lines}`
+              : `❌ Email chưa hợp lệ ở dòng: ${lines}.`;
+        } else if (parsed.duplicateEmails.length > 0) {
+          errorText = language === "en"
+            ? "❌ Duplicate emails are not allowed."
+            : language === "th"
+              ? "❌ ไม่อนุญาตให้ใช้อีเมลซ้ำ"
+              : "❌ Danh sách có email bị trùng. Vui lòng kiểm tra lại.";
+        } else {
+          errorText = language === "en"
+            ? `❌ You can enter at most ${selection.maxQuantity} email(s).`
+            : language === "th"
+              ? `❌ กรอกได้สูงสุด ${selection.maxQuantity} อีเมล`
+              : `❌ Chỉ được nhập tối đa ${selection.maxQuantity} email.`;
+        }
+
+        await this.sendText(
+          token,
+          message.chat.id,
+          this.buildCustomerEmailPromptText(selection.maxQuantity, language, errorText),
+          actions,
+          {
+            inline_keyboard: [[this.navBtn("back", language, "home:products")]],
+          },
+        );
+        return true;
+      }
+
+      quantity = parsed.emails.length;
+      customerEmail = parsed.emails.join("\n");
+    } else {
+      const parsedQuantity = this.parseQuantityMessage(message.text, selection.maxQuantity);
+      if (!parsedQuantity) {
+        const usdtVndRate = await this.getShopUsdtVndRate(shopId);
+        await this.sendQuantityReplyPrompt(
+          shopId,
+          token,
+          String(message.chat.id || telegramUserId),
+          telegramUserId,
+          selection,
+          actions,
+          this.buildInvalidQuantityText(selection.maxQuantity, language),
+          language,
+          usdtVndRate,
+        );
+        return true;
+      }
+      quantity = parsedQuantity;
     }
 
     try {
-      const paymentProviders = await this.getAvailablePaymentOptions(
-        shopId,
-        telegramUserId,
-        selection.salePrice * quantity,
-      );
       const customer = {
         telegramUserId,
         telegramChatId: String(message.chat.id || telegramUserId),
         telegramUsername: message.from?.username || null,
         firstName: message.from?.first_name || null,
         lastName: message.from?.last_name || null,
+        customerEmail,
       };
+
+      const paymentProviders = await this.getAvailablePaymentOptions(
+        shopId,
+        telegramUserId,
+        selection.salePrice * quantity,
+      );
+
+      if (paymentProviders.length === 0) {
+        await this.clearPendingQuantitySelection(shopId, telegramUserId);
+        await this.sendText(
+          token,
+          message.chat.id,
+          language === "en"
+            ? "This shop has no available payment method. Please contact the shop owner."
+            : language === "th"
+              ? "ร้านค้ายังไม่มีวิธีชำระเงินที่พร้อมใช้งาน กรุณาติดต่อเจ้าของร้าน"
+              : "Shop chưa có phương thức thanh toán khả dụng. Vui lòng liên hệ chủ shop.",
+          actions,
+          {
+            inline_keyboard: [[
+              this.navBtn("products", language, "home:products"),
+              this.navBtn("home", language, "home:menu"),
+            ]],
+          },
+        );
+        return true;
+      }
 
       if (paymentProviders.length > 1) {
         await this.clearPendingQuantitySelection(shopId, telegramUserId);
@@ -4284,6 +4829,7 @@ export class TelegramBotService {
             : language === "th" ? "❌ จำนวน USDT ไม่ถูกต้อง ขั้นต่ำ 1 USDT"
               : "❌ Số USDT không hợp lệ. Tối thiểu 1 USDT.",
           language,
+          pending.provider,
         );
         return true;
       }
@@ -4305,7 +4851,9 @@ export class TelegramBotService {
       vndAmount = parsed;
     }
 
-    const providerOverride = isUsdt ? PaymentProvider.USDT_TRC20 : undefined;
+    const providerOverride = isUsdt
+      ? (pending.provider as PaymentProvider | undefined) || PaymentProvider.USDT_TRC20
+      : undefined;
 
     try {
       const created = await this.customerWalletService.createTopupForTelegram({
@@ -4347,7 +4895,7 @@ export class TelegramBotService {
               url: created.topup.checkoutUrl,
             }]]
             : []),
-          ...(isUsdt
+          ...(isUsdt && pending.provider !== "USDT_TON"
             ? [[{
               text: this.buttonLabel("txHash", language),
               callback_data: `txhash:topup:${created.topup.externalOrderCode}`,
@@ -4392,6 +4940,7 @@ export class TelegramBotService {
               : "Không thể tạo lệnh nạp ví lúc này.",
         ),
         language,
+        pending.provider,
       );
     }
 
@@ -4574,15 +5123,19 @@ export class TelegramBotService {
       displayName: string;
       addedQuantity: number;
       available: number;
+      /** Optional price snapshot from the caller. If omitted the current catalog salePrice is used. */
+      price?: number | null;
     }>,
   ) {
     if (!Array.isArray(updates) || updates.length === 0) {
       return 0;
     }
 
-    const shop = await this.shopsService.getSellerShopByShopId(shopId);
+    // One fetch for the shop — used to grab the bot token AND (via botConfig.customizationJson)
+    // the shop-level customization for buttons. Previously we called getSellerShopByShopId twice.
+    const shopData = await this.shopsService.getSellerShopByShopId(shopId);
     const token = decryptSecret(
-      shop.botConfig?.telegramBotTokenEncrypted,
+      shopData.botConfig?.telegramBotTokenEncrypted,
       this.config.encryptionKey,
     );
 
@@ -4594,22 +5147,8 @@ export class TelegramBotService {
       return 0;
     }
 
-    const customers = await this.prisma.customer.findMany({
-      where: { shopId },
-      select: {
-        telegramChatId: true,
-        preferredLanguage: true,
-      },
-    });
-
-    if (customers.length === 0) {
-      return 0;
-    }
-
-    const [catalog, shopData] = await Promise.all([
-      this.shopsService.getCatalogViewForShop(shopId, false),
-      this.shopsService.getSellerShopByShopId(shopId),
-    ]);
+    // Prepare shared data once (catalog map, template, customization) before iterating chunks.
+    const catalog = await this.shopsService.getCatalogViewForShop(shopId, false, false, true);
     const shopCustNotif = await this.resolveCustomization(shopData.botConfig?.customizationJson as Record<string, unknown> | null ?? null);
     const custDataNotif = {
       custEmojis: (shopCustNotif?.buttonEmojis && typeof shopCustNotif.buttonEmojis === "object") ? shopCustNotif.buttonEmojis as Record<string, string> : {},
@@ -4639,45 +5178,85 @@ export class TelegramBotService {
       return 0;
     }
 
+    // Stream customers in cursor-paginated chunks — a 100k-customer shop restock previously
+    // loaded the whole list into memory + fanned out N×M sends before yielding. Chunking:
+    //   1. Keeps heap flat regardless of shop size.
+    //   2. Lets Telegram rate-limiter breathe between batches.
+    const CHUNK = 500;
+    let cursorId: string | undefined = undefined;
     let sentCount = 0;
 
-    for (const customer of customers) {
-      for (const update of claimedUpdates) {
-        const product = productByExternalId.get(update.externalProductId);
-
-        const customerLang = this.normalizeLanguage(customer.preferredLanguage);
-
-        if (!product || product.hidden || !product.enabled) {
-          continue;
-        }
-
-        if (customerLang === "vi" && product.hiddenVi) continue;
-        if (customerLang === "en" && product.hiddenEn) continue;
-
-        const productName = this.localizeProductName(product.displayName || update.displayName, customerLang);
-        const rendered = renderRestockHtml(restockTemplate, {
-          productName,
-          addedQuantity: update.addedQuantity,
-          available: update.available,
-          productIconCustomEmojiId: product.iconCustomEmojiId ?? null,
-          language: customerLang,
+    while (true) {
+      const customers: Array<{ id: string; telegramChatId: string; preferredLanguage: string | null }> =
+        await this.prisma.customer.findMany({
+          where: { shopId },
+          orderBy: { id: "asc" },
+          take: CHUNK,
+          ...(cursorId ? { cursor: { id: cursorId }, skip: 1 } : {}),
+          select: {
+            id: true,
+            telegramChatId: true,
+            preferredLanguage: true,
+          },
         });
 
-        await this.sendText(
-          token,
-          customer.telegramChatId,
-          rendered.text,
-          [],
-          {
-            inline_keyboard: [
-              [this.buildNavTextBtn(custDataNotif, "buyNow", "buyNow", `buy:${product.id}`, customerLang, canBlingNotif)],
-            ],
-          },
-          rendered.hasHtml ? "HTML" : undefined,
-        ).catch(() => undefined);
+      if (customers.length === 0) break;
 
-        sentCount += 1;
+      for (const customer of customers) {
+        for (const update of claimedUpdates) {
+          const product = productByExternalId.get(update.externalProductId);
+
+          const customerLang = this.normalizeLanguage(customer.preferredLanguage);
+
+          if (!product || product.hidden || !product.enabled) {
+            continue;
+          }
+
+          if (customerLang === "vi" && product.hiddenVi) continue;
+          if (customerLang === "en" && product.hiddenEn) continue;
+
+          const productName = this.localizeProductName(product.displayName || update.displayName, customerLang);
+          // Prefer the caller-provided snapshot (matches the price at the moment the restock
+          // event happened). Fall back to the current catalog salePrice only if the caller
+          // did not supply one — this covers manual-upload paths that don't have the
+          // per-product override handy at the time they call this method.
+          let priceForRender: number | null = null;
+          if (update.price != null && Number.isFinite(update.price) && update.price > 0) {
+            priceForRender = Number(update.price);
+          } else {
+            const catalogPrice = Number((product as any)?.salePrice);
+            priceForRender = Number.isFinite(catalogPrice) && catalogPrice > 0 ? catalogPrice : null;
+          }
+          const rendered = renderRestockHtml(restockTemplate, {
+            productName,
+            addedQuantity: update.addedQuantity,
+            available: update.available,
+            price: priceForRender,
+            productIconCustomEmojiId: product.iconCustomEmojiId ?? null,
+            language: customerLang,
+          });
+
+          await this.sendText(
+            token,
+            customer.telegramChatId,
+            rendered.text,
+            [],
+            {
+              inline_keyboard: [
+                [this.buildNavTextBtn(custDataNotif, "buyNow", "buyNow", `buy:${product.id}`, customerLang, canBlingNotif)],
+              ],
+            },
+            rendered.hasHtml ? "HTML" : undefined,
+          ).catch(() => undefined);
+
+          sentCount += 1;
+        }
       }
+
+      if (customers.length < CHUNK) break;
+      const last = customers[customers.length - 1];
+      if (!last) break;
+      cursorId = last.id;
     }
 
     return sentCount;
@@ -4738,6 +5317,9 @@ export class TelegramBotService {
       ],
     };
     const quantityLine = this.buildQuantityPromptText(selection.maxQuantity, language, msgEmojiIds["quantityInput"] || "");
+    const nextStepPrompt = selection.requiresCustomerEmail
+      ? this.buildCustomerEmailPromptText(selection.maxQuantity, language)
+      : quantityLine;
     const hasLabelEmojis = Object.values(labelEmojiIds).some((v) => v?.trim());
     // Force HTML mode when a description exists so the <blockquote> wrap renders
     // as a styled card instead of leaking raw tags into the caption.
@@ -4798,7 +5380,6 @@ export class TelegramBotService {
       }
 
       if (productNote) lines.push(``, productNote);
-      lines.push(``, quantityLine);
 
       const caption = this.clampTelegramHtml(lines.join("\n"), 1024);
 
@@ -4875,12 +5456,17 @@ export class TelegramBotService {
       }
 
       if (productNote) textLines.push(``, productNote);
-      textLines.push(``, quantityLine);
 
       const fullText = this.clampTelegramHtml(textLines.join("\n"), 4096);
 
       await this.sendText(token, chatId, fullText, actions, replyMarkup, "HTML");
     }
+
+    // Keep the next-step instruction outside the product caption/text. Telegram truncates
+    // photo captions at 1024 characters, so a long source description could otherwise hide
+    // the quantity prompt completely and leave the buyer with only the "choose another"
+    // button visible.
+    await this.sendText(token, chatId, nextStepPrompt, actions, undefined, "HTML");
 
     await this.sessions.setPendingSession(
       "pendingQuantitySelections",
@@ -4898,6 +5484,7 @@ export class TelegramBotService {
         soldCount: selection.soldCount ?? null,
         deliveryFormatHint: (selection as any).deliveryFormatHint ?? null,
         iconCustomEmojiId: selection.iconCustomEmojiId ?? null,
+        requiresCustomerEmail: selection.requiresCustomerEmail === true,
         expiresAt: Date.now() + this.sessions.pendingQuantityTtlMs,
       },
       this.sessions.pendingQuantityTtlMs,
@@ -4961,7 +5548,7 @@ export class TelegramBotService {
     sourceProductId: string,
     language: BotLanguage = "vi",
   ) {
-    const product = await this.shopsService.getCatalogItemForShop(shopId, sourceProductId);
+    const product = await this.shopsService.getCatalogItemForShop(shopId, sourceProductId, true);
 
     if (!product || product.hidden || !product.enabled) {
       throw new Error(
@@ -5051,6 +5638,51 @@ export class TelegramBotService {
     return maxQuantity === null
       ? `${icon} Nhập số lượng cần mua:`
       : `${icon} Nhập số lượng cần mua (tối đa ${maxQuantity}):`;
+  }
+
+  private buildCustomerEmailPromptText(
+    maxQuantity: number | null,
+    language: BotLanguage = "vi",
+    errorText?: string,
+  ) {
+    const maxLine = maxQuantity === null
+      ? null
+      : language === "en"
+        ? `Maximum: ${maxQuantity} email(s).`
+        : language === "th"
+          ? `สูงสุด: ${maxQuantity} อีเมล`
+          : `Tối đa: ${maxQuantity} email.`;
+    const body = language === "en"
+      ? [
+          "📧 Please enter the emails that will receive a slot (one email per line).",
+          "💡 Quantity and total price are calculated automatically from the number of emails.",
+          ...(maxLine ? [maxLine] : []),
+          "",
+          "Example:",
+          "user1@gmail.com",
+          "user2@gmail.com",
+        ]
+      : language === "th"
+        ? [
+            "📧 กรุณากรอกอีเมลที่จะรับสล็อต (หนึ่งอีเมลต่อหนึ่งบรรทัด)",
+            "💡 ระบบจะคำนวณจำนวนและราคารวมอัตโนมัติตามจำนวนอีเมล",
+            ...(maxLine ? [maxLine] : []),
+            "",
+            "ตัวอย่าง:",
+            "user1@gmail.com",
+            "user2@gmail.com",
+          ]
+        : [
+            "📧 Vui lòng nhập email để nhận slot (mỗi dòng 1 email).",
+            "💡 Số lượng và tổng tiền sẽ được tính tự động theo số email bạn nhập.",
+            ...(maxLine ? [maxLine] : []),
+            "",
+            "Ví dụ:",
+            "user1@gmail.com",
+            "user2@gmail.com",
+          ];
+
+    return [...(errorText ? [errorText, ""] : []), ...body].join("\n");
   }
 
   private buildInvalidQuantityText(maxQuantity: number | null, language: BotLanguage = "vi") {
@@ -5221,7 +5853,11 @@ export class TelegramBotService {
       return;
     }
 
-    await this.sessions.delPendingSession('pendingQuantitySelections', this.sessions.getPendingQuantityKey(shopId, telegramUserId));
+    const key = this.sessions.getPendingQuantityKey(shopId, telegramUserId);
+    await Promise.all([
+      this.sessions.delPendingSession('pendingQuantitySelections', key),
+      this.sessions.delPendingSession('pendingCustomerEmailSelections', key),
+    ]);
   }
 
   private async clearPendingWalletTopup(shopId: string, telegramUserId: string) {
@@ -5794,6 +6430,13 @@ export class TelegramBotService {
     }>,
     language: BotLanguage = "vi",
     usdtVndRate?: Prisma.Decimal | number | string | null,
+    options: {
+      view: "recent" | "all";
+      page: number;
+      totalPages: number;
+      totalOrders: number;
+      startIndex: number;
+    } = { view: "recent", page: 0, totalPages: 1, totalOrders: 0, startIndex: 0 },
   ) {
     if (orders.length === 0) {
       if (language === "en") {
@@ -5822,11 +6465,31 @@ export class TelegramBotService {
       ].join("\n");
     }
 
+    const title = options.view === "all"
+      ? language === "en"
+        ? "📜 All purchase history"
+        : language === "th"
+          ? "📜 ประวัติการซื้อทั้งหมด"
+          : "📜 Toàn bộ lịch sử mua hàng"
+      : language === "en"
+        ? "📜 Recent orders"
+        : language === "th"
+          ? "📜 คำสั่งซื้อล่าสุด"
+          : "📜 Lịch sử mua hàng gần đây";
+    const pageSummary = options.view === "all"
+      ? language === "en"
+        ? `Page ${options.page + 1}/${options.totalPages} • ${options.totalOrders} orders`
+        : language === "th"
+          ? `หน้า ${options.page + 1}/${options.totalPages} • ${options.totalOrders} คำสั่งซื้อ`
+          : `Trang ${options.page + 1}/${options.totalPages} • ${options.totalOrders} đơn hàng`
+      : null;
+
     const lines: string[] = [
-      language === "en" ? "📜 Recent orders" : language === "th" ? "📜 คำสั่งซื้อล่าสุด" : "📜 Lịch sử mua hàng gần đây",
+      title,
+      ...(pageSummary ? [pageSummary] : []),
       "",
       ...orders.flatMap((order, index) => [
-        `${index + 1}. ${this.localizeProductName(order.productNameSnapshot, language)}`,
+        `${options.startIndex + index + 1}. ${this.localizeProductName(order.productNameSnapshot, language)}`,
         language === "en" ? `   Order: ${order.orderCode}` : language === "th" ? `   คำสั่งซื้อ: ${order.orderCode}` : `   Mã đơn: ${order.orderCode}`,
         language === "en"
           ? `   Qty: ${order.quantity} • ${this.formatBotMoney(decimalToNumber(order.totalSaleAmount), language, usdtVndRate)}`
@@ -5850,7 +6513,20 @@ export class TelegramBotService {
     const deliveredOrders = orders.filter((order) => Boolean(order.deliveredAccountText)).slice(0, 3);
 
     if (deliveredOrders.length > 0) {
-      lines.push(language === "en" ? "🔐 Recently delivered accounts:" : language === "th" ? "🔐 บัญชีที่จัดส่งล่าสุด:" : "🔐 Tài khoản đã giao gần đây:", "");
+      lines.push(
+        options.view === "all"
+          ? language === "en"
+            ? "🔐 Delivered accounts on this page:"
+            : language === "th"
+              ? "🔐 บัญชีที่จัดส่งในหน้านี้:"
+              : "🔐 Tài khoản đã giao trong trang này:"
+          : language === "en"
+            ? "🔐 Recently delivered accounts:"
+            : language === "th"
+              ? "🔐 บัญชีที่จัดส่งล่าสุด:"
+              : "🔐 Tài khoản đã giao gần đây:",
+        "",
+      );
 
       deliveredOrders.forEach((order, index) => {
         lines.push(
@@ -6032,8 +6708,58 @@ export class TelegramBotService {
     language: BotLanguage = "vi",
     usdtVndRate?: Prisma.Decimal | number | string | null,
     bankInfo?: PayOSBankInfo,
-    manualCrypto?: { address?: string | null; usdtAmount: number; note: string } | null,
+    manualCrypto?: {
+      provider?: "BINANCE" | "OKX" | "USDT_TRC20" | "USDT_SOL" | "USDT_TON";
+      network?: "TRC20" | "SOLANA" | "TON" | null;
+      address?: string | null;
+      usdtAmount: number;
+      note: string;
+    } | null,
   ) {
+    if (manualCrypto?.address && (manualCrypto.provider === "USDT_SOL" || manualCrypto.provider === "USDT_TON")) {
+      const usdtFormatted = this.formatUsdt(manualCrypto.usdtAmount);
+      const network = manualCrypto.provider === "USDT_TON" ? "TON" : "Solana";
+      if (language === "en") {
+        return [
+          `💲 USDT top-up ${usdtFormatted} USDT (≈ ${formatCurrency(amount)})`,
+          `Top-up code: ${externalOrderCode}`,
+          `Payment deadline: ${this.formatDateTime(expiresAt)}`,
+          "",
+          `📤 Transfer details (${network})`,
+          `Address: <code>${manualCrypto.address}</code>`,
+          `Amount: <code>${usdtFormatted}</code> USDT`,
+          `Reference: <code>${manualCrypto.note}</code>`,
+          "",
+          `Send the exact amount using only USDT on ${network}. The bot will confirm automatically within 30-60 seconds.`,
+        ].join("\n");
+      }
+      if (language === "th") {
+        return [
+          `💲 เติม USDT ${usdtFormatted} USDT (≈ ${formatCurrency(amount)})`,
+          `รหัสเติมเงิน: ${externalOrderCode}`,
+          `กำหนดชำระ: ${this.formatDateTime(expiresAt)}`,
+          "",
+          `📤 ข้อมูลการโอน (${network})`,
+          `ที่อยู่: <code>${manualCrypto.address}</code>`,
+          `จำนวน: <code>${usdtFormatted}</code> USDT`,
+          "",
+          `ส่งจำนวนที่ตรงกันด้วย USDT บน ${network} เท่านั้น ระบบจะยืนยันอัตโนมัติภายใน 30-60 วินาที`,
+        ].join("\n");
+      }
+      return [
+        `💲 Nạp USDT ${usdtFormatted} USDT (≈ ${formatCurrency(amount)})`,
+        `Mã nạp: ${externalOrderCode}`,
+        `Hạn thanh toán: ${this.formatDateTime(expiresAt)}`,
+        "",
+        `📤 Thông tin chuyển (${network})`,
+        `Địa chỉ ví: <code>${manualCrypto.address}</code>`,
+        `Số USDT: <code>${usdtFormatted}</code>`,
+        `Mã tham chiếu: <code>${manualCrypto.note}</code>`,
+        "",
+        `Chuyển đúng số tiền và chỉ dùng USDT mạng ${network}. Bot sẽ tự xác nhận trong 30-60 giây.`,
+      ].join("\n");
+    }
+
     // USDT TRC20 topup
     if (manualCrypto?.address) {
       const usdtFormatted = this.formatUsdt(manualCrypto.usdtAmount);
@@ -6203,7 +6929,8 @@ export class TelegramBotService {
       transaction.order.shopId !== shopId ||
       transaction.order.customer?.telegramUserId !== telegramUserId ||
       (transaction.provider !== PaymentProvider.PAYOS &&
-        transaction.provider !== PaymentProvider.BINANCE_PAY)
+        transaction.provider !== PaymentProvider.BINANCE_PAY &&
+        transaction.provider !== PaymentProvider.PAYPAL)
     ) {
       await this.sendText(
         token,
@@ -7003,12 +7730,12 @@ export class TelegramBotService {
     callbackQuery: TelegramUpdate | undefined,
   ) {
     const from = message?.from || callbackQuery?.from;
-    const chatId =
-      message?.chat?.id || callbackQuery?.message?.chat?.id || callbackQuery?.from?.id || null;
+    const chat = message?.chat || callbackQuery?.message?.chat;
 
-    if (!from?.id || !chatId) {
+    if (!from?.id || !isPrivateTelegramChat(chat, from.id)) {
       return;
     }
+    const chatId = chat.id;
 
     await this.prisma.customer.upsert({
       where: {

@@ -26,6 +26,11 @@ import { PrismaService } from "../db/prisma.service";
 import { PaymentService } from "../lib/payment.service";
 import { QueueService } from "../lib/queue.service";
 import {
+  hasValidCustomerEmailList,
+  parseCustomerEmailList,
+} from "../lib/customer-email-list";
+import { isProductVisibleForBot } from "../lib/source-product-visibility";
+import {
   decimalToNumber,
   generateExternalPaymentCode,
   generateOrderCode,
@@ -48,6 +53,7 @@ type CreateTelegramOrderInput = {
   lastName?: string | null;
   sourceProductId: string;
   quantity: number;
+  customerEmail?: string | null;
   paymentProvider?: PaymentProvider;
 };
 
@@ -87,7 +93,6 @@ export class OrdersService {
       orderBy: {
         createdAt: "desc",
       },
-      take: 100,
     });
 
     return orders.map((order) => this.mapOrder(order));
@@ -136,6 +141,7 @@ export class OrdersService {
       shopId: input.shopId,
       externalOrderCode,
       amount: prepared.totalSaleAmount,
+      amountUsd: prepared.totalSaleAmountUsd,
       description: orderCode,
       providerOverride: input.paymentProvider,
     });
@@ -151,6 +157,7 @@ export class OrdersService {
         sourceProviderKindSnapshot:
           prepared.shop.providerConfig?.providerKind || ProviderKind.EXTERNAL,
         productNameSnapshot: prepared.productNameSnapshot,
+        customerEmail: prepared.customerEmail,
         quantity: prepared.quantity,
         salePrice: toDecimal(prepared.salePrice),
         sourcePriceSnapshot: toDecimal(prepared.sourcePrice),
@@ -163,6 +170,11 @@ export class OrdersService {
             provider: payment.provider,
             externalOrderCode,
             amount: toDecimal(prepared.totalSaleAmount),
+            providerAmount: payment.providerAmount == null
+              ? undefined
+              : toDecimal(payment.providerAmount),
+            providerCurrency: payment.providerCurrency,
+            providerReference: payment.providerReference,
             checkoutUrl: payment.checkoutUrl,
             qrCode: payment.qrCode,
             status: PaymentTransactionStatus.PENDING,
@@ -190,6 +202,9 @@ export class OrdersService {
       order: this.mapOrder(order),
       checkoutUrl: order.paymentTransaction?.checkoutUrl || payment.checkoutUrl,
       qrCode: order.paymentTransaction?.qrCode || payment.qrCode,
+      paymentProvider: payment.provider,
+      providerAmount: payment.providerAmount,
+      providerCurrency: payment.providerCurrency,
       manualCrypto: payment.manualCrypto,
       bankInfo: payment.bankInfo,
       isManualNoDelivery: prepared.isManual && !prepared.hasAutoDelivery,
@@ -252,6 +267,7 @@ export class OrdersService {
           sourceProviderKindSnapshot:
             prepared.shop.providerConfig?.providerKind || ProviderKind.EXTERNAL,
           productNameSnapshot: prepared.productNameSnapshot,
+          customerEmail: prepared.customerEmail,
           quantity: prepared.quantity,
           salePrice: toDecimal(prepared.salePrice),
           sourcePriceSnapshot: toDecimal(prepared.sourcePrice),
@@ -368,7 +384,9 @@ export class OrdersService {
     if (
       provider !== PaymentProvider.BINANCE &&
       provider !== PaymentProvider.OKX &&
-      provider !== PaymentProvider.USDT_TRC20
+      provider !== PaymentProvider.USDT_TRC20 &&
+      provider !== PaymentProvider.USDT_SOL &&
+      provider !== PaymentProvider.USDT_TON
     ) {
       throw new BadRequestException("Only manual crypto payments can be confirmed here.");
     }
@@ -407,9 +425,12 @@ export class OrdersService {
       return this.getOrderById(paymentTransaction.orderId);
     }
 
-    await this.prisma.$transaction(async (tx) => {
-      await tx.paymentTransaction.update({
-        where: { id: paymentTransaction.id },
+    const transitioned = await this.prisma.$transaction(async (tx) => {
+      const claimed = await tx.paymentTransaction.updateMany({
+        where: {
+          id: paymentTransaction.id,
+          status: PaymentTransactionStatus.PENDING,
+        },
         data: {
           status: PaymentTransactionStatus.PAID,
           paidAt: new Date(),
@@ -417,6 +438,8 @@ export class OrdersService {
           rawPayloadJson: rawPayload as Prisma.InputJsonValue,
         },
       });
+
+      if (claimed.count === 0) return false;
 
       await tx.order.update({
         where: { id: paymentTransaction.orderId },
@@ -436,7 +459,12 @@ export class OrdersService {
           }) as Prisma.InputJsonValue,
         },
       });
+      return true;
     });
+
+    if (!transitioned) {
+      return this.getOrderById(paymentTransaction.orderId);
+    }
 
     const order = await this.getOrderById(paymentTransaction.orderId);
 
@@ -478,6 +506,10 @@ export class OrdersService {
 
     if (product.isSample) {
       throw new BadRequestException("Sản phẩm mẫu (template), không thể mua được.");
+    }
+
+    if (!isProductVisibleForBot(product, shop.providerConfig?.ownProductsOnly === true)) {
+      throw new BadRequestException("Product is not available.");
     }
 
     const override = product.overrides[0];
@@ -555,6 +587,16 @@ export class OrdersService {
         : ctvBase;
     }
     const sourcePrice = decimalToNumber(product.sourcePrice);
+    const salePriceUsd = !isCtvCustomer && override?.salePriceUsd != null
+      ? decimalToNumber(override.salePriceUsd)
+      : null;
+
+    const metadata =
+      product.metadataJson && typeof product.metadataJson === "object" && !Array.isArray(product.metadataJson)
+        ? (product.metadataJson as Record<string, unknown>)
+        : {};
+    const requiresCustomerEmail =
+      metadata.requiresCustomerEmail === true || metadata.requires_customer_email === true;
 
     // Promo logic — check active window first
     const promoType = (product as any).promoType as string | null;
@@ -572,7 +614,7 @@ export class OrdersService {
     let bonusUnits = 0;
     let promoDiscount = 0;
     if (promoActive) {
-      if (promoType === "BUY_N_GET_M" && promoBuyN > 0 && promoGetM > 0 && quantity >= promoBuyN) {
+      if (!requiresCustomerEmail && promoType === "BUY_N_GET_M" && promoBuyN > 0 && promoGetM > 0 && quantity >= promoBuyN) {
         bonusUnits = promoGetM;
       } else if (promoType === "BULK_DISCOUNT" && promoBulkMinQty > 0 && promoBulkDiscountPct > 0 && quantity >= promoBulkMinQty) {
         promoDiscount = Math.floor(salePrice * quantity * promoBulkDiscountPct / 100);
@@ -581,11 +623,34 @@ export class OrdersService {
 
     const effectiveQuantity = quantity + bonusUnits;
     const totalSaleAmount = Math.max(0, salePrice * quantity - promoDiscount);
+    const totalSaleAmountUsd = salePriceUsd == null
+      ? null
+      : Math.max(
+          0,
+          salePriceUsd
+            * quantity
+            * (promoActive
+              && promoType === "BULK_DISCOUNT"
+              && promoBulkMinQty > 0
+              && promoBulkDiscountPct > 0
+              && quantity >= promoBulkMinQty
+              ? 1 - promoBulkDiscountPct / 100
+              : 1),
+        );
     const totalSourceAmount = sourcePrice * effectiveQuantity;
-    const metadata =
-      product.metadataJson && typeof product.metadataJson === "object" && !Array.isArray(product.metadataJson)
-        ? (product.metadataJson as Record<string, unknown>)
-        : {};
+    const parsedCustomerEmails = parseCustomerEmailList(input.customerEmail);
+    const customerEmail = requiresCustomerEmail
+      ? parsedCustomerEmails.emails.join("\n") || null
+      : String(input.customerEmail || "").trim().toLowerCase() || null;
+
+    if (
+      requiresCustomerEmail &&
+      (!hasValidCustomerEmailList(parsedCustomerEmails) || parsedCustomerEmails.emails.length !== quantity)
+    ) {
+      throw new BadRequestException(
+        "Enter one valid, unique customer email per purchased item.",
+      );
+    }
     const isManual =
       String(product.providerName || "").toLowerCase() === "manual" || metadata.manual === true;
     const deliveryEntries = metadata.deliveryEntries;
@@ -622,8 +687,10 @@ export class OrdersService {
       salePrice,
       sourcePrice,
       totalSaleAmount,
+      totalSaleAmountUsd,
       totalSourceAmount,
       productNameSnapshot: override?.displayName || product.sourceName,
+      customerEmail,
       isManual,
       hasAutoDelivery,
     };
@@ -1118,6 +1185,7 @@ export class OrdersService {
     warrantyExpiresAt?: Date | null;
     warrantyClaimCount?: number;
     productNameSnapshot: string;
+    customerEmail?: string | null;
     quantity: number;
     salePrice: Prisma.Decimal;
     sourcePriceSnapshot: Prisma.Decimal;
@@ -1165,6 +1233,7 @@ export class OrdersService {
       warrantyExpiresAt: order.warrantyExpiresAt || null,
       warrantyClaimCount: Number(order.warrantyClaimCount || 0),
       productName: order.productNameSnapshot,
+      customerEmail: order.customerEmail || null,
       quantity: order.quantity,
       salePrice: decimalToNumber(order.salePrice),
       sourcePrice: decimalToNumber(order.sourcePriceSnapshot),

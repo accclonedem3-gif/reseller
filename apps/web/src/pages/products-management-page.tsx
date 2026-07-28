@@ -1,4 +1,4 @@
-import { Boxes, Check, Eye, EyeOff, FolderOpen, GripVertical, Package, PackagePlus, Pencil, Plus, Trash2, Upload, X } from "lucide-react";
+import { Boxes, Check, Eye, EyeOff, FolderOpen, GripVertical, Package, PackagePlus, Pencil, Plus, Store, Trash2, Upload, X } from "lucide-react";
 import { useState } from "react";
 import { createPortal } from "react-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -39,6 +39,12 @@ const T = {
     oosToggleDesc: "Hiện sản phẩm hết hàng trên bot (mặc định ẩn). Khách vẫn không thể đặt, chỉ xem được danh sách.",
     oosToggleOn: "Đang hiện",
     oosToggleOff: "Đang ẩn",
+    ownOnlyTitle: "Chỉ bán sản phẩm riêng",
+    ownOnlyDesc: "Bật để bot ẩn toàn bộ sản phẩm đồng bộ từ key nguồn. Key, giá và dữ liệu nguồn vẫn được giữ nguyên.",
+    ownOnlyOn: "Chỉ SP riêng",
+    ownOnlyOff: "Có SP nguồn",
+    ownOnlyToastOn: "Bot hiện chỉ hiển thị sản phẩm riêng của shop.",
+    ownOnlyToastOff: "Bot đã hiển thị lại sản phẩm từ nguồn.",
   },
   en: {
     tabProducts: "Products",
@@ -66,6 +72,12 @@ const T = {
     oosToggleDesc: "Show out-of-stock products in the bot catalog (hidden by default). Customers can view but not order them.",
     oosToggleOn: "Showing",
     oosToggleOff: "Hidden",
+    ownOnlyTitle: "Sell own products only",
+    ownOnlyDesc: "Enable to hide every product synced from the source key. The key, pricing and synced data are preserved.",
+    ownOnlyOn: "Own only",
+    ownOnlyOff: "Source visible",
+    ownOnlyToastOn: "The bot now shows only this shop's own products.",
+    ownOnlyToastOff: "Source products are visible in the bot again.",
   },
   th: {
     tabProducts: "สินค้า",
@@ -93,6 +105,12 @@ const T = {
     oosToggleDesc: "แสดงสินค้าหมดสต็อกในบอท (ซ่อนโดยค่าเริ่มต้น) ลูกค้าดูได้แต่สั่งไม่ได้",
     oosToggleOn: "กำลังแสดง",
     oosToggleOff: "ซ่อนอยู่",
+    ownOnlyTitle: "ขายเฉพาะสินค้าของร้าน",
+    ownOnlyDesc: "เปิดเพื่อซ่อนสินค้าที่ซิงค์จากคีย์แหล่งสินค้า โดยยังเก็บคีย์ ราคา และข้อมูลเดิมไว้",
+    ownOnlyOn: "เฉพาะของร้าน",
+    ownOnlyOff: "แสดงต้นทาง",
+    ownOnlyToastOn: "บอทแสดงเฉพาะสินค้าของร้านแล้ว",
+    ownOnlyToastOff: "บอทกลับมาแสดงสินค้าจากแหล่งแล้ว",
   },
 };
 
@@ -106,18 +124,31 @@ export function ProductsManagementPage() {
   const [activeTab, setActiveTab] = useState<Tab>("products");
   const [createPending, setCreatePending] = useState(false);
   const queryClient = useQueryClient();
+  const { showToast } = useToast();
 
-  const botConfigQuery = useQuery<{ showOutOfStock?: boolean }>({
+  const botConfigQuery = useQuery<{ showOutOfStock?: boolean; ownProductsOnly?: boolean }>({
     queryKey: ["bot-config"],
     queryFn: async () => (await api.get("/bot-config")).data,
     staleTime: 30_000,
   });
   const showOutOfStock = botConfigQuery.data?.showOutOfStock ?? false;
+  const ownProductsOnly = botConfigQuery.data?.ownProductsOnly ?? false;
 
   const toggleOosMutation = useMutation({
     mutationFn: async (value: boolean) => api.put("/bot-config", { showOutOfStock: value }),
     onSuccess: (_, value) => {
       queryClient.setQueryData(["bot-config"], (cur: any) => ({ ...cur, showOutOfStock: value }));
+    },
+  });
+
+  const toggleOwnProductsMutation = useMutation({
+    mutationFn: async (value: boolean) => api.put("/bot-config", { ownProductsOnly: value }),
+    onSuccess: (_, value) => {
+      queryClient.setQueryData(["bot-config"], (cur: any) => ({ ...cur, ownProductsOnly: value }));
+      showToast({ tone: "success", message: value ? t.ownOnlyToastOn : t.ownOnlyToastOff });
+    },
+    onError: () => {
+      showToast({ tone: "error", message: "Không thể đổi chế độ hiển thị sản phẩm nguồn." });
     },
   });
 
@@ -194,6 +225,41 @@ export function ProductsManagementPage() {
             }}
           >
             {showOutOfStock ? t.oosToggleOn : t.oosToggleOff}
+          </button>
+        </div>
+      )}
+
+      {activeTab === "products" && (
+        <div
+          className="flex items-center justify-between gap-4 rounded-[16px] px-4 py-3"
+          style={{ backgroundColor: "var(--surface)", border: "1px solid var(--bd)" }}
+        >
+          <div className="flex items-center gap-3 min-w-0">
+            <div
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl"
+              style={{ background: "rgba(249,115,22,0.12)", border: "1px solid rgba(249,115,22,0.25)" }}
+            >
+              <Store className="h-3.5 w-3.5 text-orange-400" />
+            </div>
+            <div className="min-w-0">
+              <p className="text-sm font-bold truncate" style={{ color: "var(--tx)" }}>{t.ownOnlyTitle}</p>
+              <p className="text-xs mt-0.5 leading-snug" style={{ color: "var(--tx-m)" }}>{t.ownOnlyDesc}</p>
+            </div>
+          </div>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={ownProductsOnly}
+            disabled={toggleOwnProductsMutation.isPending || botConfigQuery.isPending}
+            onClick={() => toggleOwnProductsMutation.mutate(!ownProductsOnly)}
+            className="shrink-0 flex items-center gap-2 rounded-[10px] px-3 py-1.5 text-xs font-bold transition hover:opacity-80 disabled:opacity-50"
+            style={{
+              background: ownProductsOnly ? "rgba(249,115,22,0.15)" : "var(--inp)",
+              color: ownProductsOnly ? "rgb(251,146,60)" : "var(--tx-f)",
+              border: `1px solid ${ownProductsOnly ? "rgba(249,115,22,0.35)" : "var(--bd)"}`,
+            }}
+          >
+            {ownProductsOnly ? t.ownOnlyOn : t.ownOnlyOff}
           </button>
         </div>
       )}

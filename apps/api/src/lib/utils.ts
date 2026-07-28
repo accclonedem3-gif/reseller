@@ -1,6 +1,10 @@
 import { createHash, randomBytes, randomInt } from "node:crypto";
 
 import { Prisma } from "@prisma/client";
+import {
+  deriveOrderCorrelationSuffix,
+  deriveOrderCorrelationTimestamp,
+} from "@reseller/shared/server";
 
 export function hashValue(value: string) {
   return createHash("sha256").update(value).digest("hex");
@@ -89,12 +93,14 @@ export function generateOrderCode() {
   return `ORD-${timestamp}-${randomInt(100, 999)}`;
 }
 
-export function generateSourceOrderCode() {
-  const timestamp = new Date()
+export function generateSourceOrderCode(downstreamOrderCode?: string | null) {
+  const nowTimestamp = new Date()
     .toISOString()
     .replace(/[-:TZ.]/g, "")
-    .slice(0, 14);
-  return `SRC-${timestamp}-${randomInt(100, 999)}`;
+  const correlationTimestamp = deriveOrderCorrelationTimestamp(downstreamOrderCode);
+  const correlationSuffix = deriveOrderCorrelationSuffix(downstreamOrderCode, 5);
+  const timestamp = correlationTimestamp || nowTimestamp.slice(0, correlationSuffix ? 17 : 14);
+  return `SRC-${timestamp}-${correlationSuffix || randomInt(100, 999)}`;
 }
 
 export function generateExternalPaymentCode() {

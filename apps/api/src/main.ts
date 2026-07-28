@@ -65,7 +65,9 @@ async function bootstrap() {
   // Behind nginx → trust the first proxy hop so req.ip resolves to the real client IP (from
   // X-Forwarded-For) instead of the proxy's. The global ThrottlerGuard keys on req.ip, so without
   // this every request would share nginx's IP and the rate limit would apply to ALL clients at once.
-  app.getHttpAdapter().getInstance().set("trust proxy", 1);
+  // Trust only the local nginx reverse proxy. A numeric hop count would let a client that reached
+  // Node directly spoof X-Forwarded-For and rotate its identity around the rate limiter.
+  app.getHttpAdapter().getInstance().set("trust proxy", "loopback");
   // rawBody is preserved automatically via NestFactory rawBody:true option above.
   // The built-in body-parser will handle JSON; do NOT add a second json() middleware
   // or it will break the rawBody buffer that Binance Pay webhook verification depends on.
@@ -73,12 +75,16 @@ async function bootstrap() {
   const allowedOrigins = new Set(config.corsOrigins.map(normalizeOrigin));
 
   app.enableCors({
-    origin: (requestOrigin: string | undefined, callback: CorsOriginCallback) => {
+    origin: (
+      requestOrigin: string | undefined,
+      callback: CorsOriginCallback,
+    ) => {
       const normalizedOrigin = normalizeOrigin(String(requestOrigin || ""));
       const isAllowed =
         !requestOrigin ||
         allowedOrigins.has(normalizedOrigin) ||
-        isLoopbackHost(String(requestOrigin || ""));
+        (config.nodeEnv !== "production" &&
+          isLoopbackHost(String(requestOrigin || "")));
 
       callback(null, isAllowed ? requestOrigin || true : false);
     },
@@ -91,31 +97,38 @@ async function bootstrap() {
     }),
   );
   app.setGlobalPrefix(API_PREFIX);
-  app.use("/uploads", (_req: any, res: any, next: any) => {
-    res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
-    next();
-  }, (await import("express")).default.static(uploadsDir));
+  app.use(
+    "/uploads",
+    (_req: any, res: any, next: any) => {
+      res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
+      next();
+    },
+    (await import("express")).default.static(uploadsDir),
+  );
 
   const appPublicUrl = config.appPublicUrl;
   const swaggerConfig = new DocumentBuilder()
     .setTitle("Internal Source API")
     .setDescription(
       "## Kết nối nguồn nội bộ ULTRA\n\n" +
-      "API dành cho PRO seller để đặt hàng từ nguồn ULTRA.\n\n" +
-      "### Authentication\n\n" +
-      "Mỗi request phải có header:\n\n" +
-      "```\nX-Source-Api-Key: <your-key>\n```\n\n" +
-      "### Lấy API key\n\n" +
-      "Liên hệ PRO seller hoặc nhắn lệnh `/api` trong Telegram bot của shop nguồn để nhận key.\n\n" +
-      "### Flow cơ bản\n\n" +
-      "1. `GET /catalog` → lấy danh sách sản phẩm\n" +
-      "2. `GET /balance` → kiểm tra số dư\n" +
-      "3. `POST /orders` → đặt hàng (trừ số dư)\n" +
-      "4. `GET /orders/{code}` → kiểm tra trạng thái đơn",
+        "API dành cho PRO seller để đặt hàng từ nguồn ULTRA.\n\n" +
+        "### Authentication\n\n" +
+        "Mỗi request phải có header:\n\n" +
+        "```\nX-Source-Api-Key: <your-key>\n```\n\n" +
+        "### Lấy API key\n\n" +
+        "Liên hệ PRO seller hoặc nhắn lệnh `/api` trong Telegram bot của shop nguồn để nhận key.\n\n" +
+        "### Flow cơ bản\n\n" +
+        "1. `GET /catalog` → lấy danh sách sản phẩm\n" +
+        "2. `GET /balance` → kiểm tra số dư\n" +
+        "3. `POST /orders` → đặt hàng (trừ số dư)\n" +
+        "4. `GET /orders/{code}` → kiểm tra trạng thái đơn",
     )
     .setVersion("1.0")
     .addServer(`${appPublicUrl}/${API_PREFIX}`, "API Server")
-    .addApiKey({ type: "apiKey", name: "X-Source-Api-Key", in: "header" }, "source-api-key")
+    .addApiKey(
+      { type: "apiKey", name: "X-Source-Api-Key", in: "header" },
+      "source-api-key",
+    )
     .build();
 
   const swaggerDoc = SwaggerModule.createDocument(app, swaggerConfig, {
@@ -131,12 +144,13 @@ async function bootstrap() {
     customSiteTitle: "Internal Source API Docs",
   });
 
-  await app.listen(config.apiPort);
-  console.log(`API is running on http://localhost:${config.apiPort}/${API_PREFIX}`);
+  await app.listen(config.apiPort, config.apiHost);
+  console.log(
+    `API is running on http://${config.apiHost}:${config.apiPort}/${API_PREFIX}`,
+  );
 }
 
 bootstrap().catch((error) => {
   console.error(error);
   process.exit(1);
 });
-

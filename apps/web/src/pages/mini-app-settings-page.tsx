@@ -40,14 +40,14 @@ const PRODUCT_LABEL_DEFAULTS: Record<string, { vi: string; emoji: string }> = {
 const BUTTON_KEYS = [
   "products", "orders", "wallet", "guide", "support", "warranty",
   "language", "home", "affiliate", "refresh", "viewAll", "buyOther",
-  "apiKey", "payWallet", "payQR", "payBinance", "payOkx", "payUsdt", "paid", "buyNow",
+  "apiKey", "payWallet", "payQR", "payBinance", "payOkx", "payUsdt", "paySol", "payTon", "payPaypal", "paid", "buyNow",
 ] as const;
 
 const DEFAULT_EMOJIS: Record<string, string> = {
   products: "🛍️", orders: "📦", wallet: "💳", guide: "📘", support: "💬",
   warranty: "🛡️", language: "🌐", home: "🏠", affiliate: "🤝", refresh: "🔄",
   viewAll: "⬅️", buyOther: "⬅️", apiKey: "🔑", payWallet: "💰", payQR: "💳",
-  payBinance: "🟡", payOkx: "⚫", payUsdt: "", paid: "✅", buyNow: "🛒",
+  payBinance: "🟡", payOkx: "⚫", payUsdt: "", paySol: "", payTon: "", payPaypal: "🅿️", paid: "✅", buyNow: "🛒",
 };
 
 const BUTTON_LABELS_VI: Record<string, string> = {
@@ -57,13 +57,15 @@ const BUTTON_LABELS_VI: Record<string, string> = {
   buyOther: "Chọn sản phẩm khác", apiKey: "API Key", payWallet: "Thanh toán bằng ví",
   payQR: "Thanh toán QR / Chuyển khoản", payBinance: "Thanh toán Binance",
   payOkx: "Thanh toán OKX", payUsdt: "Thanh toán USDT (TRC20)",
+  paySol: "Thanh toán USDT (Solana)", payTon: "Thanh toán USDT (TON)",
+  payPaypal: "Thanh toán PayPal",
   paid: "Tôi đã thanh toán", buyNow: "Mua ngay",
 };
 
 const BUTTON_GROUPS: { label: string; keys: (typeof BUTTON_KEYS)[number][] }[] = [
   { label: "Điều hướng chính", keys: ["home", "products", "orders", "wallet", "guide", "support", "warranty", "language", "affiliate", "refresh"] },
   { label: "Danh mục / Chọn lại", keys: ["viewAll", "buyOther"] },
-  { label: "Thanh toán", keys: ["payWallet", "payQR", "payBinance", "payOkx", "payUsdt", "paid"] },
+  { label: "Thanh toán", keys: ["payWallet", "payQR", "payBinance", "payOkx", "payUsdt", "paySol", "payTon", "payPaypal", "paid"] },
   { label: "Mua hàng", keys: ["buyNow", "apiKey"] },
 ];
 

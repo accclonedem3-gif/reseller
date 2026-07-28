@@ -11,6 +11,13 @@ export class AppConfigService {
     return Number(process.env.PORT || process.env.API_PORT || 3000);
   }
 
+  get apiHost() {
+    return (
+      process.env.API_HOST ||
+      (this.nodeEnv === "production" ? "127.0.0.1" : "0.0.0.0")
+    );
+  }
+
   get webPublicUrl() {
     return process.env.WEB_PUBLIC_URL || "http://localhost:5173";
   }
@@ -122,6 +129,12 @@ export class AppConfigService {
     return Number(process.env.USDT_VND_RATE || DEFAULT_USDT_VND_RATE);
   }
 
+  get paypalVndRate() {
+    return Number(
+      process.env.PAYPAL_VND_RATE || this.usdtVndRate || DEFAULT_USDT_VND_RATE,
+    );
+  }
+
   get usdtPaymentTolerance() {
     return Number(process.env.USDT_PAYMENT_TOLERANCE || 0.02);
   }
@@ -135,7 +148,10 @@ export class AppConfigService {
   }
 
   get tronUsdtContractAddress() {
-    return process.env.TRON_USDT_CONTRACT_ADDRESS || "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
+    return (
+      process.env.TRON_USDT_CONTRACT_ADDRESS ||
+      "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
+    );
   }
 
   get heliusApiKey() {
@@ -149,7 +165,25 @@ export class AppConfigService {
   }
 
   get solanaUsdtMintAddress() {
-    return process.env.SOLANA_USDT_MINT || "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB";
+    return (
+      process.env.SOLANA_USDT_MINT ||
+      "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"
+    );
+  }
+
+  get tonCenterApiBaseUrl() {
+    return process.env.TONCENTER_API_BASE_URL || "https://toncenter.com/api/v3";
+  }
+
+  get tonCenterApiKey() {
+    return process.env.TONCENTER_API_KEY || "";
+  }
+
+  get tonUsdtMasterAddress() {
+    return (
+      process.env.TON_USDT_MASTER_ADDRESS ||
+      "EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs"
+    );
   }
 
   get mockProviderEnabled() {
@@ -204,14 +238,21 @@ export class AppConfigService {
       }
     }
 
-    for (const key of ["JWT_ACCESS_SECRET", "JWT_REFRESH_SECRET", "APP_ENCRYPTION_KEY", "INTERNAL_API_TOKEN"]) {
+    for (const key of [
+      "JWT_ACCESS_SECRET",
+      "JWT_REFRESH_SECRET",
+      "APP_ENCRYPTION_KEY",
+      "INTERNAL_API_TOKEN",
+    ]) {
       const value = String(process.env[key] || "");
 
       if (
         value.length < 32 ||
         /change-me|CHANGE_ME|default|secret/i.test(value)
       ) {
-        errors.push(`${key} must be a strong random value with at least 32 characters.`);
+        errors.push(
+          `${key} must be a strong random value with at least 32 characters.`,
+        );
       }
     }
 
@@ -231,8 +272,22 @@ export class AppConfigService {
       errors.push("MOCK_TELEGRAM_MODE must be false in production.");
     }
 
+    if (
+      !["127.0.0.1", "::1", "localhost"].includes(this.apiHost.toLowerCase())
+    ) {
+      errors.push(
+        "API_HOST must bind to loopback in production; nginx is the only public entry point.",
+      );
+    }
+
+    if (String(this.paymentMode).trim().toLowerCase() === "mock") {
+      errors.push("PAYMENT_MODE must not be mock in production.");
+    }
+
     if (errors.length > 0) {
-      throw new Error(`Production configuration is not safe:\n- ${errors.join("\n- ")}`);
+      throw new Error(
+        `Production configuration is not safe:\n- ${errors.join("\n- ")}`,
+      );
     }
   }
 }

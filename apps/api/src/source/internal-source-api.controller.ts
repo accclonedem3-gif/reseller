@@ -32,6 +32,10 @@ import type { Request } from "express";
 import { PrismaService } from "../db/prisma.service";
 import { InternalSourceService } from "../internal-source/internal-source.service";
 import {
+  hasValidCustomerEmailList,
+  parseCustomerEmailList,
+} from "../lib/customer-email-list";
+import {
   decimalToNumber,
   generateSourceOrderCode,
   splitWalletDebit,
@@ -54,10 +58,26 @@ class CreateInternalSourceOrderDto {
   @IsString()
   clientOrderCode?: string;
 
-  @ApiPropertyOptional({ type: String, description: "Customer email for digital delivery", example: "customer@example.com" })
+  @ApiPropertyOptional({
+    type: String,
+    description: "One customer email per purchased item, separated by newlines",
+    example: "user1@gmail.com\nuser2@gmail.com",
+  })
   @IsOptional()
   @IsString()
   customerEmail?: string;
+}
+
+function metadataRecord(value: Prisma.JsonValue | null | undefined) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {} as Record<string, unknown>;
+  }
+  return value as Record<string, unknown>;
+}
+
+function requiresCustomerEmail(value: Prisma.JsonValue | null | undefined) {
+  const metadata = metadataRecord(value);
+  return metadata.requiresCustomerEmail === true || metadata.requires_customer_email === true;
 }
 
 @ApiTags("Internal Source")
@@ -123,6 +143,7 @@ export class InternalSourceApiController {
         durationTypeOther: p.durationTypeOther ?? null,
         deliveryMode: p.sourceDeliveryMode?.toLowerCase() ?? null,
         warrantyPolicy: p.warrantyPolicy?.toLowerCase() ?? null,
+        requiresCustomerEmail: requiresCustomerEmail(p.metadataJson),
       })),
     };
   }
@@ -195,6 +216,17 @@ export class InternalSourceApiController {
     }
 
     const quantity = Number(dto.quantity);
+    const parsedCustomerEmails = parseCustomerEmailList(dto.customerEmail);
+    const customerEmail = parsedCustomerEmails.emails.join("\n") || null;
+    if (
+      requiresCustomerEmail(product.metadataJson) &&
+      (!hasValidCustomerEmailList(parsedCustomerEmails) || parsedCustomerEmails.emails.length !== quantity)
+    ) {
+      throw new BadRequestException(
+        "Enter one valid, unique customer email per purchased item.",
+      );
+    }
+
     const unitPrice = decimalToNumber(product.internalSourcePrice ?? product.sourcePrice);
     const totalAmount = unitPrice * quantity;
 
@@ -244,7 +276,7 @@ export class InternalSourceApiController {
         const split = splitWalletDebit(commissionBefore, balanceBefore, totalAmount);
         const balanceAfter = split.balanceAfter;
         const commissionAfter = split.commissionAfter;
-        const sourceOrderCode = generateSourceOrderCode();
+        const sourceOrderCode = generateSourceOrderCode(dto.clientOrderCode);
 
         const created = await tx.internalSourceOrder.create({
           data: {
@@ -263,7 +295,7 @@ export class InternalSourceApiController {
             totalAmount: toDecimal(totalAmount),
             status: InternalSourceOrderStatus.PENDING,
             metadataJson: {
-              customerEmail: dto.customerEmail || null,
+              customerEmail,
             } as Prisma.InputJsonValue,
           },
         });

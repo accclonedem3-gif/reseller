@@ -136,7 +136,7 @@ const T = {
 } as const;
 
 function DepositPaymentView({ response, method, onClose }: {
-  response: any; method: "PAYOS" | "USDT_SOL" | "BINANCE"; onClose: () => void;
+  response: any; method: "PAYOS" | "USDT_SOL" | "USDT_TON" | "BINANCE"; onClose: () => void;
 }) {
   const [copiedLabel, setCopiedLabel] = useState<string | null>(null);
   const [now, setNow] = useState(Date.now());
@@ -145,6 +145,7 @@ function DepositPaymentView({ response, method, onClose }: {
   const address = manualCrypto?.address;
   const uid = manualCrypto?.uid;
   const usdtAmount = manualCrypto?.usdtAmount;
+  const cryptoNetwork = method === "USDT_TON" ? "TON" : "Solana";
 
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 1000);
@@ -164,9 +165,9 @@ function DepositPaymentView({ response, method, onClose }: {
     // PayOS trả về raw VietQR text — phải encode qua QR generator để hiển thị image
     qrImageUrl = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(response.qrCode)}`;
     qrCaption = "Quét QR bằng app ngân hàng";
-  } else if (method === "USDT_SOL" && address) {
+  } else if ((method === "USDT_SOL" || method === "USDT_TON") && address) {
     qrImageUrl = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(address)}`;
-    qrCaption = "Quét QR hoặc copy địa chỉ ví Solana";
+    qrCaption = `Quét QR hoặc copy địa chỉ ví ${cryptoNetwork}`;
   }
 
   function copy(text: string, label: string) {
@@ -222,11 +223,11 @@ function DepositPaymentView({ response, method, onClose }: {
         </div>
       )}
 
-      {method === "USDT_SOL" && address && (
+      {(method === "USDT_SOL" || method === "USDT_TON") && address && (
         <div className="rounded-2xl p-3.5 space-y-2.5" style={{ background: "var(--inp)" }}>
           <div>
             <p className="text-[10px] font-black uppercase tracking-widest" style={{ color: "var(--tx-f)" }}>Mạng</p>
-            <p className="mt-0.5 text-[13px] font-semibold" style={{ color: "var(--tx)" }}>Solana</p>
+            <p className="mt-0.5 text-[13px] font-semibold" style={{ color: "var(--tx)" }}>{cryptoNetwork}</p>
           </div>
           <div>
             <p className="text-[10px] font-black uppercase tracking-widest" style={{ color: "var(--tx-f)" }}>Địa chỉ ví</p>
@@ -618,7 +619,7 @@ export function ProfilePage() {
   });
 
   // ── seller wallet deposit (top up) ──────────────
-  type DepositMethod = "PAYOS" | "USDT_SOL" | "BINANCE";
+  type DepositMethod = "PAYOS" | "USDT_SOL" | "USDT_TON" | "BINANCE";
   const [depositOpen, setDepositOpen] = useState(false);
   const [depositAmount, setDepositAmount] = useState("");
   const [depositMethod, setDepositMethod] = useState<DepositMethod>("PAYOS");
@@ -1404,6 +1405,7 @@ export function ProfilePage() {
                     {([
                       { key: "PAYOS" as const, icon: "🏦", label: "Chuyển khoản VND", desc: "PayOS · QR ngân hàng · tự cộng" },
                       { key: "USDT_SOL" as const, icon: "💎", label: "USDT Solana", desc: "Chuyển USDT mạng Solana" },
+                      { key: "USDT_TON" as const, icon: "💎", label: "USDT TON", desc: "Tự nhận diện và cộng tiền qua mạng TON" },
                       { key: "BINANCE" as const, icon: "🟡", label: "Binance UID", desc: "Chuyển Binance Pay (UID)" },
                     ]).map(({ key, icon, label, desc }) => {
                       const selected = depositMethod === key;

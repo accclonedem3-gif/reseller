@@ -23,13 +23,16 @@ import {
   encryptSecret,
   fetchProviderBalance,
   fetchProviderProducts,
+  checkProviderVariantStock,
   getMockProviderProducts,
   getMockTelegramBotInfo,
   isMockBotToken,
   isMockBuyerKey,
   isRoboticvnBaseUrl,
   isRoboticvnKey,
+  isRoboticvnProvider,
   maskSecret,
+  normalizeTonAddress,
   renderRestockHtml,
   resolveRestockTemplate,
   telegramDeleteWebhook,
@@ -44,6 +47,7 @@ import type { ProviderBalanceResult, ProviderProduct } from "@reseller/shared/se
 import { AppConfigService } from "../config/app-config.service";
 import { CacheService } from "../lib/cache.service";
 import { PrismaService } from "../db/prisma.service";
+import { isOwnShopProduct } from "../lib/source-product-visibility";
 import { OkxPersonalApiService } from "../lib/okx-personal-api.service";
 import { decimalToNumber, slugify, toDecimal } from "../lib/utils";
 
@@ -65,6 +69,8 @@ type CatalogStockNotification = {
   displayName: string;
   addedQuantity: number;
   available: number;
+  /** Sale price in VND at time of restock (optional — omit to hide the price line). */
+  price?: number | null;
 };
 
 // PRO per-connection overrides layered on top of an inherited ULTRA template.
@@ -161,6 +167,17 @@ export class ShopsService {
     return toDecimal(rate);
   }
 
+  private parsePaypalVndRateOverride(value: string | null | undefined) {
+    if (value === null || value === undefined) return undefined;
+    const normalized = String(value).replace(/,/g, "").trim();
+    if (!normalized) return null;
+    const rate = Number(normalized);
+    if (!Number.isFinite(rate) || rate <= 0) {
+      throw new BadRequestException("PayPal USD/VND rate must be greater than 0.");
+    }
+    return toDecimal(rate);
+  }
+
   private async ensureSourceWebhookKey(providerConfig: {
     id: string;
     sourceWebhookKey: string | null;
@@ -246,6 +263,7 @@ export class ShopsService {
       ),
       sourceNotificationSyncEnabled:
         providerConfig?.sourceNotificationSyncEnabled ?? true,
+      ownProductsOnly: providerConfig?.ownProductsOnly ?? false,
       priceMarkupPercent: providerConfig?.priceMarkupPercent != null
         ? decimalToNumber(providerConfig.priceMarkupPercent)
         : null,
@@ -281,11 +299,31 @@ export class ShopsService {
       web2mPasswordMasked: maskSecret(this.safeDecryptSecret(paymentConfig?.web2mPasswordEncrypted)),
       web2mTokenMasked: maskSecret(this.safeDecryptSecret(paymentConfig?.web2mTokenEncrypted)),
       web2mAccessTokenMasked: maskSecret(this.safeDecryptSecret(paymentConfig?.web2mAccessTokenEncrypted)),
+      paypalClientIdMasked: maskSecret(
+        this.safeDecryptSecret(paymentConfig?.paypalClientIdEncrypted),
+      ),
+      paypalClientSecretMasked: maskSecret(
+        this.safeDecryptSecret(paymentConfig?.paypalClientSecretEncrypted),
+      ),
+      paypalWebhookId: paymentConfig?.paypalWebhookId || "",
+      paypalEnabled: paymentConfig?.paypalEnabled ?? false,
+      paypalSandbox: paymentConfig?.paypalSandbox ?? true,
+      paypalVndRateOverride: paymentConfig?.paypalVndRateOverride
+        ? decimalToNumber(paymentConfig.paypalVndRateOverride)
+        : null,
+      defaultPaypalVndRate: this.config.paypalVndRate,
+      paypalWebhookUrl: `${String(this.config.appPublicUrl || "").replace(/\/$/, "")}/api/v1/webhooks/paypal/${shop.id}`,
       binanceUid: paymentConfig?.binanceUid || "",
+      binanceEnabled: paymentConfig?.binanceEnabled ?? false,
       okxUid: paymentConfig?.okxUid || "",
+      okxEnabled: paymentConfig?.okxEnabled ?? false,
       usdtTrc20Address: paymentConfig?.usdtTrc20Address || "",
+      usdtTrc20Enabled: paymentConfig?.usdtTrc20Enabled ?? false,
       usdtBep20Address: paymentConfig?.usdtBep20Address || "",
       usdtSolanaAddress: paymentConfig?.usdtSolanaAddress || "",
+      usdtSolanaEnabled: paymentConfig?.usdtSolanaEnabled ?? false,
+      usdtTonAddress: paymentConfig?.usdtTonAddress || "",
+      usdtTonEnabled: paymentConfig?.usdtTonEnabled ?? false,
       usdtVndRateOverride: paymentConfig?.usdtVndRateOverride
         ? decimalToNumber(paymentConfig.usdtVndRateOverride)
         : null,
@@ -341,6 +379,56 @@ export class ShopsService {
     const usdtVndRateOverride = this.parseUsdtVndRateOverride(
       dto.usdtVndRateOverride,
     );
+    const paypalVndRateOverride = this.parsePaypalVndRateOverride(
+      dto.paypalVndRateOverride,
+    );
+    const shouldEnablePaypal = dto.paypalEnabled === true;
+    if (shouldEnablePaypal) {
+      const clientId = dto.paypalClientId
+        || this.safeDecryptSecret(shop.paymentConfig?.paypalClientIdEncrypted);
+      const clientSecret = dto.paypalClientSecret
+        || this.safeDecryptSecret(shop.paymentConfig?.paypalClientSecretEncrypted);
+      const webhookId = dto.paypalWebhookId || shop.paymentConfig?.paypalWebhookId;
+      if (!clientId || !clientSecret || !webhookId) {
+        throw new BadRequestException(
+          "PayPal Client ID, Client Secret and Webhook ID are required before enabling PayPal.",
+        );
+      }
+    }
+    const configuredValue = (incoming: string | null | undefined, existing: string | null | undefined) =>
+      String(incoming !== undefined ? incoming || "" : existing || "").trim();
+    if (
+      dto.binanceEnabled === true
+      && !configuredValue(dto.binanceUid, shop.paymentConfig?.binanceUid)
+      && dto.binancePayEnabled !== true
+      && shop.paymentConfig?.binancePayEnabled !== true
+    ) {
+      throw new BadRequestException("Binance UID is required before enabling Binance.");
+    }
+    if (dto.okxEnabled === true && !configuredValue(dto.okxUid, shop.paymentConfig?.okxUid)) {
+      throw new BadRequestException("OKX UID is required before enabling OKX.");
+    }
+    if (
+      dto.usdtTrc20Enabled === true
+      && !configuredValue(dto.usdtTrc20Address, shop.paymentConfig?.usdtTrc20Address)
+    ) {
+      throw new BadRequestException("USDT TRC20 address is required before enabling TRC20.");
+    }
+    if (
+      dto.usdtSolanaEnabled === true
+      && !configuredValue(dto.usdtSolanaAddress, shop.paymentConfig?.usdtSolanaAddress)
+    ) {
+      throw new BadRequestException("USDT Solana address is required before enabling Solana.");
+    }
+    if (
+      dto.usdtTonEnabled === true
+      && !configuredValue(dto.usdtTonAddress, shop.paymentConfig?.usdtTonAddress)
+    ) {
+      throw new BadRequestException("USDT TON address is required before enabling TON.");
+    }
+    if (dto.usdtTonAddress != null && !normalizeTonAddress(dto.usdtTonAddress)) {
+      throw new BadRequestException("Địa chỉ ví TON không hợp lệ hoặc sai checksum.");
+    }
 
     await this.prisma.$transaction(async (tx) => {
       await tx.shop.update({
@@ -383,18 +471,25 @@ export class ShopsService {
         },
       });
 
-      // The bot-config UI has no baseUrl field. Detect the provider from the key
-      // the seller pastes: `apk_` = roboticvn → force its API base + name. Otherwise
-      // fall back to the (canboso) default. Routing also re-checks the key prefix at
-      // call time, so an already-saved apk_ key still works even before a re-save.
+      // The bot-config UI has no baseUrl field. Detect the provider from a newly
+      // pasted key, but preserve the current source when this request only changes
+      // an unrelated switch such as ownProductsOnly/showOutOfStock.
       const incomingBuyerKey = (dto.providerBuyerKey || "").trim();
+      const incomingProviderBaseUrl = (dto.providerBaseUrl || "").trim();
+      const providerConnectionChanging = Boolean(
+        incomingBuyerKey || incomingProviderBaseUrl,
+      );
       const resolvedProviderBaseUrl = isRoboticvnKey(incomingBuyerKey)
         ? "https://api.roboticvn.com"
-        : dto.providerBaseUrl || this.config.providerBaseUrl;
-      const resolvedProviderName =
-        isRoboticvnKey(incomingBuyerKey) || isRoboticvnBaseUrl(resolvedProviderBaseUrl)
+        : incomingBuyerKey
+          ? incomingProviderBaseUrl || this.config.providerBaseUrl
+          : incomingProviderBaseUrl || shop.providerConfig?.baseUrl || this.config.providerBaseUrl;
+      const resolvedProviderName = providerConnectionChanging
+        ? isRoboticvnKey(incomingBuyerKey) || isRoboticvnBaseUrl(resolvedProviderBaseUrl)
           ? "roboticvn"
-          : this.config.providerName;
+          : this.config.providerName
+        : shop.providerConfig?.providerName ||
+          (isRoboticvnBaseUrl(resolvedProviderBaseUrl) ? "roboticvn" : this.config.providerName);
 
       await tx.providerConfig.upsert({
         where: { shopId: shop.id },
@@ -410,6 +505,7 @@ export class ShopsService {
               }
             : {}),
           sourceNotificationSyncEnabled: dto.sourceNotificationSyncEnabled,
+          ownProductsOnly: dto.ownProductsOnly,
           priceMarkupPercent: dto.priceMarkupPercent !== undefined
             ? (dto.priceMarkupPercent === null ? null : toDecimal(dto.priceMarkupPercent))
             : undefined,
@@ -424,6 +520,7 @@ export class ShopsService {
           providerKind: ProviderKind.EXTERNAL,
           sourceWebhookKey: this.createSourceWebhookKey(),
           sourceNotificationSyncEnabled: dto.sourceNotificationSyncEnabled ?? true,
+          ownProductsOnly: dto.ownProductsOnly ?? false,
           priceMarkupPercent: dto.priceMarkupPercent != null ? toDecimal(dto.priceMarkupPercent) : null,
           connectionStatus: "PENDING",
         },
@@ -458,8 +555,21 @@ export class ShopsService {
         }
       }
 
-      const explicitProvider = dto.paymentProvider && ["PAYOS", "PAY2S", "WEB2M", "BINANCE_PAY", "MOCK", "BINANCE", "OKX", "USDT_TRC20"].includes(dto.paymentProvider)
+      const explicitProvider = dto.paymentProvider && ["PAYOS", "PAY2S", "WEB2M", "MOCK"].includes(dto.paymentProvider)
         ? (dto.paymentProvider as any)
+        : undefined;
+      const legacyVndProvider = shop.paymentConfig?.provider === "PAYPAL"
+        ? (shop.paymentConfig.payosClientIdEncrypted
+          && shop.paymentConfig.payosApiKeyEncrypted
+          && shop.paymentConfig.payosChecksumKeyEncrypted
+            ? "PAYOS"
+            : shop.paymentConfig.pay2sPartnerCodeEncrypted
+              && shop.paymentConfig.pay2sAccessKeyEncrypted
+              && shop.paymentConfig.pay2sSecretKeyEncrypted
+                ? "PAY2S"
+                : shop.paymentConfig.web2mAccountNumber && shop.paymentConfig.web2mBankCode
+                  ? "WEB2M"
+                  : "MOCK")
         : undefined;
 
       // Plain (non-encrypted) payment fields: the bot-config form sends `null` for a field the
@@ -472,11 +582,10 @@ export class ShopsService {
         where: { shopId: shop.id },
         update: {
           provider: explicitProvider
+            ?? legacyVndProvider
             ?? (shouldUsePayOS
               ? "PAYOS"
-              : dto.binancePayEnabled === true || (dto.binancePayApiKey && dto.binancePaySecretKey)
-                ? "BINANCE_PAY"
-                : undefined),
+              : undefined),
           payosClientIdEncrypted: dto.payosClientId
             ? encryptSecret(dto.payosClientId, encryptionKey)
             : undefined,
@@ -511,11 +620,27 @@ export class ShopsService {
           web2mAccessTokenEncrypted: dto.web2mAccessToken
             ? encryptSecret(dto.web2mAccessToken, encryptionKey)
             : undefined,
+          paypalClientIdEncrypted: dto.paypalClientId
+            ? encryptSecret(dto.paypalClientId, encryptionKey)
+            : undefined,
+          paypalClientSecretEncrypted: dto.paypalClientSecret
+            ? encryptSecret(dto.paypalClientSecret, encryptionKey)
+            : undefined,
+          paypalWebhookId: setOrKeep(dto.paypalWebhookId),
+          paypalEnabled: dto.paypalEnabled ?? undefined,
+          paypalSandbox: dto.paypalSandbox ?? undefined,
+          paypalVndRateOverride,
           binanceUid: setOrKeep(dto.binanceUid),
+          binanceEnabled: dto.binanceEnabled ?? undefined,
           okxUid: setOrKeep(dto.okxUid),
+          okxEnabled: dto.okxEnabled ?? undefined,
           usdtTrc20Address: setOrKeep(dto.usdtTrc20Address),
+          usdtTrc20Enabled: dto.usdtTrc20Enabled ?? undefined,
           usdtBep20Address: setOrKeep(dto.usdtBep20Address),
           usdtSolanaAddress: setOrKeep(dto.usdtSolanaAddress),
+          usdtSolanaEnabled: dto.usdtSolanaEnabled ?? undefined,
+          usdtTonAddress: setOrKeep(dto.usdtTonAddress),
+          usdtTonEnabled: dto.usdtTonEnabled ?? undefined,
           usdtVndRateOverride,
           binancePersonalApiKeyEncrypted: dto.binancePersonalApiKey
             ? encryptSecret(dto.binancePersonalApiKey, encryptionKey)
@@ -584,11 +709,27 @@ export class ShopsService {
           web2mAccessTokenEncrypted: dto.web2mAccessToken
             ? encryptSecret(dto.web2mAccessToken, encryptionKey)
             : null,
+          paypalClientIdEncrypted: dto.paypalClientId
+            ? encryptSecret(dto.paypalClientId, encryptionKey)
+            : null,
+          paypalClientSecretEncrypted: dto.paypalClientSecret
+            ? encryptSecret(dto.paypalClientSecret, encryptionKey)
+            : null,
+          paypalWebhookId: dto.paypalWebhookId ?? null,
+          paypalEnabled: dto.paypalEnabled ?? false,
+          paypalSandbox: dto.paypalSandbox ?? true,
+          paypalVndRateOverride: paypalVndRateOverride ?? null,
           binanceUid: dto.binanceUid ?? null,
+          binanceEnabled: dto.binanceEnabled ?? false,
           okxUid: dto.okxUid ?? null,
+          okxEnabled: dto.okxEnabled ?? false,
           usdtTrc20Address: dto.usdtTrc20Address ?? null,
+          usdtTrc20Enabled: dto.usdtTrc20Enabled ?? false,
           usdtBep20Address: dto.usdtBep20Address ?? null,
           usdtSolanaAddress: dto.usdtSolanaAddress ?? null,
+          usdtSolanaEnabled: dto.usdtSolanaEnabled ?? false,
+          usdtTonAddress: dto.usdtTonAddress ?? null,
+          usdtTonEnabled: dto.usdtTonEnabled ?? false,
           usdtVndRateOverride: usdtVndRateOverride ?? null,
           binancePersonalApiKeyEncrypted: dto.binancePersonalApiKey
             ? encryptSecret(dto.binancePersonalApiKey, encryptionKey)
@@ -876,7 +1017,16 @@ export class ShopsService {
           })
         : null;
       const connDiscount = Number(connCustomer?.discountPercent ?? 0);
-      products = upstreamProducts.map((p) => ({
+      products = upstreamProducts.map((p) => {
+        const upstreamMetadata =
+          p.metadataJson && typeof p.metadataJson === "object" && !Array.isArray(p.metadataJson)
+            ? (p.metadataJson as Record<string, unknown>)
+            : {};
+        const requiresCustomerEmail =
+          upstreamMetadata.requiresCustomerEmail === true ||
+          upstreamMetadata.requires_customer_email === true;
+
+        return {
         externalId: p.id,
         sourceName: p.sourceName,
         sourceRawName: p.sourceRawName || p.sourceName,
@@ -889,7 +1039,7 @@ export class ShopsService {
         available: p.available,
         hidden: false,
         isSlotProduct: false,
-        requiresCustomerEmail: false,
+        requiresCustomerEmail,
         requiresSlotMonths: false,
         slotDurations: [],
         quantityFixed: 1,
@@ -907,8 +1057,10 @@ export class ShopsService {
           warrantyPolicy: p.warrantyPolicy ?? null,
           internalSourceEnabled: p.internalSourceEnabled,
           internalSourcePrice: p.internalSourcePrice != null ? Number(p.internalSourcePrice) : null,
+          requiresCustomerEmail,
         },
-      }));
+        };
+      });
     } else {
       const buyerKey = decryptSecret(
         shop.providerConfig.buyerKeyEncrypted,
@@ -1050,6 +1202,7 @@ export class ShopsService {
           ...businessFields,
           metadataJson: {
             ...(product.metadata as Record<string, unknown>),
+            requiresCustomerEmail: product.requiresCustomerEmail,
             ...(previous?.metadataJson && typeof previous.metadataJson === "object" && !Array.isArray(previous.metadataJson)
               ? { usageInstructions: (previous.metadataJson as Record<string, unknown>).usageInstructions ?? null }
               : {}),
@@ -1068,7 +1221,10 @@ export class ShopsService {
           totalCount: nextAvailable ?? 0,
           internalSourceEnabled: shop.seller.tier === "ULTRA",
           ...businessFields,
-          metadataJson: product.metadata as Prisma.InputJsonValue,
+          metadataJson: {
+            ...(product.metadata as Record<string, unknown>),
+            requiresCustomerEmail: product.requiresCustomerEmail,
+          } as Prisma.InputJsonValue,
           syncedAt,
         },
       });
@@ -1137,6 +1293,7 @@ export class ShopsService {
             displayName: product.sourceRawName || product.sourceName,
             addedQuantity,
             available: Number(nextAvailable),
+            price: newSalePrice != null && Number.isFinite(newSalePrice) ? Number(newSalePrice) : null,
           });
         }
       }
@@ -1274,11 +1431,14 @@ export class ShopsService {
       }),
       this.prisma.sourceProduct.findMany({
         where: { shopId },
-        select: { id: true, iconCustomEmojiId: true },
+        select: { id: true, iconCustomEmojiId: true, providerName: true, metadataJson: true },
       }),
       this.prisma.shop.findUnique({
         where: { id: shopId },
-        select: { botConfig: { select: { customizationJson: true } } },
+        select: {
+          botConfig: { select: { customizationJson: true } },
+          providerConfig: { select: { ownProductsOnly: true } },
+        },
       }),
     ]);
 
@@ -1309,6 +1469,10 @@ export class ShopsService {
     // a manual upload) broadcasts exactly one message instead of a burst of identical ones.
     const freshNotifications: CatalogStockNotification[] = [];
     for (const item of notifications) {
+      const product = productById.get(item.sourceProductId);
+      if (shop?.providerConfig?.ownProductsOnly && (!product || !isOwnShopProduct(product))) {
+        continue;
+      }
       if (await this.claimRestockNotification(shopId, item.sourceProductId, item.available)) {
         freshNotifications.push(item);
       }
@@ -1329,6 +1493,7 @@ export class ShopsService {
           productName: item.displayName,
           addedQuantity: item.addedQuantity,
           available: item.available,
+          price: item.price ?? null,
           productIconCustomEmojiId: product?.iconCustomEmojiId ?? null,
           language: lang,
         });
@@ -1862,8 +2027,7 @@ export class ShopsService {
       product.metadataJson && typeof product.metadataJson === "object" && !Array.isArray(product.metadataJson)
         ? (product.metadataJson as Record<string, unknown>)
         : {};
-    const isManual =
-      String(product.providerName || "").toLowerCase() === "manual" || metadata.manual === true;
+    const isManual = isOwnShopProduct(product);
 
     return {
       id: product.id,
@@ -1891,6 +2055,8 @@ export class ShopsService {
         typeof metadata.deliveryText === "string" ? metadata.deliveryText : null,
       deliveryFormatHint:
         typeof metadata.deliveryFormatHint === "string" ? metadata.deliveryFormatHint : null,
+      requiresCustomerEmail:
+        metadata.requiresCustomerEmail === true || metadata.requires_customer_email === true,
       internalSourceEnabled: product.internalSourceEnabled,
       internalSourcePrice: product.internalSourcePrice
         ? decimalToNumber(product.internalSourcePrice)
@@ -1928,31 +2094,65 @@ export class ShopsService {
   }
 
   /** One mapped catalog item by id — avoids loading the WHOLE catalog just to show one product. */
-  async getCatalogItemForShop(shopId: string, sourceProductId: string) {
-    const product = await this.prisma.sourceProduct.findFirst({
-      where: { id: sourceProductId, shopId },
-      include: { overrides: true },
-    });
-    return product ? this.mapCatalogProduct(product) : null;
+  async getCatalogItemForShop(
+    shopId: string,
+    sourceProductId: string,
+    enforceBotVisibility = false,
+  ) {
+    const [product, providerConfig] = await Promise.all([
+      this.prisma.sourceProduct.findFirst({
+        where: { id: sourceProductId, shopId },
+        include: { overrides: true },
+      }),
+      enforceBotVisibility
+        ? this.prisma.providerConfig.findUnique({
+            where: { shopId },
+            select: { ownProductsOnly: true },
+          })
+        : Promise.resolve(null),
+    ]);
+    if (!product) return null;
+
+    const mapped = this.mapCatalogProduct(product);
+    if (enforceBotVisibility && providerConfig?.ownProductsOnly && !mapped.isManual) {
+      return null;
+    }
+    return mapped;
   }
 
-  async getCatalogViewForShop(shopId: string, sortByAvailable = true, applyInheritedTemplate = false) {
-    const products = await this.prisma.sourceProduct.findMany({
-      where: { shopId },
-      include: {
-        overrides: true,
-      },
-      orderBy: sortByAvailable
-        ? [{ available: { sort: "desc", nulls: "first" } }, { createdAt: "asc" }]
-        : [{ createdAt: "asc" }],
-    });
+  async getCatalogViewForShop(
+    shopId: string,
+    sortByAvailable = true,
+    applyInheritedTemplate = false,
+    enforceBotVisibility = false,
+  ) {
+    const [products, providerConfig] = await Promise.all([
+      this.prisma.sourceProduct.findMany({
+        where: { shopId },
+        include: {
+          overrides: true,
+        },
+        orderBy: sortByAvailable
+          ? [{ available: { sort: "desc", nulls: "first" } }, { createdAt: "asc" }]
+          : [{ createdAt: "asc" }],
+      }),
+      enforceBotVisibility
+        ? this.prisma.providerConfig.findUnique({
+            where: { shopId },
+            select: { ownProductsOnly: true },
+          })
+        : Promise.resolve(null),
+    ]);
 
     const mapped = products.map((product) => this.mapCatalogProduct(product));
     if (applyInheritedTemplate) {
       await this.applyInheritedLayout(shopId, mapped);
     }
+    const visibleProducts = enforceBotVisibility && providerConfig?.ownProductsOnly
+      ? mapped.filter((product) => product.isManual)
+      : mapped;
     // Sort by manual position first, then by sortByAvailable / createdAt
-    return mapped.sort((a, b) => {
+    return visibleProducts.sort((a, b) => {
       if (a.position !== b.position) return a.position - b.position;
       if (sortByAvailable) {
         const av = a.available === null ? Number.MAX_SAFE_INTEGER : a.available;
@@ -2131,6 +2331,29 @@ export class ShopsService {
     const buyerKey = decryptSecret(shop.providerConfig.buyerKeyEncrypted, this.config.encryptionKey);
     if (!buyerKey) return true;
     if (String(process.env.MOCK_PROVIDER_ENABLED || "false") === "true" && isMockBuyerKey(buyerKey)) return true;
+
+    const credentials = { baseUrl: shop.providerConfig.baseUrl, buyerKey };
+
+    // Roboticvn: single-variant check (1 HTTP request) instead of full catalog (N+1).
+    if (isRoboticvnProvider(credentials)) {
+      // Get the parent product id from the synced SourceProduct metadata.
+      const sourceProduct = await this.prisma.sourceProduct.findFirst({
+        where: { shopId, externalProductId },
+        select: { metadataJson: true, available: true },
+      });
+      const metadata = sourceProduct?.metadataJson as Record<string, unknown> | null;
+      const parentProductId = metadata?.productId ? String(metadata.productId) : null;
+
+      const result = await checkProviderVariantStock(credentials, externalProductId, parentProductId);
+      if (result !== null) return result;
+      // Fall back to DB available if we couldn't determine via API
+      if (sourceProduct && sourceProduct.available !== null) {
+        return sourceProduct.available > 0;
+      }
+      return true; // fail-open
+    }
+
+    // Canboso / other providers: full catalog fetch (single request for canboso).
     try {
       const products = await fetchProviderProducts({
         baseUrl: shop.providerConfig.baseUrl,

@@ -6,8 +6,8 @@ export class CreateDepositRequestDto {
   amount!: number;
 
   @IsOptional()
-  @IsEnum(["PAYOS", "USDT_SOL", "BINANCE"])
-  paymentMethod?: "PAYOS" | "USDT_SOL" | "BINANCE";
+  @IsEnum(["PAYOS", "USDT_SOL", "USDT_TON", "BINANCE"])
+  paymentMethod?: "PAYOS" | "USDT_SOL" | "USDT_TON" | "BINANCE";
 
   @IsOptional()
   @IsString()

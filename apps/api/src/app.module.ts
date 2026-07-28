@@ -1,4 +1,9 @@
-import { MiddlewareConsumer, Module, NestModule, RequestMethod } from "@nestjs/common";
+import {
+  MiddlewareConsumer,
+  Module,
+  NestModule,
+  RequestMethod,
+} from "@nestjs/common";
 import { JwtModule } from "@nestjs/jwt";
 import { APP_GUARD, Reflector } from "@nestjs/core";
 import { ThrottlerGuard, ThrottlerModule } from "@nestjs/throttler";
@@ -11,6 +16,7 @@ import { JwtAuthGuard } from "./common/guards/jwt-auth.guard";
 import { RolesGuard } from "./common/guards/roles.guard";
 import { SellerCapabilitiesGuard } from "./common/guards/seller-capabilities.guard";
 import { SellerTierGuard } from "./common/guards/seller-tier.guard";
+import { RedisThrottlerStorage } from "./common/throttling/redis-throttler.storage";
 import { InternalSourceApiKeyService } from "./source/internal-source-api-key.service";
 import { SellerSourceConnectionController } from "./seller/seller-source-connection.controller";
 import { SellerSourceConnectionService } from "./seller/seller-source-connection.service";
@@ -28,6 +34,7 @@ import { InternalController } from "./internal/internal.controller";
 import { InternalSourceController } from "./internal-source/internal-source.controller";
 import { InternalSourceService } from "./internal-source/internal-source.service";
 import { PaymentService } from "./lib/payment.service";
+import { PaypalService } from "./lib/paypal.service";
 import { BinancePayService } from "./lib/binance-pay.service";
 import { OkxPersonalApiService } from "./lib/okx-personal-api.service";
 import { OnchainPaymentService } from "./lib/onchain-payment.service";
@@ -84,15 +91,43 @@ import { AdminTemplateController } from "./admin-template/admin-template.control
 import { AdminTemplateService } from "./admin-template/admin-template.service";
 import { DiscountCodesController } from "./discount-codes/discount-codes.controller";
 import { DiscountCodesService } from "./discount-codes/discount-codes.service";
-import { ProductFamilyController, AdminProductFamilyController } from "./product-family/product-family.controller";
+import {
+  ProductFamilyController,
+  AdminProductFamilyController,
+} from "./product-family/product-family.controller";
 import { ProductFamilyService } from "./product-family/product-family.service";
 import { AdminNotifyService } from "./lib/admin-notify.service";
 import { MailService } from "./lib/mail.service";
 
+function positiveEnvInteger(name: string, fallback: number): number {
+  const value = Number(process.env[name]);
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
+}
+
+const globalRateLimitTtlMs = positiveEnvInteger(
+  "API_RATE_LIMIT_WINDOW_MS",
+  60_000,
+);
+const globalRateLimitStorage = new RedisThrottlerStorage(
+  process.env.REDIS_URL || "redis://localhost:6379",
+);
+
 @Module({
   imports: [
     JwtModule.register({}),
-    ThrottlerModule.forRoot([{ ttl: 60000, limit: 100 }]),
+    ThrottlerModule.forRoot({
+      storage: globalRateLimitStorage,
+      throttlers: [
+        {
+          ttl: globalRateLimitTtlMs,
+          limit: positiveEnvInteger("API_RATE_LIMIT_MAX", 100),
+          blockDuration: positiveEnvInteger(
+            "API_RATE_LIMIT_BLOCK_MS",
+            globalRateLimitTtlMs,
+          ),
+        },
+      ],
+    }),
   ],
   controllers: [
     AuthController,
@@ -116,7 +151,7 @@ import { MailService } from "./lib/mail.service";
     TiersController,
     ProAnalyticsController,
     AffiliateController,
-    DevController,
+    ...(process.env.NODE_ENV === "production" ? [] : [DevController]),
     AdminController,
     CustomersController,
     CatalogGroupsController,
@@ -128,9 +163,9 @@ import { MailService } from "./lib/mail.service";
     AdminProductFamilyController,
   ],
   providers: [
-    // Global L7 rate limit (default 100 req/min/IP from ThrottlerModule.forRoot). Per-route
-    // @Throttle still overrides (e.g. login 5/min); @SkipThrottle exempts internal + webhook
-    // routes so the worker/payment-IPN traffic never throttles itself.
+    // Distributed L7 rate limit (default 100 req/min/IP, backed by Redis). Per-route @Throttle
+    // still overrides it. nginx applies separate high-capacity buckets to signed internal and
+    // webhook routes so trusted worker/payment traffic cannot self-throttle here.
     { provide: APP_GUARD, useClass: ThrottlerGuard },
     AppConfigService,
     PrismaService,
@@ -140,6 +175,7 @@ import { MailService } from "./lib/mail.service";
     OnchainPaymentService,
     SolanaPaymentService,
     PaymentService,
+    PaypalService,
     TelegramClientService,
     BotSessionStore,
     BotRenderHelpers,
@@ -192,8 +228,9 @@ import { MailService } from "./lib/mail.service";
 })
 export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer) {
-    consumer
-      .apply(InternalSourceAuthMiddleware)
-      .forRoutes({ path: "internal-source/v1*path", method: RequestMethod.ALL });
+    consumer.apply(InternalSourceAuthMiddleware).forRoutes({
+      path: "internal-source/v1*path",
+      method: RequestMethod.ALL,
+    });
   }
 }

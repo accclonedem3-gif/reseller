@@ -10,9 +10,19 @@ import {
   fetchRoboticvnBalance,
   purchaseFromRoboticvn,
   fetchRoboticvnOrderStatus,
+  checkRoboticvnVariantStock,
+  verifyRoboticvnCredentials,
 } from "./roboticvn";
+import {
+  isShopMmoProvider,
+  fetchShopMmoProducts,
+  fetchShopMmoBalance,
+  purchaseFromShopMmo,
+  fetchShopMmoOrderStatus,
+} from "./shopmmo";
 
 export { isRoboticvnBaseUrl, isRoboticvnKey, isRoboticvnProvider } from "./roboticvn";
+export { isShopMmoBaseUrl, isShopMmoKey, isShopMmoProvider } from "./shopmmo";
 
 export interface ProviderCredentials {
   baseUrl?: string;
@@ -112,6 +122,13 @@ function getTimeout(credentials: ProviderCredentials) {
 }
 
 function normalizeAvailable(value: unknown) {
+  // Canboso uses null for products whose inventory is not quantity-limited
+  // (notably manually fulfilled slot products). Preserve that sentinel: in the
+  // catalog domain null means unlimited/available, while 0 means out of stock.
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
+
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric : null;
 }
@@ -213,6 +230,17 @@ function isOutOfStock(payload: unknown, statusCode?: number) {
 }
 
 export async function verifyProviderConnection(credentials: ProviderCredentials) {
+  // Roboticvn: skip the N+1 detail fan-out of fetchRoboticvnProducts (which trips
+  // the provider's per-IP rate limit on rapid re-verify and comes back as 401).
+  // A single /products list request is enough to confirm the key + baseUrl work.
+  if (isRoboticvnProvider(credentials)) {
+    const result = await verifyRoboticvnCredentials(credentials);
+    return {
+      ok: result.ok,
+      providerName: credentials.providerName || "roboticvn",
+      sampleSize: result.sampleSize,
+    };
+  }
   const products = await fetchProviderProducts(credentials);
   return {
     ok: products.length > 0,
@@ -226,6 +254,9 @@ export async function fetchProviderProducts(
 ): Promise<ProviderProduct[]> {
   if (isRoboticvnProvider(credentials)) {
     return fetchRoboticvnProducts(credentials);
+  }
+  if (isShopMmoProvider(credentials)) {
+    return fetchShopMmoProducts(credentials);
   }
   if (!credentials.buyerKey) {
     throw new Error("Provider buyer key is missing.");
@@ -255,9 +286,11 @@ export async function fetchProviderProducts(
     price: Number(product.walletPricing ?? product.pricing ?? 0),
     available: normalizeAvailable((product.stats as Record<string, unknown> | undefined)?.available),
     hidden: Boolean(product.hidden) || product.status === "inactive" || product.enabled === false || product.active === false,
-    isSlotProduct: Boolean(product.isSlotProduct),
-    requiresCustomerEmail: Boolean(product.requiresCustomerEmail),
-    requiresSlotMonths: Boolean(product.requiresSlotMonths),
+    isSlotProduct: Boolean(product.isSlotProduct ?? product.is_slot_product),
+    requiresCustomerEmail: Boolean(
+      product.requiresCustomerEmail ?? product.requires_customer_email,
+    ),
+    requiresSlotMonths: Boolean(product.requiresSlotMonths ?? product.requires_slot_months),
     slotDurations: Array.isArray(product.slotDurations)
       ? product.slotDurations.map((item) => Number(item)).filter((item) => Number.isFinite(item))
       : [],
@@ -267,11 +300,34 @@ export async function fetchProviderProducts(
   }));
 }
 
+/**
+ * Lightweight stock check for a SINGLE product variant.
+ * For roboticvn: 1 HTTP request (GET /products/{parentId}) instead of N+1.
+ * For other providers: returns null (caller should fall back to DB or full catalog).
+ */
+export async function checkProviderVariantStock(
+  credentials: ProviderCredentials,
+  variantId: string,
+  parentProductId?: string | null,
+): Promise<boolean | null> {
+  if (isRoboticvnProvider(credentials)) {
+    return checkRoboticvnVariantStock(credentials, variantId, parentProductId);
+  }
+  if (isShopMmoProvider(credentials)) {
+    return null; // ShopMMO does not have a single-variant endpoint
+  }
+  // Non-roboticvn: no single-variant endpoint available → caller decides.
+  return null;
+}
+
 export async function fetchProviderBalance(
   credentials: ProviderCredentials,
 ): Promise<ProviderBalanceResult> {
   if (isRoboticvnProvider(credentials)) {
     return fetchRoboticvnBalance(credentials);
+  }
+  if (isShopMmoProvider(credentials)) {
+    return fetchShopMmoBalance(credentials);
   }
   if (!credentials.buyerKey) {
     throw new Error("Provider buyer key is missing.");
@@ -321,6 +377,9 @@ export async function purchaseFromProvider(
 ): Promise<ProviderPurchaseResult> {
   if (isRoboticvnProvider(credentials)) {
     return purchaseFromRoboticvn(credentials, input);
+  }
+  if (isShopMmoProvider(credentials)) {
+    return purchaseFromShopMmo(credentials, input);
   }
   if (!credentials.buyerKey) {
     throw new Error("Provider buyer key is missing.");
@@ -406,6 +465,9 @@ export async function fetchProviderOrderStatus(
 ): Promise<ProviderOrderStatusResult> {
   if (isRoboticvnProvider(credentials)) {
     return fetchRoboticvnOrderStatus(credentials, input);
+  }
+  if (isShopMmoProvider(credentials)) {
+    return fetchShopMmoOrderStatus(credentials, input);
   }
   if (!credentials.buyerKey) {
     throw new Error("Provider buyer key is missing.");

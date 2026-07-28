@@ -1,6 +1,6 @@
 import { BadRequestException, Inject, Injectable, NotFoundException } from "@nestjs/common";
 import { createHmac, timingSafeEqual } from "node:crypto";
-import { PaymentProvider } from "@prisma/client";
+import { PaymentProvider, Prisma } from "@prisma/client";
 import {
   buildVietQrImageUrl,
   createPay2sPaymentLink,
@@ -9,6 +9,7 @@ import {
   decryptSecret,
   fetchWeb2mTransactions,
   getPayOSPaymentLinkStatus,
+  normalizeTonAddress,
   type Pay2sBankInfo,
   type PaymentLinkResult,
   type PayOSBankInfo,
@@ -18,6 +19,12 @@ import {
 import { AppConfigService } from "../config/app-config.service";
 import { PrismaService } from "../db/prisma.service";
 import { BinancePayService } from "./binance-pay.service";
+import {
+  extractPaypalWebhookExternalOrderCode,
+  extractPaypalWebhookOrderId,
+  summarizePaypalOrder,
+} from "./paypal-payment";
+import { PaypalService } from "./paypal.service";
 
 @Injectable()
 export class PaymentService {
@@ -28,6 +35,8 @@ export class PaymentService {
     private readonly config: AppConfigService,
     @Inject(BinancePayService)
     private readonly binancePayService: BinancePayService,
+    @Inject(PaypalService)
+    private readonly paypalService: PaypalService,
   ) {}
 
   private safeDecryptSecret(payload: string | null | undefined) {
@@ -72,7 +81,116 @@ export class PaymentService {
     return timingSafeEqual(expected, provided);
   }
 
-  private resolveUsdtVndRate(paymentConfig: {
+  buildPaypalReturnState(externalOrderCode: string) {
+    return createHmac("sha256", this.config.internalApiToken)
+      .update(`paypal-return:${String(externalOrderCode || "").trim()}`)
+      .digest("hex");
+  }
+
+  isValidPaypalReturnState(externalOrderCode: string, providedState: string | null | undefined) {
+    const expected = Buffer.from(this.buildPaypalReturnState(externalOrderCode), "utf8");
+    const provided = Buffer.from(String(providedState || "").trim(), "utf8");
+    return expected.length === provided.length && timingSafeEqual(expected, provided);
+  }
+
+  async claimOnchainPaymentReceipt(input: {
+    provider: PaymentProvider;
+    txHash: string;
+    externalOrderCode: string;
+    amountUsdt: number;
+    destination: string;
+    transactionAt: Date;
+    rawPayload?: unknown;
+  }) {
+    const allowedProviders = new Set<PaymentProvider>([
+      PaymentProvider.USDT_TRC20,
+      PaymentProvider.USDT_SOL,
+      PaymentProvider.USDT_TON,
+    ]);
+    if (!allowedProviders.has(input.provider)) {
+      throw new BadRequestException("Unsupported on-chain payment provider.");
+    }
+    if (!input.txHash || !input.externalOrderCode || !input.destination) {
+      throw new BadRequestException("On-chain receipt data is incomplete.");
+    }
+    if (!Number.isFinite(input.amountUsdt) || input.amountUsdt <= 0) {
+      throw new BadRequestException("On-chain receipt amount is invalid.");
+    }
+
+    const target = await this.resolvePaymentStatusTarget(input.externalOrderCode);
+    if (!target) throw new NotFoundException("Payment target not found.");
+    if (target.provider !== input.provider) {
+      throw new BadRequestException("On-chain receipt provider does not match the payment target.");
+    }
+    if (input.provider === PaymentProvider.USDT_TON) {
+      const payload = target.rawPayloadJson && typeof target.rawPayloadJson === "object"
+        ? target.rawPayloadJson as Record<string, unknown>
+        : null;
+      const manualCrypto = payload?.manualCrypto && typeof payload.manualCrypto === "object"
+        ? payload.manualCrypto as Record<string, unknown>
+        : null;
+      const expectedAmountUsdt = Number(manualCrypto?.usdtAmount || 0);
+      const expectedDestination = normalizeTonAddress(String(manualCrypto?.address || ""));
+      const actualDestination = normalizeTonAddress(input.destination);
+      if (!Number.isFinite(expectedAmountUsdt) || expectedAmountUsdt <= 0) {
+        throw new BadRequestException("TON invoice amount is missing.");
+      }
+      if (Math.abs(input.amountUsdt - expectedAmountUsdt) > 0.000001) {
+        throw new BadRequestException("TON transfer amount does not match the invoice.");
+      }
+      if (!expectedDestination || !actualDestination || expectedDestination !== actualDestination) {
+        throw new BadRequestException("TON transfer destination does not match the invoice.");
+      }
+    }
+
+    const [byTransaction, byExternalOrderCode] = await Promise.all([
+      this.prisma.onchainPaymentReceipt.findUnique({
+        where: { provider_txHash: { provider: input.provider, txHash: input.txHash } },
+      }),
+      this.prisma.onchainPaymentReceipt.findUnique({
+        where: { externalOrderCode: input.externalOrderCode },
+      }),
+    ]);
+    const existing = byTransaction || byExternalOrderCode;
+    if (existing) {
+      if (existing.externalOrderCode !== input.externalOrderCode || existing.txHash !== input.txHash) {
+        throw new BadRequestException("This blockchain transaction or invoice has already been claimed.");
+      }
+      return existing;
+    }
+
+    try {
+      return await this.prisma.onchainPaymentReceipt.create({
+        data: {
+          provider: input.provider,
+          txHash: input.txHash,
+          externalOrderCode: input.externalOrderCode,
+          amountUsdt: input.amountUsdt,
+          destination: input.destination,
+          transactionAt: input.transactionAt,
+          rawPayloadJson: input.rawPayload as Prisma.InputJsonValue,
+        },
+      });
+    } catch (error) {
+      const raced = await this.prisma.onchainPaymentReceipt.findUnique({
+        where: { provider_txHash: { provider: input.provider, txHash: input.txHash } },
+      });
+      if (raced?.externalOrderCode === input.externalOrderCode) return raced;
+      throw error;
+    }
+  }
+
+  async markOnchainPaymentReceiptProcessed(receiptId: string, rawPayload?: unknown) {
+    return this.prisma.onchainPaymentReceipt.update({
+      where: { id: receiptId },
+      data: {
+        processedAt: new Date(),
+        rawPayloadJson: rawPayload as Prisma.InputJsonValue,
+      },
+    });
+  }
+
+  resolveUsdtVndRate(paymentConfig: {
     usdtVndRateOverride?: unknown;
   } | null) {
     const overrideRate = Number(paymentConfig?.usdtVndRateOverride ?? NaN);
@@ -90,10 +208,23 @@ export class PaymentService {
     return fallbackRate;
   }
 
+  private resolvePaypalVndRate(paymentConfig: {
+    paypalVndRateOverride?: unknown;
+  } | null) {
+    const overrideRate = Number(paymentConfig?.paypalVndRateOverride ?? NaN);
+    if (Number.isFinite(overrideRate) && overrideRate > 0) return overrideRate;
+    const fallbackRate = Number(this.config.paypalVndRate || 26000);
+    if (!Number.isFinite(fallbackRate) || fallbackRate <= 0) {
+      throw new BadRequestException("PAYPAL_VND_RATE must be greater than 0.");
+    }
+    return fallbackRate;
+  }
+
   async createPaymentLink(input: {
     shopId: string;
     externalOrderCode: string;
     amount: number;
+    amountUsd?: number | null;
     description: string;
     expiredAt?: Date;
     providerOverride?: PaymentProvider;
@@ -102,12 +233,15 @@ export class PaymentService {
     checkoutUrl: string;
     qrCode: string | null;
     providerPayload: unknown;
+    providerAmount?: number;
+    providerCurrency?: string;
+    providerReference?: string;
     bankInfo?: PayOSBankInfo;
     manualCrypto?: {
-      provider: "BINANCE" | "OKX" | "USDT_TRC20" | "USDT_SOL";
+      provider: "BINANCE" | "OKX" | "USDT_TRC20" | "USDT_SOL" | "USDT_TON";
       uid?: string | null;
       address?: string | null;
-      network?: "TRC20" | "SOLANA" | null;
+      network?: "TRC20" | "SOLANA" | "TON" | null;
       usdtAmount: number;
       usdtVndRate: number;
       note: string;
@@ -135,6 +269,48 @@ export class PaymentService {
       ? PaymentProvider.MOCK
       : (input.providerOverride || paymentConfig?.provider || PaymentProvider.PAYOS);
 
+    if (provider === PaymentProvider.PAYPAL) {
+      const paypalVndRate = this.resolvePaypalVndRate(paymentConfig);
+      const explicitUsd = Number(input.amountUsd ?? NaN);
+      const rawAmountUsd = Number.isFinite(explicitUsd) && explicitUsd > 0
+        ? explicitUsd
+        : input.amount / paypalVndRate;
+      const amountUsd = Math.ceil(rawAmountUsd * 100) / 100;
+      if (!Number.isFinite(amountUsd) || amountUsd < 0.01) {
+        throw new BadRequestException("PayPal amount must be at least 0.01 USD.");
+      }
+      const state = this.buildPaypalReturnState(input.externalOrderCode);
+      const reconcileToken = this.buildPublicReconcileToken(input.externalOrderCode);
+      const statusQuery = `orderCode=${encodeURIComponent(input.externalOrderCode)}&rt=${encodeURIComponent(reconcileToken)}`;
+      const paypal = await this.paypalService.createOrder({
+        shopId: input.shopId,
+        externalOrderCode: input.externalOrderCode,
+        description: input.description,
+        amountUsd,
+        returnUrl: `${this.config.appPublicUrl}/api/v1/webhooks/paypal/return/${encodeURIComponent(input.externalOrderCode)}?state=${encodeURIComponent(state)}`,
+        cancelUrl: `${this.config.webPublicUrl}/payments/cancel?${statusQuery}`,
+      });
+      return {
+        provider,
+        checkoutUrl: paypal.checkoutUrl,
+        qrCode: null,
+        providerAmount: amountUsd,
+        providerCurrency: "USD",
+        providerReference: paypal.orderId,
+        providerPayload: {
+          paypal: {
+            orderId: paypal.orderId,
+            amountUsd,
+            currency: "USD",
+            vndAmount: input.amount,
+            vndRate: paypalVndRate,
+            sandbox: paypal.sandbox,
+            createResponse: paypal.rawPayload,
+          },
+        },
+      };
+    }
+
     // ── BINANCE_PAY (auto merchant flow) ──────────────────────────────────────
     if (provider === PaymentProvider.BINANCE_PAY) {
       return this.createBinancePayPaymentLink(paymentConfig, input, allowEnvFallback);
@@ -144,7 +320,8 @@ export class PaymentService {
       provider === PaymentProvider.BINANCE ||
       provider === PaymentProvider.OKX ||
       provider === PaymentProvider.USDT_TRC20 ||
-      provider === PaymentProvider.USDT_SOL
+      provider === PaymentProvider.USDT_SOL ||
+      provider === PaymentProvider.USDT_TON
     ) {
       return await this.createManualCryptoPaymentLink(provider, paymentConfig as any, input);
     }
@@ -256,6 +433,7 @@ export class PaymentService {
       okxUid: string | null;
       usdtTrc20Address: string | null;
       usdtSolanaAddress?: string | null;
+      usdtTonAddress?: string | null;
       usdtVndRateOverride?: unknown;
       binancePersonalApiKeyEncrypted?: string | null;
       binancePersonalSecretKeyEncrypted?: string | null;
@@ -271,14 +449,16 @@ export class PaymentService {
       amount: number;
     },
   ) {
-    const cryptoProvider: "BINANCE" | "OKX" | "USDT_TRC20" | "USDT_SOL" =
+    const cryptoProvider: "BINANCE" | "OKX" | "USDT_TRC20" | "USDT_SOL" | "USDT_TON" =
       provider === PaymentProvider.BINANCE
         ? "BINANCE"
         : provider === PaymentProvider.OKX
           ? "OKX"
           : provider === PaymentProvider.USDT_SOL
             ? "USDT_SOL"
-            : "USDT_TRC20";
+            : provider === PaymentProvider.USDT_TON
+              ? "USDT_TON"
+              : "USDT_TRC20";
     const uid = String(
       cryptoProvider === "BINANCE"
         ? paymentConfig?.binanceUid || ""
@@ -291,7 +471,9 @@ export class PaymentService {
         ? paymentConfig?.usdtTrc20Address || ""
         : cryptoProvider === "USDT_SOL"
           ? paymentConfig?.usdtSolanaAddress || ""
-          : "",
+          : cryptoProvider === "USDT_TON"
+            ? paymentConfig?.usdtTonAddress || ""
+            : "",
     ).trim();
 
     if (cryptoProvider === "USDT_TRC20" && !address) {
@@ -302,7 +484,11 @@ export class PaymentService {
       throw new BadRequestException("USDT Solana address is not configured.");
     }
 
-    if (cryptoProvider !== "USDT_TRC20" && cryptoProvider !== "USDT_SOL" && !uid) {
+    if (cryptoProvider === "USDT_TON" && !address) {
+      throw new BadRequestException("USDT TON address is not configured.");
+    }
+
+    if (!["USDT_TRC20", "USDT_SOL", "USDT_TON"].includes(cryptoProvider) && !uid) {
       throw new BadRequestException(
         cryptoProvider === "BINANCE"
           ? "Binance UID is not configured."
@@ -459,6 +645,52 @@ export class PaymentService {
       usdtAmount = targetUsdt;
     }
 
+    // TON invoices are matched by exact amount. Keep the amount unique platform-wide because
+    // multiple shops may intentionally receive into the same TON wallet.
+    if (cryptoProvider === "USDT_TON") {
+      const cutoff = new Date(Date.now() - 60 * 60 * 1000);
+      const [recentPendingOrders, recentPendingTopups, recentPendingDeposits] = await Promise.all([
+        this.prisma.paymentTransaction.findMany({
+          where: {
+            provider: PaymentProvider.USDT_TON,
+            status: "PENDING",
+            createdAt: { gte: cutoff },
+          },
+          select: { rawPayloadJson: true },
+        }),
+        this.prisma.customerWalletTopup.findMany({
+          where: {
+            provider: PaymentProvider.USDT_TON,
+            status: "PENDING",
+            createdAt: { gte: cutoff },
+          },
+          select: { rawPayloadJson: true },
+        }),
+        this.prisma.depositRequest.findMany({
+          where: {
+            provider: PaymentProvider.USDT_TON,
+            status: "PENDING",
+            createdAt: { gte: cutoff },
+          },
+          select: { rawPayloadJson: true },
+        }),
+      ]);
+      const usedAmounts = new Set<number>();
+      for (const record of [...recentPendingOrders, ...recentPendingTopups, ...recentPendingDeposits]) {
+        const payload = record.rawPayloadJson as any;
+        const amount = Number(payload?.manualCrypto?.usdtAmount || 0);
+        if (amount > 0) usedAmounts.add(Number(amount.toFixed(2)));
+      }
+
+      let offset = 0;
+      let targetUsdt = usdtAmount;
+      while (usedAmounts.has(Number(targetUsdt.toFixed(2))) && offset < 99) {
+        offset += 0.01;
+        targetUsdt = this.ceilToDecimals(usdtAmount + offset, 2);
+      }
+      usdtAmount = targetUsdt;
+    }
+
     const note = input.externalOrderCode;
     const manualCrypto = {
       provider: cryptoProvider,
@@ -468,14 +700,16 @@ export class PaymentService {
         ? ("TRC20" as const)
         : cryptoProvider === "USDT_SOL"
           ? ("SOLANA" as const)
-          : null,
+          : cryptoProvider === "USDT_TON"
+            ? ("TON" as const)
+            : null,
       usdtAmount,
       usdtVndRate: rate,
       note,
       hasPersonalApi,
     };
     const checkoutUrl = `manual-crypto://${cryptoProvider.toLowerCase()}/${input.externalOrderCode}`;
-    const qrCode = cryptoProvider === "USDT_TRC20" || cryptoProvider === "USDT_SOL"
+    const qrCode = ["USDT_TRC20", "USDT_SOL", "USDT_TON"].includes(cryptoProvider)
       ? `qrdata:${address}`
       : null;
 
@@ -520,7 +754,11 @@ export class PaymentService {
       throw new BadRequestException("Payment record not found.");
     }
 
-    if (target.provider !== PaymentProvider.PAYOS && target.provider !== PaymentProvider.BINANCE_PAY) {
+    if (
+      target.provider !== PaymentProvider.PAYOS
+      && target.provider !== PaymentProvider.BINANCE_PAY
+      && target.provider !== PaymentProvider.PAYPAL
+    ) {
       return {
         kind: target.kind,
         provider: target.provider,
@@ -536,6 +774,10 @@ export class PaymentService {
 
     if (target.provider === PaymentProvider.BINANCE_PAY) {
       return this.getBinancePayExternalStatus(target, externalOrderCode);
+    }
+
+    if (target.provider === PaymentProvider.PAYPAL) {
+      return this.reconcilePaypalOrder(externalOrderCode);
     }
 
     const paymentConfig = await this.prisma.paymentConfig.findUnique({
@@ -557,6 +799,102 @@ export class PaymentService {
       failureReason: target.failureReason,
       rawPayload: remoteStatus.providerResponse,
     };
+  }
+
+  async getTelegramBotUsernameForExternalOrderCode(externalOrderCode: string) {
+    const target = await this.resolvePaymentStatusTarget(externalOrderCode);
+    if (!target?.shopId) return null;
+    const botConfig = await this.prisma.botConfig.findUnique({
+      where: { shopId: target.shopId },
+      select: { telegramBotUsername: true },
+    });
+    const username = String(botConfig?.telegramBotUsername || "").replace(/^@/, "").trim();
+    return /^[A-Za-z0-9_]{5,32}$/.test(username) ? username : null;
+  }
+
+  async resolvePaypalWebhookExternalOrderCode(event: unknown) {
+    const fromPayload = extractPaypalWebhookExternalOrderCode(event);
+    if (fromPayload) return fromPayload;
+    const paypalOrderId = extractPaypalWebhookOrderId(event);
+    if (!paypalOrderId) return "";
+    const transaction = await this.prisma.paymentTransaction.findFirst({
+      where: {
+        provider: PaymentProvider.PAYPAL,
+        providerReference: paypalOrderId,
+      },
+      select: { externalOrderCode: true },
+    });
+    return transaction?.externalOrderCode || "";
+  }
+
+  async reconcilePaypalOrder(
+    externalOrderCode: string,
+    paypalOrderId?: string | null,
+    expectedShopId?: string | null,
+  ) {
+    const target = await this.resolvePaymentStatusTarget(externalOrderCode);
+    if (!target || target.provider !== PaymentProvider.PAYPAL) {
+      throw new BadRequestException("PayPal payment record not found.");
+    }
+    if (expectedShopId && target.shopId !== expectedShopId) {
+      throw new BadRequestException("PayPal webhook shop does not match the payment record.");
+    }
+    const expectedOrderId = String(target.providerReference || "").trim();
+    const requestedOrderId = String(paypalOrderId || expectedOrderId).trim();
+    if (!expectedOrderId || !requestedOrderId || requestedOrderId !== expectedOrderId) {
+      throw new BadRequestException("PayPal order reference does not match the payment record.");
+    }
+
+    let remoteOrder = await this.paypalService.getOrder(target.shopId, expectedOrderId);
+    let summary = summarizePaypalOrder(remoteOrder);
+    if (summary.status === "APPROVED" && !summary.completed) {
+      remoteOrder = await this.paypalService.captureOrder(
+        target.shopId,
+        expectedOrderId,
+        externalOrderCode,
+      );
+      summary = summarizePaypalOrder(remoteOrder);
+    }
+
+    const expectedAmount = Number(target.providerAmount || 0);
+    const expectedCurrency = String(target.providerCurrency || "USD").toUpperCase();
+    if (!summary.orderId || summary.orderId !== expectedOrderId) {
+      throw new BadRequestException("PayPal returned a different order reference.");
+    }
+    if (!summary.externalOrderCode || summary.externalOrderCode !== externalOrderCode) {
+      throw new BadRequestException("PayPal order does not belong to this local payment.");
+    }
+    if (!Number.isFinite(expectedAmount) || expectedAmount <= 0) {
+      throw new BadRequestException("Stored PayPal amount is invalid.");
+    }
+    if (summary.currency !== expectedCurrency || Math.abs(summary.amount - expectedAmount) > 0.001) {
+      throw new BadRequestException("PayPal order currency or amount does not match.");
+    }
+    if (summary.completed && summary.amountPaid + 0.001 < expectedAmount) {
+      throw new BadRequestException("PayPal captured less than the required amount.");
+    }
+
+    return {
+      kind: target.kind,
+      provider: target.provider,
+      providerStatus: summary.status,
+      amount: summary.amount,
+      amountPaid: summary.amountPaid,
+      localPaymentStatus: target.localPaymentStatus,
+      localOrderStatus: target.localOrderStatus,
+      failureReason: target.failureReason,
+      rawPayload: remoteOrder,
+      paypalOrderId: summary.orderId,
+      paypalCaptureId: summary.captureId,
+    };
+  }
+
+  async verifyPaypalWebhook(
+    shopId: string,
+    headers: Record<string, string | string[] | undefined>,
+    event: unknown,
+  ) {
+    return this.paypalService.verifyWebhook(shopId, headers, event);
   }
 
   /**
@@ -1245,6 +1583,10 @@ export class PaymentService {
     localPaymentStatus: string | null;
     localOrderStatus?: string | null;
     failureReason?: string | null;
+    rawPayloadJson?: Prisma.JsonValue | null;
+    providerAmount?: number | null;
+    providerCurrency?: string | null;
+    providerReference?: string | null;
   } | null> {
     const paymentTransaction = await this.prisma.paymentTransaction.findUnique({
       where: {
@@ -1269,6 +1611,12 @@ export class PaymentService {
         localPaymentStatus: paymentTransaction.status,
         localOrderStatus: paymentTransaction.order.status,
         failureReason: paymentTransaction.order.failureReason,
+        rawPayloadJson: paymentTransaction.rawPayloadJson,
+        providerAmount: paymentTransaction.providerAmount == null
+          ? null
+          : Number(paymentTransaction.providerAmount),
+        providerCurrency: paymentTransaction.providerCurrency,
+        providerReference: paymentTransaction.providerReference,
       };
     }
 
@@ -1280,6 +1628,7 @@ export class PaymentService {
         provider: true,
         shopId: true,
         status: true,
+        rawPayloadJson: true,
       },
     });
 
@@ -1289,6 +1638,7 @@ export class PaymentService {
         provider: customerTopup.provider,
         shopId: customerTopup.shopId,
         localPaymentStatus: customerTopup.status,
+        rawPayloadJson: customerTopup.rawPayloadJson,
       };
     }
 
@@ -1300,13 +1650,14 @@ export class PaymentService {
         provider: true,
         sellerId: true,
         status: true,
+        rawPayloadJson: true,
       },
     });
 
     if (!deposit) {
       const connectionTopup = await this.prisma.connectionTopupRequest.findUnique({
         where: { externalOrderCode },
-        select: { provider: true, upstreamShopId: true, status: true },
+        select: { provider: true, upstreamShopId: true, status: true, rawPayloadJson: true },
       });
 
       if (!connectionTopup) {
@@ -1318,6 +1669,7 @@ export class PaymentService {
         provider: connectionTopup.provider,
         shopId: connectionTopup.upstreamShopId,
         localPaymentStatus: connectionTopup.status,
+        rawPayloadJson: connectionTopup.rawPayloadJson,
       };
     }
 
@@ -1342,6 +1694,7 @@ export class PaymentService {
       provider: deposit.provider,
       shopId: shop.id,
       localPaymentStatus: deposit.status,
+      rawPayloadJson: deposit.rawPayloadJson,
     };
   }
 }

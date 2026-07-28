@@ -139,11 +139,13 @@ enum PaymentProvider {
   PAYOS
   PAY2S
   WEB2M
+  PAYPAL
   MOCK
   BINANCE
   OKX
   USDT_TRC20
   USDT_SOL
+  USDT_TON
   BINANCE_PAY
 }
 
@@ -530,6 +532,7 @@ model ProviderConfig {
   internalSourceConnectionId    String?                     @unique @map("internal_source_connection_id")
   sourceWebhookKey              String?                     @unique @map("source_webhook_key")
   sourceNotificationSyncEnabled Boolean                     @default(true) @map("source_notification_sync_enabled")
+  ownProductsOnly               Boolean                     @default(false) @map("own_products_only")
   priceMarkupPercent            Decimal?                    @map("price_markup_percent") @db.Decimal(5, 2)
   connectionStatus              ConnectionStatus            @default(PENDING) @map("connection_status")
   lastVerifiedAt                DateTime?                   @map("last_verified_at")
@@ -559,11 +562,23 @@ model PaymentConfig {
   web2mPasswordEncrypted            String?         @map("web2m_password_encrypted")
   web2mTokenEncrypted               String?         @map("web2m_token_encrypted")
   web2mAccessTokenEncrypted         String?         @map("web2m_access_token_encrypted")
+  paypalClientIdEncrypted           String?         @map("paypal_client_id_encrypted")
+  paypalClientSecretEncrypted       String?         @map("paypal_client_secret_encrypted")
+  paypalWebhookId                   String?         @map("paypal_webhook_id")
+  paypalEnabled                     Boolean         @default(false) @map("paypal_enabled")
+  paypalSandbox                     Boolean         @default(true) @map("paypal_sandbox")
+  paypalVndRateOverride             Decimal?        @map("paypal_vnd_rate_override") @db.Decimal(18, 2)
   binanceUid                        String?         @map("binance_uid")
+  binanceEnabled                    Boolean         @default(false) @map("binance_enabled")
   okxUid                            String?         @map("okx_uid")
+  okxEnabled                        Boolean         @default(false) @map("okx_enabled")
   usdtTrc20Address                  String?         @map("usdt_trc20_address")
+  usdtTrc20Enabled                  Boolean         @default(false) @map("usdt_trc20_enabled")
   usdtBep20Address                  String?         @map("usdt_bep20_address")
   usdtSolanaAddress                 String?         @map("usdt_solana_address")
+  usdtSolanaEnabled                 Boolean         @default(false) @map("usdt_solana_enabled")
+  usdtTonAddress                    String?         @map("usdt_ton_address")
+  usdtTonEnabled                    Boolean         @default(false) @map("usdt_ton_enabled")
   usdtVndRateOverride               Decimal?        @map("usdt_vnd_rate_override") @db.Decimal(18, 2)
   // Binance Pay Merchant API (auto flow) — DEPRECATED, UI hidden but kept in DB
   binancePayApiKeyEncrypted         String?         @map("binance_pay_api_key_encrypted")
@@ -953,6 +968,7 @@ model Order {
   // Per-order warranty secret (from warranty branch); nullable for legacy orders. Generated at order create.
   warrantyClaimCode            String?               @map("warranty_claim_code")
   productNameSnapshot          String                @map("product_name_snapshot")
+  customerEmail                String?               @map("customer_email")
   quantity                     Int                   @default(1)
   salePrice                    Decimal               @map("sale_price") @db.Decimal(18, 2)
   sourcePriceSnapshot          Decimal               @map("source_price_snapshot") @db.Decimal(18, 2)
@@ -980,6 +996,7 @@ model Order {
   stockEntries                 StockEntry[]          @relation("OrderStockEntries")
 
   @@index([sellerId, createdAt])
+  @@index([customerId, createdAt])
   @@index([shopId, status])
   @@map("orders")
 }
@@ -1198,6 +1215,9 @@ model PaymentTransaction {
   provider            PaymentProvider
   externalOrderCode   String                   @unique @map("external_order_code")
   amount              Decimal                  @db.Decimal(18, 2)
+  providerAmount      Decimal?                 @map("provider_amount") @db.Decimal(18, 4)
+  providerCurrency    String?                  @map("provider_currency")
+  providerReference   String?                  @unique @map("provider_reference")
   checkoutUrl         String                   @map("checkout_url")
   qrCode              String?                  @map("qr_code")
   qrTelegramMessageId Int?                     @map("qr_telegram_message_id")
@@ -1388,6 +1408,24 @@ model SystemConfig {
   updatedAt DateTime @updatedAt @map("updated_at")
 
   @@map("system_configs")
+}
+
+model OnchainPaymentReceipt {
+  id                String          @id @default(cuid())
+  provider          PaymentProvider
+  txHash            String          @map("tx_hash")
+  externalOrderCode String          @unique @map("external_order_code")
+  amountUsdt        Decimal         @map("amount_usdt") @db.Decimal(30, 8)
+  destination       String
+  transactionAt     DateTime        @map("transaction_at")
+  rawPayloadJson    Json?           @map("raw_payload_json")
+  processedAt       DateTime?       @map("processed_at")
+  createdAt         DateTime        @default(now()) @map("created_at")
+  updatedAt         DateTime        @updatedAt @map("updated_at")
+
+  @@unique([provider, txHash])
+  @@index([processedAt, createdAt])
+  @@map("onchain_payment_receipts")
 }
 
 model WalletPromotion {

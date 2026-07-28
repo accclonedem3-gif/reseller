@@ -16,13 +16,13 @@ const T = {
     noCode: "không có",
     back: "Quay về dashboard",
     cancelDetail: "Bạn có thể quay lại bot Telegram hoặc dashboard để tạo giao dịch khác.",
-    loadingDetail: "Đang đối soát thanh toán với PayOS và cập nhật trạng thái đơn hàng...",
+    loadingDetail: "Đang đối soát thanh toán và cập nhật trạng thái đơn hàng...",
     noTokenDetail: "Trang thanh toán này không có mã đối soát hợp lệ. Hãy quay lại bot hoặc dashboard để kiểm tra trạng thái đơn hàng.",
     defaultDetail: "Bạn có thể quay lại bot Telegram hoặc dashboard để theo dõi trạng thái đơn hàng và tình hình giao account.",
     failureMsg: (reason: string) => `Thanh toán đã được ghi nhận nhưng đơn chưa mua được: ${reason}`,
     reconcileOrder: "Hệ thống đã xác nhận thanh toán và đang xử lý giao tài khoản.",
     reconcileOther: "Hệ thống đã xác nhận thanh toán thành công.",
-    providerStatus: (s: string) => `PayOS hiện báo trạng thái ${s}. Nếu bạn vừa mới chuyển khoản, hãy chờ thêm vài giây rồi tải lại trang.`,
+    providerStatus: (s: string) => `Cổng thanh toán hiện báo trạng thái ${s}. Hãy chờ thêm vài giây rồi tải lại trang.`,
     notConfirmed: "Hệ thống chưa xác nhận được giao dịch. Hãy chờ thêm vài giây rồi tải lại trang.",
     reconcileErr: "Chưa thể đối soát thanh toán tự động. Hãy tải lại trang sau vài giây.",
   },
@@ -34,13 +34,13 @@ const T = {
     noCode: "none",
     back: "Back to dashboard",
     cancelDetail: "You can return to the Telegram bot or dashboard to create another transaction.",
-    loadingDetail: "Reconciling payment with PayOS and updating order status...",
+    loadingDetail: "Reconciling payment and updating order status...",
     noTokenDetail: "This payment page has no valid reconciliation token. Return to the bot or dashboard to check order status.",
     defaultDetail: "You can return to the Telegram bot or dashboard to track order status and account delivery.",
     failureMsg: (reason: string) => `Payment was recorded but the order could not be fulfilled: ${reason}`,
     reconcileOrder: "The system has confirmed payment and is processing account delivery.",
     reconcileOther: "The system has confirmed payment successfully.",
-    providerStatus: (s: string) => `PayOS currently shows status ${s}. If you just transferred, wait a few seconds and refresh.`,
+    providerStatus: (s: string) => `The payment provider currently shows status ${s}. Wait a few seconds and refresh.`,
     notConfirmed: "The system could not confirm the transaction. Wait a few seconds and refresh.",
     reconcileErr: "Could not auto-reconcile payment. Please refresh after a few seconds.",
   },
@@ -52,13 +52,13 @@ const T = {
     noCode: "ไม่มี",
     back: "กลับไปแดชบอร์ด",
     cancelDetail: "คุณสามารถกลับไปที่บอท Telegram หรือแดชบอร์ดเพื่อสร้างธุรกรรมใหม่",
-    loadingDetail: "กำลังยืนยันการชำระเงินกับ PayOS และอัปเดตสถานะคำสั่งซื้อ...",
+    loadingDetail: "กำลังยืนยันการชำระเงินและอัปเดตสถานะคำสั่งซื้อ...",
     noTokenDetail: "หน้าชำระเงินนี้ไม่มีโทเคนยืนยันที่ถูกต้อง กลับไปที่บอทหรือแดชบอร์ดเพื่อตรวจสอบสถานะ",
     defaultDetail: "คุณสามารถกลับไปที่บอท Telegram หรือแดชบอร์ดเพื่อติดตามสถานะคำสั่งซื้อ",
     failureMsg: (reason: string) => `บันทึกการชำระเงินแล้วแต่คำสั่งซื้อไม่สำเร็จ: ${reason}`,
     reconcileOrder: "ระบบยืนยันการชำระเงินและกำลังดำเนินการส่งบัญชีแล้ว",
     reconcileOther: "ระบบยืนยันการชำระเงินสำเร็จแล้ว",
-    providerStatus: (s: string) => `PayOS แสดงสถานะ ${s} ถ้าโอนเงินเพิ่งทำ โปรดรอสักครู่แล้วรีเฟรช`,
+    providerStatus: (s: string) => `ผู้ให้บริการชำระเงินแสดงสถานะ ${s} โปรดรอสักครู่แล้วรีเฟรช`,
     notConfirmed: "ระบบยังไม่สามารถยืนยันธุรกรรมได้ โปรดรอสักครู่แล้วรีเฟรชหน้า",
     reconcileErr: "ไม่สามารถยืนยันการชำระเงินอัตโนมัติได้ โปรดรีเฟรชหลังจากสักครู่",
   },
@@ -70,6 +70,10 @@ export function PaymentStatusPage({ mode }: { mode: "success" | "cancel" }) {
   const [searchParams] = useSearchParams();
   const externalOrderCode = searchParams.get("orderCode") || "";
   const reconcileToken = searchParams.get("rt") || "";
+  const provider = String(searchParams.get("provider") || "").toLowerCase();
+  const rawBotUsername = String(searchParams.get("bot") || "").replace(/^@/, "").trim();
+  const botUsername = /^[A-Za-z0-9_]{5,32}$/.test(rawBotUsername) ? rawBotUsername : "";
+  const telegramUrl = botUsername ? `https://t.me/${botUsername}` : "";
   const [reconcileState, setReconcileState] = useState<{
     loading: boolean;
     message: string | null;
@@ -87,7 +91,7 @@ export function PaymentStatusPage({ mode }: { mode: "success" | "cancel" }) {
     let cancelled = false;
 
     void api
-      .post(`/webhooks/payos/reconcile/${externalOrderCode}`, { token: reconcileToken })
+      .post(`/webhooks/payments/reconcile/${externalOrderCode}`, { token: reconcileToken })
       .then((response) => {
         if (cancelled) return;
 
@@ -127,6 +131,20 @@ export function PaymentStatusPage({ mode }: { mode: "success" | "cancel" }) {
     return () => { cancelled = true; };
   }, [externalOrderCode, mode, reconcileToken]);
 
+  useEffect(() => {
+    if (
+      provider !== "paypal"
+      || mode !== "success"
+      || !telegramUrl
+      || reconcileState.loading
+      || (reconcileState.message !== t.reconcileOrder && reconcileState.message !== t.reconcileOther)
+    ) {
+      return;
+    }
+    const timer = window.setTimeout(() => window.location.assign(telegramUrl), 1800);
+    return () => window.clearTimeout(timer);
+  }, [mode, provider, reconcileState, t, telegramUrl]);
+
   const detailMessage = useMemo(() => {
     if (mode !== "success") return t.cancelDetail;
     if (reconcileState.loading) return t.loadingDetail;
@@ -157,8 +175,10 @@ export function PaymentStatusPage({ mode }: { mode: "success" | "cancel" }) {
             </p>
             <p className="mt-2 text-sm leading-7 text-slate-500">{detailMessage}</p>
             <div className="mt-6">
-              <Button variant="secondary" onClick={() => window.location.assign("/")}>
-                {t.back}
+              <Button variant="secondary" onClick={() => window.location.assign(telegramUrl || "/")}>
+                {telegramUrl
+                  ? (lang === "en" ? "Back to Telegram bot" : lang === "th" ? "กลับไปที่บอท Telegram" : "Quay lại bot Telegram")
+                  : t.back}
               </Button>
             </div>
           </div>

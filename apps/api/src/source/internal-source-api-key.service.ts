@@ -14,7 +14,7 @@ import { randomBytes } from "node:crypto";
 
 import { AppConfigService } from "../config/app-config.service";
 import { PrismaService } from "../db/prisma.service";
-import { decimalToNumber } from "../lib/utils";
+import { decimalToNumber, hashValue } from "../lib/utils";
 import { encryptSecret, decryptSecret } from "@reseller/shared/server";
 
 export interface IssueKeyDto {
@@ -192,26 +192,40 @@ export class InternalSourceApiKeyService {
 
     const keyPrefix = normalized.slice(0, 12);
 
-    const candidates = await this.prisma.internalSourceApiKey.findMany({
-      where: { keyPrefix },
-      include: {
-        connection: {
-          include: {
-            upstreamSeller: true,
-            upstreamShop: true,
-            downstreamSeller: true,
-            downstreamShop: true,
-          },
+    const include = {
+      connection: {
+        include: {
+          upstreamSeller: true,
+          upstreamShop: true,
+          downstreamSeller: true,
+          downstreamShop: true,
         },
       },
+    } as const;
+
+    // Two legacy hash formats exist for the same key column:
+    //   - bcrypt (issueKey / this file — dashboard-issued keys)
+    //   - sha256 hex via hashValue (internal-source.service.createApiKey — REST-issued keys)
+    // validateKey() must accept both, otherwise a REST-issued key silently 401s at the
+    // Internal Source middleware. Try the O(1) sha256 lookup first, then fall back to
+    // bcrypt-scan across the (prefix-filtered) rows.
+    let matched = await this.prisma.internalSourceApiKey.findFirst({
+      where: { keyHash: hashValue(normalized) },
+      include,
     });
 
-    let matched: (typeof candidates)[number] | null = null;
-
-    for (const candidate of candidates) {
-      if (await bcrypt.compare(normalized, candidate.keyHash)) {
-        matched = candidate;
-        break;
+    if (!matched) {
+      const candidates = await this.prisma.internalSourceApiKey.findMany({
+        where: { keyPrefix },
+        include,
+      });
+      for (const candidate of candidates) {
+        // sha256 hex is 64 chars — skip bcrypt.compare() on those to avoid the O(cost) hit.
+        if (candidate.keyHash.length === 64) continue;
+        if (await bcrypt.compare(normalized, candidate.keyHash)) {
+          matched = candidate;
+          break;
+        }
       }
     }
 

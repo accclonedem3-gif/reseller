@@ -16,6 +16,7 @@ const REDIS_URL = process.env.REDIS_URL || "redis://localhost:6379";
 const INFRA_RETRY_MS = Number(process.env.WORKER_INFRA_RETRY_MS || 5000);
 const TELEGRAM_POLL_INTERVAL_MS = Number(process.env.TELEGRAM_POLL_INTERVAL_MS || 5000);
 const CATALOG_SYNC_INTERVAL_MS = Number(process.env.CATALOG_SYNC_INTERVAL_MS || 60000);
+const ROBOTICVN_CATALOG_SYNC_INTERVAL_MS = Number(process.env.ROBOTICVN_CATALOG_SYNC_INTERVAL_MS || 120000);
 const CATALOG_SCHEDULER_TICK_MS = Number(process.env.CATALOG_SCHEDULER_TICK_MS || 5000);
 const CATALOG_SHOPS_REFRESH_MS = Number(process.env.CATALOG_SHOPS_REFRESH_MS || 60000);
 const CATALOG_SYNC_CONCURRENCY = Number(process.env.CATALOG_SYNC_CONCURRENCY || 12);
@@ -28,7 +29,19 @@ let globalSyncQueue = null;
 let globalRedis = null;
 const PAYOS_ORDER_SWEEP_INTERVAL_MS = Number(process.env.PAYOS_ORDER_SWEEP_INTERVAL_MS || 10000);
 const OKX_DEPOSIT_POLL_INTERVAL_MS = Number(process.env.OKX_DEPOSIT_POLL_INTERVAL_MS || 30000);
+const TON_PAYMENT_SCAN_INTERVAL_MS = Math.max(10000, Number(process.env.TON_PAYMENT_SCAN_INTERVAL_MS || 30000) || 30000);
+const TON_PAYMENT_SCAN_LOCK_KEY = "locks:payments:usdt-ton-scan";
+const TON_PAYMENT_SCAN_LOCK_TTL_MS = Math.max(120000, TON_PAYMENT_SCAN_INTERVAL_MS * 4);
 const INTERNAL_SOURCE_ORDER_SWEEP_INTERVAL_MS = Number(process.env.INTERNAL_SOURCE_ORDER_SWEEP_INTERVAL_MS || 15000);
+// Centralised encryption-key accessor. Historically 18 call sites each read
+// getEncryptionKey() — dev / staging deploys
+// missing the env silently decrypted with the placeholder key and produced garbage
+// tokens without throwing. validateProductionConfig() blocks that in prod, but not
+// in dev. Central accessor lets us tighten the fallback later (or drop it entirely)
+// without hunting every call site.
+function getEncryptionKey() {
+    return getEncryptionKey();
+}
 function validateProductionConfig() {
     if (process.env.NODE_ENV !== "production") {
         return;
@@ -460,7 +473,7 @@ function buildManualPendingMessage(input) {
 }
 function safeDecryptSecret(payload) {
     try {
-        return (0, server_1.decryptSecret)(payload, process.env.APP_ENCRYPTION_KEY || "change-me-32-byte-key");
+        return (0, server_1.decryptSecret)(payload, getEncryptionKey());
     }
     catch {
         return "";
@@ -939,6 +952,11 @@ async function syncCatalogForShop(shopId) {
         products = upstreamProducts.map((p) => {
             const fallbackSalePrice = p.overrides?.[0]?.salePrice ? Number(p.overrides[0].salePrice) : 0;
             const wholesalePrice = p.internalSourcePrice != null ? Number(p.internalSourcePrice) : fallbackSalePrice;
+            const upstreamMetadata = p.metadataJson && typeof p.metadataJson === "object" && !Array.isArray(p.metadataJson)
+                ? p.metadataJson
+                : {};
+            const requiresCustomerEmail = upstreamMetadata.requiresCustomerEmail === true ||
+                upstreamMetadata.requires_customer_email === true;
             return ({
             externalId: p.id,
             sourceName: p.sourceName,
@@ -949,7 +967,7 @@ async function syncCatalogForShop(shopId) {
             available: p.available,
             hidden: false,
             isSlotProduct: false,
-            requiresCustomerEmail: false,
+            requiresCustomerEmail,
             requiresSlotMonths: false,
             slotDurations: [],
             quantityFixed: 1,
@@ -966,6 +984,7 @@ async function syncCatalogForShop(shopId) {
                 warrantyPolicy: p.warrantyPolicy ?? null,
                 internalSourceEnabled: p.internalSourceEnabled,
                 internalSourcePrice: p.internalSourcePrice != null ? Number(p.internalSourcePrice) : null,
+                requiresCustomerEmail,
             },
         });
         });
@@ -974,8 +993,15 @@ async function syncCatalogForShop(shopId) {
             data: { lastCatalogSyncAt: new Date() },
         }).catch(() => undefined);
     } else {
-        const buyerKey = (0, server_1.decryptSecret)(shop.providerConfig.buyerKeyEncrypted, process.env.APP_ENCRYPTION_KEY || "change-me-32-byte-key");
+        const buyerKey = (0, server_1.decryptSecret)(shop.providerConfig.buyerKeyEncrypted, getEncryptionKey());
         if (!buyerKey) throw new Error("Provider buyer key is missing.");
+        // Roboticvn: enforce longer sync interval to stay within 120 req/min rate limit.
+        if ((0, server_1.isRoboticvnProvider)({ baseUrl: shop.providerConfig.baseUrl, buyerKey })) {
+            const lastSync = shop.lastCatalogSyncAt ? shop.lastCatalogSyncAt.getTime() : 0;
+            if (Date.now() - lastSync < ROBOTICVN_CATALOG_SYNC_INTERVAL_MS) {
+                return { synced: 0, notified: 0 };
+            }
+        }
         products = String(process.env.MOCK_PROVIDER_ENABLED || "false") === "true" && (0, server_1.isMockBuyerKey)(buyerKey)
             ? (0, server_1.getMockProviderProducts)()
             : await (0, server_1.fetchProviderProducts)({ baseUrl: shop.providerConfig.baseUrl, buyerKey }).catch((err) => {
@@ -1028,6 +1054,7 @@ async function syncCatalogForShop(shopId) {
                 syncedAt,
                 metadataJson: {
                     ...(product.metadata && typeof product.metadata === "object" && !Array.isArray(product.metadata) ? product.metadata : {}),
+                    requiresCustomerEmail: product.requiresCustomerEmail,
                     ...(previous?.metadataJson && typeof previous.metadataJson === "object" && !Array.isArray(previous.metadataJson)
                         ? { usageInstructions: previous.metadataJson.usageInstructions ?? null }
                         : {}),
@@ -1045,7 +1072,10 @@ async function syncCatalogForShop(shopId) {
                 totalCount: product.available || 0,
                 internalSourceEnabled: shop.seller?.tier === "ULTRA",
                 ...businessFields,
-                metadataJson: product.metadata,
+                metadataJson: {
+                    ...(product.metadata && typeof product.metadata === "object" && !Array.isArray(product.metadata) ? product.metadata : {}),
+                    requiresCustomerEmail: product.requiresCustomerEmail,
+                },
                 syncedAt,
             },
         });
@@ -1103,11 +1133,15 @@ async function syncCatalogForShop(shopId) {
             addedQuantity = Math.max(0, Number(nextAvailable) - Number(previousAvailable));
         }
         if (addedQuantity > 0 && Number(nextAvailable) > 0) {
+            const priceForNoti = updatedSalePrice != null
+                ? Number(updatedSalePrice)
+                : (existingSalePrice ?? null);
             stockNotifications.push({
                 sourceProductId: sourceProduct.id,
                 displayName: product.sourceRawName || product.sourceName,
                 addedQuantity,
                 available: Number(nextAvailable),
+                price: priceForNoti != null && Number.isFinite(priceForNoti) && priceForNoti > 0 ? priceForNoti : null,
             });
         }
     }
@@ -1165,7 +1199,7 @@ async function syncCatalogForShop(shopId) {
             },
         }).catch(() => undefined);
     }
-    if (shop.providerConfig.sourceNotificationSyncEnabled) {
+    if (shop.providerConfig.sourceNotificationSyncEnabled && !shop.providerConfig.ownProductsOnly) {
         await notifyCatalogStockUpdates(shop.id, shop.botConfig?.telegramBotTokenEncrypted || null, stockNotifications);
     }
     if (shop.providerConfig.providerKind !== "INTERNAL" && shop.seller?.tier === "ULTRA") {
@@ -1184,7 +1218,17 @@ async function notifyCatalogStockUpdates(shopId, encryptedBotToken, notification
     if (notifications.length === 0 || !encryptedBotToken) {
         return 0;
     }
-    const token = (0, server_1.decryptSecret)(encryptedBotToken, process.env.APP_ENCRYPTION_KEY || "change-me-32-byte-key");
+    // The sync can run for several seconds. Re-read the switches here so a seller
+    // enabling own-products-only during an in-flight sync cannot receive a stale
+    // source-product restock notification after the toggle has been saved.
+    const notificationConfig = await prisma.providerConfig.findUnique({
+        where: { shopId },
+        select: { sourceNotificationSyncEnabled: true, ownProductsOnly: true },
+    });
+    if (!notificationConfig?.sourceNotificationSyncEnabled || notificationConfig.ownProductsOnly) {
+        return 0;
+    }
+    const token = (0, server_1.decryptSecret)(encryptedBotToken, getEncryptionKey());
     if (!token ||
         (String(process.env.MOCK_TELEGRAM_MODE || "false") === "true" && (0, server_1.isMockBotToken)(token))) {
         return 0;
@@ -1255,6 +1299,7 @@ async function notifyCatalogStockUpdates(shopId, encryptedBotToken, notification
                 productName: item.displayName || "",
                 addedQuantity: item.addedQuantity,
                 available: item.available,
+                price: item.price ?? null,
                 productIconCustomEmojiId: product.iconCustomEmojiId ?? null,
                 language: lang,
             });
@@ -1302,10 +1347,15 @@ async function scheduleCatalogSyncJobs(queue, redis) {
         scheduled,
     };
 }
-function generateInternalSourceOrderCode() {
-    const ts = new Date().toISOString().replace(/[-:.TZ]/g, "").slice(2, 14);
+function generateInternalSourceOrderCode(downstreamOrderCode) {
+    const nowTimestamp = new Date().toISOString().replace(/[-:.TZ]/g, "");
+    const downstreamTimestamp = (0, server_1.deriveOrderCorrelationTimestamp)(downstreamOrderCode);
+    const correlationSuffix = (0, server_1.deriveOrderCorrelationSuffix)(downstreamOrderCode, 5);
+    const ts = downstreamTimestamp
+        ? downstreamTimestamp.slice(2)
+        : nowTimestamp.slice(2, correlationSuffix ? 17 : 14);
     const rand = Math.random().toString(36).slice(2, 8).toUpperCase();
-    return `ISO-${ts}-${rand}`;
+    return `ISO-${ts}-${correlationSuffix || rand}`;
 }
 
 async function recordInternalSourceOrder(tx, params) {
@@ -1322,7 +1372,7 @@ async function recordInternalSourceOrder(tx, params) {
         canbosoProviderOrderId,
         canbosoProviderOrderCode,
     } = params;
-    const sourceOrderCode = generateInternalSourceOrderCode();
+    const sourceOrderCode = generateInternalSourceOrderCode(order.orderCode);
     const created = await tx.internalSourceOrder.create({
         data: {
             connectionId: connection.id,
@@ -1346,6 +1396,7 @@ async function recordInternalSourceOrder(tx, params) {
                 ...(canbosoProviderOrderId ? { canbosoProviderOrderId } : {}),
                 ...(canbosoProviderOrderCode ? { canbosoProviderOrderCode } : {}),
                 downstreamOrderId: order.id,
+                customerEmail: order.customerEmail || null,
             },
         },
     });
@@ -1477,7 +1528,7 @@ async function creditAffiliateCommission(orderId) {
             const enc = botCfg?.telegramBotTokenEncrypted;
             const chatId = ref?.telegramChatId;
             if (enc && chatId) {
-                const token = (0, server_1.decryptSecret)(enc, process.env.APP_ENCRYPTION_KEY || "change-me-32-byte-key");
+                const token = (0, server_1.decryptSecret)(enc, getEncryptionKey());
                 if (token && !(0, server_1.isMockBotToken)(token)) {
                     const amt = new Intl.NumberFormat("vi-VN").format(commission) + "đ";
                     const bal = new Intl.NumberFormat("vi-VN").format(creditedCommissionAfter) + "đ";
@@ -1510,20 +1561,7 @@ async function processPurchase(job) {
             paymentTransaction: true,
         },
     });
-    if (!order?.shop.providerConfig) {
-        const metadata = order?.sourceProduct?.metadataJson &&
-            typeof order.sourceProduct.metadataJson === "object" &&
-            !Array.isArray(order.sourceProduct.metadataJson)
-            ? order.sourceProduct.metadataJson
-            : {};
-        const isManual = String(order?.sourceProduct?.providerName || "").toLowerCase() === "manual" ||
-            metadata.manual === true;
-        if (!order || !isManual) {
-            return;
-        }
-    }
-    const providerConfig = order.shop.providerConfig;
-    if (!providerConfig) {
+    if (!order) {
         return;
     }
     const sourceMetadata = order.sourceProduct?.metadataJson &&
@@ -1532,10 +1570,17 @@ async function processPurchase(job) {
         ? order.sourceProduct.metadataJson
         : {};
     const customerLanguage = normalizeLanguage(order.customer?.preferredLanguage);
-    const isManualProduct = String(order.sourceProduct.providerName || "").toLowerCase() === "manual" ||
+    const isManualProduct = String(order.sourceProduct?.providerName || "").toLowerCase() === "manual" ||
         sourceMetadata.manual === true;
+    // Manual products are fulfilled by internal stock — providerConfig is only required
+    // for the external-source branch below. A shop that sells only manual products may
+    // legitimately have no providerConfig, so guard it AFTER the manual branch.
+    const providerConfig = order.shop.providerConfig;
+    if (!isManualProduct && !providerConfig) {
+        return;
+    }
     if (isManualProduct) {
-        const botToken = (0, server_1.decryptSecret)(order.shop.botConfig?.telegramBotTokenEncrypted, process.env.APP_ENCRYPTION_KEY || "change-me-32-byte-key");
+        const botToken = (0, server_1.decryptSecret)(order.shop.botConfig?.telegramBotTokenEncrypted, getEncryptionKey());
         // Shared content delivery: same content for all buyers, stock is a counter
         if (sourceMetadata.shared === true && typeof sourceMetadata.sharedContent === "string" && sourceMetadata.sharedContent.trim()) {
             const deliveredText = sourceMetadata.sharedContent.trim();
@@ -1778,7 +1823,7 @@ async function processPurchase(job) {
     }
     // INTERNAL source: pull delivery entries directly from upstream ULTRA product
     if (providerConfig.providerKind === "INTERNAL" && providerConfig.internalSourceConnectionId) {
-        const botToken = (0, server_1.decryptSecret)(order.shop.botConfig?.telegramBotTokenEncrypted, process.env.APP_ENCRYPTION_KEY || "change-me-32-byte-key");
+        const botToken = (0, server_1.decryptSecret)(order.shop.botConfig?.telegramBotTokenEncrypted, getEncryptionKey());
         const upstreamProduct = await prisma.sourceProduct.findUnique({
             where: { id: order.sourceProduct.externalProductId },
         });
@@ -1925,14 +1970,15 @@ async function processPurchase(job) {
         // No manual delivery entries — check if upstream shop can purchase from Canboso
         const upstreamProviderConfig = upstreamConnection?.upstreamShop?.providerConfig;
         if (upstreamProviderConfig?.providerKind === "EXTERNAL" && upstreamProduct?.externalProductId) {
-            const upstreamBuyerKey = (0, server_1.decryptSecret)(upstreamProviderConfig.buyerKeyEncrypted, process.env.APP_ENCRYPTION_KEY || "change-me-32-byte-key");
+            const upstreamBuyerKey = (0, server_1.decryptSecret)(upstreamProviderConfig.buyerKeyEncrypted, getEncryptionKey());
             const upstreamResult = await (0, server_1.purchaseFromProvider)({
                 baseUrl: upstreamProviderConfig.baseUrl,
                 buyerKey: upstreamBuyerKey,
-                timeoutMs: 60000,
+                timeoutMs: 120000,
             }, {
                 productId: upstreamProduct.externalProductId,
                 quantity: order.quantity,
+                customerEmail: order.customerEmail || null,
                 clientOrderCode: order.orderCode,
             });
             if (upstreamResult.success && upstreamResult.deliveredText) {
@@ -2085,23 +2131,46 @@ async function processPurchase(job) {
         }
         return;
     }
-    const buyerKey = (0, server_1.decryptSecret)(providerConfig.buyerKeyEncrypted, process.env.APP_ENCRYPTION_KEY || "change-me-32-byte-key");
-    const botToken = (0, server_1.decryptSecret)(order.shop.botConfig?.telegramBotTokenEncrypted, process.env.APP_ENCRYPTION_KEY || "change-me-32-byte-key");
+    const buyerKey = (0, server_1.decryptSecret)(providerConfig.buyerKeyEncrypted, getEncryptionKey());
+    const botToken = (0, server_1.decryptSecret)(order.shop.botConfig?.telegramBotTokenEncrypted, getEncryptionKey());
     // Pre-purchase stock check for EXTERNAL provider
+    // Roboticvn: skip full catalog fetch (N+1 requests → rate limit 120/min).
+    // Use DB available (synced every 60s) instead. Canboso: single request, OK to keep.
     if (providerConfig.providerKind === "EXTERNAL" && order.sourceProduct?.externalProductId &&
         !(String(process.env.MOCK_PROVIDER_ENABLED || "false") === "true" && (0, server_1.isMockBuyerKey)(buyerKey))) {
-        try {
-            const catalog = await (0, server_1.fetchProviderProducts)({ baseUrl: providerConfig.baseUrl, buyerKey, timeoutMs: 5000 });
-            const entry = catalog.find((p) => p.externalId === order.sourceProduct.externalProductId);
-            if (!entry || entry.hidden || (entry.available !== null && entry.available <= 0)) {
-                await prisma.order.update({
-                    where: { id: order.id },
-                    data: { status: "PAID_WAITING_STOCK", failureReason: "San pham tam het hang ben nha cung cap. Tu dong thu lai khi co hang." },
-                });
-                return;
+        if ((0, server_1.isRoboticvnProvider)({ baseUrl: providerConfig.baseUrl, buyerKey })) {
+            // Roboticvn: single-variant stock check (1 HTTP request) instead of full catalog (N+1).
+            try {
+                const meta = order.sourceProduct.metadataJson && typeof order.sourceProduct.metadataJson === "object" && !Array.isArray(order.sourceProduct.metadataJson)
+                    ? order.sourceProduct.metadataJson
+                    : {};
+                const parentProductId = meta.productId ? String(meta.productId) : null;
+                const inStock = await (0, server_1.checkProviderVariantStock)({ baseUrl: providerConfig.baseUrl, buyerKey }, order.sourceProduct.externalProductId, parentProductId);
+                if (inStock === false) {
+                    await prisma.order.update({
+                        where: { id: order.id },
+                        data: { status: "PAID_WAITING_STOCK", failureReason: "San pham tam het hang ben nha cung cap. Tu dong thu lai khi co hang." },
+                    });
+                    return;
+                }
+            } catch {
+                // fail-open: nếu không check được thì cứ tiếp tục mua
             }
-        } catch {
-            // fail-open: nếu không check được thì cứ tiếp tục mua
+        } else {
+            // Canboso / others: single-request catalog fetch is OK.
+            try {
+                const catalog = await (0, server_1.fetchProviderProducts)({ baseUrl: providerConfig.baseUrl, buyerKey, timeoutMs: 5000 });
+                const entry = catalog.find((p) => p.externalId === order.sourceProduct.externalProductId);
+                if (!entry || entry.hidden || (entry.available !== null && entry.available <= 0)) {
+                    await prisma.order.update({
+                        where: { id: order.id },
+                        data: { status: "PAID_WAITING_STOCK", failureReason: "San pham tam het hang ben nha cung cap. Tu dong thu lai khi co hang." },
+                    });
+                    return;
+                }
+            } catch {
+                // fail-open: nếu không check được thì cứ tiếp tục mua
+            }
         }
     }
     const result = String(process.env.MOCK_PROVIDER_ENABLED || "false") === "true" && (0, server_1.isMockBuyerKey)(buyerKey)
@@ -2112,10 +2181,11 @@ async function processPurchase(job) {
         : await (0, server_1.purchaseFromProvider)({
             baseUrl: providerConfig.baseUrl,
             buyerKey,
-            timeoutMs: 60000,
+            timeoutMs: 120000,
         }, {
             productId: order.sourceProduct.externalProductId,
             quantity: order.quantity,
+            customerEmail: order.customerEmail || null,
             clientOrderCode: order.orderCode,
         });
     if (result.success && result.deliveredText) {
@@ -2256,7 +2326,7 @@ async function reconcilePendingInternalSourceOrders() {
         if (!providerConfig) {
             continue;
         }
-        const buyerKey = (0, server_1.decryptSecret)(providerConfig.buyerKeyEncrypted, process.env.APP_ENCRYPTION_KEY || "change-me-32-byte-key");
+        const buyerKey = (0, server_1.decryptSecret)(providerConfig.buyerKeyEncrypted, getEncryptionKey());
         if (!buyerKey) {
             continue;
         }
@@ -2312,7 +2382,7 @@ async function reconcilePendingInternalSourceOrders() {
                 });
                 await snapshotWarrantyForDeliveredOrder(order.id);
                 await creditAffiliateCommission(order.id).catch(() => undefined);
-                const botToken = (0, server_1.decryptSecret)(order.shop.botConfig?.telegramBotTokenEncrypted, process.env.APP_ENCRYPTION_KEY || "change-me-32-byte-key");
+                const botToken = (0, server_1.decryptSecret)(order.shop.botConfig?.telegramBotTokenEncrypted, getEncryptionKey());
                 const sourceMetadata = order.sourceProduct?.metadataJson &&
                     typeof order.sourceProduct.metadataJson === "object" &&
                     !Array.isArray(order.sourceProduct.metadataJson)
@@ -2400,7 +2470,7 @@ async function reconcilePendingRoboticvnOrders() {
         if (!providerConfig) {
             continue;
         }
-        const buyerKey = (0, server_1.decryptSecret)(providerConfig.buyerKeyEncrypted, process.env.APP_ENCRYPTION_KEY || "change-me-32-byte-key");
+        const buyerKey = (0, server_1.decryptSecret)(providerConfig.buyerKeyEncrypted, getEncryptionKey());
         if (!buyerKey) {
             continue;
         }
@@ -2454,7 +2524,7 @@ async function reconcilePendingRoboticvnOrders() {
             });
             await snapshotWarrantyForDeliveredOrder(order.id);
             await creditAffiliateCommission(order.id).catch(() => undefined);
-            const botToken = (0, server_1.decryptSecret)(order.shop.botConfig?.telegramBotTokenEncrypted, process.env.APP_ENCRYPTION_KEY || "change-me-32-byte-key");
+            const botToken = (0, server_1.decryptSecret)(order.shop.botConfig?.telegramBotTokenEncrypted, getEncryptionKey());
             const sourceMetadata = order.sourceProduct?.metadataJson &&
                 typeof order.sourceProduct.metadataJson === "object" &&
                 !Array.isArray(order.sourceProduct.metadataJson)
@@ -2573,7 +2643,7 @@ async function processBroadcast(job) {
             status: "SENDING",
         },
     });
-    const botToken = (0, server_1.decryptSecret)(broadcast.shop.botConfig?.telegramBotTokenEncrypted, process.env.APP_ENCRYPTION_KEY || "change-me-32-byte-key");
+    const botToken = (0, server_1.decryptSecret)(broadcast.shop.botConfig?.telegramBotTokenEncrypted, getEncryptionKey());
     let sentCount = broadcast.sentCount ?? 0;
     let failedCount = 0;
     for (const customer of customers) {
@@ -2656,7 +2726,7 @@ async function pollTelegramBots() {
         },
     });
     for (const bot of bots) {
-        const token = (0, server_1.decryptSecret)(bot.telegramBotTokenEncrypted, process.env.APP_ENCRYPTION_KEY || "change-me-32-byte-key");
+        const token = (0, server_1.decryptSecret)(bot.telegramBotTokenEncrypted, getEncryptionKey());
         if (!token || (0, server_1.isMockBotToken)(token)) {
             continue;
         }
@@ -2939,12 +3009,38 @@ async function pollOkxDeposits(purchaseQueue) {
             }
             const deposits = (json.data || []).filter((d) => d.state === "2");
             if (deposits.length === 0) continue;
+            // Idempotency: a deposit can only pay ONE order. Two orders sharing the same USDT
+            // amount used to both match the same on-chain deposit → double-credit. Filter out
+            // deposits already consumed by a prior paid tx (persisted in rawPayloadJson.okxDepositId)
+            // AND track claims made within this iteration.
+            const depIds = deposits.map((d) => String(d.depId)).filter(Boolean);
+            const consumedDepIds = new Set();
+            if (depIds.length > 0) {
+                const consumed = await prisma.paymentTransaction.findMany({
+                    where: {
+                        provider: "OKX",
+                        status: "PAID",
+                        rawPayloadJson: { path: ["okxDepositId"], in: depIds },
+                    },
+                    select: { rawPayloadJson: true },
+                }).catch(() => []);
+                for (const c of consumed) {
+                    const d = (c.rawPayloadJson || {}).okxDepositId;
+                    if (d) consumedDepIds.add(String(d));
+                }
+            }
+            const claimedInBatch = new Set();
             for (const order of pending) {
                 const tx = order.paymentTransaction;
                 const usdtAmount = Number((tx.rawPayloadJson || {}).manualCrypto?.usdtAmount || 0);
                 if (!usdtAmount) continue;
-                const matched = deposits.find((d) => Math.abs(Number(d.amt) - usdtAmount) < 0.001);
+                const matched = deposits.find((d) => {
+                    const id = String(d.depId);
+                    if (!id || consumedDepIds.has(id) || claimedInBatch.has(id)) return false;
+                    return Math.abs(Number(d.amt) - usdtAmount) < 0.001;
+                });
                 if (!matched) continue;
+                claimedInBatch.add(String(matched.depId));
                 const paidOrder = await prisma.$transaction(async (tx2) => {
                     const current = await tx2.order.findUnique({
                         where: { id: order.id },
@@ -3035,7 +3131,7 @@ async function expireCustomerWalletTopups() {
         if (updated.count === 0) {
             continue;
         }
-        const botToken = (0, server_1.decryptSecret)(topup.shop.botConfig?.telegramBotTokenEncrypted, process.env.APP_ENCRYPTION_KEY || "change-me-32-byte-key");
+        const botToken = (0, server_1.decryptSecret)(topup.shop.botConfig?.telegramBotTokenEncrypted, getEncryptionKey());
         if (!botToken ||
             (String(process.env.MOCK_TELEGRAM_MODE || "false") === "true" && (0, server_1.isMockBotToken)(botToken))) {
             continue;
@@ -3133,7 +3229,7 @@ async function runTierExpiryReminders() {
 
             const token = (0, server_1.decryptSecret)(
                 botConfig.telegramBotTokenEncrypted,
-                process.env.APP_ENCRYPTION_KEY || "change-me-32-byte-key",
+                getEncryptionKey(),
             );
             if (!token || (0, server_1.isMockBotToken)(token)) continue;
 
@@ -3289,126 +3385,9 @@ async function expireSellerDepositRequests() {
         });
     }
 }
-async function pollWeb2mShops(purchaseQueue) {
-    const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
-    const shops = await prisma.paymentConfig.findMany({
-        where: {
-            provider: "WEB2M",
-            web2mAccountNumber: { not: null },
-            web2mBankCode: { not: null },
-            web2mPasswordEncrypted: { not: null },
-            web2mTokenEncrypted: { not: null },
-        },
-        select: {
-            shopId: true,
-            web2mAccountNumber: true,
-            web2mBankCode: true,
-            web2mPasswordEncrypted: true,
-            web2mTokenEncrypted: true,
-        },
-    });
-    if (shops.length === 0) return;
-    const encryptionKey = process.env.ENCRYPTION_KEY || "";
-
-    for (const config of shops) {
-        const pendingPayments = await prisma.paymentTransaction.findMany({
-            where: {
-                provider: "WEB2M",
-                status: "PENDING",
-                createdAt: { gte: since },
-                paymentTarget: { shop: { id: config.shopId } } as any,
-            } as any,
-            select: { externalOrderCode: true, amount: true },
-            take: 100,
-        }).catch(async () => {
-            // Fallback: just match by externalOrderCode globally for this shop's transactions
-            return prisma.paymentTransaction.findMany({
-                where: { provider: "WEB2M", status: "PENDING", createdAt: { gte: since } },
-                select: { externalOrderCode: true, amount: true },
-                take: 200,
-            });
-        });
-        if (pendingPayments.length === 0) continue;
-
-        let password = "";
-        let token = "";
-        try {
-            password = config.web2mPasswordEncrypted ? (0, server_1.decryptSecret)(config.web2mPasswordEncrypted, encryptionKey) : "";
-            token = config.web2mTokenEncrypted ? (0, server_1.decryptSecret)(config.web2mTokenEncrypted, encryptionKey) : "";
-        } catch {
-            continue;
-        }
-        const accountNumber = config.web2mAccountNumber || "";
-        const bankCode = (config.web2mBankCode || "").toLowerCase();
-        if (!accountNumber || !bankCode || !password || !token) continue;
-
-        let txns: { id: string; amount: number; description: string }[] = [];
-        try {
-            txns = await (0, server_1.fetchWeb2mTransactions)({ accountNumber, bankCode, password, token });
-        } catch (error) {
-            console.error(`[worker] Web2m poll failed for shop ${config.shopId}:`, formatError(error));
-            continue;
-        }
-
-        for (const txn of txns) {
-            if (txn.amount <= 0) continue;
-            const normalized = String(txn.description || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
-            if (!normalized) continue;
-            for (const p of pendingPayments) {
-                const code = String(p.externalOrderCode).toUpperCase().replace(/[^A-Z0-9]/g, "");
-                if (!code) continue;
-                const last6 = code.slice(-6);
-                const codeMatches = normalized.includes(code) || (last6.length === 6 && normalized.includes(last6));
-                if (!codeMatches) continue;
-                if (Math.abs(Number(p.amount) - txn.amount) > 1) continue;
-
-                // Mark payment + order PAID
-                try {
-                    await prisma.$transaction(async (tx) => {
-                        const ptx = await tx.paymentTransaction.findUnique({
-                            where: { externalOrderCode: p.externalOrderCode },
-                        });
-                        if (!ptx || ptx.status !== "PENDING") return;
-                        const paidAt = new Date();
-                        await tx.paymentTransaction.update({
-                            where: { id: ptx.id },
-                            data: { status: "PAID", paidAt, rawPayloadJson: { web2m: true, txn } },
-                        });
-                        const order = await tx.order.findFirst({
-                            where: { paymentTransaction: { externalOrderCode: p.externalOrderCode } },
-                        });
-                        if (order && order.status === "AWAITING_PAYMENT") {
-                            await tx.order.update({
-                                where: { id: order.id },
-                                data: { paymentStatus: "PAID", status: "PAID", paidAt },
-                            });
-                            await tx.orderEvent.create({
-                                data: {
-                                    orderId: order.id,
-                                    eventType: "payment_completed",
-                                    payloadJson: { sweptBy: "worker_web2m_poll", web2m: true, txn },
-                                },
-                            });
-                            // Enqueue purchase job
-                            try {
-                                await purchaseQueue.add(server_1.JOBS.processPurchase, { orderId: order.id }, {
-                                    jobId: `purchase-${order.id}-${Date.now()}`,
-                                    removeOnComplete: 100,
-                                    removeOnFail: 100,
-                                });
-                            } catch (e) {
-                                console.error(`[worker] Enqueue purchase failed for order ${order.id}:`, formatError(e));
-                            }
-                        }
-                    });
-                } catch (error) {
-                    console.error(`[worker] Web2m mark paid failed for ${p.externalOrderCode}:`, formatError(error));
-                }
-                break;
-            }
-        }
-    }
-}
+// pollWeb2mShops removed — web2m migrated to webhook /api/v1/webhooks/web2m.
+// The old poller used the wrong env var (`ENCRYPTION_KEY` vs `APP_ENCRYPTION_KEY`)
+// and referenced a non-existent JOBS.processPurchase; never called by bootstrap.
 function getTronGridApiBaseUrl() {
     return process.env.TRONGRID_API_BASE_URL || "https://api.trongrid.io";
 }
@@ -3963,6 +3942,187 @@ async function scanSolanaUsdtPayments() {
     }
 }
 
+let tonPaymentScanRunning = false;
+
+async function scanTonUsdtPayments() {
+    if (tonPaymentScanRunning) return;
+    tonPaymentScanRunning = true;
+    let scanLockToken = null;
+    try {
+        if (globalRedis) {
+            const candidate = `${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+            const acquired = await globalRedis.set(TON_PAYMENT_SCAN_LOCK_KEY, candidate, "PX", TON_PAYMENT_SCAN_LOCK_TTL_MS, "NX");
+            if (acquired !== "OK") return;
+            scanLockToken = candidate;
+        }
+        const configs = await prisma.paymentConfig.findMany({
+            where: { usdtTonAddress: { not: null } },
+            select: { shopId: true, usdtTonAddress: true },
+        });
+        if (configs.length === 0) return;
+
+        const sinceMs = Date.now() - 60 * 60 * 1000;
+        const cutoff = new Date(sinceMs);
+        const platformDepositShopId = process.env.PLATFORM_DEPOSIT_SHOP_ID || "platform-tier";
+        const contexts = [];
+
+        for (const cfg of configs) {
+            const wallet = (0, server_1.normalizeTonAddress)(cfg.usdtTonAddress);
+            if (!wallet) {
+                console.error(`[worker] Ignoring invalid TON address for shop ${cfg.shopId}.`);
+                continue;
+            }
+            const isPlatformShop = cfg.shopId === platformDepositShopId;
+            const [pendingPayments, pendingTopups, pendingDeposits] = await Promise.all([
+                prisma.paymentTransaction.findMany({
+                    where: {
+                        provider: "USDT_TON",
+                        status: "PENDING",
+                        createdAt: { gte: cutoff },
+                        order: { shopId: cfg.shopId },
+                    },
+                    select: { externalOrderCode: true, rawPayloadJson: true, createdAt: true },
+                }),
+                prisma.customerWalletTopup.findMany({
+                    where: {
+                        provider: "USDT_TON",
+                        status: "PENDING",
+                        shopId: cfg.shopId,
+                        createdAt: { gte: cutoff },
+                    },
+                    select: { externalOrderCode: true, rawPayloadJson: true, createdAt: true },
+                }),
+                isPlatformShop
+                    ? prisma.depositRequest.findMany({
+                        where: {
+                            provider: "USDT_TON",
+                            status: "PENDING",
+                            createdAt: { gte: cutoff },
+                        },
+                        select: { externalOrderCode: true, rawPayloadJson: true, createdAt: true },
+                    })
+                    : Promise.resolve([]),
+            ]);
+            if (pendingPayments.length === 0 && pendingTopups.length === 0 && pendingDeposits.length === 0) continue;
+            contexts.push({ cfg, wallet, pendingPayments, pendingTopups, pendingDeposits });
+        }
+
+        if (contexts.length === 0) return;
+        await matchTonTransfersToPendingPayments(contexts, cutoff);
+    }
+    finally {
+        if (globalRedis && scanLockToken) {
+            const currentToken = await globalRedis.get(TON_PAYMENT_SCAN_LOCK_KEY).catch(() => null);
+            if (currentToken === scanLockToken) {
+                await globalRedis.del(TON_PAYMENT_SCAN_LOCK_KEY).catch(() => undefined);
+            }
+        }
+        tonPaymentScanRunning = false;
+    }
+}
+
+async function matchTonTransfersToPendingPayments(contexts, since) {
+    const ownerAddresses = Array.from(new Set(contexts.map((context) => context.wallet)));
+    const transfers = [];
+    for (let offset = 0; offset < ownerAddresses.length; offset += 1000) {
+        const batch = ownerAddresses.slice(offset, offset + 1000);
+        const rows = await (0, server_1.fetchTonUsdtTransfers)({
+            ownerAddresses: batch,
+            since,
+            apiBaseUrl: process.env.TONCENTER_API_BASE_URL || "https://toncenter.com/api/v3",
+            apiKey: process.env.TONCENTER_API_KEY || "",
+            jettonMasterAddress: process.env.TON_USDT_MASTER_ADDRESS || server_1.TON_USDT_MAINNET_MASTER,
+            decimals: Number(process.env.TON_USDT_DECIMALS || 6),
+            limit: 1000,
+        });
+        transfers.push(...rows);
+    }
+
+    const transfersByDestination = new Map();
+    for (const transfer of transfers) {
+        const rows = transfersByDestination.get(transfer.destinationAddress) || [];
+        rows.push(transfer);
+        transfersByDestination.set(transfer.destinationAddress, rows);
+    }
+
+    for (const context of contexts) {
+        const pendingByAmount = buildTonPendingAmountMap(context);
+        const walletTransfers = transfersByDestination.get(context.wallet) || [];
+        for (const transfer of walletTransfers) {
+            const amountKey = Number(transfer.amountUsdt.toFixed(2));
+            const match = pendingByAmount.get(amountKey);
+            if (!match) continue;
+            const expectedAmount = Number(match.record.rawPayloadJson?.manualCrypto?.usdtAmount || 0);
+            if (!Number.isFinite(expectedAmount) || Math.abs(transfer.amountUsdt - expectedAmount) > 0.000001) continue;
+
+            // Never match an old transfer to an invoice created later. A 60-second allowance covers
+            // small clock differences between the application host and the indexed block timestamp.
+            if (transfer.transactionAt.getTime() < match.record.createdAt.getTime() - 60_000) continue;
+
+            const existingReceipt = await prisma.onchainPaymentReceipt.findUnique({
+                where: { provider_txHash: { provider: "USDT_TON", txHash: transfer.txHash } },
+            });
+            if (existingReceipt?.processedAt) continue;
+            if (existingReceipt && existingReceipt.externalOrderCode !== match.record.externalOrderCode) continue;
+
+            const confirmed = await confirmTonPayment(match, transfer).catch((error) => {
+                console.error(`[worker] TON auto-confirm ${match.type} failed:`, formatError(error));
+                return false;
+            });
+            if (!confirmed) continue;
+
+            pendingByAmount.delete(amountKey);
+            console.log(`[worker] TON auto-detected ${match.type} ${match.record.externalOrderCode} -> PAID (${transfer.amountUsdt} USDT, tx ${transfer.txHash.slice(0, 16)}...)`);
+            if (pendingByAmount.size === 0) break;
+        }
+    }
+}
+
+function buildTonPendingAmountMap(context) {
+    const result = new Map();
+    const addRecords = (type, records) => {
+        for (const record of records) {
+            const amount = Number(record.rawPayloadJson?.manualCrypto?.usdtAmount || 0);
+            const key = Number(amount.toFixed(2));
+            if (amount > 0 && !result.has(key)) result.set(key, { type, record });
+        }
+    };
+    addRecords("order", context.pendingPayments);
+    addRecords("deposit", context.pendingDeposits);
+    addRecords("topup", context.pendingTopups);
+    return result;
+}
+
+async function confirmTonPayment(match, transfer) {
+    const baseUrl = (process.env.APP_PUBLIC_URL || "http://localhost:3000").replace(/\/$/, "");
+    const response = await axios_1.default.post(
+        `${baseUrl}/api/v1/webhooks/internal-crypto-confirm/${encodeURIComponent(match.record.externalOrderCode)}`,
+        {
+            provider: "USDT_TON",
+            txHash: transfer.txHash,
+            amountUsdt: transfer.amountUsdt,
+            destination: transfer.destinationAddress,
+            transactionAt: transfer.transactionAt.toISOString(),
+            source: "ton_usdt_auto_scan",
+            chainPayload: {
+                traceId: transfer.traceId,
+                transactionLt: transfer.transactionLt,
+                amountUnits: transfer.amountUnits,
+                jettonMasterAddress: transfer.jettonMasterAddress,
+                sourceAddress: transfer.sourceAddress,
+            },
+        },
+        {
+            headers: {
+                "x-internal-token": process.env.INTERNAL_API_TOKEN || "",
+                "Content-Type": "application/json",
+            },
+            timeout: 20_000,
+        },
+    );
+    return response.data?.reconciled === true;
+}
+
 let purchaseQueueRef = null;
 
 async function expireAwaitingPaymentOrders() {
@@ -3981,6 +4141,8 @@ async function expireAwaitingPaymentOrders() {
     });
     for (const order of orders) {
         const isCryptoProvider = order.paymentTransaction?.provider === "USDT_TRC20"
+            || order.paymentTransaction?.provider === "USDT_SOL"
+            || order.paymentTransaction?.provider === "USDT_TON"
             || order.paymentTransaction?.provider === "BINANCE"
             || order.paymentTransaction?.provider === "OKX";
         const cutoff = isCryptoProvider ? cryptoCutoff : vndCutoff;
@@ -3991,7 +4153,7 @@ async function expireAwaitingPaymentOrders() {
             data: { status: "FAILED", failureReason: `Don hang het han thanh toan (${timeoutLabel}).` },
         });
         if (updated.count === 0) continue;
-        const botToken = (0, server_1.decryptSecret)(order.shop.botConfig?.telegramBotTokenEncrypted, process.env.APP_ENCRYPTION_KEY || "change-me-32-byte-key");
+        const botToken = (0, server_1.decryptSecret)(order.shop.botConfig?.telegramBotTokenEncrypted, getEncryptionKey());
         if (!botToken || !order.customer?.telegramChatId) continue;
         const qrMessageId = order.paymentTransaction?.qrTelegramMessageId;
         if (qrMessageId) {
@@ -4176,6 +4338,12 @@ async function bootstrap() {
         });
     }, 30 * 1000);
     void scanTrc20UsdtPayments().catch(() => undefined);
+    setInterval(() => {
+        void scanTonUsdtPayments().catch((error) => {
+            console.error("[worker] TON auto-detect sweep failed:", formatError(error));
+        });
+    }, TON_PAYMENT_SCAN_INTERVAL_MS);
+    void scanTonUsdtPayments().catch(() => undefined);
     // Web2m polling removed — replaced by webhook /api/v1/webhooks/web2m
     // ── Warranty auto-check worker: consumes the `account-check` BullMQ queue (grok/veo via the
     //    separate tool-server VPS), runs the verdict, and calls back the API. Owns its own

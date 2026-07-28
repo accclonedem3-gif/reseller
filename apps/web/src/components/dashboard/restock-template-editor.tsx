@@ -5,12 +5,13 @@ export type RestockCustomEmojiIds = {
   product?: string;
   added?: string;
   stock?: string;
+  price?: string;
 };
 
 export type RestockTemplate = {
   header: { icon: string; text: string };
-  fieldIcons: { product: string; added: string; stock: string };
-  labels: { added: string; stock: string };
+  fieldIcons: { product: string; added: string; stock: string; price: string };
+  labels: { added: string; stock: string; price: string };
   footer: string;
   customEmojiIds: RestockCustomEmojiIds;
 };
@@ -19,28 +20,44 @@ export const RESTOCK_PLACEHOLDER_HINTS: Array<{ key: string; label: string }> = 
   { key: "{product_name}", label: "Tên sản phẩm" },
   { key: "{added}", label: "Số lượng vừa thêm" },
   { key: "{current_stock}", label: "Tồn kho hiện tại" },
+  { key: "{price}", label: "Giá bán (₫)" },
 ];
 
 const FIELD_LABELS: Record<keyof RestockTemplate["fieldIcons"], string> = {
   product: "Sản phẩm",
   added: "Thêm",
   stock: "Tồn kho",
+  price: "Giá",
 };
 
-const SAMPLE = { productName: "Slot X Premium 3 tháng | BHF", added: 50, stock: 87 };
+const SAMPLE = { productName: "Slot X Premium 3 tháng | BHF", added: 50, stock: 87, price: 89000 };
+
+function formatSamplePrice(n: number): string {
+  try {
+    return `${n.toLocaleString("vi-VN")}₫`;
+  } catch {
+    return `${n}₫`;
+  }
+}
 
 function fillPlaceholders(raw: string): string {
   if (!raw) return "";
   return raw
     .replace(/\{product_name\}/g, SAMPLE.productName)
     .replace(/\{added\}/g, String(SAMPLE.added))
-    .replace(/\{current_stock\}/g, String(SAMPLE.stock));
+    .replace(/\{current_stock\}/g, String(SAMPLE.stock))
+    .replace(/\{price\}/g, formatSamplePrice(SAMPLE.price));
 }
 
 function renderPreview(t: RestockTemplate): string {
   const headerText = fillPlaceholders(t.header.text || "") || "Thông báo nhập kho!";
   const addedLabel = (t.labels.added || "").trim() || "Thêm";
   const stockLabel = (t.labels.stock || "").trim() || "Tồn kho hiện tại";
+  const priceLabel = (t.labels.price || "").trim() || "Giá";
+  const priceIcon = (t.fieldIcons.price || "").trim();
+  // Preview mirrors renderRestockHtml — hide the price line when the admin explicitly
+  // cleared both icon AND label (defaults keep icon 💳 + fallback label "Giá").
+  const showPriceLine = priceIcon.length > 0 || (t.labels.price || "").trim().length > 0;
   const lines: string[] = [
     `${t.header.icon} ${headerText}`,
     "",
@@ -48,6 +65,9 @@ function renderPreview(t: RestockTemplate): string {
     `${t.fieldIcons.added} ${addedLabel}: ${SAMPLE.added}`,
     `${t.fieldIcons.stock} ${stockLabel}: ${SAMPLE.stock}`,
   ];
+  if (showPriceLine) {
+    lines.push(`${priceIcon || "💳"} ${priceLabel}: ${formatSamplePrice(SAMPLE.price)}`);
+  }
   const footer = fillPlaceholders(t.footer || "").trim();
   if (footer) {
     lines.push("", footer);
@@ -188,6 +208,16 @@ export function RestockTemplateEditor({
                 className={inputCls}
                 style={inputStyle}
                 placeholder="Tồn kho hiện tại"
+              />
+            </div>
+            <div className="mt-1.5 grid grid-cols-[76px_1fr] items-center gap-2">
+              <span className="text-[11px] font-bold uppercase tracking-wider" style={{ color: "var(--tx-f)" }}>Giá</span>
+              <input
+                value={local.labels.price}
+                onChange={(e) => patch({ labels: { ...local.labels, price: e.target.value } })}
+                className={inputCls}
+                style={inputStyle}
+                placeholder="Giá"
               />
             </div>
           </Group>

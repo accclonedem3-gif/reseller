@@ -2,17 +2,22 @@ import {
   BadRequestException,
   Body,
   Controller,
+  Get,
   Headers,
   Inject,
   Logger,
   NotFoundException,
   Param,
   Post,
+  Query,
   RawBodyRequest,
   Req,
+  Res,
+  UnauthorizedException,
 } from "@nestjs/common";
-import { Request } from "express";
+import { Request, Response } from "express";
 import { verifyPay2sIpnSignature, verifyPayOSWebhook } from "@reseller/shared/server";
+import { PaymentProvider } from "@prisma/client";
 import { SkipThrottle } from "@nestjs/throttler";
 
 import { AppConfigService } from "../config/app-config.service";
@@ -87,6 +92,94 @@ export class WebhooksController {
     }
 
     return this.processPaymentCompletion(externalOrderCode, body);
+  }
+
+  @Get("paypal/return/:externalOrderCode")
+  async handlePaypalReturn(
+    @Param("externalOrderCode") externalOrderCode: string,
+    @Query("state") state: string | undefined,
+    @Query("token") paypalOrderId: string | undefined,
+    @Res() response: Response,
+  ) {
+    const successUrl = new URL("/payments/success", this.config.webPublicUrl);
+    const cancelUrl = new URL("/payments/cancel", this.config.webPublicUrl);
+    const reconcileToken = this.paymentService.buildPublicReconcileToken(externalOrderCode);
+    const botUsername = await this.paymentService.getTelegramBotUsernameForExternalOrderCode(externalOrderCode);
+    for (const url of [successUrl, cancelUrl]) {
+      url.searchParams.set("orderCode", externalOrderCode);
+      url.searchParams.set("rt", reconcileToken);
+      url.searchParams.set("provider", "paypal");
+      if (botUsername) url.searchParams.set("bot", botUsername);
+    }
+
+    if (
+      !paypalOrderId
+      || !this.paymentService.isValidPaypalReturnState(externalOrderCode, state)
+    ) {
+      cancelUrl.searchParams.set("reason", "paypal_invalid_return");
+      return response.redirect(302, cancelUrl.toString());
+    }
+
+    try {
+      const paymentStatus = await this.paymentService.reconcilePaypalOrder(
+        externalOrderCode,
+        paypalOrderId,
+      );
+      if (String(paymentStatus.providerStatus || "").toUpperCase() === "COMPLETED") {
+        await this.processPaymentCompletion(externalOrderCode, {
+          source: "paypal_return_capture",
+          paypal: paymentStatus.rawPayload,
+        });
+      }
+      return response.redirect(302, successUrl.toString());
+    } catch (error) {
+      this.logger.error(
+        `[paypal] return failed for ${externalOrderCode}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      cancelUrl.searchParams.set("reason", "paypal_capture_failed");
+      return response.redirect(302, cancelUrl.toString());
+    }
+  }
+
+  @Post("paypal/:shopId")
+  async handlePaypalWebhook(
+    @Param("shopId") shopId: string,
+    @Headers() headers: Record<string, string | string[] | undefined>,
+    @Body() body: Record<string, unknown>,
+  ) {
+    const verified = await this.paymentService.verifyPaypalWebhook(shopId, headers, body);
+    if (!verified) {
+      throw new UnauthorizedException("Invalid PayPal webhook signature.");
+    }
+
+    const eventType = String(body?.event_type || "").toUpperCase();
+    if (!["CHECKOUT.ORDER.APPROVED", "PAYMENT.CAPTURE.COMPLETED"].includes(eventType)) {
+      return { success: true, ignored: true };
+    }
+    const externalOrderCode = await this.paymentService.resolvePaypalWebhookExternalOrderCode(body);
+    if (!externalOrderCode) {
+      this.logger.warn(`[paypal] verified ${eventType} webhook has no matching local order`);
+      return { success: true, ignored: true };
+    }
+
+    const paymentStatus = await this.paymentService.reconcilePaypalOrder(
+      externalOrderCode,
+      null,
+      shopId,
+    );
+    if (String(paymentStatus.providerStatus || "").toUpperCase() !== "COMPLETED") {
+      return {
+        success: true,
+        reconciled: false,
+        providerStatus: paymentStatus.providerStatus,
+      };
+    }
+    return this.processPaymentCompletion(externalOrderCode, {
+      source: "paypal_verified_webhook",
+      eventId: body?.id,
+      eventType,
+      paypal: paymentStatus.rawPayload,
+    });
   }
 
   @Post("web2m")
@@ -269,7 +362,7 @@ export class WebhooksController {
     return { success: true, confirmed };
   }
 
-  @Post("payos/reconcile/:externalOrderCode")
+  @Post(["payments/reconcile/:externalOrderCode", "payos/reconcile/:externalOrderCode"])
   async reconcilePayOS(
     @Param("externalOrderCode") externalOrderCode: string,
     @Body() body: { token?: string } | null,
@@ -312,22 +405,76 @@ export class WebhooksController {
   async internalCryptoConfirm(
     @Param("externalOrderCode") externalOrderCode: string,
     @Headers("x-internal-token") tokenHeader: string,
-    @Body() body: { signature?: string; amountUsdt?: number; source?: string },
+    @Body() body: {
+      provider?: string;
+      txHash?: string;
+      signature?: string;
+      amountUsdt?: number;
+      destination?: string;
+      transactionAt?: string;
+      source?: string;
+      chainPayload?: unknown;
+    },
   ) {
     if (!tokenHeader || tokenHeader !== this.config.internalApiToken) {
       throw new NotFoundException("Not found.");
     }
-    return this.processPaymentCompletion(externalOrderCode, {
+    const provider = String(body?.provider || "").trim().toUpperCase() as PaymentProvider;
+    const txHash = String(body?.txHash || body?.signature || "").trim();
+    const destination = String(body?.destination || "").trim();
+    const amountUsdt = Number(body?.amountUsdt || 0);
+    const transactionAt = new Date(String(body?.transactionAt || ""));
+    // Backward-compatible path for the existing Binance/OKX/TRC20/Solana worker calls.
+    // TON additionally uses the durable receipt claim below to prevent cross-table replay.
+    if (provider !== PaymentProvider.USDT_TON) {
+      return this.processPaymentCompletion(externalOrderCode, {
+        source: body?.source || "internal_crypto_auto_scan",
+        signature: body?.signature,
+        amountUsdt: body?.amountUsdt,
+        detectedAt: new Date().toISOString(),
+      });
+    }
+    if (!txHash || !destination || !Number.isFinite(amountUsdt)) {
+      throw new BadRequestException("Invalid internal on-chain confirmation payload.");
+    }
+    if (!Number.isFinite(transactionAt.getTime())) {
+      throw new BadRequestException("Invalid on-chain transaction time.");
+    }
+
+    const confirmationPayload = {
       source: body?.source || "internal_crypto_auto_scan",
-      signature: body?.signature,
-      amountUsdt: body?.amountUsdt,
+      provider,
+      signature: txHash,
+      txHash,
+      amountUsdt,
+      destination,
+      transactionAt: transactionAt.toISOString(),
+      chainPayload: body?.chainPayload,
       detectedAt: new Date().toISOString(),
+    };
+    const receipt = await this.paymentService.claimOnchainPaymentReceipt({
+      provider,
+      txHash,
+      externalOrderCode,
+      amountUsdt,
+      destination,
+      transactionAt,
+      rawPayload: confirmationPayload,
     });
+    const completion = await this.processPaymentCompletion(externalOrderCode, confirmationPayload);
+    if (completion.reconciled) {
+      await this.paymentService.markOnchainPaymentReceiptProcessed(receipt.id, confirmationPayload);
+    }
+    return completion;
   }
 
   async processPaymentCompletion(externalOrderCode: string, rawPayload?: unknown) {
+    const rawPayloadObject = rawPayload && typeof rawPayload === "object"
+      ? rawPayload as Record<string, unknown>
+      : null;
+    const cryptoTxHash = String(rawPayloadObject?.txHash || rawPayloadObject?.signature || "").trim() || null;
     try {
-      await this.ordersService.markPaymentCompleted(externalOrderCode, rawPayload);
+      await this.ordersService.markPaymentCompleted(externalOrderCode, rawPayload, { cryptoTxHash });
       const paymentStatus = await this.paymentService.getExternalPaymentStatus(externalOrderCode);
       return {
         success: true,
@@ -346,7 +493,7 @@ export class WebhooksController {
     }
 
     try {
-      const topup = await this.customerWalletService.markTopupPaid(externalOrderCode, rawPayload);
+      const topup = await this.customerWalletService.markTopupPaid(externalOrderCode, rawPayload, { cryptoTxHash });
       await this.telegramBotService.sendWalletTopupPaidMessage(
         topup.topup.shopId,
         topup.topup.amount,

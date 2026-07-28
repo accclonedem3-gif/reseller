@@ -162,6 +162,8 @@ export class WalletService {
     const providerOverride =
       dto.paymentMethod === "USDT_SOL"
         ? "USDT_SOL"
+        : dto.paymentMethod === "USDT_TON"
+          ? "USDT_TON"
         : dto.paymentMethod === "BINANCE"
           ? "BINANCE"
           : "PAYOS";
