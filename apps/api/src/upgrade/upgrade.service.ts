@@ -108,6 +108,29 @@ export class UpgradeService {
    * Được gọi sau khi payment confirm (webhook hoặc mock-confirm).
    * Tự động đổi tier của seller.
    */
+  async confirmMockUpgrade(
+    user: AuthenticatedUser,
+    externalOrderCode: string,
+  ) {
+    const deposit = await this.prisma.depositRequest.findUnique({
+      where: { externalOrderCode },
+      select: { sellerId: true },
+    });
+    const seller = await this.prisma.seller.findUnique({
+      where: { userId: user.id },
+      select: { id: true },
+    });
+
+    if (!deposit || !seller || deposit.sellerId !== seller.id) {
+      throw new NotFoundException("Upgrade payment request not found.");
+    }
+
+    return this.confirmUpgradeByExternalOrderCode(externalOrderCode, {
+      mock: true,
+      confirmedAt: new Date().toISOString(),
+    });
+  }
+
   async confirmUpgradeByExternalOrderCode(externalOrderCode: string, rawPayload?: unknown) {
     const deposit = await this.prisma.depositRequest.findUnique({
       where: { externalOrderCode },

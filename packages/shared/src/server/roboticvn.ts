@@ -49,6 +49,25 @@ export function isRoboticvnProvider(credentials: {
   return isRoboticvnBaseUrl(credentials.baseUrl) || isRoboticvnKey(credentials.buyerKey);
 }
 
+export function resolveRoboticvnOrderReference(
+  payload: unknown,
+  fallbackId = "",
+): { providerOrderId: string; providerOrderCode: string } {
+  const body =
+    payload && typeof payload === "object"
+      ? (payload as Record<string, unknown>)
+      : {};
+  const providerOrderId = String(
+    body.order_id || body.id || fallbackId || "",
+  ).trim();
+  const providerOrderCode = String(body.display_id || "").trim();
+
+  return {
+    providerOrderId,
+    providerOrderCode: providerOrderCode || providerOrderId,
+  };
+}
+
 function getTimeout(credentials: ProviderCredentials, fallback = 15000) {
   const timeout = Number(credentials.timeoutMs || fallback);
   return Number.isFinite(timeout) && timeout > 0 ? timeout : fallback;
@@ -80,14 +99,23 @@ function client(credentials: ProviderCredentials, perRequestTimeout?: number): A
 
     config.__retryCount = config.__retryCount || 0;
     const status = error.response?.status;
-    
-    // 429 Rate Limit or 5xx server errors
-    const isRetryable = status === 429 || (status && status >= 500 && status <= 599);
+    const isProductDetailRequest = /^\/products\/[^/]+/i.test(String(config.url || ""));
+
+    // RoboticVN sometimes reports its per-IP detail rate limit as 401/403 instead
+    // of 429. Retry those statuses only for product-detail calls so a genuinely
+    // invalid API key still fails fast on catalog/balance/order endpoints.
+    const isRateLimitedDetail = isProductDetailRequest && (status === 401 || status === 403);
+    const isRetryable = isRateLimitedDetail || status === 429 || (status && status >= 500 && status <= 599);
 
     if (isRetryable && config.__retryCount < 4) {
       config.__retryCount += 1;
-      
-      let delayMs = 1500 * Math.pow(1.5, config.__retryCount - 1);
+
+      const retryAfterSeconds = Number(error.response?.headers?.["retry-after"] || 0);
+      let delayMs = retryAfterSeconds > 0
+        ? retryAfterSeconds * 1000
+        : isRateLimitedDetail
+          ? 10_000 * config.__retryCount
+          : 1500 * Math.pow(1.5, config.__retryCount - 1);
       const retryAfter = error.response?.headers?.["retry-after"];
       if (retryAfter) {
         const parsed = parseInt(retryAfter, 10);
@@ -152,6 +180,35 @@ interface RvProductDetail {
   variants?: RvVariant[];
 }
 
+// RoboticVN applies its detail-request limit per caller IP, not per API key.
+// All catalog syncs in this process therefore have to share one gate; pacing
+// each shop independently still creates a burst when several shops sync at once.
+let roboticvnDetailQueue: Promise<void> = Promise.resolve();
+let roboticvnLastDetailStartedAt = 0;
+
+function runRoboticvnDetailRequest<T>(
+  intervalMs: number,
+  request: () => Promise<T>,
+): Promise<T> {
+  const run = roboticvnDetailQueue.catch(() => undefined).then(async () => {
+    const waitMs = Math.max(
+      0,
+      intervalMs - (Date.now() - roboticvnLastDetailStartedAt),
+    );
+    if (waitMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, waitMs));
+    }
+    roboticvnLastDetailStartedAt = Date.now();
+    return request();
+  });
+
+  roboticvnDetailQueue = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
 function variantPrice(variant: RvVariant): number {
   const vnd = Number(variant.prices?.vnd);
   if (Number.isFinite(vnd) && vnd > 0) return vnd;
@@ -193,6 +250,7 @@ function mapVariant(product: RvProductDetail, variant: RvVariant): ProviderProdu
       variantTitle,
       prices: variant.prices || {},
       thumbnail: product.thumbnail || null,
+      providerDescription: String(product.description || "").trim() || null,
     },
   };
 }
@@ -242,15 +300,28 @@ export async function fetchRoboticvnProducts(
     if (rows.length < pageSize || offset >= count) break;
   }
 
-  // 2. Fan out to product detail (variants live there). N+1 — keep concurrency low (429-aware).
-  const details = await runWithConcurrency(summaries, 5, async (summary) => {
+  // 2. Fetch details at a conservative pace. RoboticVN limits by IP and may
+  // return 401/403 (instead of 429) when calls are bursty. A sequential 650 ms
+  // interval stays below 100 detail requests/minute and leaves room for list,
+  // balance and order calls made by the same worker.
+  const configuredInterval = Number(process.env.ROBOTICVN_DETAIL_REQUEST_INTERVAL_MS || 650);
+  const detailIntervalMs = Number.isFinite(configuredInterval)
+    ? Math.max(600, configuredInterval)
+    : 650;
+  const details: Array<RvProductDetail | undefined> = [];
+  for (const summary of summaries) {
     try {
-      const { data } = await api.get(`/products/${encodeURIComponent(summary.id)}`);
-      return data?.data as RvProductDetail | undefined;
-    } catch {
-      return undefined;
+      const { data } = await runRoboticvnDetailRequest(detailIntervalMs, () =>
+        api.get(`/products/${encodeURIComponent(summary.id)}`),
+      );
+      details.push(data?.data as RvProductDetail | undefined);
+    } catch (error) {
+      console.warn(
+        `[roboticvn] skipped product detail ${summary.id} after retries: ${errorMessage(error)}`,
+      );
+      details.push(undefined);
     }
-  });
+  }
 
   // 3. Flatten variants → one ProviderProduct each.
   const products: ProviderProduct[] = [];
@@ -279,33 +350,58 @@ export async function fetchRoboticvnProducts(
  *          `false` if it is out of stock or hidden.
  *          `null` if we could not determine (caller should fail-open).
  */
+export interface RoboticvnVariantAvailability {
+  inStock: boolean;
+  availableQuantity: number | null;
+}
+
+export async function checkRoboticvnVariantAvailability(
+  credentials: ProviderCredentials,
+  variantId: string,
+  productId?: string | null,
+): Promise<RoboticvnVariantAvailability | null> {
+  if (!productId) return null; // can't check without parent product id
+
+  try {
+    const api = client(credentials);
+    const configuredInterval = Number(process.env.ROBOTICVN_DETAIL_REQUEST_INTERVAL_MS || 650);
+    const detailIntervalMs = Number.isFinite(configuredInterval)
+      ? Math.max(600, configuredInterval)
+      : 650;
+    const { data } = await runRoboticvnDetailRequest(detailIntervalMs, () =>
+      api.get(`/products/${encodeURIComponent(productId)}`),
+    );
+    const detail = data?.data as RvProductDetail | undefined;
+    if (!detail?.variants?.length) return { inStock: false, availableQuantity: 0 };
+
+    const variant = detail.variants.find((v) => String(v.id) === String(variantId));
+    if (!variant || variant.in_stock === false) {
+      return { inStock: false, availableQuantity: 0 };
+    }
+    const rawQuantity = variant.available_quantity;
+    const availableQuantity = rawQuantity === undefined || rawQuantity === null
+      ? null
+      : Math.max(0, Math.floor(Number(rawQuantity) || 0));
+    return {
+      inStock: availableQuantity === null || availableQuantity > 0,
+      availableQuantity,
+    };
+  } catch {
+    return null; // fail-open
+  }
+}
+
 export async function checkRoboticvnVariantStock(
   credentials: ProviderCredentials,
   variantId: string,
   productId?: string | null,
 ): Promise<boolean | null> {
-  if (!productId) return null; // can't check without parent product id
-
-  try {
-    const api = client(credentials);
-    const { data } = await api.get(`/products/${encodeURIComponent(productId)}`);
-    const detail = data?.data as RvProductDetail | undefined;
-    if (!detail?.variants?.length) return false;
-
-    const variant = detail.variants.find((v) => String(v.id) === String(variantId));
-    if (!variant) return false;
-    if (variant.in_stock === false) return false;
-    if (
-      variant.available_quantity !== undefined &&
-      variant.available_quantity !== null &&
-      Number(variant.available_quantity) <= 0
-    ) {
-      return false;
-    }
-    return true;
-  } catch {
-    return null; // fail-open
-  }
+  const availability = await checkRoboticvnVariantAvailability(
+    credentials,
+    variantId,
+    productId,
+  );
+  return availability?.inStock ?? null;
 }
 
 // ── Balance ──────────────────────────────────────────────────
@@ -410,13 +506,16 @@ export async function purchaseFromRoboticvn(
   const api = client(credentials, overallTimeout);
 
   let orderId = "";
+  let orderDisplayCode = "";
   try {
     const { data } = await api.post("/orders", {
       items: [{ variant_id: input.productId, quantity: input.quantity }],
       currency_code: "vnd",
       payment_method: "wallet",
     });
-    orderId = String(data?.data?.order_id || "").trim();
+    const reference = resolveRoboticvnOrderReference(data?.data);
+    orderId = reference.providerOrderId;
+    orderDisplayCode = reference.providerOrderCode;
     if (!orderId) {
       return {
         success: false,
@@ -444,6 +543,10 @@ export async function purchaseFromRoboticvn(
     while (Date.now() < deadline) {
       const { data } = await api.get(`/orders/${encodeURIComponent(orderId)}`);
       lastStatus = String(data?.data?.status || "").trim().toLowerCase();
+      orderDisplayCode = resolveRoboticvnOrderReference(
+        data?.data,
+        orderId,
+      ).providerOrderCode;
       // Delivery is the source of truth for fulfilment. Do not require one
       // exact order-status string: the provider only needs the created order id.
       const deliveredText = await fetchDelivery(api, orderId);
@@ -453,12 +556,8 @@ export async function purchaseFromRoboticvn(
           deliveredText,
           outOfStock: false,
           pending: false,
-          // providerOrderId is null on purpose: the worker writes it into
-          // Order.internalSourceOrderId, a UNIQUE FK to internal_source_orders.
-          // A roboticvn order id (order_xxx) is NOT a row there → FK violation.
-          // Keep the ref in providerOrderCode (plain string column) instead.
-          providerOrderId: null,
-          providerOrderCode: orderId,
+          providerOrderId: orderId,
+          providerOrderCode: orderDisplayCode || orderId,
           rawPayload: data,
         };
       }
@@ -467,8 +566,8 @@ export async function purchaseFromRoboticvn(
           success: false,
           deliveredText: null,
           outOfStock: false,
-          providerOrderId: null,
-          providerOrderCode: orderId,
+          providerOrderId: orderId,
+          providerOrderCode: orderDisplayCode || orderId,
           message: `Roboticvn order ${lastStatus}.`,
           rawPayload: data,
         };
@@ -484,8 +583,8 @@ export async function purchaseFromRoboticvn(
     deliveredText: null,
     outOfStock: false,
     pending: true,
-    providerOrderId: null,
-    providerOrderCode: orderId,
+    providerOrderId: orderId,
+    providerOrderCode: orderDisplayCode || orderId,
     message:
       lastStatus === "completed"
         ? "Roboticvn order completed; delivery is not ready and will reconcile."
@@ -499,7 +598,7 @@ export async function fetchRoboticvnOrderStatus(
   credentials: ProviderCredentials,
   input: ProviderOrderStatusInput,
 ): Promise<ProviderOrderStatusResult> {
-  const orderId = String(input.orderId || "").trim();
+  const orderId = String(input.orderId || input.orderCode || "").trim();
   if (!orderId) {
     return {
       success: false,
@@ -519,6 +618,9 @@ export async function fetchRoboticvnOrderStatus(
   try {
     const { data } = await api.get(`/orders/${encodeURIComponent(orderId)}`);
     const status = String(data?.data?.status || "").trim().toLowerCase();
+    const reference = resolveRoboticvnOrderReference(data?.data, orderId);
+    const resolvedOrderId = reference.providerOrderId || orderId;
+    const orderDisplayCode = reference.providerOrderCode || resolvedOrderId;
     const deliveredText = await fetchDelivery(api, orderId);
 
     if (deliveredText) {
@@ -528,9 +630,8 @@ export async function fetchRoboticvnOrderStatus(
         status: "delivered",
         deliveredText,
         failureReason: null,
-        // null on purpose — see note in purchaseFromRoboticvn (FK to internal_source_orders).
-        providerOrderId: null,
-        providerOrderCode: orderId,
+        providerOrderId: resolvedOrderId,
+        providerOrderCode: orderDisplayCode,
         pending: false,
         outOfStock: false,
         rawPayload: data,
@@ -543,8 +644,8 @@ export async function fetchRoboticvnOrderStatus(
         status: "completed",
         deliveredText: null,
         failureReason: null,
-        providerOrderId: null,
-        providerOrderCode: orderId,
+        providerOrderId: resolvedOrderId,
+        providerOrderCode: orderDisplayCode,
         pending: true,
         outOfStock: false,
         rawPayload: data,
@@ -558,8 +659,8 @@ export async function fetchRoboticvnOrderStatus(
       status,
       deliveredText: null,
       failureReason: failed ? `Roboticvn order ${status}.` : null,
-      providerOrderId: null,
-      providerOrderCode: orderId,
+      providerOrderId: resolvedOrderId,
+      providerOrderCode: orderDisplayCode,
       pending: !failed,
       outOfStock: false,
       rawPayload: data,
@@ -570,7 +671,7 @@ export async function fetchRoboticvnOrderStatus(
       status: null,
       deliveredText: null,
       failureReason: errorMessage(error),
-      providerOrderId: null,
+      providerOrderId: orderId,
       providerOrderCode: orderId,
       pending: false,
       outOfStock: false,

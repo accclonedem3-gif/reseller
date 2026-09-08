@@ -19,6 +19,7 @@ import { PrismaService } from "../db/prisma.service";
 import { AdminNotifyService } from "../lib/admin-notify.service";
 import { MailService } from "../lib/mail.service";
 import { PaymentService } from "../lib/payment.service";
+import { FeatureFlagService } from "../lib/feature-flag.service";
 import { decimalToNumber, generateExternalPaymentCode, toDecimal } from "../lib/utils";
 import { ShopsService } from "../shops/shops.service";
 import { WalletNotifyService } from "../customer-wallet/wallet-notify.service";
@@ -49,7 +50,18 @@ export class WalletService {
     private readonly adminNotify: AdminNotifyService,
     @Inject(WalletNotifyService)
     private readonly walletNotify: WalletNotifyService,
+    @Inject(FeatureFlagService)
+    private readonly featureFlags: FeatureFlagService,
   ) {}
+
+  private async getShopUsdtVndRate(shopId: string) {
+    const paymentConfig = await this.prisma.paymentConfig.findUnique({
+      where: { shopId },
+      select: { usdtVndRateOverride: true },
+    });
+    const override = Number(paymentConfig?.usdtVndRateOverride ?? NaN);
+    return Number.isFinite(override) && override > 0 ? override : this.config.usdtVndRate;
+  }
 
   async getWallet(user: AuthenticatedUser) {
     const shop = await this.shopsService.getSellerShop(user.id);
@@ -221,6 +233,11 @@ export class WalletService {
       throw new NotFoundException("Deposit request not found.");
     }
 
+    await this.paymentService.assertCryptoReceiptClaimed(
+      externalOrderCode,
+      deposit.provider,
+    );
+
     // Upgrade deposits are handled by UpgradeService, not wallet
     if (deposit.note && deposit.note.startsWith("UPGRADE_TIER:")) {
       throw new NotFoundException("Deposit request not found.");
@@ -231,34 +248,63 @@ export class WalletService {
       throw new NotFoundException("Deposit request not found.");
     }
 
-    if (deposit.status === DepositStatus.CONFIRMED) {
-      return deposit;
-    }
+    return this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw(
+        Prisma.sql`SELECT id FROM deposit_requests WHERE id = ${deposit.id} FOR UPDATE`,
+      );
+      const currentDeposit = await tx.depositRequest.findUnique({
+        where: { id: deposit.id },
+      });
+      if (!currentDeposit) {
+        throw new NotFoundException("Deposit request not found.");
+      }
+      if (currentDeposit.status !== DepositStatus.PENDING) {
+        return currentDeposit;
+      }
 
-    if (deposit.status !== DepositStatus.PENDING) {
-      return deposit;
-    }
+      const wallet = await tx.sellerWallet.findUnique({
+        where: { sellerId: currentDeposit.sellerId },
+      });
+      if (!wallet) throw new NotFoundException("Wallet not found.");
+      await tx.$queryRaw(
+        Prisma.sql`SELECT id FROM seller_wallets WHERE id = ${wallet.id} FOR UPDATE`,
+      );
+      const currentWallet = await tx.sellerWallet.findUnique({
+        where: { id: wallet.id },
+      });
+      if (!currentWallet) throw new NotFoundException("Wallet not found.");
 
-    await this.creditWallet(
-      deposit.sellerId,
-      decimalToNumber(deposit.amount),
-      WalletLedgerType.TOPUP,
-      "deposit_request",
-      deposit.id,
-      "Top up seller wallet from dashboard payment",
-    );
+      const balanceBefore = decimalToNumber(currentWallet.balance);
+      const amount = decimalToNumber(currentDeposit.amount);
+      const balanceAfter = balanceBefore + amount;
+      await tx.sellerWallet.update({
+        where: { id: currentWallet.id },
+        data: { balance: toDecimal(balanceAfter) },
+      });
+      await tx.walletLedger.create({
+        data: {
+          sellerId: currentDeposit.sellerId,
+          walletId: currentWallet.id,
+          type: WalletLedgerType.TOPUP,
+          amount: currentDeposit.amount,
+          balanceBefore: toDecimal(balanceBefore),
+          balanceAfter: toDecimal(balanceAfter),
+          referenceType: "deposit_request",
+          referenceId: currentDeposit.id,
+          note: "Top up seller wallet from dashboard payment",
+        },
+      });
 
-    return this.prisma.depositRequest.update({
-      where: {
-        id: deposit.id,
-      },
-      data: {
-        status: DepositStatus.CONFIRMED,
-        paidAt: new Date(),
-        approvedAt: new Date(),
-        rawPayloadJson: rawPayload as Prisma.InputJsonValue,
-        note: deposit.note ?? "Top up seller wallet from dashboard",
-      },
+      return tx.depositRequest.update({
+        where: { id: currentDeposit.id },
+        data: {
+          status: DepositStatus.CONFIRMED,
+          paidAt: new Date(),
+          approvedAt: new Date(),
+          rawPayloadJson: rawPayload as Prisma.InputJsonValue,
+          note: currentDeposit.note ?? "Top up seller wallet from dashboard",
+        },
+      });
     });
   }
 
@@ -507,6 +553,7 @@ export class WalletService {
   }
 
   async createWithdrawRequest(user: AuthenticatedUser, dto: CreateWithdrawRequestDto) {
+    await this.featureFlags.assertEnabled("withdrawals");
     const shop = await this.shopsService.getSellerShop(user.id);
     const amount = Number(dto.amount);
 
@@ -657,7 +704,14 @@ export class WalletService {
         Prisma.sql`SELECT id FROM seller_wallets WHERE id = ${wallet.id} FOR UPDATE`,
       );
 
-      const balanceBefore = decimalToNumber(wallet.balance);
+      const currentWallet = await tx.sellerWallet.findUnique({
+        where: { id: wallet.id },
+      });
+      if (!currentWallet) {
+        throw new NotFoundException("Wallet not found.");
+      }
+
+      const balanceBefore = decimalToNumber(currentWallet.balance);
       const balanceAfter = balanceBefore + delta;
 
       if (balanceAfter < 0) {
@@ -694,7 +748,7 @@ export class WalletService {
 
   async getCustomerWallets(user: AuthenticatedUser) {
     const shop = await this.shopsService.getSellerShop(user.id);
-    const usdtVndRate = this.config.usdtVndRate;
+    const usdtVndRate = await this.getShopUsdtVndRate(shop.id);
 
     const [customers, apiConnections, spentRows] = await Promise.all([
       this.prisma.customer.findMany({
@@ -841,7 +895,7 @@ export class WalletService {
     });
     if (!customer) throw new NotFoundException("Customer not found.");
 
-    const USDT_VND_RATE = this.config.usdtVndRate || 27000;
+    const usdtVndRate = await this.getShopUsdtVndRate(shop.id);
 
     const result = await this.prisma.$transaction(async (tx) => {
       const wallet = await tx.customerWallet.upsert({
@@ -875,7 +929,7 @@ export class WalletService {
 
       // Sync the other currency (topup/deduct only, not set)
       const syncOther = dto.action === "topup" || dto.action === "deduct";
-      const syncDelta = isUsdt ? delta * USDT_VND_RATE : delta / USDT_VND_RATE;
+      const syncDelta = isUsdt ? delta * usdtVndRate : delta / usdtVndRate;
       const syncBalanceBefore = isUsdt ? decimalToNumber(wallet.balance) : decimalToNumber(wallet.balanceUsdt);
       const syncBalanceAfter = Math.max(0, syncBalanceBefore + syncDelta);
 
@@ -962,6 +1016,88 @@ export class WalletService {
     }));
   }
 
+  async getCustomerWalletLedgers(
+    user: AuthenticatedUser,
+    customerId: string,
+    options: { limit?: number; offset?: number } = {},
+  ) {
+    const shop = await this.shopsService.getSellerShop(user.id);
+    const customer = await this.prisma.customer.findFirst({
+      where: { id: customerId, shopId: shop.id },
+      select: {
+        id: true,
+        telegramUserId: true,
+        telegramUsername: true,
+        telegramChatId: true,
+        firstName: true,
+        lastName: true,
+        wallet: {
+          select: {
+            balance: true,
+            commissionBalance: true,
+            balanceUsdt: true,
+            currency: true,
+          },
+        },
+      },
+    });
+    if (!customer) throw new NotFoundException("Customer not found.");
+
+    const limit = Math.min(Math.max(Number(options.limit) || 50, 1), 200);
+    const offset = Math.max(Number(options.offset) || 0, 0);
+    const [items, total] = await Promise.all([
+      this.prisma.customerWalletLedger.findMany({
+        where: { customerId: customer.id },
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+        skip: offset,
+        take: limit,
+      }),
+      this.prisma.customerWalletLedger.count({
+        where: { customerId: customer.id },
+      }),
+    ]);
+
+    return {
+      customer: {
+        id: customer.id,
+        telegramUserId: customer.telegramUserId,
+        telegramUsername: customer.telegramUsername,
+        displayName:
+          [customer.firstName, customer.lastName].filter(Boolean).join(" ") ||
+          customer.telegramUsername ||
+          customer.telegramChatId,
+      },
+      wallet: {
+        balance: decimalToNumber(customer.wallet?.balance),
+        commissionBalance: decimalToNumber(customer.wallet?.commissionBalance),
+        balanceUsdt: decimalToNumber(customer.wallet?.balanceUsdt),
+        currency: customer.wallet?.currency || "VND",
+      },
+      items: items.map((item) => ({
+        id: item.id,
+        type: item.type,
+        currency: item.currency,
+        amount: decimalToNumber(item.amount),
+        balanceBefore: decimalToNumber(item.balanceBefore),
+        balanceAfter: decimalToNumber(item.balanceAfter),
+        commissionBalanceBefore:
+          item.commissionBalanceBefore == null
+            ? null
+            : decimalToNumber(item.commissionBalanceBefore),
+        commissionBalanceAfter:
+          item.commissionBalanceAfter == null
+            ? null
+            : decimalToNumber(item.commissionBalanceAfter),
+        referenceType: item.referenceType,
+        referenceId: item.referenceId,
+        note: item.note,
+        createdAt: item.createdAt,
+      })),
+      total,
+      limit,
+      offset,
+    };
+  }
   private async getPendingWithdrawAmount(sellerId: string) {
     const aggregate = await this.prisma.withdrawRequest.aggregate({
       where: {

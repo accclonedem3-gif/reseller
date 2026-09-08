@@ -26,6 +26,7 @@ import { SourceProductController } from "./source/source-product.controller";
 import { SourceProductService } from "./source/source-product.service";
 import { StockAlertService } from "./source/stock-alert.service";
 import { AppConfigService } from "./config/app-config.service";
+import { SystemAnnouncementController } from "./system-announcement.controller";
 import { CustomerWalletService } from "./customer-wallet/customer-wallet.service";
 import { WalletNotifyService } from "./customer-wallet/wallet-notify.service";
 import { PrismaService } from "./db/prisma.service";
@@ -97,7 +98,12 @@ import {
 } from "./product-family/product-family.controller";
 import { ProductFamilyService } from "./product-family/product-family.service";
 import { AdminNotifyService } from "./lib/admin-notify.service";
+import { AlchemyBep20Service } from "./lib/alchemy-bep20.service";
 import { MailService } from "./lib/mail.service";
+import { FeatureFlagService } from "./lib/feature-flag.service";
+
+import { UserbotCampaignController } from "./userbot-campaign/userbot-campaign.controller";
+import { UserbotCampaignService } from "./userbot-campaign/userbot-campaign.service";
 
 function positiveEnvInteger(name: string, fallback: number): number {
   const value = Number(process.env[name]);
@@ -130,6 +136,7 @@ const globalRateLimitStorage = new RedisThrottlerStorage(
     }),
   ],
   controllers: [
+    UserbotCampaignController,
     AuthController,
     ShopsController,
     ProductsController,
@@ -153,6 +160,7 @@ const globalRateLimitStorage = new RedisThrottlerStorage(
     AffiliateController,
     ...(process.env.NODE_ENV === "production" ? [] : [DevController]),
     AdminController,
+    SystemAnnouncementController,
     CustomersController,
     CatalogGroupsController,
     IconCatalogController,
@@ -222,8 +230,11 @@ const globalRateLimitStorage = new RedisThrottlerStorage(
     AdminTemplateService,
     DiscountCodesService,
     MailService,
+    FeatureFlagService,
     AdminNotifyService,
+    AlchemyBep20Service,
     ProductFamilyService,
+    UserbotCampaignService,
   ],
 })
 export class AppModule implements NestModule {

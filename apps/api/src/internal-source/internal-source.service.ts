@@ -19,6 +19,7 @@ import {
 import {
   decryptSecret,
   encryptSecret,
+  isOrderPriceSafe,
   purchaseFromProvider,
 } from "@reseller/shared/server";
 import { randomBytes } from "node:crypto";
@@ -29,7 +30,13 @@ import {
   hasValidCustomerEmailList,
   parseCustomerEmailList,
 } from "../lib/customer-email-list";
-import { decimalToNumber, generateSourceOrderCode, hashValue, splitWalletDebit, toDecimal } from "../lib/utils";
+import {
+  decimalToNumber,
+  generateSourceOrderCode,
+  hashValue,
+  splitWalletDebit,
+  toDecimal,
+} from "../lib/utils";
 import { ShopsService } from "../shops/shops.service";
 import { StockAlertService } from "../source/stock-alert.service";
 import type { AuthenticatedUser } from "../types";
@@ -109,7 +116,10 @@ export class InternalSourceService {
           },
           select: { balance: true },
         });
-        walletBalanceMap.set(key.connection.id, wallet ? decimalToNumber(wallet.balance) : 0);
+        walletBalanceMap.set(
+          key.connection.id,
+          wallet ? decimalToNumber(wallet.balance) : 0,
+        );
       }
     }
 
@@ -128,7 +138,8 @@ export class InternalSourceService {
             id: key.connection.id,
             status: key.connection.status.toLowerCase(),
             downstreamSellerId: key.connection.downstreamSellerId,
-            downstreamSellerName: key.connection.downstreamSeller?.displayName ?? null,
+            downstreamSellerName:
+              key.connection.downstreamSeller?.displayName ?? null,
             downstreamShopId: key.connection.downstreamShopId,
             downstreamShopName: key.connection.downstreamShop?.name ?? null,
             balance: walletBalanceMap.get(key.connection.id) ?? 0,
@@ -138,7 +149,10 @@ export class InternalSourceService {
     }));
   }
 
-  async createApiKey(user: AuthenticatedUser, dto: CreateInternalSourceApiKeyDto) {
+  async createApiKey(
+    user: AuthenticatedUser,
+    dto: CreateInternalSourceApiKeyDto,
+  ) {
     const shop = await this.getProSellerShopOrThrow(user.id);
     const rawKey = `isk_${randomBytes(24).toString("hex")}`;
 
@@ -149,7 +163,8 @@ export class InternalSourceService {
         label: dto.label.trim(),
         note: dto.note?.trim() || null,
         keyPrefix: rawKey.slice(0, 12),
-        keyHash: hashValue(rawKey),
+        keyHash: await bcrypt.hash(rawKey, 10),
+        keyEncrypted: encryptSecret(rawKey, this.config.encryptionKey),
         expiresAt: dto.expiresAt ? new Date(dto.expiresAt) : null,
       },
     });
@@ -218,16 +233,23 @@ export class InternalSourceService {
 
   async getCurrentConnection(user: AuthenticatedUser) {
     const shop = await this.shopsService.getSellerShop(user.id);
+    const providerConfig = await this.prisma.providerConfig.findUnique({
+      where: { shopId: shop.id },
+      select: { internalSourceConnectionId: true },
+    });
     const connection = await this.prisma.downstreamSourceConnection.findFirst({
       where: {
         downstreamShopId: shop.id,
         status: DownstreamSourceConnectionStatus.ACTIVE,
+        ...(providerConfig?.internalSourceConnectionId
+          ? { id: providerConfig.internalSourceConnectionId }
+          : {}),
       },
       orderBy: { createdAt: "desc" },
       include: {
         apiKey: true,
         upstreamSeller: true,
-        upstreamShop: true,
+        upstreamShop: { include: { botConfig: true } },
         downstreamSeller: true,
         downstreamShop: true,
       },
@@ -241,7 +263,10 @@ export class InternalSourceService {
     if (connection.downstreamTelegramChatId) {
       const wallet = await this.prisma.customerWallet.findFirst({
         where: {
-          customer: { shopId: connection.upstreamShopId, telegramChatId: connection.downstreamTelegramChatId },
+          customer: {
+            shopId: connection.upstreamShopId,
+            telegramChatId: connection.downstreamTelegramChatId,
+          },
         },
         select: { balance: true },
       });
@@ -251,10 +276,72 @@ export class InternalSourceService {
     return this.mapConnection(connection, walletBalance);
   }
 
+  async listCurrentShopConnections(user: AuthenticatedUser) {
+    const shop = await this.shopsService.getSellerShop(user.id);
+    const connections = await this.prisma.downstreamSourceConnection.findMany({
+      where: {
+        downstreamShopId: shop.id,
+        status: DownstreamSourceConnectionStatus.ACTIVE,
+      },
+      orderBy: { createdAt: "asc" },
+      include: {
+        apiKey: true,
+        upstreamSeller: true,
+        upstreamShop: { include: { botConfig: true } },
+        downstreamSeller: true,
+        downstreamShop: true,
+        _count: { select: { catalogProducts: true } },
+      },
+    });
+
+    return Promise.all(
+      connections.map(async (connection) => {
+        let walletBalance = 0;
+        if (connection.downstreamTelegramChatId) {
+          const wallet = await this.prisma.customerWallet.findFirst({
+            where: {
+              customer: {
+                shopId: connection.upstreamShopId,
+                telegramChatId: connection.downstreamTelegramChatId,
+              },
+            },
+            select: { balance: true },
+          });
+          if (wallet) walletBalance = decimalToNumber(wallet.balance);
+        }
+        return {
+          ...this.mapConnection(connection, walletBalance),
+          productCount: connection._count.catalogProducts,
+        };
+      }),
+    );
+  }
+
+  async listCurrentConnectionOrders(user: AuthenticatedUser) {
+    const shop = await this.shopsService.getSellerShop(user.id);
+    const orders = await this.prisma.internalSourceOrder.findMany({
+      where: { downstreamShopId: shop.id },
+      include: {
+        connection: true,
+        downstreamSeller: true,
+        downstreamShop: true,
+        sourceProduct: true,
+        downstreamOrder: { include: { customer: true } },
+      },
+      orderBy: { createdAt: "desc" },
+      take: 100,
+    });
+
+    return orders.map((order) => this.mapSourceOrder(order));
+  }
+
   async setInheritTemplate(user: AuthenticatedUser, enabled: boolean) {
     const shop = await this.shopsService.getSellerShop(user.id);
     const result = await this.prisma.downstreamSourceConnection.updateMany({
-      where: { downstreamShopId: shop.id, status: DownstreamSourceConnectionStatus.ACTIVE },
+      where: {
+        downstreamShopId: shop.id,
+        status: DownstreamSourceConnectionStatus.ACTIVE,
+      },
       data: { inheritSourceTemplate: enabled },
     });
     if (result.count === 0) {
@@ -266,9 +353,15 @@ export class InternalSourceService {
   /** Save PRO's per-connection overrides (custom category names/order/hide + product order). */
   async setTemplateOverrides(user: AuthenticatedUser, overrides: unknown) {
     const shop = await this.shopsService.getSellerShop(user.id);
-    const clean = overrides && typeof overrides === "object" && !Array.isArray(overrides) ? overrides : {};
+    const clean =
+      overrides && typeof overrides === "object" && !Array.isArray(overrides)
+        ? overrides
+        : {};
     const result = await this.prisma.downstreamSourceConnection.updateMany({
-      where: { downstreamShopId: shop.id, status: DownstreamSourceConnectionStatus.ACTIVE },
+      where: {
+        downstreamShopId: shop.id,
+        status: DownstreamSourceConnectionStatus.ACTIVE,
+      },
       data: { templateOverridesJson: clean as Prisma.InputJsonValue },
     });
     if (result.count === 0) {
@@ -292,7 +385,8 @@ export class InternalSourceService {
     const fam = c.productDefaultsByFamily;
     if (fam && typeof fam === "object" && !Array.isArray(fam)) {
       for (const v of Object.values(fam as Record<string, unknown>)) {
-        if (v && typeof v === "object") (v as Record<string, unknown>).customEmojiId = null;
+        if (v && typeof v === "object")
+          (v as Record<string, unknown>).customEmojiId = null;
       }
     }
     return c;
@@ -309,14 +403,24 @@ export class InternalSourceService {
   async cloneBotInterfaceFromUpstream(user: AuthenticatedUser) {
     const shop = await this.shopsService.getSellerShop(user.id);
     const conn = await this.prisma.downstreamSourceConnection.findFirst({
-      where: { downstreamShopId: shop.id, status: DownstreamSourceConnectionStatus.ACTIVE },
+      where: {
+        downstreamShopId: shop.id,
+        status: DownstreamSourceConnectionStatus.ACTIVE,
+      },
       select: { id: true, upstreamShopId: true },
     });
     if (!conn) {
       throw new NotFoundException("No active source connection.");
     }
 
-    const [upstreamGroups, upstreamOverrides, proGroups, proProducts, upstreamBc, proBc] = await Promise.all([
+    const [
+      upstreamGroups,
+      upstreamOverrides,
+      proGroups,
+      proProducts,
+      upstreamBc,
+      proBc,
+    ] = await Promise.all([
       this.prisma.shopCatalogGroup.findMany({
         where: { shopId: conn.upstreamShopId },
         orderBy: [{ position: "asc" }, { createdAt: "asc" }],
@@ -325,10 +429,22 @@ export class InternalSourceService {
         where: { shopId: conn.upstreamShopId },
         select: { sourceProductId: true, groupId: true },
       }),
-      this.prisma.shopCatalogGroup.findMany({ where: { shopId: shop.id }, select: { id: true, name: true } }),
-      this.prisma.sourceProduct.findMany({ where: { shopId: shop.id }, select: { id: true, externalProductId: true } }),
-      this.prisma.botConfig.findUnique({ where: { shopId: conn.upstreamShopId }, select: { customizationJson: true } }),
-      this.prisma.botConfig.findUnique({ where: { shopId: shop.id }, select: { customizationJson: true } }),
+      this.prisma.shopCatalogGroup.findMany({
+        where: { shopId: shop.id },
+        select: { id: true, name: true },
+      }),
+      this.prisma.sourceProduct.findMany({
+        where: { shopId: shop.id },
+        select: { id: true, externalProductId: true },
+      }),
+      this.prisma.botConfig.findUnique({
+        where: { shopId: conn.upstreamShopId },
+        select: { customizationJson: true },
+      }),
+      this.prisma.botConfig.findUnique({
+        where: { shopId: shop.id },
+        select: { customizationJson: true },
+      }),
     ]);
 
     // ULTRA product → group layout. Keyed by the ULTRA SourceProduct id, which equals the PRO
@@ -337,9 +453,13 @@ export class InternalSourceService {
     for (const o of upstreamOverrides) layout.set(o.sourceProductId, o.groupId);
 
     // MERGE: ULTRA customization (cusids stripped) wins per-key; keep PRO-only keys.
-    const strippedUpstreamCust = this.stripPremiumEmojiIds(upstreamBc?.customizationJson);
+    const strippedUpstreamCust = this.stripPremiumEmojiIds(
+      upstreamBc?.customizationJson,
+    );
     const existingProCust =
-      proBc?.customizationJson && typeof proBc.customizationJson === "object" && !Array.isArray(proBc.customizationJson)
+      proBc?.customizationJson &&
+      typeof proBc.customizationJson === "object" &&
+      !Array.isArray(proBc.customizationJson)
         ? (proBc.customizationJson as Record<string, unknown>)
         : {};
     const mergedCust = { ...existingProCust, ...strippedUpstreamCust };
@@ -351,7 +471,8 @@ export class InternalSourceService {
       // oldUpstreamGroupId -> proGroupId so products can be mapped to existing OR new groups.
       const idMap = new Map<string, string>();
       const proByName = new Map<string, string>();
-      for (const g of proGroups) proByName.set(g.name.trim().toLowerCase(), g.id);
+      for (const g of proGroups)
+        proByName.set(g.name.trim().toLowerCase(), g.id);
       let nextPos = proGroups.length;
       for (const g of upstreamGroups) {
         const key = g.name.trim().toLowerCase();
@@ -364,6 +485,7 @@ export class InternalSourceService {
           data: {
             shopId: shop.id,
             name: g.name,
+            description: g.description,
             // Don't copy the ULTRA's stored icon (often a text word/label, not an emoji) — the bot
             // always shows 📁 for categories anyway.
             icon: "📁",
@@ -380,7 +502,9 @@ export class InternalSourceService {
       const byGroup = new Map<string, string[]>();
       for (const p of proProducts) {
         const upstreamGroupId = layout.get(p.externalProductId) ?? null;
-        const proGroupId = upstreamGroupId ? idMap.get(upstreamGroupId) : undefined;
+        const proGroupId = upstreamGroupId
+          ? idMap.get(upstreamGroupId)
+          : undefined;
         if (!proGroupId) continue;
         const arr = byGroup.get(proGroupId) ?? [];
         arr.push(p.id);
@@ -388,7 +512,11 @@ export class InternalSourceService {
       }
       for (const [groupId, ids] of byGroup) {
         const res = await tx.sellerProductOverride.updateMany({
-          where: { shopId: shop.id, sellerId: shop.sellerId, sourceProductId: { in: ids } },
+          where: {
+            shopId: shop.id,
+            sellerId: shop.sellerId,
+            sourceProductId: { in: ids },
+          },
           data: { groupId },
         });
         productsMapped += res.count;
@@ -405,7 +533,10 @@ export class InternalSourceService {
       // Materialised now → stop live-inherit so the PRO renders its OWN data.
       await tx.downstreamSourceConnection.update({
         where: { id: conn.id },
-        data: { inheritSourceTemplate: false, templateOverridesJson: Prisma.DbNull },
+        data: {
+          inheritSourceTemplate: false,
+          templateOverridesJson: Prisma.DbNull,
+        },
       });
     });
 
@@ -416,7 +547,10 @@ export class InternalSourceService {
   async getInheritedStructure(user: AuthenticatedUser) {
     const shop = await this.shopsService.getSellerShop(user.id);
     const conn = await this.prisma.downstreamSourceConnection.findFirst({
-      where: { downstreamShopId: shop.id, status: DownstreamSourceConnectionStatus.ACTIVE },
+      where: {
+        downstreamShopId: shop.id,
+        status: DownstreamSourceConnectionStatus.ACTIVE,
+      },
       select: { upstreamShopId: true, templateOverridesJson: true },
     });
     if (!conn) return { groups: [], products: [], overrides: {} };
@@ -424,13 +558,32 @@ export class InternalSourceService {
       where: { shopId: conn.upstreamShopId },
       orderBy: [{ position: "asc" }, { createdAt: "asc" }],
     });
-    const products = await this.shopsService.getCatalogViewForShop(shop.id, false, true);
+    const products = await this.shopsService.getCatalogViewForShop(
+      shop.id,
+      false,
+      true,
+    );
     return {
-      overrides: (conn.templateOverridesJson && typeof conn.templateOverridesJson === "object" ? conn.templateOverridesJson : {}),
-      groups: groups.map((g) => ({ id: g.id, name: g.name, position: g.position, icon: g.icon })),
+      overrides:
+        conn.templateOverridesJson &&
+        typeof conn.templateOverridesJson === "object"
+          ? conn.templateOverridesJson
+          : {},
+      groups: groups.map((g) => ({
+        id: g.id,
+        name: g.name,
+        description: g.description,
+        position: g.position,
+        icon: g.icon,
+      })),
       products: products
         .filter((p) => p.enabled && !p.hidden)
-        .map((p) => ({ id: p.id, name: p.displayName, groupId: p.groupId, position: p.position })),
+        .map((p) => ({
+          id: p.id,
+          name: p.displayName,
+          groupId: p.groupId,
+          position: p.position,
+        })),
     };
   }
 
@@ -443,7 +596,7 @@ export class InternalSourceService {
       include: {
         apiKey: true,
         upstreamSeller: true,
-        upstreamShop: true,
+        upstreamShop: { include: { botConfig: true } },
         downstreamSeller: true,
         downstreamShop: {
           include: { botConfig: true },
@@ -458,34 +611,46 @@ export class InternalSourceService {
       .map((c) => c.apiKey?.telegramChatId)
       .filter((id): id is string => !!id);
 
-    const customers = chatIds.length > 0
-      ? await this.prisma.customer.findMany({
-          where: { shopId: shop.id, telegramChatId: { in: chatIds } },
-          select: { telegramChatId: true, telegramUsername: true, firstName: true, lastName: true },
-        })
-      : [];
+    const customers =
+      chatIds.length > 0
+        ? await this.prisma.customer.findMany({
+            where: { shopId: shop.id, telegramChatId: { in: chatIds } },
+            select: {
+              telegramChatId: true,
+              telegramUsername: true,
+              firstName: true,
+              lastName: true,
+            },
+          })
+        : [];
 
-    const customerByChatId = new Map(customers.map((c) => [c.telegramChatId, c]));
+    const customerByChatId = new Map(
+      customers.map((c) => [c.telegramChatId, c]),
+    );
 
     // Batch-fetch wallet balances for all connections
     const downstreamChatIds = connections
       .map((c) => c.downstreamTelegramChatId)
       .filter((id): id is string => !!id);
 
-    const wallets = downstreamChatIds.length > 0
-      ? await this.prisma.customerWallet.findMany({
-          where: {
-            customer: {
-              shopId: shop.id,
-              telegramChatId: { in: downstreamChatIds },
+    const wallets =
+      downstreamChatIds.length > 0
+        ? await this.prisma.customerWallet.findMany({
+            where: {
+              customer: {
+                shopId: shop.id,
+                telegramChatId: { in: downstreamChatIds },
+              },
             },
-          },
-          include: { customer: { select: { telegramChatId: true } } },
-        })
-      : [];
+            include: { customer: { select: { telegramChatId: true } } },
+          })
+        : [];
 
     const walletByChatId = new Map(
-      wallets.map((w) => [w.customer.telegramChatId, decimalToNumber(w.balance)]),
+      wallets.map((w) => [
+        w.customer.telegramChatId,
+        decimalToNumber(w.balance),
+      ]),
     );
 
     return connections.map((connection) => {
@@ -505,15 +670,32 @@ export class InternalSourceService {
               displayName: connection.downstreamSeller.displayName,
               telegramUsername: customer?.telegramUsername ?? null,
             }
-          : null,
+          : customer
+            ? {
+                id: `customer:${connection.apiKey?.telegramChatId}`,
+                displayName:
+                  [customer.firstName, customer.lastName]
+                    .filter(Boolean)
+                    .join(" ") ||
+                  customer.telegramUsername ||
+                  connection.label ||
+                  "Bot customer",
+                telegramUsername: customer.telegramUsername ?? null,
+              }
+            : null,
         downstreamShop: connection.downstreamShop
           ? {
               id: connection.downstreamShop.id,
               name: connection.downstreamShop.name,
               slug: connection.downstreamShop.slug,
-              telegramBotUsername: connection.downstreamShop.botConfig?.telegramBotUsername ?? null,
+              telegramBotUsername:
+                connection.downstreamShop.botConfig?.telegramBotUsername ??
+                null,
             }
           : null,
+        clientName: connection.clientName,
+        clientBotUsername: connection.clientBotUsername,
+        clientConnectedAt: connection.clientConnectedAt,
       };
     });
   }
@@ -564,12 +746,17 @@ export class InternalSourceService {
     }
 
     if (!connection.downstreamTelegramChatId) {
-      throw new BadRequestException("Connection has no linked customer wallet to adjust.");
+      throw new BadRequestException(
+        "Connection has no linked customer wallet to adjust.",
+      );
     }
 
     await this.prisma.$transaction(async (tx) => {
       const customer = await tx.customer.findFirst({
-        where: { shopId: connection.upstreamShopId, telegramChatId: connection.downstreamTelegramChatId! },
+        where: {
+          shopId: connection.upstreamShopId,
+          telegramChatId: connection.downstreamTelegramChatId!,
+        },
         include: { wallet: true },
       });
 
@@ -580,7 +767,12 @@ export class InternalSourceService {
       let cWallet = customer.wallet;
       if (!cWallet) {
         cWallet = await tx.customerWallet.create({
-          data: { customerId: customer.id, balance: toDecimal(0), balanceUsdt: toDecimal(0), currency: "VND" },
+          data: {
+            customerId: customer.id,
+            balance: toDecimal(0),
+            balanceUsdt: toDecimal(0),
+            currency: "VND",
+          },
         });
       }
 
@@ -645,7 +837,9 @@ export class InternalSourceService {
       where: {
         upstreamShopId: shop.id,
         status: status
-          ? (String(status || "").trim().toUpperCase() as InternalSourceOrderStatus)
+          ? (String(status || "")
+              .trim()
+              .toUpperCase() as InternalSourceOrderStatus)
           : undefined,
       },
       include: {
@@ -663,7 +857,41 @@ export class InternalSourceService {
       take: 100,
     });
 
-    return orders.map((order) => this.mapSourceOrder(order));
+    const customerChatIds = Array.from(
+      new Set(
+        orders
+          .filter((order) => !order.downstreamOrder)
+          .map((order) => order.connection.downstreamTelegramChatId)
+          .filter((id): id is string => Boolean(id)),
+      ),
+    );
+    const directCustomers =
+      customerChatIds.length > 0
+        ? await this.prisma.customer.findMany({
+            where: { shopId: shop.id, telegramChatId: { in: customerChatIds } },
+            select: {
+              telegramChatId: true,
+              telegramUsername: true,
+              telegramUserId: true,
+              firstName: true,
+              lastName: true,
+            },
+          })
+        : [];
+    const directCustomerByChatId = new Map(
+      directCustomers.map((customer) => [customer.telegramChatId, customer]),
+    );
+
+    return orders.map((order) =>
+      this.mapSourceOrder(
+        order,
+        order.connection.downstreamTelegramChatId
+          ? directCustomerByChatId.get(
+              order.connection.downstreamTelegramChatId,
+            )
+          : undefined,
+      ),
+    );
   }
 
   async connectDownstreamShop(
@@ -673,13 +901,29 @@ export class InternalSourceService {
     const downstreamShop = await this.shopsService.getSellerShop(user.id);
     const resolvedKey = await this.resolveApiKey(dto.apiKey);
 
-    if (resolvedKey.seller.tier !== SellerTier.ULTRA) {
-      throw new ForbiddenException("Only PRO sellers can publish internal source keys.");
+    if (
+      resolvedKey.seller.tier !== SellerTier.PRO &&
+      resolvedKey.seller.tier !== SellerTier.ULTRA
+    ) {
+      throw new ForbiddenException(
+        "Only PRO sellers can publish internal source keys.",
+      );
     }
 
-    this.assertApiKeyUsable(resolvedKey);
+    if (resolvedKey.status !== InternalSourceApiKeyStatus.ACTIVE) {
+      throw new ForbiddenException("Source API key is no longer active.");
+    }
+    if (
+      resolvedKey.expiresAt &&
+      resolvedKey.expiresAt.getTime() <= Date.now()
+    ) {
+      throw new ForbiddenException("Source API key has expired.");
+    }
 
-    if (resolvedKey.connection && resolvedKey.connection.downstreamShopId == null) {
+    if (
+      resolvedKey.connection &&
+      resolvedKey.connection.downstreamShopId == null
+    ) {
       throw new BadRequestException(
         "This key is bound to a bot wallet (customer source key) and cannot be used as a dashboard shop connection.",
       );
@@ -689,11 +933,15 @@ export class InternalSourceService {
       resolvedKey.connection &&
       resolvedKey.connection.downstreamShopId !== downstreamShop.id
     ) {
-      throw new BadRequestException("This source key is already assigned to another downstream shop.");
+      throw new BadRequestException(
+        "This source key is already assigned to another downstream shop.",
+      );
     }
 
     if (resolvedKey.shop.id === downstreamShop.id) {
-      throw new BadRequestException("You cannot connect your shop to its own internal source key.");
+      throw new BadRequestException(
+        "You cannot connect your shop to its own internal source key.",
+      );
     }
 
     const connection = await this.prisma.$transaction(async (tx) => {
@@ -726,13 +974,26 @@ export class InternalSourceService {
             },
           });
 
+      await tx.internalSourceApiKey.update({
+        where: { id: resolvedKey.id },
+        data: {
+          keyEncrypted: encryptSecret(
+            dto.apiKey.trim(),
+            this.config.encryptionKey,
+          ),
+        },
+      });
+
       await tx.providerConfig.upsert({
         where: { shopId: downstreamShop.id },
         update: {
           providerKind: ProviderKind.INTERNAL,
           providerName: "internal_pro",
           baseUrl: this.getInternalBuyerBaseUrl(),
-          buyerKeyEncrypted: encryptSecret(dto.apiKey.trim(), this.config.encryptionKey),
+          buyerKeyEncrypted: encryptSecret(
+            dto.apiKey.trim(),
+            this.config.encryptionKey,
+          ),
           internalSourceConnectionId: nextConnection.id,
           connectionStatus: "VERIFIED",
           lastVerifiedAt: new Date(),
@@ -742,7 +1003,10 @@ export class InternalSourceService {
           providerKind: ProviderKind.INTERNAL,
           providerName: "internal_pro",
           baseUrl: this.getInternalBuyerBaseUrl(),
-          buyerKeyEncrypted: encryptSecret(dto.apiKey.trim(), this.config.encryptionKey),
+          buyerKeyEncrypted: encryptSecret(
+            dto.apiKey.trim(),
+            this.config.encryptionKey,
+          ),
           internalSourceConnectionId: nextConnection.id,
           sourceNotificationSyncEnabled: true,
           connectionStatus: "VERIFIED",
@@ -764,7 +1028,9 @@ export class InternalSourceService {
     const amount = Number(dto.amount);
 
     if (!Number.isInteger(amount) || amount < 1000) {
-      throw new BadRequestException("Top-up amount must be at least 1,000 VND.");
+      throw new BadRequestException(
+        "Top-up amount must be at least 1,000 VND.",
+      );
     }
 
     const connection = await this.prisma.downstreamSourceConnection.findFirst({
@@ -776,7 +1042,47 @@ export class InternalSourceService {
     });
 
     if (!connection) {
-      throw new NotFoundException("No internal source connection found for this shop.");
+      throw new NotFoundException(
+        "No internal source connection found for this shop.",
+      );
+    }
+
+    return this.topUpConnectionByRecord(downstreamShop, connection, amount);
+  }
+
+  async topUpConnection(
+    user: AuthenticatedUser,
+    connectionId: string,
+    dto: TopUpInternalSourceConnectionDto,
+  ) {
+    const downstreamShop = await this.shopsService.getSellerShop(user.id);
+    const amount = Number(dto.amount);
+    const connection = await this.prisma.downstreamSourceConnection.findFirst({
+      where: {
+        id: connectionId,
+        downstreamShopId: downstreamShop.id,
+        status: DownstreamSourceConnectionStatus.ACTIVE,
+      },
+    });
+    if (!connection) {
+      throw new NotFoundException("Internal source connection not found.");
+    }
+    return this.topUpConnectionByRecord(downstreamShop, connection, amount);
+  }
+
+  private async topUpConnectionByRecord(
+    downstreamShop: Awaited<ReturnType<ShopsService["getSellerShop"]>>,
+    connection: {
+      id: string;
+      upstreamShopId: string;
+      downstreamTelegramChatId: string | null;
+    },
+    amount: number,
+  ) {
+    if (!Number.isInteger(amount) || amount < 1000) {
+      throw new BadRequestException(
+        "Top-up amount must be at least 1,000 VND.",
+      );
     }
 
     await this.prisma.$transaction(async (tx) => {
@@ -800,12 +1106,15 @@ export class InternalSourceService {
       const balanceBeforeWallet = decimalToNumber(wallet.balance);
 
       if (balanceBeforeWallet < amount) {
-        throw new BadRequestException("Seller wallet balance is not enough for this source top-up.");
+        throw new BadRequestException(
+          "Seller wallet balance is not enough for this source top-up.",
+        );
       }
 
-      const refreshedConnection = await tx.downstreamSourceConnection.findUnique({
-        where: { id: connection.id },
-      });
+      const refreshedConnection =
+        await tx.downstreamSourceConnection.findUnique({
+          where: { id: connection.id },
+        });
 
       if (!refreshedConnection) {
         throw new NotFoundException("Internal source connection not found.");
@@ -839,17 +1148,27 @@ export class InternalSourceService {
       let customerWalletAfter = 0;
       if (refreshedConnection.downstreamTelegramChatId) {
         const customer = await tx.customer.findFirst({
-          where: { shopId: refreshedConnection.upstreamShopId, telegramChatId: refreshedConnection.downstreamTelegramChatId },
+          where: {
+            shopId: refreshedConnection.upstreamShopId,
+            telegramChatId: refreshedConnection.downstreamTelegramChatId,
+          },
           include: { wallet: true },
         });
         if (customer) {
           let cWallet = customer.wallet;
           if (!cWallet) {
             cWallet = await tx.customerWallet.create({
-              data: { customerId: customer.id, balance: toDecimal(0), balanceUsdt: toDecimal(0), currency: "VND" },
+              data: {
+                customerId: customer.id,
+                balance: toDecimal(0),
+                balanceUsdt: toDecimal(0),
+                currency: "VND",
+              },
             });
           }
-          await tx.$queryRaw(Prisma.sql`SELECT id FROM customer_wallets WHERE id = ${cWallet.id} FOR UPDATE`);
+          await tx.$queryRaw(
+            Prisma.sql`SELECT id FROM customer_wallets WHERE id = ${cWallet.id} FOR UPDATE`,
+          );
           customerWalletBefore = decimalToNumber(cWallet.balance);
           customerWalletAfter = customerWalletBefore + amount;
           await tx.customerWallet.update({
@@ -893,7 +1212,115 @@ export class InternalSourceService {
       });
     });
 
-    return this.getCurrentConnection(user);
+    return this.getCurrentConnectionById(connection.id);
+  }
+
+  async disconnectConnection(user: AuthenticatedUser, connectionId: string) {
+    const shop = await this.shopsService.getSellerShop(user.id);
+    const connection = await this.prisma.downstreamSourceConnection.findFirst({
+      where: { id: connectionId, downstreamShopId: shop.id },
+    });
+    if (!connection) {
+      throw new NotFoundException("Internal source connection not found.");
+    }
+
+    const result = await this.prisma.$transaction(async (tx) => {
+      const products = await tx.sourceProduct.findMany({
+        where: {
+          shopId: shop.id,
+          providerName: { notIn: ["manual", "pro_source", "disconnected_archive"] },
+        },
+        select: {
+          id: true,
+          _count: { select: { orders: true, internalSourceOrders: true } },
+        },
+      });
+      const deletableIds = products
+        .filter(
+          (product) =>
+            product._count.orders === 0 &&
+            product._count.internalSourceOrders === 0,
+        )
+        .map((product) => product.id);
+      const archivedIds = products
+        .filter(
+          (product) =>
+            product._count.orders > 0 ||
+            product._count.internalSourceOrders > 0,
+        )
+        .map((product) => product.id);
+
+      if (deletableIds.length > 0) {
+        await tx.sourceProduct.deleteMany({
+          where: { id: { in: deletableIds } },
+        });
+      }
+      if (archivedIds.length > 0) {
+        await tx.sourceProduct.updateMany({
+          where: { id: { in: archivedIds } },
+          data: {
+            providerName: "disconnected_archive",
+            available: 0,
+            internalSourceEnabled: false,
+          },
+        });
+      }
+
+      await tx.downstreamSourceConnection.update({
+        where: { id: connection.id },
+        data: { status: DownstreamSourceConnectionStatus.DISABLED },
+      });
+
+      const replacement = await tx.downstreamSourceConnection.findFirst({
+        where: {
+          downstreamShopId: shop.id,
+          status: DownstreamSourceConnectionStatus.ACTIVE,
+          id: { not: connection.id },
+        },
+        orderBy: { createdAt: "desc" },
+        include: { apiKey: { select: { keyEncrypted: true } } },
+      });
+      const provider = await tx.providerConfig.findUnique({
+        where: { shopId: shop.id },
+        select: { internalSourceConnectionId: true },
+      });
+      if (provider?.internalSourceConnectionId === connection.id) {
+        await tx.providerConfig.update({
+          where: { shopId: shop.id },
+          data: replacement
+            ? {
+                providerKind: ProviderKind.INTERNAL,
+                providerName: "internal_pro",
+                internalSourceConnectionId: replacement.id,
+                ...(replacement.apiKey?.keyEncrypted
+                  ? { buyerKeyEncrypted: replacement.apiKey.keyEncrypted }
+                  : {}),
+                connectionStatus: "VERIFIED",
+                lastVerifiedAt: new Date(),
+              }
+            : {
+                internalSourceConnectionId: null,
+                connectionStatus: "DISABLED",
+                lastVerifiedAt: null,
+              },
+        });
+      }
+
+      return {
+        deletedProducts: deletableIds.length,
+        archivedProducts: archivedIds.length,
+        activeConnections: replacement ? 1 : 0,
+      };
+    });
+
+    const activeConnections =
+      await this.prisma.downstreamSourceConnection.count({
+        where: {
+          downstreamShopId: shop.id,
+          status: DownstreamSourceConnectionStatus.ACTIVE,
+        },
+      });
+    return { ok: true, ...result, activeConnections, ordersPreserved: true };
   }
 
   async manualDeliverSourceOrder(
@@ -947,7 +1374,9 @@ export class InternalSourceService {
     const order = await this.getManagedSourceOrder(user.id, id);
 
     if (order.status === InternalSourceOrderStatus.DELIVERED) {
-      throw new BadRequestException("Delivered source orders cannot be failed.");
+      throw new BadRequestException(
+        "Delivered source orders cannot be failed.",
+      );
     }
 
     if (
@@ -970,21 +1399,29 @@ export class InternalSourceService {
     return this.getSourceOrderById(id);
   }
 
-  async listProductsByKey(rawKey: string, requestMeta?: {
-    path?: string;
-    method?: string;
-    ipAddress?: string | null;
-  }) {
+  async listProductsByKey(
+    rawKey: string,
+    requestMeta?: {
+      path?: string;
+      method?: string;
+      ipAddress?: string | null;
+    },
+  ) {
     const resolvedKey = await this.resolveApiKey(rawKey);
     const connection = this.assertApiKeyUsable(resolvedKey);
     const products = await this.prisma.sourceProduct.findMany({
       where: {
         shopId: connection.upstreamShopId,
         internalSourceEnabled: true,
-        OR: [
-          { available: null },
-          { available: { gt: 0 } },
-        ],
+        archivedAt: null,
+        OR: [{ available: null }, { available: { gt: 0 } }],
+        overrides: {
+          some: {
+            sellerId: connection.upstreamSellerId,
+            enabled: true,
+            groupId: { not: null },
+          },
+        },
       },
       include: {
         overrides: {
@@ -999,16 +1436,25 @@ export class InternalSourceService {
     });
 
     const customerDiscount = connection.downstreamTelegramChatId
-      ? await this.prisma.customer.findFirst({
-          where: { shopId: connection.upstreamShopId, telegramChatId: connection.downstreamTelegramChatId },
-          select: { discountPercent: true },
-        }).then((c) => Number(c?.discountPercent ?? 0))
+      ? await this.prisma.customer
+          .findFirst({
+            where: {
+              shopId: connection.upstreamShopId,
+              telegramChatId: connection.downstreamTelegramChatId,
+            },
+            select: { discountPercent: true },
+          })
+          .then((c) => Number(c?.discountPercent ?? 0))
       : 0;
 
     const response = {
       success: true,
       products: products.map((product) =>
-        this.mapPublishedProduct(product, connection.upstreamSellerId, customerDiscount),
+        this.mapPublishedProduct(
+          product,
+          connection.upstreamSellerId,
+          customerDiscount,
+        ),
       ),
     };
 
@@ -1019,16 +1465,25 @@ export class InternalSourceService {
       },
     });
 
-    await this.recordAccessLog(resolvedKey, requestMeta, 200, undefined, response);
+    await this.recordAccessLog(
+      resolvedKey,
+      requestMeta,
+      200,
+      undefined,
+      response,
+    );
 
     return response;
   }
 
-  async getBalanceByKey(rawKey: string, requestMeta?: {
-    path?: string;
-    method?: string;
-    ipAddress?: string | null;
-  }) {
+  async getBalanceByKey(
+    rawKey: string,
+    requestMeta?: {
+      path?: string;
+      method?: string;
+      ipAddress?: string | null;
+    },
+  ) {
     const resolvedKey = await this.resolveApiKey(rawKey);
     const connection = this.assertApiKeyUsable(resolvedKey);
     let walletBalance = 0;
@@ -1054,13 +1509,22 @@ export class InternalSourceService {
       usdtBalance: 0,
       updatedAt: connection.updatedAt.toISOString(),
       requester: {
-        name: connection.downstreamSeller?.displayName ?? connection.downstreamTelegramChatId ?? "Khách",
+        name:
+          connection.downstreamSeller?.displayName ??
+          connection.downstreamTelegramChatId ??
+          "Khách",
         chatId: connection.id,
       },
       botSource: "internal_pro",
     };
 
-    await this.recordAccessLog(resolvedKey, requestMeta, 200, undefined, response);
+    await this.recordAccessLog(
+      resolvedKey,
+      requestMeta,
+      200,
+      undefined,
+      response,
+    );
 
     return response;
   }
@@ -1081,6 +1545,14 @@ export class InternalSourceService {
         id: payload.product_id,
         shopId: connection.upstreamShopId,
         internalSourceEnabled: true,
+        archivedAt: null,
+        overrides: {
+          some: {
+            sellerId: connection.upstreamSellerId,
+            enabled: true,
+            groupId: { not: null },
+          },
+        },
       },
       include: {
         overrides: {
@@ -1096,7 +1568,13 @@ export class InternalSourceService {
         success: false,
         message: "Source product not found or not published.",
       };
-      await this.recordAccessLog(resolvedKey, requestMeta, 404, payload, errorResponse);
+      await this.recordAccessLog(
+        resolvedKey,
+        requestMeta,
+        404,
+        payload,
+        errorResponse,
+      );
       return errorResponse;
     }
 
@@ -1105,7 +1583,13 @@ export class InternalSourceService {
         success: false,
         message: "Quantity must be a positive integer.",
       };
-      await this.recordAccessLog(resolvedKey, requestMeta, 400, payload, errorResponse);
+      await this.recordAccessLog(
+        resolvedKey,
+        requestMeta,
+        400,
+        payload,
+        errorResponse,
+      );
       return errorResponse;
     }
 
@@ -1113,28 +1597,62 @@ export class InternalSourceService {
     const customerEmail = parsedCustomerEmails.emails.join("\n") || null;
     if (
       this.productRequiresCustomerEmail(product.metadataJson) &&
-      (!hasValidCustomerEmailList(parsedCustomerEmails) || parsedCustomerEmails.emails.length !== quantity)
+      (!hasValidCustomerEmailList(parsedCustomerEmails) ||
+        parsedCustomerEmails.emails.length !== quantity)
     ) {
       const errorResponse = {
         success: false,
         message: "Enter one valid, unique customer email per purchased item.",
       };
-      await this.recordAccessLog(resolvedKey, requestMeta, 400, payload, errorResponse);
+      await this.recordAccessLog(
+        resolvedKey,
+        requestMeta,
+        400,
+        payload,
+        errorResponse,
+      );
       return errorResponse;
     }
 
     const fallbackOverridePrice = product.overrides?.[0]?.salePrice
       ? decimalToNumber(product.overrides[0].salePrice)
       : null;
-    const unitPrice = product.internalSourcePrice != null
-      ? decimalToNumber(product.internalSourcePrice)
-      : fallbackOverridePrice ?? 0;
+    const unitPrice =
+      product.internalSourcePrice != null
+        ? decimalToNumber(product.internalSourcePrice)
+        : (fallbackOverridePrice ?? 0);
     if (unitPrice <= 0) {
       const errorResponse = {
         success: false,
         message: "Source product has no wholesale or sale price configured.",
       };
-      await this.recordAccessLog(resolvedKey, requestMeta, 400, payload, errorResponse);
+      await this.recordAccessLog(
+        resolvedKey,
+        requestMeta,
+        400,
+        payload,
+        errorResponse,
+      );
+      return errorResponse;
+    }
+    if (
+      !isOrderPriceSafe({
+        totalSaleAmount: unitPrice * quantity,
+        totalSourceAmount: decimalToNumber(product.sourcePrice) * quantity,
+      })
+    ) {
+      const errorResponse = {
+        success: false,
+        message:
+          "Wholesale price after discount is below the current source cost.",
+      };
+      await this.recordAccessLog(
+        resolvedKey,
+        requestMeta,
+        400,
+        payload,
+        errorResponse,
+      );
       return errorResponse;
     }
     const totalAmount = unitPrice * quantity;
@@ -1143,11 +1661,16 @@ export class InternalSourceService {
     try {
       const created = await this.prisma.$transaction(async (tx) => {
         if (!connection.downstreamTelegramChatId) {
-          throw new BadRequestException("Connection has no linked customer wallet.");
+          throw new BadRequestException(
+            "Connection has no linked customer wallet.",
+          );
         }
 
         const customer = await tx.customer.findFirst({
-          where: { shopId: connection.upstreamShopId, telegramChatId: connection.downstreamTelegramChatId },
+          where: {
+            shopId: connection.upstreamShopId,
+            telegramChatId: connection.downstreamTelegramChatId,
+          },
           include: { wallet: true },
         });
 
@@ -1158,27 +1681,47 @@ export class InternalSourceService {
         await tx.$queryRaw(
           Prisma.sql`SELECT id FROM customer_wallets WHERE id = ${customer.wallet.id} FOR UPDATE`,
         );
-
-        const currentConnection = await tx.downstreamSourceConnection.findUnique({
-          where: { id: connection.id },
-          select: { id: true, status: true },
+        const freshWallet = await tx.customerWallet.findUnique({
+          where: { id: customer.wallet.id },
         });
+        if (!freshWallet) {
+          throw new BadRequestException("Customer wallet not found.");
+        }
+
+        const currentConnection =
+          await tx.downstreamSourceConnection.findUnique({
+            where: { id: connection.id },
+            select: { id: true, status: true },
+          });
 
         if (!currentConnection) {
           throw new NotFoundException("Internal source connection not found.");
         }
-
-        const balanceBefore = decimalToNumber(customer.wallet.balance);
-        const commissionBefore = decimalToNumber(customer.wallet.commissionBalance);
-
-        if (balanceBefore + commissionBefore < totalAmount) {
-          throw new BadRequestException("Downstream source balance is not enough.");
+        if (
+          currentConnection.status !== DownstreamSourceConnectionStatus.ACTIVE
+        ) {
+          throw new BadRequestException("Downstream connection is not active.");
         }
 
-        const split = splitWalletDebit(commissionBefore, balanceBefore, totalAmount);
+        const balanceBefore = decimalToNumber(freshWallet.balance);
+        const commissionBefore = decimalToNumber(freshWallet.commissionBalance);
+
+        if (balanceBefore + commissionBefore < totalAmount) {
+          throw new BadRequestException(
+            "Downstream source balance is not enough.",
+          );
+        }
+
+        const split = splitWalletDebit(
+          commissionBefore,
+          balanceBefore,
+          totalAmount,
+        );
         const balanceAfter = split.balanceAfter;
         const commissionAfter = split.commissionAfter;
-        const sourceOrderCode = generateSourceOrderCode(payload.client_order_code);
+        const sourceOrderCode = generateSourceOrderCode(
+          payload.client_order_code,
+        );
         const order = await tx.internalSourceOrder.create({
           data: {
             connectionId: connection.id,
@@ -1194,7 +1737,7 @@ export class InternalSourceService {
             unitPrice: toDecimal(unitPrice),
             sourcePriceSnapshot: product.sourcePrice,
             totalAmount: toDecimal(totalAmount),
-            status: InternalSourceOrderStatus.PROCESSING,
+            status: InternalSourceOrderStatus.PENDING,
             metadataJson: {
               customerEmail,
               slotMonths: payload.slot_months || null,
@@ -1204,7 +1747,10 @@ export class InternalSourceService {
 
         await tx.customerWallet.update({
           where: { id: customer.wallet.id },
-          data: { balance: toDecimal(balanceAfter), commissionBalance: toDecimal(commissionAfter) },
+          data: {
+            balance: toDecimal(balanceAfter),
+            commissionBalance: toDecimal(commissionAfter),
+          },
         });
 
         await tx.customerWalletLedger.create({
@@ -1263,12 +1809,20 @@ export class InternalSourceService {
       createdOrderId = created.id;
     } catch (error) {
       const message =
-        error instanceof Error ? error.message : "Could not create internal source order.";
+        error instanceof Error
+          ? error.message
+          : "Could not create internal source order.";
       const errorResponse = {
         success: false,
         message,
       };
-      await this.recordAccessLog(resolvedKey, requestMeta, 400, payload, errorResponse);
+      await this.recordAccessLog(
+        resolvedKey,
+        requestMeta,
+        400,
+        payload,
+        errorResponse,
+      );
       return errorResponse;
     }
 
@@ -1315,7 +1869,13 @@ export class InternalSourceService {
         success: false,
         message: "Source order not found.",
       };
-      await this.recordAccessLog(resolvedKey, requestMeta, 404, identifier, errorResponse);
+      await this.recordAccessLog(
+        resolvedKey,
+        requestMeta,
+        404,
+        identifier,
+        errorResponse,
+      );
       return errorResponse;
     }
 
@@ -1334,9 +1894,116 @@ export class InternalSourceService {
       },
     };
 
-    await this.recordAccessLog(resolvedKey, requestMeta, 200, identifier, response);
+    await this.recordAccessLog(
+      resolvedKey,
+      requestMeta,
+      200,
+      identifier,
+      response,
+    );
 
     return response;
+  }
+
+  private async popInternalManualStockEntries(
+    tx: Prisma.TransactionClient,
+    sourceProductId: string,
+    quantity: number,
+  ) {
+    const now = new Date();
+    const candidates = await tx.stockEntry.findMany({
+      where: {
+        sourceProductId,
+        status: "AVAILABLE",
+        OR: [
+          { batchId: null },
+          { batch: { deletedAt: null, expiresAt: null } },
+          { batch: { deletedAt: null, expiresAt: { gt: now } } },
+        ],
+      },
+      include: {
+        batch: {
+          select: {
+            id: true,
+            costPerUnit: true,
+            priority: true,
+            createdAt: true,
+          },
+        },
+      },
+    });
+    candidates.sort((left, right) => {
+      if (!left.batchId && right.batchId) return -1;
+      if (left.batchId && !right.batchId) return 1;
+      const priorityDelta =
+        (right.batch?.priority ?? 0) - (left.batch?.priority ?? 0);
+      if (priorityDelta !== 0) return priorityDelta;
+      const batchDateDelta =
+        (left.batch?.createdAt.getTime() ?? 0) -
+        (right.batch?.createdAt.getTime() ?? 0);
+      if (batchDateDelta !== 0) return batchDateDelta;
+      const uploadDateDelta =
+        left.uploadedAt.getTime() - right.uploadedAt.getTime();
+      if (uploadDateDelta !== 0) return uploadDateDelta;
+      return left.id.localeCompare(right.id);
+    });
+    const entries = candidates.slice(0, quantity);
+    if (entries.length < quantity) return null;
+
+    const entryIds = entries.map((entry) => entry.id);
+    await tx.stockEntry.updateMany({
+      where: { id: { in: entryIds }, status: "AVAILABLE" },
+      data: { status: "SOLD", soldAt: now, extractedAt: now },
+    });
+    const totalCost = entries.reduce(
+      (sum, entry) =>
+        sum +
+        (entry.batch?.costPerUnit
+          ? decimalToNumber(entry.batch.costPerUnit)
+          : 0),
+      0,
+    );
+    for (const batchId of new Set(
+      entries.map((entry) => entry.batchId).filter(Boolean) as string[],
+    )) {
+      const remaining = await tx.stockEntry.count({
+        where: { batchId, status: "AVAILABLE" },
+      });
+      if (remaining === 0) {
+        await tx.stockBatch.update({
+          where: { id: batchId },
+          data: { deletedAt: now },
+        });
+      }
+    }
+    return {
+      texts: entries.map((entry) => entry.text),
+      entryIds,
+      totalCost,
+    };
+  }
+
+  private mapExistingFulfillmentResult(order: {
+    id: string;
+    sourceOrderCode: string;
+    status: InternalSourceOrderStatus;
+    deliveredAccountText: string | null;
+    failureReason: string | null;
+  }) {
+    return {
+      success: order.status === InternalSourceOrderStatus.DELIVERED,
+      outOfStock: false,
+      pending:
+        order.status === InternalSourceOrderStatus.PENDING_STOCK ||
+        order.status === InternalSourceOrderStatus.PENDING_MANUAL,
+      rawResponse: {
+        success: order.status === InternalSourceOrderStatus.DELIVERED,
+        orderId: order.id,
+        orderCode: order.sourceOrderCode,
+        deliveredText: order.deliveredAccountText ?? undefined,
+        message: order.failureReason ?? undefined,
+      },
+    };
   }
 
   async fulfillInternalSourceOrder(orderId: string) {
@@ -1362,20 +2029,7 @@ export class InternalSourceService {
     // If the order is no longer PENDING it has already been processed — return its
     // current shape instead of re-running delivery/refund.
     if (order.status !== InternalSourceOrderStatus.PENDING) {
-      return {
-        success: order.status === InternalSourceOrderStatus.DELIVERED,
-        outOfStock: false,
-        pending:
-          order.status === InternalSourceOrderStatus.PENDING_STOCK ||
-          order.status === InternalSourceOrderStatus.PENDING_MANUAL,
-        rawResponse: {
-          success: order.status === InternalSourceOrderStatus.DELIVERED,
-          orderId: order.id,
-          orderCode: order.sourceOrderCode,
-          deliveredText: order.deliveredAccountText ?? undefined,
-          message: order.failureReason ?? undefined,
-        },
-      };
+      return this.mapExistingFulfillmentResult(order);
     }
 
     const sourceMetadata = this.asRecord(order.sourceProduct.metadataJson);
@@ -1388,49 +2042,235 @@ export class InternalSourceService {
     const isCustomerBound = order.downstreamShopId == null;
 
     if (isManualProduct) {
-      if (deliveryEntries.length >= order.quantity) {
+      const [totalStockEntries, availableStockEntries] = await Promise.all([
+        this.prisma.stockEntry.count({
+          where: { sourceProductId: order.sourceProductId },
+        }),
+        this.prisma.stockEntry.count({
+          where: {
+            sourceProductId: order.sourceProductId,
+            status: "AVAILABLE",
+            OR: [
+              { batchId: null },
+              { batch: { deletedAt: null, expiresAt: null } },
+              { batch: { deletedAt: null, expiresAt: { gt: new Date() } } },
+            ],
+          },
+        }),
+      ]);
+      if (availableStockEntries > 0) {
+        const shortageSentinel = Symbol("internal_manual_stock_shortage");
+        const unsafeMarginSentinel = Symbol("internal_manual_stock_margin");
+        let actualStockCost = 0;
+        try {
+          const delivered = await this.prisma.$transaction(async (tx) => {
+            await tx.$queryRaw(
+              Prisma.sql`SELECT id FROM internal_source_orders WHERE id = ${order.id} FOR UPDATE`,
+            );
+            const currentOrder = await tx.internalSourceOrder.findUnique({
+              where: { id: order.id },
+              select: { status: true },
+            });
+            if (currentOrder?.status !== InternalSourceOrderStatus.PENDING) {
+              throw shortageSentinel;
+            }
+            await tx.$queryRaw(
+              Prisma.sql`SELECT id FROM source_products WHERE id = ${order.sourceProductId} FOR UPDATE`,
+            );
+            const popped = await this.popInternalManualStockEntries(
+              tx,
+              order.sourceProductId,
+              order.quantity,
+            );
+            if (!popped) throw shortageSentinel;
+            actualStockCost = popped.totalCost;
+            if (
+              !isOrderPriceSafe({
+                totalSaleAmount: decimalToNumber(order.totalAmount),
+                totalSourceAmount: popped.totalCost,
+              })
+            ) {
+              throw unsafeMarginSentinel;
+            }
+
+            const deliveredText = popped.texts.join("\n\n");
+            const remainingMetadataEntries = [...deliveryEntries];
+            for (const text of popped.texts) {
+              const index = remainingMetadataEntries.indexOf(text);
+              if (index >= 0) remainingMetadataEntries.splice(index, 1);
+            }
+            const remainingAvailable = await tx.stockEntry.count({
+              where: {
+                sourceProductId: order.sourceProductId,
+                status: "AVAILABLE",
+              },
+            });
+            await tx.internalSourceOrder.update({
+              where: { id: order.id },
+              data: {
+                status: InternalSourceOrderStatus.DELIVERED,
+                deliveredAccountText: deliveredText,
+                deliveredAt: new Date(),
+                sourcePriceSnapshot: toDecimal(
+                  order.quantity > 0
+                    ? popped.totalCost / order.quantity
+                    : popped.totalCost,
+                ),
+              },
+            });
+            await tx.internalSourceOrderEvent.create({
+              data: {
+                orderId: order.id,
+                eventType: "manual_stock_delivered",
+                payloadJson: {
+                  deliveredCount: popped.texts.length,
+                  entryIds: popped.entryIds,
+                  actualStockCost: popped.totalCost,
+                  chargedAmount: decimalToNumber(order.totalAmount),
+                } as Prisma.InputJsonValue,
+              },
+            });
+            await tx.sourceProduct.update({
+              where: { id: order.sourceProductId },
+              data: {
+                soldCount: { increment: order.quantity },
+                available: remainingAvailable,
+                metadataJson: {
+                  ...sourceMetadata,
+                  manual: true,
+                  deliveryEntries: remainingMetadataEntries,
+                  deliveryText: this.normalizeManualDeliveryText(
+                    remainingMetadataEntries.join("\n\n"),
+                  ),
+                } as Prisma.InputJsonValue,
+              },
+            });
+            return deliveredText;
+          });
+          void this.stockAlertService.checkAndAlert(order.sourceProductId);
+          return {
+            success: true,
+            outOfStock: false,
+            pending: false,
+            rawResponse: {
+              success: true,
+              orderId: order.id,
+              orderCode: order.sourceOrderCode,
+              deliveredText: delivered,
+            },
+          };
+        } catch (error) {
+          if (error === unsafeMarginSentinel) {
+            const message =
+              "Actual stock cost is higher than the charged wholesale amount.";
+            await this.failInternalSourceOrder(order, message, true);
+            return {
+              success: false,
+              outOfStock: false,
+              pending: false,
+              rawResponse: {
+                success: false,
+                refunded: true,
+                orderId: order.id,
+                orderCode: order.sourceOrderCode,
+                message,
+                actualStockCost,
+              },
+            };
+          }
+          if (error !== shortageSentinel) throw error;
+        }
+      }
+      if (totalStockEntries === 0 && deliveryEntries.length >= order.quantity) {
+        if (
+          !isOrderPriceSafe({
+            totalSaleAmount: decimalToNumber(order.totalAmount),
+            totalSourceAmount:
+              decimalToNumber(order.sourceProduct.sourcePrice) * order.quantity,
+          })
+        ) {
+          const message =
+            "Current source cost is higher than the charged wholesale amount.";
+          await this.failInternalSourceOrder(order, message, true);
+          return {
+            success: false,
+            outOfStock: false,
+            pending: false,
+            rawResponse: {
+              success: false,
+              refunded: true,
+              orderId: order.id,
+              orderCode: order.sourceOrderCode,
+              message,
+            },
+          };
+        }
         const deliveredEntries = deliveryEntries.slice(0, order.quantity);
         const remainingEntries = deliveryEntries.slice(order.quantity);
         const deliveredText = deliveredEntries.join("\n\n");
 
-        await this.prisma.$transaction(async (tx) => {
-          await tx.internalSourceOrder.update({
-            where: { id: order.id },
-            data: {
-              status: InternalSourceOrderStatus.DELIVERED,
-              deliveredAccountText: deliveredText,
-              deliveredAt: new Date(),
-            },
-          });
-
-          await tx.internalSourceOrderEvent.create({
-            data: {
-              orderId: order.id,
-              eventType: "manual_stock_delivered",
-              payloadJson: {
-                deliveredCount: deliveredEntries.length,
-              } as Prisma.InputJsonValue,
-            },
-          });
-
-          await tx.sourceProduct.update({
-            where: { id: order.sourceProductId },
-            data: {
-              soldCount: {
-                increment: order.quantity,
+        const legacyDeliveryCommitted = await this.prisma.$transaction(
+          async (tx) => {
+            await tx.$queryRaw(
+              Prisma.sql`SELECT id FROM internal_source_orders WHERE id = ${order.id} FOR UPDATE`,
+            );
+            const currentOrder = await tx.internalSourceOrder.findUnique({
+              where: { id: order.id },
+              select: { status: true },
+            });
+            if (currentOrder?.status !== InternalSourceOrderStatus.PENDING) {
+              return false;
+            }
+            await tx.$queryRaw(
+              Prisma.sql`SELECT id FROM source_products WHERE id = ${order.sourceProductId} FOR UPDATE`,
+            );
+            await tx.internalSourceOrder.update({
+              where: { id: order.id },
+              data: {
+                status: InternalSourceOrderStatus.DELIVERED,
+                deliveredAccountText: deliveredText,
+                deliveredAt: new Date(),
               },
-              available: remainingEntries.length,
-              metadataJson: {
-                ...sourceMetadata,
-                manual: true,
-                deliveryEntries: remainingEntries,
-                deliveryText: this.normalizeManualDeliveryText(
-                  remainingEntries.join("\n\n"),
-                ),
-              } as Prisma.InputJsonValue,
-            },
-          });
-        });
+            });
+
+            await tx.internalSourceOrderEvent.create({
+              data: {
+                orderId: order.id,
+                eventType: "manual_stock_delivered",
+                payloadJson: {
+                  deliveredCount: deliveredEntries.length,
+                } as Prisma.InputJsonValue,
+              },
+            });
+
+            await tx.sourceProduct.update({
+              where: { id: order.sourceProductId },
+              data: {
+                soldCount: {
+                  increment: order.quantity,
+                },
+                available: remainingEntries.length,
+                metadataJson: {
+                  ...sourceMetadata,
+                  manual: true,
+                  deliveryEntries: remainingEntries,
+                  deliveryText: this.normalizeManualDeliveryText(
+                    remainingEntries.join("\n\n"),
+                  ),
+                } as Prisma.InputJsonValue,
+              },
+            });
+            return true;
+          },
+        );
+
+        if (!legacyDeliveryCommitted) {
+          const settledOrder =
+            await this.prisma.internalSourceOrder.findUniqueOrThrow({
+              where: { id: order.id },
+            });
+          return this.mapExistingFulfillmentResult(settledOrder);
+        }
 
         void this.stockAlertService.checkAndAlert(order.sourceProductId);
         return {
@@ -1501,7 +2341,11 @@ export class InternalSourceService {
     );
 
     if (!providerConfig || !buyerKey) {
-      await this.failInternalSourceOrder(order, "Upstream provider config is missing.", true);
+      await this.failInternalSourceOrder(
+        order,
+        "Upstream provider config is missing.",
+        true,
+      );
       return {
         success: false,
         outOfStock: false,
@@ -1525,13 +2369,25 @@ export class InternalSourceService {
         productId: order.sourceProduct.externalProductId,
         quantity: order.quantity,
         customerEmail:
-          typeof sourceMetadata.customerEmail === "string" ? sourceMetadata.customerEmail : null,
+          typeof sourceMetadata.customerEmail === "string"
+            ? sourceMetadata.customerEmail
+            : null,
         clientOrderCode: order.sourceOrderCode,
       },
     );
 
     if (purchaseResult.success && purchaseResult.deliveredText) {
-      await this.prisma.$transaction(async (tx) => {
+      const deliveryCommitted = await this.prisma.$transaction(async (tx) => {
+        await tx.$queryRaw(
+          Prisma.sql`SELECT id FROM internal_source_orders WHERE id = ${order.id} FOR UPDATE`,
+        );
+        const currentOrder = await tx.internalSourceOrder.findUnique({
+          where: { id: order.id },
+          select: { status: true },
+        });
+        if (currentOrder?.status !== InternalSourceOrderStatus.PENDING) {
+          return false;
+        }
         await tx.internalSourceOrder.update({
           where: { id: order.id },
           data: {
@@ -1552,21 +2408,21 @@ export class InternalSourceService {
           },
         });
 
-        await tx.sourceProduct.update({
-          where: { id: order.sourceProductId },
-          data: {
-            soldCount: {
-              increment: order.quantity,
-            },
-            available:
-              order.sourceProduct.available === null
-                ? undefined
-                : {
-                    decrement: order.quantity,
-                  },
-          },
-        });
+        await this.incrementSoldAndClampAvailable(
+          tx,
+          order.sourceProductId,
+          order.quantity,
+        );
+        return true;
       });
+
+      if (!deliveryCommitted) {
+        const settledOrder =
+          await this.prisma.internalSourceOrder.findUniqueOrThrow({
+            where: { id: order.id },
+          });
+        return this.mapExistingFulfillmentResult(settledOrder);
+      }
 
       void this.stockAlertService.checkAndAlert(order.sourceProductId);
       return {
@@ -1597,7 +2453,8 @@ export class InternalSourceService {
           where: { id: order.id },
           data: {
             status: InternalSourceOrderStatus.PENDING_STOCK,
-            failureReason: purchaseResult.message || "Source stock is not enough right now.",
+            failureReason:
+              purchaseResult.message || "Source stock is not enough right now.",
           },
         });
 
@@ -1621,7 +2478,8 @@ export class InternalSourceService {
           pending: true,
           orderId: order.id,
           orderCode: order.sourceOrderCode,
-          message: purchaseResult.message || "Source stock is not enough right now.",
+          message:
+            purchaseResult.message || "Source stock is not enough right now.",
         },
       };
     }
@@ -1651,11 +2509,20 @@ export class InternalSourceService {
    * these). Returns a clean out-of-stock response shape for the REST caller.
    */
   private async refundCustomerBoundUnfulfilled(
-    order: { id: string; connectionId: string; totalAmount: Prisma.Decimal; sourceOrderCode: string },
+    order: {
+      id: string;
+      connectionId: string;
+      totalAmount: Prisma.Decimal;
+      sourceOrderCode: string;
+    },
     message: string,
   ) {
     await this.failInternalSourceOrder(
-      { id: order.id, connectionId: order.connectionId, totalAmount: order.totalAmount },
+      {
+        id: order.id,
+        connectionId: order.connectionId,
+        totalAmount: order.totalAmount,
+      },
       message,
       true,
     );
@@ -1695,6 +2562,7 @@ export class InternalSourceService {
       });
       if (
         !current ||
+        current.status === InternalSourceOrderStatus.DELIVERED ||
         current.status === InternalSourceOrderStatus.FAILED ||
         current.status === InternalSourceOrderStatus.CANCELED
       ) {
@@ -1738,20 +2606,35 @@ export class InternalSourceService {
       const refundAmount = decimalToNumber(order.totalAmount);
       let walletBefore = 0;
       let walletAfter = 0;
+      let ledgerBalanceBefore = 0;
+      let ledgerBalanceAfter = 0;
 
       if (connection.downstreamTelegramChatId) {
         const customer = await tx.customer.findFirst({
-          where: { shopId: connection.upstreamShopId, telegramChatId: connection.downstreamTelegramChatId },
+          where: {
+            shopId: connection.upstreamShopId,
+            telegramChatId: connection.downstreamTelegramChatId,
+          },
           include: { wallet: true },
         });
         if (customer) {
           let cWallet = customer.wallet;
           if (!cWallet) {
             cWallet = await tx.customerWallet.create({
-              data: { customerId: customer.id, balance: toDecimal(0), balanceUsdt: toDecimal(0), currency: "VND" },
+              data: {
+                customerId: customer.id,
+                balance: toDecimal(0),
+                balanceUsdt: toDecimal(0),
+                currency: "VND",
+              },
             });
           }
-          await tx.$queryRaw(Prisma.sql`SELECT id FROM customer_wallets WHERE id = ${cWallet.id} FOR UPDATE`);
+          await tx.$queryRaw(
+            Prisma.sql`SELECT id FROM customer_wallets WHERE id = ${cWallet.id} FOR UPDATE`,
+          );
+          const freshWallet = await tx.customerWallet.findUniqueOrThrow({
+            where: { id: cWallet.id },
+          });
 
           // Reverse the ORIGINAL debit split symmetrically. The order may have been
           // paid partly from spend-only commissionBalance (splitWalletDebit spends
@@ -1769,32 +2652,45 @@ export class InternalSourceService {
           let fromMain = refundAmount;
           let fromCommission = 0;
           if (spendRow) {
-            const mainTaken = decimalToNumber(spendRow.balanceBefore) - decimalToNumber(spendRow.balanceAfter);
+            const mainTaken =
+              decimalToNumber(spendRow.balanceBefore) -
+              decimalToNumber(spendRow.balanceAfter);
             const commissionTaken =
-              decimalToNumber(spendRow.commissionBalanceBefore) - decimalToNumber(spendRow.commissionBalanceAfter);
-            if (mainTaken >= 0 && commissionTaken >= 0 && mainTaken + commissionTaken > 0) {
+              decimalToNumber(spendRow.commissionBalanceBefore) -
+              decimalToNumber(spendRow.commissionBalanceAfter);
+            if (
+              mainTaken >= 0 &&
+              commissionTaken >= 0 &&
+              mainTaken + commissionTaken > 0
+            ) {
               fromMain = mainTaken;
               fromCommission = commissionTaken;
             }
           }
 
-          const commissionBefore = decimalToNumber(cWallet.commissionBalance);
+          const commissionBefore = decimalToNumber(
+            freshWallet.commissionBalance,
+          );
           const commissionAfter = commissionBefore + fromCommission;
-          walletBefore = decimalToNumber(cWallet.balance);
+          walletBefore = decimalToNumber(freshWallet.balance);
           walletAfter = walletBefore + fromMain;
+          ledgerBalanceBefore = walletBefore + commissionBefore;
+          ledgerBalanceAfter = walletAfter + commissionAfter;
 
           await tx.customerWallet.update({
             where: { id: cWallet.id },
             data: {
               balance: toDecimal(walletAfter),
-              ...(fromCommission > 0 ? { commissionBalance: toDecimal(commissionAfter) } : {}),
+              ...(fromCommission > 0
+                ? { commissionBalance: toDecimal(commissionAfter) }
+                : {}),
             },
           });
           await tx.customerWalletLedger.create({
             data: {
               customerId: customer.id,
               walletId: cWallet.id,
-              type: "TOPUP",
+              type: "REFUND_ORDER",
               amount: toDecimal(refundAmount),
               balanceBefore: toDecimal(walletBefore),
               balanceAfter: toDecimal(walletAfter),
@@ -1813,8 +2709,8 @@ export class InternalSourceService {
           connectionId: connection.id,
           type: InternalSourceLedgerType.REFUND_ORDER,
           amount: toDecimal(refundAmount),
-          balanceBefore: toDecimal(walletBefore),
-          balanceAfter: toDecimal(walletAfter),
+          balanceBefore: toDecimal(ledgerBalanceBefore),
+          balanceAfter: toDecimal(ledgerBalanceAfter),
           referenceType: "internal_source_order",
           referenceId: order.id,
           note: reason,
@@ -1828,16 +2724,24 @@ export class InternalSourceService {
     sellerId: string,
     discountPercent = 0,
   ) {
-    const override = product.overrides.find((item) => item.sellerId === sellerId);
-    const requiresCustomerEmail = this.productRequiresCustomerEmail(product.metadataJson);
+    const override = product.overrides.find(
+      (item) => item.sellerId === sellerId,
+    );
+    const requiresCustomerEmail =
+      product.sourceDeliveryMode === "ADD_MAIL" ||
+      this.productRequiresCustomerEmail(product.metadataJson);
     const displayName = override?.displayName || product.sourceName;
-    const fallbackSalePrice = override?.salePrice ? decimalToNumber(override.salePrice) : 0;
-    const basePrice = product.internalSourcePrice != null
-      ? decimalToNumber(product.internalSourcePrice)
-      : fallbackSalePrice;
-    const wholesalePrice = discountPercent > 0
-      ? Math.round(basePrice * (1 - discountPercent / 100))
-      : basePrice;
+    const fallbackSalePrice = override?.salePrice
+      ? decimalToNumber(override.salePrice)
+      : 0;
+    const basePrice =
+      product.internalSourcePrice != null
+        ? decimalToNumber(product.internalSourcePrice)
+        : fallbackSalePrice;
+    const wholesalePrice =
+      discountPercent > 0
+        ? Math.round(basePrice * (1 - discountPercent / 100))
+        : basePrice;
 
     return {
       _id: product.id,
@@ -1925,6 +2829,12 @@ export class InternalSourceService {
         downstreamOrder: { include: { customer: true } };
       };
     }>,
+    directCustomer?: {
+      telegramUsername: string | null;
+      telegramUserId: string;
+      firstName: string | null;
+      lastName: string | null;
+    },
   ) {
     const endCustomer = order.downstreamOrder?.customer
       ? {
@@ -1933,7 +2843,14 @@ export class InternalSourceService {
           firstName: order.downstreamOrder.customer.firstName,
           lastName: order.downstreamOrder.customer.lastName,
         }
-      : null;
+      : directCustomer
+        ? {
+            telegramUsername: directCustomer.telegramUsername,
+            telegramUserId: directCustomer.telegramUserId,
+            firstName: directCustomer.firstName,
+            lastName: directCustomer.lastName,
+          }
+        : null;
     return {
       id: order.id,
       orderCode: order.sourceOrderCode,
@@ -2013,7 +2930,9 @@ export class InternalSourceService {
       }
     }
 
-    throw new ForbiddenException("Source API key is invalid.");
+    throw new BadRequestException(
+      "Source API key is invalid or does not exist in this environment.",
+    );
   }
 
   private assertApiKeyUsable(resolvedKey: ResolvedSourceKey) {
@@ -2021,15 +2940,22 @@ export class InternalSourceService {
       throw new ForbiddenException("Source API key is no longer active.");
     }
 
-    if (resolvedKey.expiresAt && resolvedKey.expiresAt.getTime() <= Date.now()) {
+    if (
+      resolvedKey.expiresAt &&
+      resolvedKey.expiresAt.getTime() <= Date.now()
+    ) {
       throw new ForbiddenException("Source API key has expired.");
     }
 
     if (!resolvedKey.connection) {
-      throw new ForbiddenException("Source API key is not assigned to a downstream connection yet.");
+      throw new ForbiddenException(
+        "Source API key is not assigned to a downstream connection yet.",
+      );
     }
 
-    if (resolvedKey.connection.status !== DownstreamSourceConnectionStatus.ACTIVE) {
+    if (
+      resolvedKey.connection.status !== DownstreamSourceConnectionStatus.ACTIVE
+    ) {
       throw new ForbiddenException("Downstream connection is not active.");
     }
 
@@ -2047,8 +2973,10 @@ export class InternalSourceService {
       },
     });
 
-    if (seller?.tier !== SellerTier.ULTRA) {
-      throw new ForbiddenException("This action is only available for PRO sellers.");
+    if (seller?.tier !== SellerTier.PRO && seller?.tier !== SellerTier.ULTRA) {
+      throw new ForbiddenException(
+        "This action is only available for PRO sellers.",
+      );
     }
 
     return shop;
@@ -2064,7 +2992,7 @@ export class InternalSourceService {
       include: {
         apiKey: true,
         upstreamSeller: true,
-        upstreamShop: true,
+        upstreamShop: { include: { botConfig: true } },
         downstreamSeller: true,
         downstreamShop: true,
       },
@@ -2078,7 +3006,10 @@ export class InternalSourceService {
     if (connection.downstreamTelegramChatId) {
       const wallet = await this.prisma.customerWallet.findFirst({
         where: {
-          customer: { shopId: connection.upstreamShopId, telegramChatId: connection.downstreamTelegramChatId },
+          customer: {
+            shopId: connection.upstreamShopId,
+            telegramChatId: connection.downstreamTelegramChatId,
+          },
         },
         select: { balance: true },
       });
@@ -2093,7 +3024,7 @@ export class InternalSourceService {
       include: {
         apiKey: true;
         upstreamSeller: true;
-        upstreamShop: true;
+        upstreamShop: { include: { botConfig: true } };
         downstreamSeller?: true;
         downstreamShop?: true;
       };
@@ -2107,9 +3038,11 @@ export class InternalSourceService {
       balance: walletBalance,
       currency: connection.currency,
       inheritSourceTemplate: connection.inheritSourceTemplate,
-      templateOverrides: (connection.templateOverridesJson && typeof connection.templateOverridesJson === "object"
-        ? connection.templateOverridesJson
-        : {}),
+      templateOverrides:
+        connection.templateOverridesJson &&
+        typeof connection.templateOverridesJson === "object"
+          ? connection.templateOverridesJson
+          : {},
       lastCatalogSyncAt: connection.lastCatalogSyncAt,
       lastOrderedAt: connection.lastOrderedAt,
       buyerApiBaseUrl: this.getInternalBuyerBaseUrl(),
@@ -2120,7 +3053,10 @@ export class InternalSourceService {
             keyPrefix: connection.apiKey.keyPrefix,
             keySuffix: (() => {
               try {
-                const raw = decryptSecret(connection.apiKey.keyEncrypted!, this.config.encryptionKey);
+                const raw = decryptSecret(
+                  connection.apiKey.keyEncrypted!,
+                  this.config.encryptionKey,
+                );
                 return raw.slice(-4);
               } catch {
                 return null;
@@ -2140,6 +3076,8 @@ export class InternalSourceService {
         id: connection.upstreamShop.id,
         name: connection.upstreamShop.name,
         slug: connection.upstreamShop.slug,
+        telegramBotUsername:
+          connection.upstreamShop.botConfig?.telegramBotUsername ?? null,
       },
       downstreamSeller:
         "downstreamSeller" in connection && connection.downstreamSeller
@@ -2155,8 +3093,10 @@ export class InternalSourceService {
               name: connection.downstreamShop.name,
               slug: connection.downstreamShop.slug,
               telegramBotUsername:
-                "botConfig" in connection.downstreamShop && connection.downstreamShop.botConfig
-                  ? (connection.downstreamShop.botConfig as any).telegramBotUsername ?? null
+                "botConfig" in connection.downstreamShop &&
+                connection.downstreamShop.botConfig
+                  ? ((connection.downstreamShop.botConfig as any)
+                      .telegramBotUsername ?? null)
                   : null,
             }
           : null,
@@ -2199,9 +3139,13 @@ export class InternalSourceService {
 
   private isManualProduct(product: {
     providerName: string;
+    sourceDeliveryMode?: string | null;
     metadataJson?: Prisma.JsonValue | null;
   }) {
-    if (String(product.providerName || "").toLowerCase() === "manual") {
+    if (
+      product.sourceDeliveryMode === "ADD_MAIL" ||
+      String(product.providerName || "").toLowerCase() === "manual"
+    ) {
       return true;
     }
 
@@ -2209,9 +3153,35 @@ export class InternalSourceService {
     return metadata.manual === true;
   }
 
-  private productRequiresCustomerEmail(value: Prisma.JsonValue | null | undefined) {
+  private async incrementSoldAndClampAvailable(
+    tx: Prisma.TransactionClient,
+    sourceProductId: string,
+    quantity: number,
+  ) {
+    const safeQuantity = Math.max(0, Math.floor(Number(quantity) || 0));
+    if (safeQuantity === 0) return;
+    await tx.$executeRaw(
+      Prisma.sql`
+        UPDATE source_products
+        SET sold_count = sold_count + ${safeQuantity},
+            available = CASE
+              WHEN available IS NULL THEN NULL
+              ELSE GREATEST(0, available - ${safeQuantity})
+            END,
+            updated_at = NOW()
+        WHERE id = ${sourceProductId}
+      `,
+    );
+  }
+
+  private productRequiresCustomerEmail(
+    value: Prisma.JsonValue | null | undefined,
+  ) {
     const metadata = this.asRecord(value);
-    return metadata.requiresCustomerEmail === true || metadata.requires_customer_email === true;
+    return (
+      metadata.requiresCustomerEmail === true ||
+      metadata.requires_customer_email === true
+    );
   }
 
   private asRecord(value: Prisma.JsonValue | null | undefined) {
@@ -2223,7 +3193,9 @@ export class InternalSourceService {
   }
 
   private normalizeManualDeliveryText(value: string | null | undefined) {
-    const normalized = String(value || "").replace(/\r\n/g, "\n").trim();
+    const normalized = String(value || "")
+      .replace(/\r\n/g, "\n")
+      .trim();
     return normalized || null;
   }
 
@@ -2275,7 +3247,13 @@ export class InternalSourceService {
     }
 
     const record = entry as Record<string, unknown>;
-    const account = [record.account, record.email, record.username, record.user, record.login]
+    const account = [
+      record.account,
+      record.email,
+      record.username,
+      record.user,
+      record.login,
+    ]
       .map((value) => String(value || "").trim())
       .find(Boolean);
     const password = [record.password, record.pass, record.pwd]

@@ -1,8 +1,13 @@
-import { IsArray, IsInt, IsOptional, IsString, Min } from "class-validator";
+import { IsArray, IsInt, IsOptional, IsString, MaxLength, Min } from "class-validator";
 
 export class CreateCatalogGroupDto {
   @IsString()
   name!: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(1000)
+  description?: string;
 
   @IsOptional()
   @IsInt()
@@ -22,6 +27,11 @@ export class UpdateCatalogGroupDto {
   @IsOptional()
   @IsString()
   name?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(1000)
+  description?: string;
 
   @IsOptional()
   @IsInt()

@@ -18,6 +18,8 @@ export type PaymentMethodVisibilityConfig = {
   okxEnabled?: boolean | null;
   usdtTrc20Address?: string | null;
   usdtTrc20Enabled?: boolean | null;
+  usdtBep20Address?: string | null;
+  usdtBep20Enabled?: boolean | null;
   usdtSolanaAddress?: string | null;
   usdtSolanaEnabled?: boolean | null;
   usdtTonAddress?: string | null;
@@ -97,6 +99,10 @@ export function resolveVisiblePaymentProviders(
 
   if (paymentConfig?.usdtTrc20Enabled && hasValue(paymentConfig.usdtTrc20Address)) {
     providers.push(PaymentProvider.USDT_TRC20);
+  }
+
+  if (paymentConfig?.usdtBep20Enabled && hasValue(paymentConfig.usdtBep20Address)) {
+    providers.push(PaymentProvider.USDT_BEP20);
   }
 
   if (paymentConfig?.usdtSolanaEnabled && hasValue(paymentConfig.usdtSolanaAddress)) {

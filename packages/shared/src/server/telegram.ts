@@ -1,5 +1,7 @@
 import axios, { type AxiosRequestConfig } from "axios";
+import https from "node:https";
 
+const telegramHttpsAgent = new https.Agent({ keepAlive: true });
 export interface TelegramBotInfo {
   id: number;
   is_bot: boolean;
@@ -23,12 +25,21 @@ async function callTelegramApi<T>(
   // timeouts. Deterministic errors (4xx bad-request / blocked bot / ok:false) are NOT retried.
   const url = `https://api.telegram.org/bot${token}/${method}`;
   const maxAttempts = 3;
-  let response: Awaited<ReturnType<typeof axios.post<{ ok: boolean; result: T; description?: string }>>> | null = null;
+  let response: Awaited<
+    ReturnType<
+      typeof axios.post<{ ok: boolean; result: T; description?: string }>
+    >
+  > | null = null;
   let lastDesc = "unknown";
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      response = await axios.post<{ ok: boolean; result: T; description?: string }>(url, body, {
+      response = await axios.post<{
+        ok: boolean;
+        result: T;
+        description?: string;
+      }>(url, body, {
         timeout: 10000,
+        httpsAgent: telegramHttpsAgent,
         ...config,
         headers: {
           "Content-Type": "application/json",
@@ -37,7 +48,8 @@ async function callTelegramApi<T>(
       });
       break;
     } catch (err: any) {
-      lastDesc = err?.response?.data?.description || err?.message || String(err);
+      lastDesc =
+        err?.response?.data?.description || err?.message || String(err);
       const status = err?.response?.status;
       const retryAfter = Number(err?.response?.data?.parameters?.retry_after);
       const isRateLimited = status === 429;
@@ -48,21 +60,28 @@ async function callTelegramApi<T>(
       // (e.g. send the warranty replacement credentials / an order twice). Only retry those on a
       // DEFINITE rejection (429/5xx = Telegram did not deliver). Reads/edits are idempotent → safe to
       // retry on network errors too, EXCEPT getUpdates (long-poll no-response is normal, not an error).
-      const isSendMethod = /^(sendMessage|sendPhoto|sendDocument|copyMessage|sendMediaGroup)$/.test(method);
-      const networkRetryable = isAmbiguousNetwork && !isSendMethod && method !== "getUpdates";
+      const isSendMethod =
+        /^(sendMessage|sendPhoto|sendDocument|copyMessage|sendMediaGroup)$/.test(
+          method,
+        );
+      const networkRetryable =
+        isAmbiguousNetwork && !isSendMethod && method !== "getUpdates";
       const isTransient = isRateLimited || isServer5xx || networkRetryable;
       if (attempt >= maxAttempts || !isTransient) {
         throw new Error(`Telegram API method ${method} failed: ${lastDesc}`);
       }
-      const waitMs = isRateLimited && Number.isFinite(retryAfter) && retryAfter > 0
-        ? Math.min(retryAfter * 1000, 15000)
-        : Math.min(500 * 2 ** (attempt - 1), 4000);
+      const waitMs =
+        isRateLimited && Number.isFinite(retryAfter) && retryAfter > 0
+          ? Math.min(retryAfter * 1000, 15000)
+          : Math.min(500 * 2 ** (attempt - 1), 4000);
       await new Promise((r) => setTimeout(r, waitMs));
     }
   }
 
   if (!response || !response.data?.ok) {
-    throw new Error(`Telegram API method ${method} failed: ${response?.data?.description || lastDesc}`);
+    throw new Error(
+      `Telegram API method ${method} failed: ${response?.data?.description || lastDesc}`,
+    );
   }
 
   return response.data.result;
@@ -95,7 +114,10 @@ export async function telegramDeleteWebhook(token: string) {
   });
 }
 
-export async function telegramSetCommands(token: string, commands: TelegramCommand[]) {
+export async function telegramSetCommands(
+  token: string,
+  commands: TelegramCommand[],
+) {
   return callTelegramApi(token, "setMyCommands", {
     commands,
   });
@@ -160,10 +182,17 @@ export async function telegramSendDocument(
     documentBuffer.byteOffset,
     documentBuffer.byteOffset + documentBuffer.byteLength,
   ) as ArrayBuffer;
-  form.append("document", new Blob([ab], { type: "text/plain; charset=utf-8" }), filename);
+  form.append(
+    "document",
+    new Blob([ab], { type: "text/plain; charset=utf-8" }),
+    filename,
+  );
   for (const [key, value] of Object.entries(options || {})) {
     if (value !== undefined && value !== null) {
-      form.append(key, typeof value === "object" ? JSON.stringify(value) : String(value));
+      form.append(
+        key,
+        typeof value === "object" ? JSON.stringify(value) : String(value),
+      );
     }
   }
   let response: any;
@@ -171,14 +200,17 @@ export async function telegramSendDocument(
     response = await axios.post(
       `https://api.telegram.org/bot${token}/sendDocument`,
       form,
-      { timeout: 30000, maxContentLength: Infinity, maxBodyLength: Infinity },
+      { timeout: 30000, maxContentLength: Infinity, maxBodyLength: Infinity, httpsAgent: telegramHttpsAgent },
     );
   } catch (err: any) {
-    const desc = err?.response?.data?.description || err?.message || String(err);
+    const desc =
+      err?.response?.data?.description || err?.message || String(err);
     throw new Error(`Telegram API method sendDocument failed: ${desc}`);
   }
   if (!response.data?.ok) {
-    throw new Error(`Telegram API method sendDocument failed: ${response.data?.description || "unknown"}`);
+    throw new Error(
+      `Telegram API method sendDocument failed: ${response.data?.description || "unknown"}`,
+    );
   }
   return response.data.result as { message_id: number };
 }
@@ -191,11 +223,17 @@ export async function telegramSendPhotoBuffer(
 ): Promise<{ message_id: number }> {
   const form = new FormData();
   form.append("chat_id", String(chatId));
-  const ab = photoBuffer.buffer.slice(photoBuffer.byteOffset, photoBuffer.byteOffset + photoBuffer.byteLength) as ArrayBuffer;
+  const ab = photoBuffer.buffer.slice(
+    photoBuffer.byteOffset,
+    photoBuffer.byteOffset + photoBuffer.byteLength,
+  ) as ArrayBuffer;
   form.append("photo", new Blob([ab], { type: "image/png" }), "qr.png");
   for (const [key, value] of Object.entries(options || {})) {
     if (value !== undefined && value !== null) {
-      form.append(key, typeof value === "object" ? JSON.stringify(value) : String(value));
+      form.append(
+        key,
+        typeof value === "object" ? JSON.stringify(value) : String(value),
+      );
     }
   }
   let response: any;
@@ -203,14 +241,17 @@ export async function telegramSendPhotoBuffer(
     response = await axios.post(
       `https://api.telegram.org/bot${token}/sendPhoto`,
       form,
-      { timeout: 15000 },
+      { timeout: 15000, httpsAgent: telegramHttpsAgent },
     );
   } catch (err: any) {
-    const desc = err?.response?.data?.description || err?.message || String(err);
+    const desc =
+      err?.response?.data?.description || err?.message || String(err);
     throw new Error(`Telegram API method sendPhoto (buffer) failed: ${desc}`);
   }
   if (!response.data?.ok) {
-    throw new Error(`Telegram API method sendPhoto (buffer) failed: ${response.data?.description || "unknown"}`);
+    throw new Error(
+      `Telegram API method sendPhoto (buffer) failed: ${response.data?.description || "unknown"}`,
+    );
   }
   return response.data.result as { message_id: number };
 }
@@ -226,6 +267,21 @@ export async function telegramEditMessageText(
     chat_id: chatId,
     message_id: messageId,
     text,
+    ...options,
+  });
+}
+
+export async function telegramEditMessageCaption(
+  token: string,
+  chatId: string | number,
+  messageId: number,
+  caption: string,
+  options?: Record<string, unknown>,
+) {
+  return callTelegramApi(token, "editMessageCaption", {
+    chat_id: chatId,
+    message_id: messageId,
+    caption,
     ...options,
   });
 }
@@ -259,13 +315,9 @@ export async function telegramGetUpdates(
   offset?: number,
   timeout = 15,
 ) {
-  return callTelegramApi<Record<string, unknown>[]>(
-    token,
-    "getUpdates",
-    {
-      offset,
-      timeout,
-      allowed_updates: ["message", "callback_query"],
-    },
-  );
+  return callTelegramApi<Record<string, unknown>[]>(token, "getUpdates", {
+    offset,
+    timeout,
+    allowed_updates: ["message", "callback_query"],
+  });
 }

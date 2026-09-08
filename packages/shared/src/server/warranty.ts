@@ -56,6 +56,7 @@ function normalizeDeliveryMode(value: unknown): DeliveryModeCode | null {
   if (normalized === "AUTO_API") return "AUTO_API";
   if (normalized === "AUTO_STOCK") return "AUTO_STOCK";
   if (normalized === "MANUAL") return "MANUAL";
+  if (normalized === "ADD_MAIL") return "MANUAL";
 
   return null;
 }

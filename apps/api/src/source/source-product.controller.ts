@@ -22,7 +22,7 @@ import { SourceProductService } from "./source-product.service";
 
 @Controller("pro/source-products")
 @UseGuards(JwtAuthGuard, SellerTierGuard)
-@RequireSellerTier(SellerTier.ULTRA)
+@RequireSellerTier(SellerTier.PRO, SellerTier.ULTRA)
 export class SourceProductController {
   constructor(
     @Inject(SourceProductService)

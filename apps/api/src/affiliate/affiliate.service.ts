@@ -1,6 +1,7 @@
 import { Inject, Injectable, NotFoundException } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../db/prisma.service";
+import { resolveAffiliateCommissionRefund } from "@reseller/shared/server";
 import { WalletNotifyService } from "../customer-wallet/wallet-notify.service";
 import { UpdateAffiliateConfigDto } from "./affiliate.dto";
 import type { AuthenticatedUser } from "../types";
@@ -132,19 +133,37 @@ export class AffiliateService {
     }
   }
 
-  async revokeCommission(orderId: string) {
-    const order = await this.prisma.order.findUnique({
-      where: { id: orderId },
-      select: { id: true, affiliateCustomerId: true, affiliateCommission: true },
-    });
-    if (!order?.affiliateCustomerId) return;
-    const amount = Number(order.affiliateCommission ?? 0);
-    if (amount <= 0) return;
-
+  async revokeCommission(orderId: string, requestedAmount?: number) {
     const result = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw(
+        Prisma.sql`SELECT id FROM orders WHERE id = ${orderId} FOR UPDATE`,
+      );
+      const order = await tx.order.findUnique({
+        where: { id: orderId },
+        select: {
+          id: true,
+          affiliateCustomerId: true,
+          affiliateCommission: true,
+        },
+      });
+      if (!order?.affiliateCustomerId) return null;
+      const currentCommission = Number(order.affiliateCommission ?? 0);
+      const requested = Number(requestedAmount);
+      const amount = Number(
+        Math.min(
+          currentCommission,
+          Number.isFinite(requested) && requested > 0
+            ? requested
+            : currentCommission,
+        ).toFixed(2),
+      );
+      if (amount <= 0) return null;
+
       await tx.order.update({
         where: { id: orderId },
-        data: { affiliateCommission: toDecimal(0) },
+        data: {
+          affiliateCommission: toDecimal(currentCommission - amount),
+        },
       });
 
       const wallet = await tx.customerWallet.upsert({
@@ -185,16 +204,55 @@ export class AffiliateService {
         },
       });
 
-      return { commissionAfter };
+      return {
+        affiliateCustomerId: order.affiliateCustomerId,
+        amount,
+        commissionAfter,
+      };
     });
 
     if (result) {
-      await this.walletNotify.notifyCustomerWalletChange(order.affiliateCustomerId as string, {
+      await this.walletNotify.notifyCustomerWalletChange(result.affiliateCustomerId, {
         type: "REFUND_ORDER",
-        amount: -amount,
+        amount: -result.amount,
         commissionBalanceAfter: result.commissionAfter,
       });
     }
+  }
+
+  async revokeCommissionForRefund(orderId: string, refundAmount: number) {
+    if (!Number.isFinite(refundAmount) || refundAmount <= 0) return;
+    const order = await this.prisma.order.findUnique({
+      where: { id: orderId },
+      select: {
+        affiliateCustomerId: true,
+        affiliateCommission: true,
+        totalSaleAmount: true,
+      },
+    });
+    if (!order?.affiliateCustomerId) return;
+    const orderTotal = Number(order.totalSaleAmount);
+    if (!Number.isFinite(orderTotal) || orderTotal <= 0) return;
+    const credited = await this.prisma.customerWalletLedger.aggregate({
+      where: {
+        customerId: order.affiliateCustomerId,
+        type: "AFFILIATE_COMMISSION",
+        referenceType: "order",
+        referenceId: orderId,
+      },
+      _sum: { amount: true },
+    });
+    const originalCommission = Number(
+      credited._sum.amount ?? order.affiliateCommission ?? 0,
+    );
+    if (!Number.isFinite(originalCommission) || originalCommission <= 0) return;
+    const proportionalAmount = resolveAffiliateCommissionRefund({
+      originalCommission,
+      remainingCommission: Number(order.affiliateCommission ?? 0),
+      orderTotal,
+      refundAmount,
+    });
+    await this.revokeCommission(orderId, proportionalAmount);
   }
 
   async getLeaderboard(user: AuthenticatedUser, limit = 20) {

@@ -34,7 +34,7 @@ import { SourceStockService } from "./source-stock.service";
 
 @Controller("source/products")
 @UseGuards(JwtAuthGuard, SellerTierGuard)
-@RequireSellerTier(SellerTier.ULTRA)
+@RequireSellerTier(SellerTier.PRO, SellerTier.ULTRA)
 export class SourceStockController {
   constructor(
     @Inject(SourceStockService)

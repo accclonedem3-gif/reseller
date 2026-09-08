@@ -101,6 +101,22 @@ export class SourceProductService {
     this.validateOtherFields(dto);
     const shop = await this.shopsService.getSellerShop(user.id);
     const cleanedName = dto.sourceName.trim();
+    const sourcePrice = Number(dto.sourcePrice);
+    const retailPrice = Number(dto.salePrice ?? dto.sourcePrice);
+    if (retailPrice < sourcePrice) {
+      throw new BadRequestException(
+        "Sale price cannot be lower than the product source cost.",
+      );
+    }
+    if (
+      dto.internalSourceEnabled !== false &&
+      dto.internalSourcePrice != null &&
+      Number(dto.internalSourcePrice) < sourcePrice
+    ) {
+      throw new BadRequestException(
+        "Wholesale price cannot be lower than the product source cost.",
+      );
+    }
     const templateDefault = await this.getAdminTemplateDefaults({ family: dto.productFamily as any, sourceName: cleanedName });
     // If admin set media as photo OR video → use it as imageUrl. Bot detects by extension and uses sendPhoto/sendVideo accordingly.
     const inheritedImageUrl =
@@ -127,17 +143,22 @@ export class SourceProductService {
         productFamilyOther:
           dto.productFamily === "OTHER" ? dto.productFamilyOther?.trim() || null : null,
         productPackage: dto.productPackage?.trim() || null,
-        accountType: dto.accountType,
+        accountType: dto.sourceDeliveryMode === "ADD_MAIL" ? "ADD_FAMILY" : dto.accountType,
         accountTypeOther:
-          dto.accountType === "OTHER" ? dto.accountTypeOther?.trim() || null : null,
+          dto.sourceDeliveryMode === "ADD_MAIL"
+            ? null
+            : dto.accountType === "OTHER" ? dto.accountTypeOther?.trim() || null : null,
         durationType: dto.durationType,
         durationTypeOther:
           dto.durationType === "OTHER" ? dto.durationTypeOther?.trim() || null : null,
         sourceDeliveryMode: dto.sourceDeliveryMode,
         warrantyPolicy: dto.warrantyPolicy,
+        metadataJson: {
+          requiresCustomerEmail: dto.sourceDeliveryMode === "ADD_MAIL",
+          requires_customer_email: dto.sourceDeliveryMode === "ADD_MAIL",
+        },
       },
     });
-    const retailPrice = dto.salePrice ?? dto.sourcePrice;
     const overrideDisplayName = dto.displayName?.trim() || dto.sourceName.trim();
     const override = await this.prisma.sellerProductOverride.upsert({
       where: { sellerId_sourceProductId: { sellerId: shop.sellerId, sourceProductId: product.id } },
@@ -163,6 +184,61 @@ export class SourceProductService {
     this.validateOtherFields(dto);
     const shop = await this.shopsService.getSellerShop(user.id);
     const product = await this.getOwnedProduct(id, shop.id);
+    if (
+      dto.sourcePrice !== undefined ||
+      dto.salePrice !== undefined ||
+      dto.internalSourcePrice !== undefined ||
+      dto.internalSourceEnabled !== undefined
+    ) {
+      const currentOverride =
+        await this.prisma.sellerProductOverride.findUnique({
+          where: {
+            sellerId_sourceProductId: {
+              sellerId: shop.sellerId,
+              sourceProductId: product.id,
+            },
+          },
+          select: { salePrice: true },
+        });
+      const effectiveSourcePrice =
+        dto.sourcePrice !== undefined
+          ? Number(dto.sourcePrice)
+          : decimalToNumber(product.sourcePrice);
+      const effectiveSalePrice =
+        dto.salePrice !== undefined
+          ? Number(dto.salePrice)
+          : currentOverride?.salePrice != null
+            ? decimalToNumber(currentOverride.salePrice)
+            : effectiveSourcePrice;
+      const effectiveWholesalePrice =
+        dto.internalSourcePrice !== undefined
+          ? dto.internalSourcePrice == null
+            ? effectiveSalePrice
+            : Number(dto.internalSourcePrice)
+          : product.internalSourcePrice != null
+            ? decimalToNumber(product.internalSourcePrice)
+            : effectiveSalePrice;
+      const effectiveInternalSourceEnabled =
+        dto.internalSourceEnabled ?? product.internalSourceEnabled;
+      if (effectiveSalePrice < effectiveSourcePrice) {
+        throw new BadRequestException(
+          "Sale price cannot be lower than the product source cost.",
+        );
+      }
+      if (
+        effectiveInternalSourceEnabled &&
+        effectiveWholesalePrice < effectiveSourcePrice
+      ) {
+        throw new BadRequestException(
+          "Wholesale price cannot be lower than the product source cost.",
+        );
+      }
+    }
+    const resolvedDeliveryMode = dto.sourceDeliveryMode ?? product.sourceDeliveryMode;
+    const currentMetadata =
+      product.metadataJson && typeof product.metadataJson === "object" && !Array.isArray(product.metadataJson)
+        ? (product.metadataJson as Record<string, unknown>)
+        : {};
 
     const updated = await this.prisma.sourceProduct.update({
       where: { id: product.id },
@@ -192,13 +268,18 @@ export class SourceProductService {
               ? null
               : undefined,
         productPackage: dto.productPackage !== undefined ? (dto.productPackage?.trim() || null) : undefined,
-        accountType: dto.accountType ?? undefined,
+        accountType:
+          resolvedDeliveryMode === "ADD_MAIL"
+            ? "ADD_FAMILY"
+            : dto.accountType ?? undefined,
         accountTypeOther:
-          dto.accountType === "OTHER"
-            ? dto.accountTypeOther?.trim() || null
-            : dto.accountType != null
-              ? null
-              : undefined,
+          resolvedDeliveryMode === "ADD_MAIL"
+            ? null
+            : dto.accountType === "OTHER"
+              ? dto.accountTypeOther?.trim() || null
+              : dto.accountType != null
+                ? null
+                : undefined,
         durationType: dto.durationType ?? undefined,
         durationTypeOther:
           dto.durationType === "OTHER"
@@ -208,6 +289,11 @@ export class SourceProductService {
               : undefined,
         sourceDeliveryMode: dto.sourceDeliveryMode ?? undefined,
         warrantyPolicy: dto.warrantyPolicy ?? undefined,
+        metadataJson: {
+          ...currentMetadata,
+          requiresCustomerEmail: resolvedDeliveryMode === "ADD_MAIL",
+          requires_customer_email: resolvedDeliveryMode === "ADD_MAIL",
+        } as Prisma.InputJsonValue,
       },
     });
     const updatedOverride = await this.prisma.sellerProductOverride.upsert({

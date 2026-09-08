@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Inject,
   Param,
@@ -61,7 +62,10 @@ export class InternalSourceController {
   @UseGuards(JwtAuthGuard, SellerTierGuard, SellerCapabilitiesGuard)
   @RequireSellerTier(SellerTier.PRO, SellerTier.ULTRA)
   @RequireSellerCapabilities("source_key_manage")
-  revokeApiKey(@CurrentUser() user: AuthenticatedUser, @Param("id") id: string) {
+  revokeApiKey(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param("id") id: string,
+  ) {
     return this.internalSourceService.revokeApiKey(user, id);
   }
 
@@ -72,6 +76,20 @@ export class InternalSourceController {
     return this.internalSourceService.getCurrentConnection(user);
   }
 
+  @Get("source/connections")
+  @UseGuards(JwtAuthGuard, SellerCapabilitiesGuard)
+  @RequireSellerCapabilities("source_internal_use")
+  listCurrentShopConnections(@CurrentUser() user: AuthenticatedUser) {
+    return this.internalSourceService.listCurrentShopConnections(user);
+  }
+
+  @Get("source/connections/current/orders")
+  @UseGuards(JwtAuthGuard, SellerCapabilitiesGuard)
+  @RequireSellerCapabilities("source_internal_use")
+  listCurrentConnectionOrders(@CurrentUser() user: AuthenticatedUser) {
+    return this.internalSourceService.listCurrentConnectionOrders(user);
+  }
+
   @Post("source/connections/current/inherit-template")
   @UseGuards(JwtAuthGuard, SellerCapabilitiesGuard)
   @RequireSellerCapabilities("source_internal_use")
@@ -79,7 +97,10 @@ export class InternalSourceController {
     @CurrentUser() user: AuthenticatedUser,
     @Body() body: { enabled: boolean },
   ) {
-    return this.internalSourceService.setInheritTemplate(user, body.enabled === true);
+    return this.internalSourceService.setInheritTemplate(
+      user,
+      body.enabled === true,
+    );
   }
 
   // "Đồng bộ giao diện bot": one-press clone of the ULTRA source's categories + bot template into
@@ -105,7 +126,10 @@ export class InternalSourceController {
     @CurrentUser() user: AuthenticatedUser,
     @Body() body: { overrides: unknown },
   ) {
-    return this.internalSourceService.setTemplateOverrides(user, body?.overrides);
+    return this.internalSourceService.setTemplateOverrides(
+      user,
+      body?.overrides,
+    );
   }
 
   @Post("source/connections/connect")
@@ -130,6 +154,28 @@ export class InternalSourceController {
     return this.internalSourceService.topUpCurrentConnection(user, body);
   }
 
+  @Post("source/connections/:id/topup")
+  @UseGuards(JwtAuthGuard, SellerTierGuard, SellerCapabilitiesGuard)
+  @RequireSellerTier(SellerTier.PRO, SellerTier.ULTRA)
+  @RequireSellerCapabilities("source_internal_use")
+  topUpConnection(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param("id") id: string,
+    @Body() body: TopUpInternalSourceConnectionDto,
+  ) {
+    return this.internalSourceService.topUpConnection(user, id, body);
+  }
+
+  @Delete("source/connections/:id")
+  @UseGuards(JwtAuthGuard, SellerCapabilitiesGuard)
+  @RequireSellerCapabilities("source_internal_use")
+  disconnectConnection(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param("id") id: string,
+  ) {
+    return this.internalSourceService.disconnectConnection(user, id);
+  }
+
   @Get("source/connections/downstream")
   @UseGuards(JwtAuthGuard, SellerCapabilitiesGuard)
   @RequireSellerCapabilities("source_internal_manage")
@@ -149,14 +195,18 @@ export class InternalSourceController {
 
   @Put("source/connections/downstream/:id/adjust")
   @UseGuards(JwtAuthGuard, SellerTierGuard, SellerCapabilitiesGuard)
-  @RequireSellerTier(SellerTier.ULTRA)
+  @RequireSellerTier(SellerTier.PRO, SellerTier.ULTRA)
   @RequireSellerCapabilities("source_internal_manage")
   adjustConnectionBalance(
     @CurrentUser() user: AuthenticatedUser,
     @Param("id") id: string,
     @Body() body: AdjustConnectionBalanceDto,
   ) {
-    return this.internalSourceService.manualAdjustConnectionBalance(user, id, body);
+    return this.internalSourceService.manualAdjustConnectionBalance(
+      user,
+      id,
+      body,
+    );
   }
 
   @Get("source/orders")
@@ -194,10 +244,7 @@ export class InternalSourceController {
   }
 
   @Get("telegram-buyer/products")
-  listBuyerCatalog(
-    @Query("key") key: string,
-    @Req() req: Request,
-  ) {
+  listBuyerCatalog(@Query("key") key: string, @Req() req: Request) {
     return this.internalSourceService.listProductsByKey(key, {
       method: req.method,
       path: req.originalUrl || req.url,
@@ -206,10 +253,7 @@ export class InternalSourceController {
   }
 
   @Get("telegram-buyer/balance")
-  getBuyerBalance(
-    @Query("key") key: string,
-    @Req() req: Request,
-  ) {
+  getBuyerBalance(@Query("key") key: string, @Req() req: Request) {
     return this.internalSourceService.getBalanceByKey(key, {
       method: req.method,
       path: req.originalUrl || req.url,

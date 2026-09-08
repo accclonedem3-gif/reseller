@@ -12,16 +12,22 @@ export const DEFAULT_USDT_VND_RATE = 27000;
 
 export const QUEUES = {
   syncCatalog: "sync-catalog",
+  restockNotification: "restock-notification",
   purchaseUpstream: "purchase-upstream",
   broadcast: "broadcast",
   accountCheck: "account-check",
+  userbotCampaign: "userbot-campaign",
+  orderTimeout: "order-timeout",
 } as const;
 
 export const JOBS = {
   syncCatalog: "sync-catalog",
+  restockNotification: "restock-notification",
   purchaseUpstream: "purchase-upstream",
   broadcast: "broadcast",
   accountCheck: "account-check",
+  userbotCampaign: "userbot-campaign",
+  orderTimeout: "order-timeout",
 } as const;
 
 export const API_PREFIX = "api/v1";
@@ -87,7 +93,10 @@ export const ACCOUNT_CHECK_TOOLS = {
 // check_gpt tool is implemented + hardened.
 // CURSOR → "cursor": external HTTP checker (separate repo/VPS). Auto-routes once the
 // CHECK_CURSOR_URL env points the worker at the running cursor checker server.
-export const PRODUCT_FAMILY_TO_TOOL: Record<string, "veo" | "grok" | "gpt" | "cursor"> = {
+export const PRODUCT_FAMILY_TO_TOOL: Record<
+  string,
+  "veo" | "grok" | "gpt" | "cursor"
+> = {
   VEO3: "veo",
   GROK: "grok",
   CURSOR: "cursor",

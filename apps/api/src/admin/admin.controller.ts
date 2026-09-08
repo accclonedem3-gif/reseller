@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Inject,
   NotFoundException,
@@ -25,11 +26,14 @@ import { WalletService } from "../wallet/wallet.service";
 
 import {
   BulkUpdateSystemConfigDto,
+  GenerateUserbotLicenseKeyDto,
   ListAdminOrdersQueryDto,
   ListSellersQueryDto,
+  RefundAdminOrderDto,
   SyncBotCommandsDto,
-  UpdateSellerTierDto,
+  UpdateSellerAffiliateCommissionDto,
   UpdateSellerTierDatesDto,
+  UpdateSellerTierDto,
 } from "./admin.dto";
 import { AdminService } from "./admin.service";
 
@@ -59,6 +63,31 @@ export class AdminController {
     return this.adminService.getRecentSellers(10);
   }
 
+  @Get("global-search")
+  globalSearch(@Query("q") query?: string) {
+    return this.adminService.globalSearch(query || "");
+  }
+
+  @Get("finance")
+  getFinanceOperations() {
+    return this.adminService.getFinanceOperations();
+  }
+
+  @Get("system-health")
+  getSystemHealth() {
+    return this.adminService.getSystemHealth();
+  }
+
+  @Get("customers")
+  listSystemCustomers(@Query("search") search?: string) {
+    return this.adminService.listSystemCustomers(search);
+  }
+
+  @Get("automations")
+  getAutomations() {
+    return this.adminService.getAutomations();
+  }
+
   @Get("top-referrers")
   getTopReferrers(@Query("limit") limit?: string) {
     return this.adminService.getTopReferrers(limit ? parseInt(limit) : 50);
@@ -73,6 +102,21 @@ export class AdminController {
     });
   }
 
+  @Get("sellers/:userId")
+  getSellerDetail(@Param("userId") userId: string) {
+    return this.adminService.getSellerDetail(userId);
+  }
+
+  @Put("sellers/:userId/affiliate-commission")
+  updateSellerAffiliateCommission(
+    @Param("userId") userId: string,
+    @Body() body: UpdateSellerAffiliateCommissionDto,
+  ) {
+    return this.adminService.updateSellerAffiliateCommission(
+      userId,
+      body.affiliateCommissionPercent ?? null,
+    );
+  }
   @Put("sellers/:userId/tier")
   updateSellerTier(
     @Param("userId") userId: string,
@@ -103,6 +147,15 @@ export class AdminController {
     const order = await this.adminService.getOrderDetail(id);
     if (!order) throw new NotFoundException("Order not found");
     return order;
+  }
+
+  @Post("orders/:id/refund")
+  refundOrder(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param("id") id: string,
+    @Body() body: RefundAdminOrderDto,
+  ) {
+    return this.adminService.refundOrderToCustomerWallet(user, id, body);
   }
 
   @Get("system-config")
@@ -149,5 +202,25 @@ export class AdminController {
   @Get("debug/connections-by-chat-id/:chatId")
   debugConnectionsByChatId(@Param("chatId") chatId: string) {
     return this.adminService.debugConnectionsByChatId(chatId);
+  }
+
+  @Post("userbot-licenses/generate")
+  generateUserbotLicenseKeys(@Body() body: GenerateUserbotLicenseKeyDto) {
+    return this.adminService.generateUserbotLicenseKeys(body.type, body.durationDays, body.count);
+  }
+
+  @Get("userbot-licenses")
+  listUserbotLicenseKeys() {
+    return this.adminService.listUserbotLicenseKeys();
+  }
+
+  @Delete("userbot-licenses/:id")
+  deleteUserbotLicenseKey(@Param("id") id: string) {
+    return this.adminService.deleteUserbotLicenseKey(id);
+  }
+
+  @Post("userbot-licenses/:id/reset")
+  resetUserbotLicenseKey(@Param("id") id: string) {
+    return this.adminService.resetUserbotLicenseKey(id);
   }
 }

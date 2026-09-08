@@ -28,6 +28,7 @@ import {
 } from "@prisma/client";
 import { IsInt, IsNotEmpty, IsOptional, IsString, Min } from "class-validator";
 import type { Request } from "express";
+import { isOrderPriceSafe } from "@reseller/shared/server";
 
 import { PrismaService } from "../db/prisma.service";
 import { InternalSourceService } from "../internal-source/internal-source.service";
@@ -68,6 +69,18 @@ class CreateInternalSourceOrderDto {
   customerEmail?: string;
 }
 
+class ConnectExternalSourceClientDto {
+  @ApiPropertyOptional({ type: String, description: "Display name of the external shop or client" })
+  @IsOptional()
+  @IsString()
+  clientName?: string;
+
+  @ApiProperty({ type: String, description: "Telegram bot username using this source key", example: "alex_shop_bot" })
+  @IsString()
+  @IsNotEmpty()
+  botUsername!: string;
+}
+
 function metadataRecord(value: Prisma.JsonValue | null | undefined) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return {} as Record<string, unknown>;
@@ -90,6 +103,35 @@ export class InternalSourceApiController {
     @Inject(InternalSourceService)
     private readonly internalSourceService: InternalSourceService,
   ) {}
+
+  @ApiOperation({
+    summary: "Register the external bot using this key",
+    description: "Call this when the user presses Connect. The username is shown to the upstream source owner.",
+  })
+  @Post("connect")
+  async connectExternalClient(
+    @Req() req: Request,
+    @Body() dto: ConnectExternalSourceClientDto,
+  ) {
+    const { connection } = req.internalSourceContext!;
+    if (!connection) {
+      throw new ForbiddenException("Source API key has no connection assigned.");
+    }
+
+    const botUsername = String(dto.botUsername || "").trim().replace(/^@+/, "");
+    if (!/^[A-Za-z0-9_]{5,32}$/.test(botUsername) || !botUsername.toLowerCase().endsWith("bot")) {
+      throw new BadRequestException("botUsername must be a valid Telegram bot username ending in 'bot'.");
+    }
+    const clientName = String(dto.clientName || "").trim().slice(0, 100) || null;
+
+    const updated = await this.prisma.downstreamSourceConnection.update({
+      where: { id: connection.id },
+      data: { clientName, clientBotUsername: botUsername, clientConnectedAt: new Date() },
+      select: { id: true, clientName: true, clientBotUsername: true, clientConnectedAt: true },
+    });
+
+    return { success: true, ...updated };
+  }
 
   @ApiOperation({
     summary: "Get product catalog",
@@ -118,13 +160,28 @@ export class InternalSourceApiController {
       where: {
         shopId: upstreamShopId,
         internalSourceEnabled: true,
+        archivedAt: null,
         OR: [
           { available: null },
           { available: { gt: 0 } },
         ],
       },
+      include: {
+        overrides: {
+          where: { sellerId: apiKey.sellerId },
+          select: { salePrice: true },
+          take: 1,
+        },
+      },
       orderBy: { createdAt: "asc" },
     });
+
+    const customerDiscount = connection?.downstreamTelegramChatId
+      ? await this.prisma.customer.findFirst({
+          where: { shopId: upstreamShopId, telegramChatId: connection.downstreamTelegramChatId },
+          select: { discountPercent: true },
+        }).then((customer) => Number(customer?.discountPercent ?? 0))
+      : 0;
 
     return {
       success: true,
@@ -133,7 +190,16 @@ export class InternalSourceApiController {
         name: p.sourceName,
         nameRaw: p.sourceRawName || null,
         description: p.sourceDescription || null,
-        price: decimalToNumber(p.internalSourcePrice ?? p.sourcePrice),
+        price: (() => {
+          const configuredPrice = p.internalSourcePrice != null
+            ? decimalToNumber(p.internalSourcePrice)
+            : p.overrides[0]?.salePrice != null
+              ? decimalToNumber(p.overrides[0].salePrice)
+              : 0;
+          return customerDiscount > 0
+            ? Math.round(configuredPrice * (1 - customerDiscount / 100))
+            : configuredPrice;
+        })(),
         available: p.available,
         productFamily: p.productFamily?.toLowerCase() ?? null,
         productFamilyOther: p.productFamilyOther ?? null,
@@ -143,7 +209,8 @@ export class InternalSourceApiController {
         durationTypeOther: p.durationTypeOther ?? null,
         deliveryMode: p.sourceDeliveryMode?.toLowerCase() ?? null,
         warrantyPolicy: p.warrantyPolicy?.toLowerCase() ?? null,
-        requiresCustomerEmail: requiresCustomerEmail(p.metadataJson),
+        requiresCustomerEmail:
+          p.sourceDeliveryMode === "ADD_MAIL" || requiresCustomerEmail(p.metadataJson),
       })),
     };
   }
@@ -208,6 +275,14 @@ export class InternalSourceApiController {
         id: dto.productId,
         shopId: connection.upstreamShopId,
         internalSourceEnabled: true,
+        archivedAt: null,
+      },
+      include: {
+        overrides: {
+          where: { sellerId: connection.upstreamSellerId },
+          select: { salePrice: true },
+          take: 1,
+        },
       },
     });
 
@@ -219,7 +294,7 @@ export class InternalSourceApiController {
     const parsedCustomerEmails = parseCustomerEmailList(dto.customerEmail);
     const customerEmail = parsedCustomerEmails.emails.join("\n") || null;
     if (
-      requiresCustomerEmail(product.metadataJson) &&
+      (product.sourceDeliveryMode === "ADD_MAIL" || requiresCustomerEmail(product.metadataJson)) &&
       (!hasValidCustomerEmailList(parsedCustomerEmails) || parsedCustomerEmails.emails.length !== quantity)
     ) {
       throw new BadRequestException(
@@ -227,7 +302,35 @@ export class InternalSourceApiController {
       );
     }
 
-    const unitPrice = decimalToNumber(product.internalSourcePrice ?? product.sourcePrice);
+    const customerDiscount = connection.downstreamTelegramChatId
+      ? await this.prisma.customer.findFirst({
+          where: { shopId: connection.upstreamShopId, telegramChatId: connection.downstreamTelegramChatId },
+          select: { discountPercent: true },
+        }).then((customer) => Number(customer?.discountPercent ?? 0))
+      : 0;
+    const configuredPrice = product.internalSourcePrice != null
+      ? decimalToNumber(product.internalSourcePrice)
+      : product.overrides[0]?.salePrice != null
+        ? decimalToNumber(product.overrides[0].salePrice)
+        : 0;
+    const unitPrice = customerDiscount > 0
+      ? Math.round(configuredPrice * (1 - customerDiscount / 100))
+      : configuredPrice;
+    if (unitPrice <= 0) {
+      throw new BadRequestException(
+        "Source product has no wholesale or sale price configured.",
+      );
+    }
+    if (
+      !isOrderPriceSafe({
+        totalSaleAmount: unitPrice * quantity,
+        totalSourceAmount: decimalToNumber(product.sourcePrice) * quantity,
+      })
+    ) {
+      throw new BadRequestException(
+        "Wholesale price after discount is below the current source cost.",
+      );
+    }
     const totalAmount = unitPrice * quantity;
 
     let orderId: string;
@@ -250,6 +353,12 @@ export class InternalSourceApiController {
         await tx.$queryRaw(
           Prisma.sql`SELECT id FROM customer_wallets WHERE id = ${customer.wallet.id} FOR UPDATE`,
         );
+        const freshWallet = await tx.customerWallet.findUnique({
+          where: { id: customer.wallet.id },
+        });
+        if (!freshWallet) {
+          throw new BadRequestException("Customer wallet not found.");
+        }
 
         const currentConnection = await tx.downstreamSourceConnection.findUnique({
           where: { id: connection.id },
@@ -264,8 +373,8 @@ export class InternalSourceApiController {
           throw new BadRequestException("Downstream connection is not active.");
         }
 
-        const balanceBefore = decimalToNumber(customer.wallet.balance);
-        const commissionBefore = decimalToNumber(customer.wallet.commissionBalance);
+        const balanceBefore = decimalToNumber(freshWallet.balance);
+        const commissionBefore = decimalToNumber(freshWallet.commissionBalance);
 
         if (balanceBefore + commissionBefore < totalAmount) {
           throw new BadRequestException(
@@ -331,8 +440,8 @@ export class InternalSourceApiController {
             connectionId: connection.id,
             type: InternalSourceLedgerType.DEBIT_ORDER,
             amount: toDecimal(totalAmount * -1),
-            balanceBefore: toDecimal(balanceBefore),
-            balanceAfter: toDecimal(balanceAfter),
+            balanceBefore: toDecimal(balanceBefore + commissionBefore),
+            balanceAfter: toDecimal(balanceAfter + commissionAfter),
             referenceType: "internal_source_order",
             referenceId: created.id,
             note: "Debit downstream source balance for internal PRO order",

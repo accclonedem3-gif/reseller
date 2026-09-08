@@ -1,23 +1,22 @@
 import { StorefrontMode } from "@prisma/client";
-import { Transform } from "class-transformer";
+import { Transform, Type } from "class-transformer";
 import {
   IsBoolean,
   IsEnum,
+  IsIn,
+  IsInt,
   IsNumber,
   IsOptional,
   IsString,
   IsUrl,
   Max,
+  MaxLength,
   Min,
   MinLength,
   ValidateIf,
 } from "class-validator";
 
-function emptyStringToUndefined({
-  value,
-}: {
-  value: unknown;
-}) {
+function emptyStringToUndefined({ value }: { value: unknown }) {
   if (typeof value !== "string") {
     return value;
   }
@@ -337,10 +336,68 @@ export class UpdateBotConfigDto {
   usdtBep20Address?: string;
 
   @IsOptional()
+  @IsBoolean()
+  usdtBep20Enabled?: boolean;
+
+  @IsOptional()
   @IsEnum(StorefrontMode)
   storefrontMode?: StorefrontMode;
 
   @IsOptional()
   @IsBoolean()
   showOutOfStock?: boolean;
+}
+
+export class CreateProviderSourceDto {
+  @Transform(emptyStringToUndefined)
+  @IsString()
+  @MinLength(2)
+  label!: string;
+
+  @IsOptional()
+  @Transform(emptyStringToUndefined)
+  @IsString()
+  @IsIn([
+    "canboso",
+    "shopmmo",
+    "roboticvn",
+    "zampto",
+    "huymai",
+    "gigapower",
+  ])
+  providerName?: string;
+
+  @Transform(emptyStringToUndefined)
+  @IsUrl({ require_tld: false, require_protocol: true })
+  baseUrl!: string;
+
+  @Transform(emptyStringToUndefined)
+  @IsString()
+  @MinLength(3)
+  buyerKey!: string;
+
+  @IsOptional()
+  @Transform(({ value }) => {
+    if (value === null || value === undefined || value === "") return null;
+    const n = Number(value);
+    return Number.isFinite(n) ? n : null;
+  })
+  @IsNumber()
+  @Min(0)
+  @Max(500)
+  priceMarkupPercent?: number | null;
+}
+
+export class ProviderSourceOrdersQueryDto {
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  page?: number;
+
+  @IsOptional()
+  @Transform(emptyStringToUndefined)
+  @IsString()
+  @MaxLength(200)
+  search?: string;
 }

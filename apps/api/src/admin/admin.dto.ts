@@ -1,4 +1,4 @@
-import { IsDateString, IsEnum, IsOptional, IsString, IsInt, Min } from "class-validator";
+import { IsDateString, IsEnum, IsOptional, IsString, IsInt, IsNumber, Min, Max, MaxLength } from "class-validator";
 import { Type } from "class-transformer";
 import { SellerTier } from "@prisma/client";
 
@@ -16,6 +16,14 @@ export class ListSellersQueryDto {
   search?: string;
 }
 
+export class UpdateSellerAffiliateCommissionDto {
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0)
+  @Max(100)
+  affiliateCommissionPercent?: number | null;
+}
 export class UpdateSellerTierDto {
   @IsEnum(SellerTier)
   tier!: SellerTier;
@@ -47,6 +55,18 @@ export class ListAdminOrdersQueryDto {
   search?: string;
 }
 
+export class RefundAdminOrderDto {
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  amount!: number;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  note?: string;
+}
+
 export class UpdateSystemConfigDto {
   @IsString()
   key!: string;
@@ -64,4 +84,21 @@ export class SyncBotCommandsDto {
   @IsOptional()
   @IsString()
   shopId?: string;
+}
+
+export class GenerateUserbotLicenseKeyDto {
+  @IsEnum(["PLUS", "PRO", "UNLIMITED"])
+  type!: "PLUS" | "PRO" | "UNLIMITED";
+
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(3650)
+  durationDays!: number;
+
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  count!: number;
 }

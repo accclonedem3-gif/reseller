@@ -186,7 +186,10 @@ export class TierAffiliateService {
     if (args.referrerSellerId) {
       const referrer = await tx.seller.findUnique({
         where: { id: args.referrerSellerId },
-        select: { affiliateUnlockedTier: true },
+        select: {
+          affiliateUnlockedTier: true,
+          affiliateCommissionPercent: true,
+        },
       });
       if (referrer) {
         // Activity in last 90d (use raw query for transaction safety)
@@ -200,7 +203,9 @@ export class TierAffiliateService {
           _sum: { amount: true },
         });
         const activity90d = decimalToNumber(activityRows._sum.amount);
-        level1Rate = calcLevel1Rate(referrer.affiliateUnlockedTier, activity90d);
+        level1Rate = referrer.affiliateCommissionPercent == null
+          ? calcLevel1Rate(referrer.affiliateUnlockedTier, activity90d)
+          : decimalToNumber(referrer.affiliateCommissionPercent) / 100;
         level1Commission = Math.round(args.priceVnd * level1Rate);
 
         await this.creditToWallet(tx, {
@@ -209,7 +214,7 @@ export class TierAffiliateService {
           type: WalletLedgerType.AFFILIATE_LEVEL_1,
           referenceType: "tier_subscription",
           referenceId: args.subscriptionId,
-          note: `Hoa hồng cấp 1 (${(level1Rate * 100).toFixed(0)}%): ${args.sourceLabel}`,
+          note: `Hoa hồng cấp 1 (${(level1Rate * 100).toFixed(2).replace(/\.?0+$/, "")}%): ${args.sourceLabel}`,
         });
 
         // Check tier unlock based on new all-time cumulative

@@ -186,6 +186,63 @@ export class AppConfigService {
     );
   }
 
+  /**
+   * Comma-separated list of BSC JSON-RPC endpoints. The worker rotates through them for
+   * `eth_getLogs`/`eth_blockNumber` calls so a single endpoint failure doesn't stall the poller.
+   */
+  get bscRpcUrls() {
+    const raw = String(process.env.BSC_RPC_URLS || "").trim();
+    const parsed = raw
+      ? raw.split(",").map((value) => value.trim()).filter(Boolean)
+      : [
+        "https://bsc-dataseed.binance.org",
+        "https://bsc-dataseed1.defibit.io",
+        "https://bsc.publicnode.com",
+        "https://binance.llamarpc.com",
+      ];
+    return parsed;
+  }
+
+  get bscUsdtContractAddress() {
+    return (
+      process.env.BSC_USDT_CONTRACT_ADDRESS ||
+      "0x55d398326f99059fF775485246999027B3197955"
+    ).toLowerCase();
+  }
+
+  get bscUsdtDecimals() {
+    return Number(process.env.BSC_USDT_DECIMALS || 18);
+  }
+
+  get bscMinConfirmations() {
+    return Math.max(1, Number(process.env.BSC_MIN_CONFIRMATIONS || 15));
+  }
+
+  /** Max block range for a single eth_getLogs call. Most public RPCs cap between 1000-5000 blocks. */
+  get bscLogsBlockRange() {
+    return Math.max(50, Math.min(5000, Number(process.env.BSC_LOGS_BLOCK_RANGE || 2000)));
+  }
+
+  get alchemyNotifyAuthToken() {
+    return String(process.env.ALCHEMY_NOTIFY_AUTH_TOKEN || "").trim();
+  }
+
+  get alchemyBep20WebhookId() {
+    return String(process.env.ALCHEMY_BEP20_WEBHOOK_ID || "").trim();
+  }
+
+  get alchemyBep20SigningKey() {
+    return String(process.env.ALCHEMY_BEP20_SIGNING_KEY || "").trim();
+  }
+
+  get alchemyBep20WebhookEnabled() {
+    return Boolean(this.alchemyBep20WebhookId && this.alchemyBep20SigningKey);
+  }
+
+  get bscWebhookMinConfirmations() {
+    return Math.max(1, Number(process.env.BSC_WEBHOOK_MIN_CONFIRMATIONS || 1));
+  }
+
   get mockProviderEnabled() {
     return String(process.env.MOCK_PROVIDER_ENABLED || "false") === "true";
   }

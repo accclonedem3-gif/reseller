@@ -1,5 +1,20 @@
-import { IsDateString, IsEnum, IsNumber, IsOptional, IsString, Max, Min, MinLength } from "class-validator";
+import { Type } from "class-transformer";
+import { IsDateString, IsEnum, IsInt, IsNumber, IsOptional, IsString, Max, Min, MinLength } from "class-validator";
 
+export class CustomerWalletLedgerQueryDto {
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(200)
+  limit?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  offset?: number;
+}
 export class CreateDepositRequestDto {
   @IsNumber()
   @Min(100000)
@@ -50,6 +65,14 @@ export class AdjustCustomerWalletDto {
 }
 
 export class CreateWalletPromotionDto {
+  @IsNumber()
+  @Min(0)
+  minAmount!: number;
+
+  @IsOptional()
+  @IsString()
+  imageUrl?: string;
+
   @IsNumber()
   @Min(0.01)
   @Max(100)

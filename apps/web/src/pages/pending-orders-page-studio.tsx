@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CheckCircle2, Clock, Package, RefreshCw, Search, User, XCircle } from "lucide-react";
+import { CheckCircle2, Clock, Copy, Mail, Package, RefreshCw, Search, User, XCircle } from "lucide-react";
 
 import { StudioBadge, StudioButton, StudioCard } from "@/components/studio/studio-ui";
 import { useToast } from "@/components/ui/toast";
@@ -119,6 +119,57 @@ const T = {
   },
 };
 
+function splitCustomerEmails(value: unknown) {
+  return String(value || "")
+    .split(/\r?\n/)
+    .map((email) => email.trim())
+    .filter(Boolean);
+}
+
+function CustomerEmailList({
+  value,
+  onCopy,
+}: {
+  value: unknown;
+  onCopy: (value: string) => void;
+}) {
+  const emails = splitCustomerEmails(value);
+  if (emails.length === 0) return null;
+
+  return (
+    <div className="mt-2 rounded-xl border border-violet-400/25 bg-violet-500/10 p-2">
+      <div className="mb-1.5 flex items-center justify-between gap-2">
+        <span className="flex items-center gap-1 text-[10px] font-black uppercase tracking-wide text-violet-400">
+          <Mail className="h-3 w-3" />
+          Email add Family ({emails.length})
+        </span>
+        {emails.length > 1 && (
+          <button
+            type="button"
+            onClick={() => onCopy(emails.join("\n"))}
+            className="shrink-0 text-[10px] font-bold text-violet-400 hover:underline"
+          >
+            Copy tất cả
+          </button>
+        )}
+      </div>
+      <div className="space-y-1">
+        {emails.map((email, index) => (
+          <button
+            key={email + "-" + index}
+            type="button"
+            title="Sao chép email"
+            onClick={() => onCopy(email)}
+            className="flex w-full items-start gap-1.5 rounded-lg bg-violet-500/10 px-2 py-1.5 text-left text-[11px] font-bold text-violet-300 transition hover:bg-violet-500/20"
+          >
+            <span className="min-w-0 flex-1 whitespace-normal break-all">{email}</span>
+            <Copy className="mt-0.5 h-3 w-3 shrink-0 opacity-70" />
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
 export function PendingOrdersPageStudio() {
   const { lang } = useLang();
   const t = T[lang];
@@ -141,6 +192,7 @@ export function PendingOrdersPageStudio() {
     queryKey: ["orders", "pending"],
     queryFn: async () =>
       (await api.get("/orders", { params: { status: "PAID_WAITING_STOCK" } })).data,
+    refetchInterval: 10000,
   });
 
   const completeMutation = useMutation({
@@ -173,20 +225,75 @@ export function PendingOrdersPageStudio() {
     },
   });
 
+  const approvePreorderCancelMutation = useMutation({
+    mutationFn: async (orderId: string) =>
+      (await api.post(`/orders/${orderId}/preorder-cancel/approve`)).data,
+    onSuccess: async () => {
+      showToast({ tone: "success", message: "Đã duyệt hủy và hoàn tiền hàng vào ví khách." });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["orders", "pending"] }),
+        queryClient.invalidateQueries({ queryKey: ["orders"] }),
+      ]);
+    },
+    onError: (error: any) => showToast({ tone: "error", message: error?.response?.data?.message || "Không thể duyệt yêu cầu hủy." }),
+  });
+
+  const rejectPreorderCancelMutation = useMutation({
+    mutationFn: async (orderId: string) =>
+      (await api.post(`/orders/${orderId}/preorder-cancel/reject`)).data,
+    onSuccess: async () => {
+      showToast({ tone: "success", message: "Đã từ chối yêu cầu hủy; đơn tiếp tục chờ hàng." });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["orders", "pending"] }),
+        queryClient.invalidateQueries({ queryKey: ["orders"] }),
+      ]);
+    },
+    onError: (error: any) => showToast({ tone: "error", message: error?.response?.data?.message || "Không thể từ chối yêu cầu hủy." }),
+  });
+
+  const sellerCancelPreorderMutation = useMutation({
+    mutationFn: async (orderId: string) =>
+      (await api.post(`/orders/${orderId}/preorder-cancel/seller`)).data,
+    onSuccess: async () => {
+      showToast({ tone: "success", message: "Đã hủy đơn và hoàn toàn bộ tiền vào ví khách." });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["orders", "pending"] }),
+        queryClient.invalidateQueries({ queryKey: ["orders"] }),
+      ]);
+    },
+    onError: (error: any) => showToast({ tone: "error", message: error?.response?.data?.message || "Không thể hủy đơn đặt trước." }),
+  });
+
   const activeOrderId = useMemo(
     () =>
       completeMutation.isPending
         ? (completeMutation.variables as string | undefined)
+        : approvePreorderCancelMutation.isPending
+          ? (approvePreorderCancelMutation.variables as string | undefined)
+          : rejectPreorderCancelMutation.isPending
+            ? (rejectPreorderCancelMutation.variables as string | undefined)
+            : sellerCancelPreorderMutation.isPending
+              ? (sellerCancelPreorderMutation.variables as string | undefined)
         : cancelMutation.isPending
           ? (cancelMutation.variables as string | undefined)
           : undefined,
-    [cancelMutation.isPending, cancelMutation.variables, completeMutation.isPending, completeMutation.variables],
+    [approvePreorderCancelMutation.isPending, approvePreorderCancelMutation.variables, cancelMutation.isPending, cancelMutation.variables, completeMutation.isPending, completeMutation.variables, rejectPreorderCancelMutation.isPending, rejectPreorderCancelMutation.variables, sellerCancelPreorderMutation.isPending, sellerCancelPreorderMutation.variables],
   );
+
+  const copyCustomerEmail = async (email: string) => {
+    try {
+      await navigator.clipboard.writeText(email);
+      showToast({ tone: "success", message: lang === "vi" ? "Đã sao chép email khách." : "Customer email copied." });
+    } catch {
+      showToast({ tone: "error", message: lang === "vi" ? "Không thể sao chép email." : "Could not copy email." });
+    }
+  };
 
   const orders = ordersQuery.data || [];
   const totalValue = orders.reduce((sum: number, o: any) => sum + Number(o.totalSaleAmount || 0), 0);
   const paidCount = orders.filter((o: any) => String(o.paymentStatus || "").toLowerCase() === "paid").length;
-  const isBusy = completeMutation.isPending || cancelMutation.isPending;
+  const cancelRequestCount = orders.filter((o: any) => String(o.preorderCancellationStatus || "").toLowerCase() === "requested").length;
+  const isBusy = completeMutation.isPending || cancelMutation.isPending || approvePreorderCancelMutation.isPending || rejectPreorderCancelMutation.isPending || sellerCancelPreorderMutation.isPending;
 
   const filteredOrders = useMemo(() => {
     if (!search.trim()) return orders;
@@ -196,7 +303,8 @@ export function PendingOrdersPageStudio() {
       (o.productName || "").toLowerCase().includes(q) ||
       (o.customer?.telegramUsername || "").toLowerCase().includes(q) ||
       (o.customer?.name || "").toLowerCase().includes(q) ||
-      (o.customer?.telegramChatId || "").includes(q),
+      (o.customer?.telegramChatId || "").includes(q) ||
+      (o.customerEmail || "").toLowerCase().includes(q),
     );
   }, [orders, search]);
 
@@ -224,6 +332,11 @@ export function PendingOrdersPageStudio() {
                 <span className="text-xs font-semibold" style={{ color: "var(--tx-f)" }}>
                   {t.total} <span className="font-black text-amber-500">{formatCurrency(totalValue)}</span>
                 </span>
+                {cancelRequestCount > 0 && (
+                  <span className="animate-pulse rounded-full border border-rose-400/30 bg-rose-400/10 px-2.5 py-1 text-xs font-black text-rose-400">
+                    🔔 {cancelRequestCount} yêu cầu hủy mới
+                  </span>
+                )}
               </div>
             </div>
             <div className="flex items-center gap-2">
@@ -309,6 +422,7 @@ export function PendingOrdersPageStudio() {
                   const isActive = activeOrderId === order.id;
                   const isCompleting = isActive && completeMutation.isPending;
                   const isCancelling = isActive && cancelMutation.isPending;
+                  const cancelRequested = String(order.preorderCancellationStatus || "none").toLowerCase() === "requested";
                   const customerName = order.customer?.telegramUsername
                     ? `@${order.customer.telegramUsername}`
                     : order.customer?.name || null;
@@ -347,7 +461,7 @@ export function PendingOrdersPageStudio() {
 
                       {/* Status */}
                       <td className="px-3 py-4 text-center">
-                        <StudioBadge tone="warning">Chờ xử lý</StudioBadge>
+                        <StudioBadge tone="warning">{cancelRequested ? "Chờ duyệt hủy" : order.isPreorder ? "Đặt trước" : "Chờ xử lý"}</StudioBadge>
                       </td>
 
                       {/* Value */}
@@ -396,43 +510,68 @@ export function PendingOrdersPageStudio() {
                             {order.customer.name}
                           </p>
                         )}
+                        <CustomerEmailList value={order.customerEmail} onCopy={(value) => void copyCustomerEmail(value)} />
                       </td>
 
                       {/* Issue */}
                       <td className="px-3 py-4">
                         <p className="line-clamp-2 text-[12px] leading-5" style={{ color: "var(--tx-f)" }}>
-                          {order.failureReason || t.waitingStock}
+                          {cancelRequested ? "Khách yêu cầu hủy. Đơn đang bị khóa giao hàng để chờ seller xử lý." : order.isPreorder ? "Đã thanh toán, bot sẽ tự giao khi hàng về." : order.failureReason || t.waitingStock}
                         </p>
                       </td>
 
                       {/* Actions */}
                       <td className="py-4 pl-3 pr-5">
                         <div className="flex items-center justify-center gap-2">
-                          <button
-                            type="button"
-                            title={isCompleting ? t.processing : t.confirmDone}
-                            disabled={isBusy}
-                            onClick={() => completeMutation.mutate(order.id)}
-                            className="flex items-center gap-1.5 whitespace-nowrap shrink-0 rounded-lg px-3 py-1.5 text-[12px] font-bold uppercase transition-all hover:opacity-90 disabled:pointer-events-none disabled:opacity-30"
-                            style={{ backgroundColor: "rgba(34,197,94,0.15)", color: "rgb(22,163,74)" }}
-                          >
-                            <CheckCircle2 className="h-3.5 w-3.5" />
-                            {isCompleting ? "..." : t.done}
-                          </button>
-                          <button
-                            type="button"
-                            title={isCancelling ? t.cancelling : t.cancelOrder}
-                            disabled={isBusy}
-                            onClick={() => {
-                              if (!window.confirm(t.confirmCancelMsg(order.orderCode))) return;
-                              cancelMutation.mutate(order.id);
-                            }}
-                            className="flex items-center gap-1.5 whitespace-nowrap shrink-0 rounded-lg px-3 py-1.5 text-[12px] font-bold uppercase transition-all hover:opacity-90 disabled:pointer-events-none disabled:opacity-30"
-                            style={{ backgroundColor: "rgba(244,63,94,0.15)", color: "rgb(225,29,72)" }}
-                          >
-                            <XCircle className="h-3.5 w-3.5" />
-                            {isCancelling ? "..." : t.cancel}
-                          </button>
+                          {order.isPreorder ? cancelRequested ? (
+                            <>
+                              <button
+                                type="button"
+                                disabled={isBusy}
+                                onClick={() => {
+                                  if (window.confirm("Duyệt hủy? Tiền hàng sẽ hoàn vào ví khách, phí đặt trước không hoàn.")) approvePreorderCancelMutation.mutate(order.id);
+                                }}
+                                className="rounded-lg px-3 py-1.5 text-[12px] font-bold uppercase disabled:opacity-30"
+                                style={{ backgroundColor: "rgba(34,197,94,0.15)", color: "rgb(22,163,74)" }}
+                              >Duyệt hủy</button>
+                              <button
+                                type="button"
+                                disabled={isBusy}
+                                onClick={() => rejectPreorderCancelMutation.mutate(order.id)}
+                                className="rounded-lg px-3 py-1.5 text-[12px] font-bold uppercase disabled:opacity-30"
+                                style={{ backgroundColor: "rgba(245,158,11,0.15)", color: "rgb(217,119,6)" }}
+                              >Từ chối</button>
+                            </>
+                          ) : (
+                            <button
+                              type="button"
+                              disabled={isBusy}
+                              onClick={() => {
+                                if (window.confirm("Shop chủ động hủy đơn? Khách sẽ được hoàn 100%, gồm cả phí đặt trước.")) sellerCancelPreorderMutation.mutate(order.id);
+                              }}
+                              className="rounded-lg px-3 py-1.5 text-[12px] font-bold uppercase disabled:opacity-30"
+                              style={{ backgroundColor: "rgba(244,63,94,0.15)", color: "rgb(225,29,72)" }}
+                            >Shop hủy đơn</button>
+                          ) : (
+                            <>
+                              <button
+                                type="button"
+                                disabled={isBusy}
+                                onClick={() => completeMutation.mutate(order.id)}
+                                className="rounded-lg px-3 py-1.5 text-[12px] font-bold uppercase disabled:opacity-30"
+                                style={{ backgroundColor: "rgba(34,197,94,0.15)", color: "rgb(22,163,74)" }}
+                              >{isCompleting ? "..." : t.done}</button>
+                              <button
+                                type="button"
+                                disabled={isBusy}
+                                onClick={() => {
+                                  if (window.confirm(t.confirmCancelMsg(order.orderCode))) cancelMutation.mutate(order.id);
+                                }}
+                                className="rounded-lg px-3 py-1.5 text-[12px] font-bold uppercase disabled:opacity-30"
+                                style={{ backgroundColor: "rgba(244,63,94,0.15)", color: "rgb(225,29,72)" }}
+                              >{isCancelling ? "..." : t.cancel}</button>
+                            </>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -447,6 +586,7 @@ export function PendingOrdersPageStudio() {
                 const isActive = activeOrderId === order.id;
                 const isCompleting = isActive && completeMutation.isPending;
                 const isCancelling = isActive && cancelMutation.isPending;
+                const cancelRequested = String(order.preorderCancellationStatus || "none").toLowerCase() === "requested";
                 const customerName = order.customer?.telegramUsername
                   ? `@${order.customer.telegramUsername}`
                   : order.customer?.name || null;
@@ -460,7 +600,7 @@ export function PendingOrdersPageStudio() {
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0 flex-1">
                         <div className="flex flex-wrap items-center gap-2">
-                          <StudioBadge tone="warning">Chờ xử lý</StudioBadge>
+                          <StudioBadge tone="warning">{cancelRequested ? "Chờ duyệt hủy" : order.isPreorder ? "Đặt trước" : "Chờ xử lý"}</StudioBadge>
                           <span className="text-[11px]" style={{ color: "var(--tx-f)" }}>{timeAgo(order.createdAt)}</span>
                         </div>
                         <p className="mt-1.5 text-sm font-black uppercase tracking-tight" style={{ color: "var(--tx)" }}>{order.orderCode}</p>
@@ -470,35 +610,34 @@ export function PendingOrdersPageStudio() {
                           {customerName && <span>· {customerName}</span>}
                           {order.paymentTransaction?.provider && <span>· {String(order.paymentTransaction.provider).toLowerCase() === "wallet" ? "VÍ" : order.paymentTransaction.provider}</span>}
                         </div>
+                        <CustomerEmailList value={order.customerEmail} onCopy={(value) => void copyCustomerEmail(value)} />
                         <p className="mt-1.5 text-base font-black text-amber-500">{formatCurrency(order.totalSaleAmount)}</p>
-                        {order.failureReason && (
-                          <p className="mt-1 text-[11px] leading-4" style={{ color: "var(--tx-f)" }}>{order.failureReason}</p>
+                        {(order.isPreorder || order.failureReason) && (
+                          <p className="mt-1 text-[11px] leading-4" style={{ color: "var(--tx-f)" }}>
+                            {cancelRequested ? "Khách yêu cầu hủy; đơn đang tạm khóa giao hàng." : order.isPreorder ? "Bot sẽ tự giao khi hàng về." : order.failureReason}
+                          </p>
                         )}
                       </div>
                       <div className="flex shrink-0 flex-col gap-1.5">
-                        <button
-                          type="button"
-                          disabled={isBusy}
-                          onClick={() => completeMutation.mutate(order.id)}
-                          className="flex items-center gap-1 rounded-lg px-3 py-2 text-[12px] font-bold uppercase disabled:opacity-40"
-                          style={{ backgroundColor: "rgba(34,197,94,0.15)", color: "rgb(22,163,74)" }}
-                        >
-                          <CheckCircle2 className="h-3.5 w-3.5" />
-                          {isCompleting ? "..." : t.done}
-                        </button>
-                        <button
-                          type="button"
-                          disabled={isBusy}
-                          onClick={() => {
-                            if (!window.confirm(t.confirmCancelMsg(order.orderCode))) return;
-                            cancelMutation.mutate(order.id);
-                          }}
-                          className="flex items-center gap-1 rounded-lg px-3 py-2 text-[12px] font-bold uppercase disabled:opacity-40"
-                          style={{ backgroundColor: "rgba(244,63,94,0.15)", color: "rgb(225,29,72)" }}
-                        >
-                          <XCircle className="h-3.5 w-3.5" />
-                          {isCancelling ? "..." : t.cancel}
-                        </button>
+                        {order.isPreorder ? cancelRequested ? (
+                          <>
+                            <button type="button" disabled={isBusy} onClick={() => {
+                              if (window.confirm("Duyệt hủy? Tiền hàng sẽ hoàn vào ví khách, phí đặt trước không hoàn.")) approvePreorderCancelMutation.mutate(order.id);
+                            }} className="rounded-lg px-3 py-2 text-[12px] font-bold uppercase disabled:opacity-40" style={{ backgroundColor: "rgba(34,197,94,0.15)", color: "rgb(22,163,74)" }}>Duyệt hủy</button>
+                            <button type="button" disabled={isBusy} onClick={() => rejectPreorderCancelMutation.mutate(order.id)} className="rounded-lg px-3 py-2 text-[12px] font-bold uppercase disabled:opacity-40" style={{ backgroundColor: "rgba(245,158,11,0.15)", color: "rgb(217,119,6)" }}>Từ chối</button>
+                          </>
+                        ) : (
+                          <button type="button" disabled={isBusy} onClick={() => {
+                            if (window.confirm("Shop chủ động hủy đơn? Khách sẽ được hoàn 100%, gồm cả phí đặt trước.")) sellerCancelPreorderMutation.mutate(order.id);
+                          }} className="rounded-lg px-3 py-2 text-[12px] font-bold uppercase disabled:opacity-40" style={{ backgroundColor: "rgba(244,63,94,0.15)", color: "rgb(225,29,72)" }}>Shop hủy đơn</button>
+                        ) : (
+                          <>
+                            <button type="button" disabled={isBusy} onClick={() => completeMutation.mutate(order.id)} className="rounded-lg px-3 py-2 text-[12px] font-bold uppercase disabled:opacity-40" style={{ backgroundColor: "rgba(34,197,94,0.15)", color: "rgb(22,163,74)" }}>{isCompleting ? "..." : t.done}</button>
+                            <button type="button" disabled={isBusy} onClick={() => {
+                              if (window.confirm(t.confirmCancelMsg(order.orderCode))) cancelMutation.mutate(order.id);
+                            }} className="rounded-lg px-3 py-2 text-[12px] font-bold uppercase disabled:opacity-40" style={{ backgroundColor: "rgba(244,63,94,0.15)", color: "rgb(225,29,72)" }}>{isCancelling ? "..." : t.cancel}</button>
+                          </>
+                        )}
                       </div>
                     </div>
                   </div>

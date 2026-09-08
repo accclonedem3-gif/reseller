@@ -21,6 +21,7 @@ export const RESTOCK_PLACEHOLDER_HINTS: Array<{ key: string; label: string }> = 
   { key: "{added}", label: "Số lượng vừa thêm" },
   { key: "{current_stock}", label: "Tồn kho hiện tại" },
   { key: "{price}", label: "Giá bán (₫)" },
+  { key: "{price_usdt}", label: "Giá quy đổi USDT" },
 ];
 
 const FIELD_LABELS: Record<keyof RestockTemplate["fieldIcons"], string> = {
@@ -30,7 +31,7 @@ const FIELD_LABELS: Record<keyof RestockTemplate["fieldIcons"], string> = {
   price: "Giá",
 };
 
-const SAMPLE = { productName: "Slot X Premium 3 tháng | BHF", added: 50, stock: 87, price: 89000 };
+const SAMPLE = { productName: "Slot X Premium 3 tháng | BHF", added: 50, stock: 87, price: 89000, usdtVndRate: 27000 };
 
 function formatSamplePrice(n: number): string {
   try {
@@ -40,12 +41,20 @@ function formatSamplePrice(n: number): string {
   }
 }
 
+function formatSampleUsdtPrice(): string {
+  return (SAMPLE.price / SAMPLE.usdtVndRate).toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+}
+
 function fillPlaceholders(raw: string): string {
   if (!raw) return "";
   return raw
     .replace(/\{product_name\}/g, SAMPLE.productName)
     .replace(/\{added\}/g, String(SAMPLE.added))
     .replace(/\{current_stock\}/g, String(SAMPLE.stock))
+    .replace(/\{price_usdt\}/g, formatSampleUsdtPrice())
     .replace(/\{price\}/g, formatSamplePrice(SAMPLE.price));
 }
 
@@ -66,7 +75,9 @@ function renderPreview(t: RestockTemplate): string {
     `${t.fieldIcons.stock} ${stockLabel}: ${SAMPLE.stock}`,
   ];
   if (showPriceLine) {
-    lines.push(`${priceIcon || "💳"} ${priceLabel}: ${formatSamplePrice(SAMPLE.price)}`);
+    lines.push(
+      `${priceIcon || "💳"} ${priceLabel}: ${formatSamplePrice(SAMPLE.price)} (~${formatSampleUsdtPrice()} USDT)`,
+    );
   }
   const footer = fillPlaceholders(t.footer || "").trim();
   if (footer) {

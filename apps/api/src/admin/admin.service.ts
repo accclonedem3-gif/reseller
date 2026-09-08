@@ -1,11 +1,15 @@
-import { Inject, Injectable, NotFoundException } from "@nestjs/common";
-import { OrderStatus, Prisma, SellerTier, UserRole, UserStatus, WalletLedgerType } from "@prisma/client";
+import { BadRequestException, Inject, Injectable, NotFoundException } from "@nestjs/common";
+import { CustomerWalletLedgerType, OrderStatus, Prisma, SellerTier, UserRole, UserStatus, WalletLedgerType } from "@prisma/client";
 import { decryptSecret, isMockBotToken, telegramSetCommands } from "@reseller/shared/server";
 
 import { AppConfigService } from "../config/app-config.service";
+import { AffiliateService } from "../affiliate/affiliate.service";
 import { PrismaService } from "../db/prisma.service";
 import { commandsForTier } from "../lib/bot-commands";
-import { decimalToNumber } from "../lib/utils";
+import { FeatureFlagService } from "../lib/feature-flag.service";
+import { decimalToNumber, toDecimal } from "../lib/utils";
+import type { AuthenticatedUser } from "../types";
+import type { RefundAdminOrderDto } from "./admin.dto";
 
 @Injectable()
 export class AdminService {
@@ -14,6 +18,10 @@ export class AdminService {
     private readonly prisma: PrismaService,
     @Inject(AppConfigService)
     private readonly config: AppConfigService,
+    @Inject(FeatureFlagService)
+    private readonly featureFlags: FeatureFlagService,
+    @Inject(AffiliateService)
+    private readonly affiliateService: AffiliateService,
   ) {}
 
   async getOverview() {
@@ -138,6 +146,216 @@ export class AdminService {
     }));
   }
 
+  async globalSearch(rawQuery: string) {
+    const query = rawQuery.trim();
+    if (query.length < 2) return { sellers: [], customers: [], orders: [] };
+
+    const [sellers, customers, orders] = await Promise.all([
+      this.prisma.user.findMany({
+        where: {
+          role: UserRole.SELLER,
+          OR: [
+            { email: { contains: query, mode: "insensitive" } },
+            { seller: { displayName: { contains: query, mode: "insensitive" } } },
+          ],
+        },
+        take: 6,
+        select: { id: true, email: true, seller: { select: { displayName: true, tier: true, status: true } } },
+      }),
+      this.prisma.customer.findMany({
+        where: {
+          OR: [
+            { telegramUserId: { contains: query, mode: "insensitive" } },
+            { telegramChatId: { contains: query, mode: "insensitive" } },
+            { telegramUsername: { contains: query, mode: "insensitive" } },
+            { firstName: { contains: query, mode: "insensitive" } },
+            { lastName: { contains: query, mode: "insensitive" } },
+          ],
+        },
+        take: 6,
+        select: { id: true, telegramUserId: true, telegramUsername: true, firstName: true, lastName: true, shop: { select: { name: true } } },
+      }),
+      this.prisma.order.findMany({
+        where: {
+          OR: [
+            { orderCode: { contains: query, mode: "insensitive" } },
+            { productNameSnapshot: { contains: query, mode: "insensitive" } },
+          ],
+        },
+        orderBy: { createdAt: "desc" },
+        take: 6,
+        select: { id: true, orderCode: true, productNameSnapshot: true, status: true, totalSaleAmount: true },
+      }),
+    ]);
+
+    return {
+      sellers: sellers.map((row) => ({ id: row.id, title: row.seller?.displayName || row.email, subtitle: `${row.email} · ${row.seller?.tier ?? "FREE"}`, status: row.seller?.status ?? null })),
+      customers: customers.map((row) => ({ id: row.id, title: [row.firstName, row.lastName].filter(Boolean).join(" ") || row.telegramUsername || row.telegramUserId, subtitle: `${row.shop.name} · ${row.telegramUserId}` })),
+      orders: orders.map((row) => ({ id: row.id, title: row.orderCode, subtitle: row.productNameSnapshot, status: row.status, amount: decimalToNumber(row.totalSaleAmount) })),
+    };
+  }
+
+  async getSellerDetail(userId: string) {
+    const user = await this.prisma.user.findFirst({
+      where: { id: userId, role: UserRole.SELLER },
+      include: {
+        seller: {
+          include: {
+            wallet: true,
+            shops: { include: { botConfig: true, paymentConfig: true, providerConfig: true } },
+            tierSubscriptions: { orderBy: { createdAt: "desc" }, take: 10 },
+            ledgers: { orderBy: { createdAt: "desc" }, take: 15 },
+            _count: { select: { orders: true, customers: true, referrals: true, withdraws: true } },
+          },
+        },
+      },
+    });
+    if (!user?.seller) throw new NotFoundException("Seller not found");
+
+    const [revenue, recentOrders] = await Promise.all([
+      this.prisma.order.aggregate({
+        where: { sellerId: user.seller.id, status: { in: ["DELIVERED", "PAID", "PROCESSING_PURCHASE"] } },
+        _sum: { totalSaleAmount: true, totalSourceAmount: true },
+      }),
+      this.prisma.order.findMany({
+        where: { sellerId: user.seller.id }, orderBy: { createdAt: "desc" }, take: 10,
+        select: { id: true, orderCode: true, productNameSnapshot: true, status: true, totalSaleAmount: true, createdAt: true },
+      }),
+    ]);
+
+    const seller = user.seller;
+    return {
+      user: { id: user.id, email: user.email, recoveryEmail: user.recoveryEmail, status: user.status, createdAt: user.createdAt },
+      seller: { id: seller.id, displayName: seller.displayName, phone: seller.phone, status: seller.status, tier: seller.tier, tierStartedAt: seller.tierStartedAt, tierExpiresAt: seller.tierExpiresAt, referralCode: seller.referralCode, signupIp: seller.signupIp },
+      metrics: { walletBalance: decimalToNumber(seller.wallet?.balance), orders: seller._count.orders, customers: seller._count.customers, referrals: seller._count.referrals, withdraws: seller._count.withdraws, revenue: decimalToNumber(revenue._sum.totalSaleAmount), sourceCost: decimalToNumber(revenue._sum.totalSourceAmount) },
+      shops: seller.shops.map((shop) => ({ id: shop.id, name: shop.name, slug: shop.slug, status: shop.status, botUsername: shop.botConfig?.telegramBotUsername ?? null, webhookStatus: shop.botConfig?.webhookStatus ?? null, deliveryMode: shop.botConfig?.deliveryMode ?? null, paymentProvider: shop.paymentConfig?.provider ?? null, sourceProvider: shop.providerConfig?.providerKind ?? null })),
+      subscriptions: seller.tierSubscriptions.map((row) => ({ ...row, priceVnd: decimalToNumber(row.priceVnd), level1CommissionVnd: decimalToNumber(row.level1CommissionVnd), level2CommissionVnd: decimalToNumber(row.level2CommissionVnd) })),
+      ledgers: seller.ledgers.map((row) => ({ ...row, amount: decimalToNumber(row.amount), balanceBefore: decimalToNumber(row.balanceBefore), balanceAfter: decimalToNumber(row.balanceAfter) })),
+      recentOrders: recentOrders.map((row) => ({ ...row, totalSaleAmount: decimalToNumber(row.totalSaleAmount) })),
+    };
+  }
+
+  async getFinanceOperations() {
+    const [sellerWallets, customerWallets, paidOrders, deposits, pendingWithdraws, paymentsByProvider, recentMovements] = await Promise.all([
+      this.prisma.sellerWallet.aggregate({ _sum: { balance: true } }),
+      this.prisma.customerWallet.aggregate({ _sum: { balance: true, commissionBalance: true } }),
+      this.prisma.order.aggregate({ where: { status: { in: ["DELIVERED", "PAID", "PROCESSING_PURCHASE"] } }, _sum: { totalSaleAmount: true, totalSourceAmount: true } }),
+      this.prisma.depositRequest.aggregate({ where: { status: "CONFIRMED" }, _sum: { amount: true } }),
+      this.prisma.withdrawRequest.aggregate({ where: { status: "PENDING" }, _sum: { amount: true }, _count: true }),
+      this.prisma.paymentTransaction.groupBy({ by: ["provider", "status"], _count: { _all: true }, _sum: { amount: true } }),
+      this.prisma.walletLedger.findMany({ orderBy: { createdAt: "desc" }, take: 20, include: { seller: { select: { displayName: true, user: { select: { email: true } } } } } }),
+    ]);
+
+    const revenue = decimalToNumber(paidOrders._sum.totalSaleAmount);
+    const sourceCost = decimalToNumber(paidOrders._sum.totalSourceAmount);
+    return {
+      summary: {
+        sellerWalletBalance: decimalToNumber(sellerWallets._sum.balance),
+        customerCashBalance: decimalToNumber(customerWallets._sum.balance),
+        customerCommissionBalance: decimalToNumber(customerWallets._sum.commissionBalance),
+        grossRevenue: revenue,
+        sourceCost,
+        grossProfit: revenue - sourceCost,
+        paidDeposits: decimalToNumber(deposits._sum?.amount),
+        pendingWithdrawAmount: decimalToNumber(pendingWithdraws._sum.amount),
+        pendingWithdrawCount: pendingWithdraws._count,
+      },
+      providers: paymentsByProvider.map((row) => ({ provider: row.provider, status: row.status, count: row._count._all, amount: decimalToNumber(row._sum.amount) })),
+      recentMovements: recentMovements.map((row) => ({ id: row.id, sellerName: row.seller.displayName || row.seller.user.email, type: row.type, amount: decimalToNumber(row.amount), balanceAfter: decimalToNumber(row.balanceAfter), note: row.note, createdAt: row.createdAt })),
+    };
+  }
+
+  async listSystemCustomers(search?: string) {
+    const query = search?.trim();
+    const customers = await this.prisma.customer.findMany({
+      where: query ? { OR: [
+        { telegramUserId: { contains: query, mode: "insensitive" } },
+        { telegramChatId: { contains: query, mode: "insensitive" } },
+        { telegramUsername: { contains: query, mode: "insensitive" } },
+        { firstName: { contains: query, mode: "insensitive" } },
+        { lastName: { contains: query, mode: "insensitive" } },
+      ] } : {},
+      orderBy: { createdAt: "desc" }, take: 200,
+      include: { wallet: true, shop: { select: { name: true, seller: { select: { displayName: true } } } }, _count: { select: { orders: true, warrantyClaims: true } } },
+    });
+    return customers.map((row) => ({ id: row.id, telegramUserId: row.telegramUserId, telegramChatId: row.telegramChatId, username: row.telegramUsername, displayName: [row.firstName, row.lastName].filter(Boolean).join(" ") || row.telegramUsername || row.telegramUserId, shopName: row.shop.name, sellerName: row.shop.seller.displayName, preferredLanguage: row.preferredLanguage, isCtv: row.isCtv, blacklisted: row.blacklisted, cashBalance: decimalToNumber(row.wallet?.balance), commissionBalance: decimalToNumber(row.wallet?.commissionBalance), orderCount: row._count.orders, warrantyCount: row._count.warrantyClaims, createdAt: row.createdAt }));
+  }
+
+  async updateSellerAffiliateCommission(
+    userId: string,
+    affiliateCommissionPercent: number | null,
+  ) {
+    const seller = await this.prisma.seller.findUnique({
+      where: { userId },
+      select: { id: true },
+    });
+    if (!seller) throw new NotFoundException("Seller not found");
+
+    if (
+      affiliateCommissionPercent !== null &&
+      (!Number.isFinite(affiliateCommissionPercent) ||
+        affiliateCommissionPercent < 0 ||
+        affiliateCommissionPercent > 100)
+    ) {
+      throw new BadRequestException("Commission percent must be between 0 and 100.");
+    }
+
+    const updated = await this.prisma.seller.update({
+      where: { id: seller.id },
+      data: {
+        affiliateCommissionPercent:
+          affiliateCommissionPercent === null
+            ? null
+            : toDecimal(affiliateCommissionPercent),
+      },
+      select: { id: true, userId: true, affiliateCommissionPercent: true },
+    });
+
+    return {
+      sellerId: updated.id,
+      userId: updated.userId,
+      affiliateCommissionPercent:
+        updated.affiliateCommissionPercent === null
+          ? null
+          : decimalToNumber(updated.affiliateCommissionPercent),
+    };
+  }
+  async getSystemHealth() {
+    const now = new Date();
+    const staleAt = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+    const expiringAt = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+    const [shops, botStates, failedPayments, pendingPayments, failedOrders, pendingOrders, expiringSellers, lowStock, recentFailures] = await Promise.all([
+      this.prisma.shop.groupBy({ by: ["status"], _count: { _all: true } }),
+      this.prisma.botConfig.groupBy({ by: ["webhookStatus", "deliveryMode"], _count: { _all: true } }),
+      this.prisma.paymentTransaction.count({ where: { status: "FAILED", updatedAt: { gte: staleAt } } }),
+      this.prisma.paymentTransaction.count({ where: { status: "PENDING", createdAt: { lt: staleAt } } }),
+      this.prisma.order.count({ where: { status: "FAILED", updatedAt: { gte: staleAt } } }),
+      this.prisma.order.count({ where: { status: { in: ["PAID", "PROCESSING_PURCHASE"] }, updatedAt: { lt: staleAt } } }),
+      this.prisma.seller.count({ where: { tierExpiresAt: { gte: now, lte: expiringAt } } }),
+      this.prisma.sourceProduct.count({ where: { available: { lte: 5 } } }),
+      this.prisma.order.findMany({ where: { status: "FAILED" }, orderBy: { updatedAt: "desc" }, take: 12, select: { id: true, orderCode: true, failureReason: true, updatedAt: true, shop: { select: { name: true } } } }),
+    ]);
+    return {
+      generatedAt: now,
+      database: { status: "operational", latencyMs: null },
+      shops: shops.map((row) => ({ status: row.status, count: row._count._all })),
+      bots: botStates.map((row) => ({ webhookStatus: row.webhookStatus, deliveryMode: row.deliveryMode, count: row._count._all })),
+      alerts: { failedPayments24h: failedPayments, stalePendingPayments: pendingPayments, failedOrders24h: failedOrders, staleProcessingOrders: pendingOrders, expiringSellers7d: expiringSellers, lowStockProducts: lowStock },
+      recentFailures: recentFailures.map((row) => ({ id: row.id, orderCode: row.orderCode, reason: row.failureReason, shopName: row.shop.name, updatedAt: row.updatedAt })),
+    };
+  }
+
+  async getAutomations() {
+    const flags = await this.featureFlags.list();
+    return {
+      generatedAt: new Date(),
+      total: flags.length,
+      active: flags.filter((flag) => flag.enabled).length,
+      maintenance: flags.filter((flag) => !flag.enabled).length,
+      flags,
+    };
+  }
+
   async listSellers(filters: { tier?: SellerTier; status?: string; search?: string }) {
     const users = await this.prisma.user.findMany({
       where: {
@@ -184,6 +402,9 @@ export class AdminService {
       id: u.id,
       sellerId: u.seller?.id || null,
       referralCode: u.seller?.referralCode || null,
+      affiliateCommissionPercent: u.seller?.affiliateCommissionPercent == null
+        ? null
+        : decimalToNumber(u.seller.affiliateCommissionPercent),
       username: u.email,
       recoveryEmail: u.recoveryEmail,
       status: u.status.toLowerCase(),
@@ -399,6 +620,7 @@ export class AdminService {
             telegramUserId: true,
             firstName: true,
             lastName: true,
+            wallet: { select: { balance: true } },
           },
         },
         warrantyClaims: {
@@ -417,10 +639,21 @@ export class AdminService {
 
     if (!order) return null;
 
+    const refundAggregate = await this.prisma.customerWalletLedger.aggregate({
+      where: {
+        customerId: order.customerId,
+        type: CustomerWalletLedgerType.REFUND_ORDER,
+        referenceType: "admin_order_refund",
+        referenceId: order.id,
+      },
+      _sum: { amount: true },
+    });
+
     return {
       id: order.id,
       orderCode: order.orderCode,
       status: order.status.toLowerCase(),
+      paymentStatus: order.paymentStatus.toLowerCase(),
       productName: order.productNameSnapshot,
       totalAmount: decimalToNumber(order.totalSaleAmount),
       quantity: order.quantity,
@@ -433,12 +666,119 @@ export class AdminService {
         [order.customer?.firstName, order.customer?.lastName]
           .filter(Boolean)
           .join(" ") || null,
+      customerWalletBalance: decimalToNumber(order.customer?.wallet?.balance),
+      refundedAmount: order.status === "REFUNDED"
+        ? decimalToNumber(order.totalSaleAmount)
+        : decimalToNumber(refundAggregate._sum.amount),
       warrantyPolicy: order.warrantyPolicySnapshot,
       warrantyClaims: order.warrantyClaims,
       sourceProviderKind: order.sourceProviderKindSnapshot,
       createdAt: order.createdAt,
       updatedAt: order.updatedAt,
     };
+  }
+
+  async refundOrderToCustomerWallet(
+    user: AuthenticatedUser,
+    orderId: string,
+    dto: RefundAdminOrderDto,
+  ) {
+    const amount = dto.amount;
+    const result = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw(Prisma.sql`SELECT id FROM orders WHERE id = ${orderId} FOR UPDATE`);
+      const order = await tx.order.findUnique({
+        where: { id: orderId },
+        select: { id: true, orderCode: true, customerId: true, totalSaleAmount: true, status: true, paymentStatus: true },
+      });
+      if (!order) throw new NotFoundException("Order not found");
+
+      const priorRefunds = await tx.customerWalletLedger.aggregate({
+        where: {
+          customerId: order.customerId,
+          type: CustomerWalletLedgerType.REFUND_ORDER,
+          referenceType: "admin_order_refund",
+          referenceId: order.id,
+        },
+        _sum: { amount: true },
+      });
+      const refundedBefore = decimalToNumber(priorRefunds._sum.amount);
+      const orderTotal = decimalToNumber(order.totalSaleAmount);
+      if (order.status === "REFUNDED") {
+        throw new BadRequestException("Order has already been refunded.");
+      }
+      if (order.paymentStatus !== "PAID") {
+        throw new BadRequestException("Only paid orders can be refunded.");
+      }
+      const remaining = Math.max(0, orderTotal - refundedBefore);
+      if (remaining <= 0) throw new BadRequestException("Order has already been refunded in full.");
+      if (amount > remaining) {
+        throw new BadRequestException(`Refund amount cannot exceed the remaining ${remaining.toLocaleString("vi-VN")} VND.`);
+      }
+
+      let wallet = await tx.customerWallet.findUnique({ where: { customerId: order.customerId } });
+      if (!wallet) {
+        wallet = await tx.customerWallet.create({
+          data: { customerId: order.customerId, balance: toDecimal(0) },
+        });
+      }
+      await tx.$queryRaw(Prisma.sql`SELECT id FROM customer_wallets WHERE id = ${wallet.id} FOR UPDATE`);
+      const freshWallet = await tx.customerWallet.findUniqueOrThrow({ where: { id: wallet.id } });
+      const balanceBefore = decimalToNumber(freshWallet.balance);
+      const balanceAfter = balanceBefore + amount;
+      const refundedAfter = refundedBefore + amount;
+      const isFullRefund = refundedAfter >= orderTotal;
+
+      await tx.customerWallet.update({
+        where: { id: wallet.id },
+        data: { balance: toDecimal(balanceAfter) },
+      });
+      await tx.customerWalletLedger.create({
+        data: {
+          customerId: order.customerId,
+          walletId: wallet.id,
+          type: CustomerWalletLedgerType.REFUND_ORDER,
+          currency: "VND",
+          amount: toDecimal(amount),
+          balanceBefore: toDecimal(balanceBefore),
+          balanceAfter: toDecimal(balanceAfter),
+          commissionBalanceBefore: freshWallet.commissionBalance,
+          commissionBalanceAfter: freshWallet.commissionBalance,
+          referenceType: "admin_order_refund",
+          referenceId: order.id,
+          note: dto.note?.trim() || `Admin refund for order ${order.orderCode}`,
+        },
+      });
+      if (isFullRefund) {
+        await tx.order.update({
+          where: { id: order.id },
+          data: { status: "REFUNDED", paymentStatus: "REFUNDED" },
+        });
+      }
+      await tx.orderEvent.create({
+        data: {
+          orderId: order.id,
+          eventType: "admin_customer_wallet_refund",
+          payloadJson: {
+            amount,
+            refundedTotal: refundedAfter,
+            balanceBefore,
+            balanceAfter,
+            isFullRefund,
+            adminUserId: user.id,
+            note: dto.note?.trim() || null,
+          } as Prisma.InputJsonValue,
+        },
+      });
+      return { amount, refundedTotal: refundedAfter, remaining: Math.max(0, orderTotal - refundedAfter), balanceAfter, isFullRefund };
+    });
+
+    if (result.isFullRefund) {
+      await this.affiliateService.revokeCommission(orderId);
+    } else {
+      await this.affiliateService.revokeCommissionForRefund(orderId, amount);
+    }
+
+    return { success: true, ...result };
   }
 
   async getSystemConfigs() {
@@ -594,5 +934,113 @@ export class AdminService {
     console.log(`[sync-bot-commands] done total=${results.length} ok=${ok} skipped=${skipped} failed=${failed}`);
 
     return { total: results.length, ok, skipped, failed, results };
+  }
+
+  async generateUserbotLicenseKeys(type: "PLUS" | "PRO" | "UNLIMITED", durationDays: number, count: number) {
+    const keysToCreate = [];
+    const characters = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+
+    for (let i = 0; i < count; i++) {
+      let randomPart = "";
+      for (let j = 0; j < 8; j++) {
+        randomPart += characters.charAt(Math.floor(Math.random() * characters.length));
+      }
+      const code = `UB-${type}-${randomPart}`;
+      keysToCreate.push({
+        code,
+        type,
+        durationDays,
+      });
+    }
+
+    await this.prisma.telegramUserbotLicenseKey.createMany({
+      data: keysToCreate,
+      skipDuplicates: true,
+    });
+
+    return { success: true, count: keysToCreate.length };
+  }
+
+  async listUserbotLicenseKeys() {
+    const keys = await this.prisma.telegramUserbotLicenseKey.findMany({
+      include: {
+        redeemedBySeller: {
+          select: {
+            id: true,
+            user: { select: { email: true } },
+          },
+        },
+      },
+      orderBy: { createdAt: "desc" },
+    });
+
+    return keys.map((k) => ({
+      id: k.id,
+      code: k.code,
+      type: k.type,
+      durationDays: k.durationDays,
+      isRedeemed: k.isRedeemed,
+      redeemedAt: k.redeemedAt,
+      expiresAt: k.expiresAt,
+      createdAt: k.createdAt,
+      redeemedBySellerId: k.redeemedBySellerId,
+      redeemedByEmail: k.redeemedBySeller?.user?.email || null,
+    }));
+  }
+
+  async resetUserbotLicenseKey(id: string) {
+    const key = await this.prisma.telegramUserbotLicenseKey.findUnique({ where: { id } });
+    if (!key) throw new NotFoundException("License key not found.");
+
+    if (key.isRedeemed && key.redeemedBySellerId) {
+      const seller = await this.prisma.seller.findUnique({
+        where: { id: key.redeemedBySellerId },
+        select: { userbotLicenseExpiresAt: true },
+      });
+      if (seller && seller.userbotLicenseExpiresAt) {
+        const newExpiresAt = new Date(
+          new Date(seller.userbotLicenseExpiresAt).getTime() - key.durationDays * 86400 * 1000,
+        );
+        await this.prisma.seller.update({
+          where: { id: key.redeemedBySellerId },
+          data: { userbotLicenseExpiresAt: newExpiresAt },
+        });
+      }
+    }
+
+    await this.prisma.telegramUserbotLicenseKey.update({
+      where: { id },
+      data: {
+        isRedeemed: false,
+        redeemedBySellerId: null,
+        redeemedAt: null,
+      },
+    });
+
+    return { success: true };
+  }
+
+  async deleteUserbotLicenseKey(id: string) {
+    const key = await this.prisma.telegramUserbotLicenseKey.findUnique({ where: { id } });
+    if (!key) throw new NotFoundException("License key not found.");
+
+    if (key.isRedeemed && key.redeemedBySellerId) {
+      const seller = await this.prisma.seller.findUnique({
+        where: { id: key.redeemedBySellerId },
+        select: { userbotLicenseExpiresAt: true },
+      });
+      if (seller && seller.userbotLicenseExpiresAt) {
+        const newExpiresAt = new Date(
+          new Date(seller.userbotLicenseExpiresAt).getTime() - key.durationDays * 86400 * 1000,
+        );
+        await this.prisma.seller.update({
+          where: { id: key.redeemedBySellerId },
+          data: { userbotLicenseExpiresAt: newExpiresAt },
+        });
+      }
+    }
+
+    await this.prisma.telegramUserbotLicenseKey.delete({ where: { id } });
+    return { success: true };
   }
 }

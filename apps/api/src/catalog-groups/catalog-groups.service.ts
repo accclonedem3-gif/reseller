@@ -47,6 +47,7 @@ export class CatalogGroupsService {
       data: {
         shopId: shop.id,
         name: dto.name,
+        description: dto.description?.trim() || null,
         position,
         icon: dto.icon ?? null,
         iconCustomEmojiId: dto.iconCustomEmojiId ?? null,
@@ -65,6 +66,7 @@ export class CatalogGroupsService {
       where: { id },
       data: {
         ...(dto.name !== undefined ? { name: dto.name } : {}),
+        ...(dto.description !== undefined ? { description: dto.description.trim() || null } : {}),
         ...(dto.position !== undefined ? { position: dto.position } : {}),
         ...(dto.icon !== undefined ? { icon: dto.icon || null } : {}),
         ...(dto.iconCustomEmojiId !== undefined ? { iconCustomEmojiId: dto.iconCustomEmojiId || null } : {}),

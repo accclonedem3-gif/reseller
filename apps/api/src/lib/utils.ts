@@ -158,3 +158,12 @@ export function slugify(value: string) {
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/(^-|-$)+/g, "");
 }
+
+export function pickUniqueSlug(baseSlug: string, occupiedSlugs: Iterable<string>) {
+  const occupied = new Set(occupiedSlugs);
+  if (!occupied.has(baseSlug)) return baseSlug;
+
+  let suffix = 2;
+  while (occupied.has(`${baseSlug}-${suffix}`)) suffix += 1;
+  return `${baseSlug}-${suffix}`;
+}

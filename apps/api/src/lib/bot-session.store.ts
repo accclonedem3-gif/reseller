@@ -14,16 +14,30 @@ export type PendingQuantitySelection = {
   expiresAt: number;
   imageUrl?: string | null;
   description?: string | null;
+  providerDescription?: string | null;
+  sourceDescriptionLocked?: boolean;
   soldCount?: number | null;
   deliveryFormatHint?: string | null;
   iconCustomEmojiId?: string | null;
   promoBanner?: string | null;
+  promoMessage?: string | null;
+  promoType?: string | null;
+  promoBuyN?: number | null;
+  promoGetM?: number | null;
+  promoPriceTiers?: Array<{ minQty: number; price: number }>;
+  promoBulkMinQty?: number | null;
+  promoBulkDiscountPct?: number | null;
+  promoStartAt?: string | Date | null;
+  promoEndAt?: string | Date | null;
   requiresCustomerEmail?: boolean;
+  preorderEnabled?: boolean;
+  preorderFeePercent?: number;
+  isPreorderOnly?: boolean;
 };
 
 export type PendingWalletTopupSelection = {
   currency: "VND" | "USDT";
-  provider?: "USDT_TRC20" | "USDT_SOL" | "USDT_TON";
+  provider?: "USDT_TRC20" | "USDT_BEP20" | "USDT_SOL" | "USDT_TON";
   expiresAt: number;
 };
 

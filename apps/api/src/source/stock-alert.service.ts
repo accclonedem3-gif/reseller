@@ -75,6 +75,7 @@ export class StockAlertService implements OnModuleInit, OnModuleDestroy {
         where: {
           stockAlertEnabled: true,
           internalSourceEnabled: true,
+          archivedAt: null,
           available: { not: null },
         },
         include: { shop: { include: { botConfig: true } } },

@@ -12,12 +12,16 @@ import {
 import type { Request } from "express";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { Prisma } from "@prisma/client";
-import { decryptSecret, verifyInternalRequestSignature } from "@reseller/shared/server";
+import {
+  decryptSecret,
+  verifyInternalRequestSignature,
+} from "@reseller/shared/server";
 import { SkipThrottle } from "@nestjs/throttler";
 
 import { AppConfigService } from "../config/app-config.service";
 import { PrismaService } from "../db/prisma.service";
 import { TelegramBotService } from "../lib/telegram-bot.service.v2";
+import { QueueService } from "../lib/queue.service";
 import { toDecimal } from "../lib/utils";
 import { WarrantyService } from "../warranty/warranty.service";
 import { WalletService } from "../wallet/wallet.service";
@@ -37,6 +41,8 @@ export class InternalController {
     private readonly prisma: PrismaService,
     @Inject(TelegramBotService)
     private readonly telegramBotService: TelegramBotService,
+    @Inject(QueueService)
+    private readonly queue: QueueService,
     @Inject(WarrantyService)
     private readonly warrantyService: WarrantyService,
     @Inject(WalletService)
@@ -52,7 +58,13 @@ export class InternalController {
     @Headers("x-internal-signature") signature: string,
     @Body() body: Record<string, any>,
   ) {
-    this.assertValidInternalRequest(req, body || {}, token, timestamp, signature);
+    this.assertValidInternalRequest(
+      req,
+      body || {},
+      token,
+      timestamp,
+      signature,
+    );
     await this.warrantyService.applyAutoCheckResult(claimId);
     return { success: true };
   }
@@ -93,7 +105,13 @@ export class InternalController {
       }>;
     },
   ) {
-    this.assertValidInternalRequest(req, body as Record<string, unknown>, token, timestamp, signature);
+    this.assertValidInternalRequest(
+      req,
+      body as Record<string, unknown>,
+      token,
+      timestamp,
+      signature,
+    );
 
     const sourceBuyerKey = String(body.sourceBuyerKey || "").trim();
     const products = Array.isArray(body.products) ? body.products : [];
@@ -149,7 +167,7 @@ export class InternalController {
         existingProducts.map((item) => [item.externalProductId, item]),
       );
       const notifications: Array<{
-        externalProductId: string;
+        sourceProductId: string;
         displayName: string;
         addedQuantity: number;
         available: number;
@@ -169,7 +187,10 @@ export class InternalController {
           ? Number(item.sourcePrice)
           : 0;
         const sourceName = String(
-          item.sourceName || item.rawName || item.displayName || externalProductId,
+          item.sourceName ||
+            item.rawName ||
+            item.displayName ||
+            externalProductId,
         ).trim();
         const displayName = String(item.displayName || sourceName).trim();
         const previous = existingByExternalId.get(externalProductId);
@@ -185,8 +206,9 @@ export class InternalController {
 
         const sourceProduct = await this.prisma.sourceProduct.upsert({
           where: {
-            shopId_externalProductId: {
+            shopId_sourceScope_externalProductId: {
               shopId: shop.id,
+              sourceScope: "legacy",
               externalProductId,
             },
           },
@@ -238,7 +260,7 @@ export class InternalController {
 
         if (available !== null && available > 0 && addedQuantity > 0) {
           notifications.push({
-            externalProductId,
+            sourceProductId: sourceProduct.id,
             displayName,
             addedQuantity,
             available,
@@ -247,7 +269,7 @@ export class InternalController {
       }
 
       if (shop.providerConfig.sourceNotificationSyncEnabled) {
-        messagesSent += await this.telegramBotService.sendCatalogStockUpdateMessages(
+        messagesSent += await this.queue.addRestockNotificationJobs(
           shop.id,
           notifications,
         );
@@ -361,8 +383,16 @@ export class InternalController {
    * fixed 32-byte digest first so timingSafeEqual never sees mismatched lengths (it throws on
    * those) and no length information escapes.
    */
-  private constantTimeEqual(a: string | undefined | null, b: string | undefined | null): boolean {
-    if (typeof a !== "string" || typeof b !== "string" || a.length === 0 || b.length === 0) {
+  private constantTimeEqual(
+    a: string | undefined | null,
+    b: string | undefined | null,
+  ): boolean {
+    if (
+      typeof a !== "string" ||
+      typeof b !== "string" ||
+      a.length === 0 ||
+      b.length === 0
+    ) {
       return false;
     }
     const ha = createHash("sha256").update(a).digest();

@@ -11,6 +11,7 @@ import { PaymentProvider, Prisma, SellerTier, WalletLedgerType } from "@prisma/c
 import { AppConfigService } from "../config/app-config.service";
 import { PrismaService } from "../db/prisma.service";
 import { PaymentService } from "../lib/payment.service";
+import { FeatureFlagService } from "../lib/feature-flag.service";
 import { decimalToNumber, generateExternalPaymentCode, toDecimal } from "../lib/utils";
 import type { AuthenticatedUser } from "../types";
 
@@ -49,6 +50,8 @@ export class TiersService {
     private readonly tierAffiliate: TierAffiliateService,
     @Inject(DiscountCodesService)
     private readonly discountCodes: DiscountCodesService,
+    @Inject(FeatureFlagService)
+    private readonly featureFlags: FeatureFlagService,
   ) {}
 
   /**
@@ -64,6 +67,7 @@ export class TiersService {
         tier: true,
         tierExpiresAt: true,
         affiliateUnlockedTier: true,
+        affiliateCommissionPercent: true,
         referralCode: true,
         referredBySellerId: true,
         autoRenewConfig: true,
@@ -149,6 +153,7 @@ export class TiersService {
       deviceFingerprint?: string;
     },
   ) {
+    await this.featureFlags.assertEnabled("tier_purchases");
     const seller = await this.prisma.seller.findUnique({
       where: { userId: user.id },
       select: {
@@ -161,6 +166,9 @@ export class TiersService {
       },
     });
     if (!seller) throw new NotFoundException("Seller not found");
+    if (seller.referredBySellerId || args.referralCode || args.discountCode) {
+      await this.featureFlags.assertEnabled("affiliate_commissions");
+    }
 
     // ULTRA can only be purchased by someone who's already / has been ULTRA
     if (args.tier === "ultra") {
@@ -441,12 +449,29 @@ export class TiersService {
       return { alreadyConfirmed: true };
     }
 
+    await this.paymentService.assertCryptoReceiptClaimed(
+      externalOrderCode,
+      deposit.provider,
+    );
+
     const priceVnd = decimalToNumber(deposit.amount);
     const durationMs = getDurationMs(plan);
 
-    await this.prisma.$transaction(async (tx) => {
-      await tx.depositRequest.update({
+    const confirmed = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw(
+        Prisma.sql`SELECT id FROM deposit_requests WHERE id = ${deposit.id} FOR UPDATE`,
+      );
+      const currentDeposit = await tx.depositRequest.findUnique({
         where: { id: deposit.id },
+      });
+      if (!currentDeposit) return false;
+      if (currentDeposit.status === "CONFIRMED") return false;
+      if (currentDeposit.status !== "PENDING") {
+        throw new BadRequestException("Tier payment is no longer pending.");
+      }
+
+      await tx.depositRequest.update({
+        where: { id: currentDeposit.id },
         data: {
           status: "CONFIRMED",
           paidAt: new Date(),
@@ -535,8 +560,13 @@ export class TiersService {
           this.logger.warn(`Failed to record discount usage for ${externalOrderCode}: ${err.message}`);
         });
       }
+      return true;
     });
 
+    if (!confirmed) {
+      this.logger.log(`TIER_SUB already confirmed after row lock: ${externalOrderCode}`);
+      return { alreadyConfirmed: true };
+    }
     return { success: true, tier, plan };
   }
 
@@ -713,6 +743,7 @@ export class TiersService {
         id: true,
         referralCode: true,
         affiliateUnlockedTier: true,
+        affiliateCommissionPercent: true,
         affiliateUnlockedTier2At: true,
         affiliateUnlockedTier3At: true,
       },
@@ -744,10 +775,12 @@ export class TiersService {
       ? null
       : null;
     // Use the imported helper directly:
-    const effectiveRate = (function () {
-      const { calcLevel1Rate } = require("./tier-pricing");
-      return calcLevel1Rate(seller.affiliateUnlockedTier, last90d);
-    })();
+    const effectiveRate = seller.affiliateCommissionPercent == null
+      ? (function () {
+          const { calcLevel1Rate } = require("./tier-pricing");
+          return calcLevel1Rate(seller.affiliateUnlockedTier, last90d);
+        })()
+      : decimalToNumber(seller.affiliateCommissionPercent) / 100;
 
     // Direct referrals (level 1)
     const level1Referrals = await this.prisma.seller.findMany({

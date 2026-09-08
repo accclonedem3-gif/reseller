@@ -51,6 +51,27 @@ export class OrdersController {
     return this.ordersService.cancelPendingManualOrder(user, id);
   }
 
+  @Post(":id/preorder-cancel/approve")
+  @UseGuards(SellerCapabilitiesGuard)
+  @RequireSellerCapabilities("orders_manage")
+  approvePreorderCancellation(@CurrentUser() user: AuthenticatedUser, @Param("id") id: string) {
+    return this.ordersService.approvePreorderCancellation(user, id);
+  }
+
+  @Post(":id/preorder-cancel/reject")
+  @UseGuards(SellerCapabilitiesGuard)
+  @RequireSellerCapabilities("orders_manage")
+  rejectPreorderCancellation(@CurrentUser() user: AuthenticatedUser, @Param("id") id: string) {
+    return this.ordersService.rejectPreorderCancellation(user, id);
+  }
+
+  @Post(":id/preorder-cancel/seller")
+  @UseGuards(SellerCapabilitiesGuard)
+  @RequireSellerCapabilities("orders_manage")
+  sellerCancelPreorder(@CurrentUser() user: AuthenticatedUser, @Param("id") id: string) {
+    return this.ordersService.sellerCancelPreorder(user, id);
+  }
+
   @Post(":id/manual-payment-confirm")
   @UseGuards(SellerCapabilitiesGuard)
   @RequireSellerCapabilities("orders_manage")

@@ -1,6 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
+import { useState } from "react";
 import { useDarkMode } from "@/hooks/use-dark-mode";
-import { TrendingDown, TrendingUp, Users, ShoppingBag, DollarSign, UserCheck } from "lucide-react";
+import { AlertTriangle, ArrowRight, Bot, TrendingDown, TrendingUp, Users, ShoppingBag, DollarSign, UserCheck } from "lucide-react";
+import { Link } from "react-router-dom";
 import {
   LineChart,
   Line,
@@ -27,6 +29,7 @@ type Overview = {
 };
 
 type ChartPoint = { date: string; revenue: number };
+type HealthSummary = { alerts: Record<string, number> };
 type RecentSeller = {
   id: string;
   username: string;
@@ -134,6 +137,7 @@ function CustomTooltip({ active, payload, label }: { active?: boolean; payload?:
 
 export function AdminOverviewPage() {
   const dark = useDarkMode();
+  const [days, setDays] = useState(30);
 
   const { data: overview, isLoading: loadingOverview } = useQuery<Overview>({
     queryKey: ["admin", "overview"],
@@ -141,8 +145,13 @@ export function AdminOverviewPage() {
   });
 
   const { data: chart = [] } = useQuery<ChartPoint[]>({
-    queryKey: ["admin", "revenue-chart"],
-    queryFn: () => api.get("/admin/revenue-chart").then((r) => r.data),
+    queryKey: ["admin", "revenue-chart", days],
+    queryFn: () => api.get(`/admin/revenue-chart?days=${days}`).then((r) => r.data),
+  });
+
+  const { data: health } = useQuery<HealthSummary>({
+    queryKey: ["admin", "health"],
+    queryFn: () => api.get("/admin/system-health").then((r) => r.data),
   });
 
   const { data: recentSellers = [] } = useQuery<RecentSeller[]>({
@@ -187,10 +196,25 @@ export function AdminOverviewPage() {
         />
       </div>
 
+      <div className="grid gap-4 xl:grid-cols-[1.35fr_0.65fr]">
+        <Card className="p-5">
+          <div className="flex items-center justify-between"><div><p className="text-[11px] font-black uppercase tracking-[0.2em] text-orange-400">Action Center</p><h2 className="mt-1 text-lg font-black">Việc cần xử lý ngay</h2></div><Link to="/admin/health" className="flex items-center gap-1 text-xs font-bold text-orange-400">System Health <ArrowRight className="size-3" /></Link></div>
+          <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {[
+              { label: "Payment lỗi", value: health?.alerts.failedPayments24h ?? 0, href: "/admin/finance", icon: DollarSign },
+              { label: "Đơn xử lý quá lâu", value: health?.alerts.staleProcessingOrders ?? 0, href: "/admin/orders", icon: ShoppingBag },
+              { label: "Seller sắp hết hạn", value: health?.alerts.expiringSellers7d ?? 0, href: "/admin/ctv", icon: Users },
+              { label: "Payment pending", value: health?.alerts.stalePendingPayments ?? 0, href: "/admin/finance", icon: AlertTriangle },
+              { label: "Tồn kho thấp", value: health?.alerts.lowStockProducts ?? 0, href: "/admin/health", icon: Bot },
+              { label: "Đơn lỗi 24h", value: health?.alerts.failedOrders24h ?? 0, href: "/admin/orders", icon: AlertTriangle },
+            ].map((item) => <Link key={item.label} to={item.href} className="flex items-center gap-3 rounded-xl border border-[var(--bd)] p-3 transition hover:border-orange-500/30"><div className={`flex size-9 items-center justify-center rounded-lg ${item.value > 0 ? "bg-red-500/10 text-red-400" : "bg-emerald-500/10 text-emerald-400"}`}><item.icon className="size-4" /></div><div><p className="text-lg font-black">{item.value}</p><p className="text-[11px]" style={{ color: "var(--tx-f)" }}>{item.label}</p></div></Link>)}
+          </div>
+        </Card>
+        <Card className="overflow-hidden bg-gradient-to-br from-orange-500/10 to-purple-500/5 p-5"><p className="text-[11px] font-black uppercase tracking-[0.2em] text-orange-400">Master Control</p><h2 className="mt-2 text-xl font-black">Vận hành toàn hệ thống từ một nơi.</h2><p className="mt-2 text-sm" style={{ color: "var(--tx-m)" }}>Dùng Ctrl + K để tìm seller, customer hoặc mã đơn ở bất kỳ màn hình nào.</p><Link to="/admin/automations" className="mt-5 inline-flex items-center gap-2 rounded-xl bg-orange-500 px-4 py-2.5 text-sm font-black text-white">Mở Automation <ArrowRight className="size-4" /></Link></Card>
+      </div>
+
       <Card className="p-5">
-        <p className="text-sm font-semibold uppercase tracking-wide" style={{ color: "var(--tx-m)" }}>
-          Doanh thu 30 ngày gần đây
-        </p>
+        <div className="flex items-center justify-between"><p className="text-sm font-semibold uppercase tracking-wide" style={{ color: "var(--tx-m)" }}>Doanh thu {days} ngày gần đây</p><div className="flex rounded-xl border border-[var(--bd)] p-1">{[7, 30, 90].map((value) => <button key={value} onClick={() => setDays(value)} className={`rounded-lg px-3 py-1 text-xs font-bold ${days === value ? "bg-orange-500 text-white" : ""}`}>{value}D</button>)}</div></div>
         <div className="mt-4 h-56">
           <ResponsiveContainer width="100%" height="100%">
             <LineChart data={chart}>

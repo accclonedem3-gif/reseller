@@ -11,8 +11,16 @@ import { AdminDiscountCodesPage } from "@/pages/admin-discount-codes-page";
 import { AdminSystemConfigPage } from "@/pages/admin-system-config-page";
 import { AdminIconsPage } from "@/pages/admin-icons-page";
 import { AdminTemplateBotPage } from "@/pages/admin-template-bot-page";
+import {
+  AdminAutomationsPage,
+  AdminCustomersPage,
+  AdminFinancePage,
+  AdminHealthPage,
+} from "@/pages/admin-operations-pages";
+import { AdminSellerDetailPage } from "@/pages/admin-seller-detail-page";
 import { BotConfigPage } from "@/pages/bot-config-page-pro";
 import { BroadcastsPage } from "@/pages/broadcasts-page-pro";
+import { UserbotCampaignPage } from "@/pages/userbot-campaign-page";
 import { LoginPageStudio } from "@/pages/login-page-studio";
 import { ManualCryptoPaymentPage } from "@/pages/manual-crypto-payment-page";
 import { OrdersPageStudio } from "@/pages/orders-page-studio";
@@ -21,9 +29,11 @@ import { PendingOrdersPageStudio } from "@/pages/pending-orders-page-studio";
 import { PaymentStatusPage } from "@/pages/payment-status-page-pro";
 import { ProductsManagementPage } from "@/pages/products-management-page";
 import { ProfilePage } from "@/pages/profile-page-pro";
+import { SupportPage } from "@/pages/support-page";
 import { RevenuePagePrime } from "@/pages/revenue-page-prime";
 import { ResetPasswordPageStudio } from "@/pages/reset-password-page-studio";
 import { SourceNetworkPage } from "@/pages/source-network-page";
+import { ProviderSourceDetailPage } from "@/pages/provider-source-detail-page";
 import { TopBuyersPage } from "@/pages/top-buyers-page-pro";
 import { TopReferrersPage } from "@/pages/top-referrers-page-pro";
 import { WalletPage } from "@/pages/wallet-page-pro";
@@ -35,18 +45,32 @@ import { WarrantyClaimsPage } from "@/pages/warranty-claims-page";
 import { WarrantyClaimPage } from "@/pages/warranty-claim-page";
 import { CustomersPage } from "@/pages/customers-page";
 import { MiniAppSettingsPage } from "@/pages/mini-app-settings-page";
+import { GuidesPage } from "@/pages/guides-page";
+import { LandingPage } from "@/pages/landing-page";
+
+import { AdminUserbotLicensesPage } from "@/pages/admin-userbot-licenses-page";
 
 function ProtectedLayout() {
   const { ready, session } = useAuth();
-  const refCode = typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("ref") : null;
+  const refCode =
+    typeof window !== "undefined"
+      ? new URLSearchParams(window.location.search).get("ref")
+      : null;
 
   if (!ready) {
-    return <div className="p-10 text-slate-300">Đang tải phiên làm việc...</div>;
+    return (
+      <div className="p-10 text-slate-300">Đang tải phiên làm việc...</div>
+    );
   }
 
   if (!session) {
     // If URL has ?ref=, route to /register with the code preserved
-    return <Navigate to={refCode ? `/register?ref=${encodeURIComponent(refCode)}` : "/login"} replace />;
+    return (
+      <Navigate
+        to={refCode ? `/register?ref=${encodeURIComponent(refCode)}` : "/login"}
+        replace
+      />
+    );
   }
 
   return (
@@ -89,12 +113,19 @@ function HomeRoute() {
 export function App() {
   return (
     <Routes>
+      <Route path="/landing" element={<LandingPage />} />
       <Route path="/login" element={<LoginPageStudio />} />
       <Route path="/register" element={<LoginPageStudio />} />
       <Route path="/reset-password" element={<ResetPasswordPageStudio />} />
       <Route path="/payments/crypto" element={<ManualCryptoPaymentPage />} />
-      <Route path="/payments/success" element={<PaymentStatusPage mode="success" />} />
-      <Route path="/payments/cancel" element={<PaymentStatusPage mode="cancel" />} />
+      <Route
+        path="/payments/success"
+        element={<PaymentStatusPage mode="success" />}
+      />
+      <Route
+        path="/payments/cancel"
+        element={<PaymentStatusPage mode="cancel" />}
+      />
       <Route path="/bao-hanh" element={<WarrantyClaimPage />} />
       <Route path="/mini-app/settings" element={<MiniAppSettingsPage />} />
       <Route element={<ProtectedLayout />}>
@@ -102,8 +133,19 @@ export function App() {
         <Route element={<SellerOnlyLayout />}>
           <Route path="/bot-config" element={<BotConfigPage />} />
           <Route path="/products" element={<ProductsManagementPage />} />
-          <Route path="/source-connection" element={<Navigate to="/source-network" replace />} />
+          <Route
+            path="/source-connection"
+            element={<Navigate to="/source-network" replace />}
+          />
           <Route path="/source-network" element={<SourceNetworkPage />} />
+          <Route
+            path="/source-network/detail-key-api/:sourceId"
+            element={<ProviderSourceDetailPage />}
+          />
+          <Route
+            path="/source-clients"
+            element={<SourceNetworkPage mode="provider" />}
+          />
           <Route path="/orders/pending" element={<PendingOrdersPageStudio />} />
           <Route path="/orders" element={<OrdersPageStudio />} />
           <Route path="/wallet" element={<WalletPage />} />
@@ -113,23 +155,51 @@ export function App() {
           <Route path="/reports/revenue" element={<RevenuePagePrime />} />
           <Route path="/customers" element={<CustomersPage />} />
           <Route path="/broadcasts" element={<BroadcastsPage />} />
+          <Route path="/userbot-campaign" element={<UserbotCampaignPage />} />
           <Route path="/profile" element={<ProfilePage />} />
+          <Route path="/guides" element={<GuidesPage />} />
+          <Route path="/guides/:slug" element={<GuidesPage />} />
+          <Route path="/support" element={<SupportPage />} />
           <Route path="/upgrade" element={<UpgradePage />} />
           <Route path="/pricing" element={<TierPricingPage />} />
           <Route path="/affiliate" element={<SellerAffiliatePage />} />
           <Route path="/pro-analytics" element={<ProAnalyticsPage />} />
-          <Route path="/source-products" element={<Navigate to="/products" replace />} />
+          <Route
+            path="/source-products"
+            element={<Navigate to="/products" replace />}
+          />
         </Route>
         <Route element={<AdminOnlyLayout />}>
           <Route path="/admin" element={<AdminOverviewPage />} />
           <Route path="/admin/ctv" element={<AdminCtvPage />} />
-          <Route path="/admin/top-referrers" element={<AdminTopReferrersPage />} />
+          <Route
+            path="/admin/ctv/:userId"
+            element={<AdminSellerDetailPage />}
+          />
+          <Route
+            path="/admin/top-referrers"
+            element={<AdminTopReferrersPage />}
+          />
           <Route path="/admin/orders" element={<AdminOrdersPage />} />
+          <Route path="/admin/customers" element={<AdminCustomersPage />} />
+          <Route path="/admin/finance" element={<AdminFinancePage />} />
+          <Route path="/admin/health" element={<AdminHealthPage />} />
+          <Route path="/admin/automations" element={<AdminAutomationsPage />} />
           <Route path="/admin/withdraws" element={<AdminWithdrawsPage />} />
-          <Route path="/admin/discount-codes" element={<AdminDiscountCodesPage />} />
+          <Route
+            path="/admin/discount-codes"
+            element={<AdminDiscountCodesPage />}
+          />
           <Route path="/admin/settings" element={<AdminSystemConfigPage />} />
           <Route path="/admin/icons" element={<AdminIconsPage />} />
-          <Route path="/admin/template-bot" element={<AdminTemplateBotPage />} />
+          <Route
+            path="/admin/template-bot"
+            element={<AdminTemplateBotPage />}
+          />
+          <Route
+            path="/admin/userbot-licenses"
+            element={<AdminUserbotLicensesPage />}
+          />
         </Route>
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />

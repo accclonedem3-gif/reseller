@@ -16,12 +16,16 @@ import {
   SellerTier,
 } from "@prisma/client";
 import { encryptSecret } from "@reseller/shared/server";
-import type { ProviderProduct } from "@reseller/shared/server";
 
 import { AppConfigService } from "../config/app-config.service";
 import { PrismaService } from "../db/prisma.service";
 import { PaymentService } from "../lib/payment.service";
-import { decimalToNumber, generateExternalPaymentCode, toDecimal } from "../lib/utils";
+import { InternalSourceService } from "../internal-source/internal-source.service";
+import {
+  decimalToNumber,
+  generateExternalPaymentCode,
+  toDecimal,
+} from "../lib/utils";
 import { ShopsService } from "../shops/shops.service";
 import { InternalSourceApiKeyService } from "../source/internal-source-api-key.service";
 import type { AuthenticatedUser } from "../types";
@@ -41,6 +45,8 @@ export class SellerSourceConnectionService {
     private readonly apiKeyService: InternalSourceApiKeyService,
     @Inject(PaymentService)
     private readonly paymentService: PaymentService,
+    @Inject(InternalSourceService)
+    private readonly internalSourceService: InternalSourceService,
   ) {}
 
   async connect(user: AuthenticatedUser, rawApiKey: string) {
@@ -57,7 +63,10 @@ export class SellerSourceConnectionService {
       select: { tier: true },
     });
 
-    if (upstreamSeller?.tier !== SellerTier.ULTRA) {
+    if (
+      upstreamSeller?.tier !== SellerTier.PRO &&
+      upstreamSeller?.tier !== SellerTier.ULTRA
+    ) {
       throw new ForbiddenException("This key was not issued by a PRO seller.");
     }
 
@@ -66,10 +75,13 @@ export class SellerSourceConnectionService {
       where: { shopId: downstreamShop.id },
       select: { ownerTelegramUserId: true },
     });
-    const resolvedTelegramChatId = apiKey.telegramChatId || downstreamBotConfig?.ownerTelegramUserId || null;
+    const resolvedTelegramChatId =
+      apiKey.telegramChatId || downstreamBotConfig?.ownerTelegramUserId || null;
 
     if (apiKey.shopId === downstreamShop.id) {
-      throw new BadRequestException("You cannot connect your shop to its own source key.");
+      throw new BadRequestException(
+        "You cannot connect your shop to its own source key.",
+      );
     }
 
     if (apiKey.connection && apiKey.connection.downstreamShopId == null) {
@@ -103,9 +115,6 @@ export class SellerSourceConnectionService {
         where: { shopId: downstreamShop.id },
         select: { internalSourceConnectionId: true, providerName: true },
       });
-      const isSwitchingSource =
-        previousProviderConfig?.internalSourceConnectionId != null &&
-        previousProviderConfig.internalSourceConnectionId !== existing?.id;
       const wasExternalProvider =
         previousProviderConfig != null &&
         previousProviderConfig.internalSourceConnectionId == null &&
@@ -118,7 +127,9 @@ export class SellerSourceConnectionService {
             data: {
               apiKeyId: apiKey.id,
               status: DownstreamSourceConnectionStatus.ACTIVE,
-              ...(resolvedTelegramChatId ? { downstreamTelegramChatId: resolvedTelegramChatId } : {}),
+              ...(resolvedTelegramChatId
+                ? { downstreamTelegramChatId: resolvedTelegramChatId }
+                : {}),
             },
           })
         : await tx.downstreamSourceConnection.create({
@@ -135,7 +146,7 @@ export class SellerSourceConnectionService {
           });
 
       // Cleanup orphan catalog rows from previous source (only those without order history)
-      if (isSwitchingSource || wasExternalProvider) {
+      if (wasExternalProvider) {
         const orphans = await tx.sourceProduct.findMany({
           where: {
             shopId: downstreamShop.id,
@@ -152,7 +163,10 @@ export class SellerSourceConnectionService {
         }
       }
 
-      const encryptedKey = encryptSecret(normalizedKey, this.config.encryptionKey);
+      const encryptedKey = encryptSecret(
+        normalizedKey,
+        this.config.encryptionKey,
+      );
 
       await tx.providerConfig.upsert({
         where: { shopId: downstreamShop.id },
@@ -188,9 +202,20 @@ export class SellerSourceConnectionService {
     const shop = await this.shopsService.getSellerShop(user.id);
 
     const connection = await this.prisma.downstreamSourceConnection.findFirst({
-      where: { downstreamShopId: shop.id, status: DownstreamSourceConnectionStatus.ACTIVE },
+      where: {
+        downstreamShopId: shop.id,
+        status: DownstreamSourceConnectionStatus.ACTIVE,
+      },
       include: {
-        apiKey: { select: { id: true, label: true, keyPrefix: true, status: true, expiresAt: true } },
+        apiKey: {
+          select: {
+            id: true,
+            label: true,
+            keyPrefix: true,
+            status: true,
+            expiresAt: true,
+          },
+        },
         upstreamSeller: { select: { id: true, displayName: true, tier: true } },
         upstreamShop: { select: { id: true, name: true, slug: true } },
       },
@@ -205,7 +230,10 @@ export class SellerSourceConnectionService {
     if (connection.downstreamTelegramChatId) {
       const wallet = await this.prisma.customerWallet.findFirst({
         where: {
-          customer: { shopId: connection.upstreamShopId, telegramChatId: connection.downstreamTelegramChatId },
+          customer: {
+            shopId: connection.upstreamShopId,
+            telegramChatId: connection.downstreamTelegramChatId,
+          },
         },
         select: { balance: true },
       });
@@ -244,102 +272,8 @@ export class SellerSourceConnectionService {
 
   async syncCatalog(user: AuthenticatedUser) {
     const shop = await this.shopsService.getSellerShop(user.id);
-
-    if (!shop.providerConfig?.internalSourceConnectionId) {
-      throw new NotFoundException("No internal source connection found.");
-    }
-
-    if (shop.providerConfig.providerKind !== ProviderKind.INTERNAL) {
-      throw new BadRequestException(
-        "Shop is not configured to use an internal source.",
-      );
-    }
-
-    const connection = await this.prisma.downstreamSourceConnection.findUnique({
-      where: { id: shop.providerConfig.internalSourceConnectionId },
-    });
-
-    if (!connection || connection.status !== DownstreamSourceConnectionStatus.ACTIVE) {
-      throw new BadRequestException("Internal source connection is not active.");
-    }
-
-    const upstreamProducts = await this.prisma.sourceProduct.findMany({
-      where: {
-        shopId: connection.upstreamShopId,
-        internalSourceEnabled: true,
-      },
-      include: {
-        overrides: {
-          where: { sellerId: connection.upstreamSellerId },
-          select: { salePrice: true },
-          take: 1,
-        },
-      },
-      orderBy: { createdAt: "asc" },
-    });
-
-    const providerProducts: ProviderProduct[] = upstreamProducts.map((p) => {
-      const fallbackSalePrice = p.overrides?.[0]?.salePrice
-        ? decimalToNumber(p.overrides[0].salePrice)
-        : 0;
-      const wholesalePrice = p.internalSourcePrice != null
-        ? decimalToNumber(p.internalSourcePrice)
-        : fallbackSalePrice;
-      const upstreamMetadata =
-        p.metadataJson && typeof p.metadataJson === "object" && !Array.isArray(p.metadataJson)
-          ? (p.metadataJson as Record<string, unknown>)
-          : {};
-      const requiresCustomerEmail =
-        upstreamMetadata.requiresCustomerEmail === true ||
-        upstreamMetadata.requires_customer_email === true;
-      return ({
-      externalId: p.id,
-      sourceName: p.sourceName,
-      sourceRawName: p.sourceRawName,
-      description: p.sourceDescription,
-      rawDescription: p.sourceDescription,
-      price: wholesalePrice,
-      available: p.available,
-      hidden: false,
-      isSlotProduct: false,
-      requiresCustomerEmail,
-      requiresSlotMonths: false,
-      slotDurations: [],
-      quantityFixed: 1,
-      walletCurrency: "VND",
-      metadata: {
-        productFamily: p.productFamily ?? null,
-        productFamilyOther: p.productFamilyOther ?? null,
-        accountType: p.accountType ?? null,
-        accountTypeOther: p.accountTypeOther ?? null,
-        durationType: p.durationType ?? null,
-        durationTypeOther: p.durationTypeOther ?? null,
-        sourceDeliveryMode: p.sourceDeliveryMode ?? null,
-        deliveryMode: p.sourceDeliveryMode ?? null,
-        warrantyPolicy: p.warrantyPolicy ?? null,
-        internalSourceEnabled: p.internalSourceEnabled,
-        internalSourcePrice: p.internalSourcePrice
-          ? decimalToNumber(p.internalSourcePrice)
-          : null,
-        requiresCustomerEmail,
-        productIcon: p.productIcon ?? null,
-        iconCustomEmojiId: p.iconCustomEmojiId ?? null,
-        imageUrl: p.imageUrl ?? null,
-      },
-    });
-    });
-
-    const result = await this.shopsService.applyCatalogProductsForShop(
-      shop.id,
-      providerProducts,
-    );
-
-    await this.prisma.downstreamSourceConnection.update({
-      where: { id: connection.id },
-      data: { lastCatalogSyncAt: new Date() },
-    });
-
-    return { synced: result.synced, notified: result.notified };
+    const synced = await this.shopsService.syncCatalogForShop(shop.id);
+    return { synced };
   }
 
   async createPayosTopup(user: AuthenticatedUser, amount: number) {
@@ -350,11 +284,16 @@ export class SellerSourceConnectionService {
     }
 
     const connection = await this.prisma.downstreamSourceConnection.findFirst({
-      where: { downstreamShopId: shop.id, status: DownstreamSourceConnectionStatus.ACTIVE },
+      where: {
+        downstreamShopId: shop.id,
+        status: DownstreamSourceConnectionStatus.ACTIVE,
+      },
     });
 
     if (!connection) {
-      throw new NotFoundException("Không tìm thấy kết nối nguồn PRO đang hoạt động.");
+      throw new NotFoundException(
+        "Không tìm thấy kết nối nguồn PRO đang hoạt động.",
+      );
     }
 
     const externalOrderCode = generateExternalPaymentCode();
@@ -393,7 +332,11 @@ export class SellerSourceConnectionService {
     };
   }
 
-  async createPayosTopupForConnection(connectionId: string, downstreamShopId: string, amount: number) {
+  async createPayosTopupForConnection(
+    connectionId: string,
+    downstreamShopId: string,
+    amount: number,
+  ) {
     if (!Number.isInteger(amount) || amount < 10000) {
       throw new BadRequestException("Số tiền nạp tối thiểu là 10,000 VND.");
     }
@@ -456,15 +399,23 @@ export class SellerSourceConnectionService {
     }
 
     if (topup.status === ConnectionTopupStatus.PAID) {
-      const connection = await this.prisma.downstreamSourceConnection.findUnique({
-        where: { id: topup.connectionId },
-        select: { id: true, upstreamShopId: true, downstreamTelegramChatId: true },
-      });
+      const connection =
+        await this.prisma.downstreamSourceConnection.findUnique({
+          where: { id: topup.connectionId },
+          select: {
+            id: true,
+            upstreamShopId: true,
+            downstreamTelegramChatId: true,
+          },
+        });
       let walletBalance = 0;
       if (connection?.downstreamTelegramChatId) {
         const wallet = await this.prisma.customerWallet.findFirst({
           where: {
-            customer: { shopId: connection.upstreamShopId, telegramChatId: connection.downstreamTelegramChatId },
+            customer: {
+              shopId: connection.upstreamShopId,
+              telegramChatId: connection.downstreamTelegramChatId,
+            },
           },
           select: { balance: true },
         });
@@ -480,6 +431,11 @@ export class SellerSourceConnectionService {
       };
     }
 
+    await this.paymentService.assertCryptoReceiptClaimed(
+      externalOrderCode,
+      topup.provider,
+    );
+
     if (topup.status !== ConnectionTopupStatus.PENDING) {
       throw new BadRequestException("Topup request is no longer pending.");
     }
@@ -487,6 +443,22 @@ export class SellerSourceConnectionService {
     const amount = decimalToNumber(topup.amount);
 
     await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw(
+        Prisma.sql`SELECT id FROM connection_topup_requests WHERE id = ${topup.id} FOR UPDATE`,
+      );
+      const currentTopup = await tx.connectionTopupRequest.findUnique({
+        where: { id: topup.id },
+      });
+      if (!currentTopup) {
+        throw new NotFoundException("Connection topup request not found.");
+      }
+      if (currentTopup.status === ConnectionTopupStatus.PAID) {
+        return;
+      }
+      if (currentTopup.status !== ConnectionTopupStatus.PENDING) {
+        throw new BadRequestException("Topup request is no longer pending.");
+      }
+
       await tx.$queryRaw(
         Prisma.sql`SELECT id FROM downstream_source_connections WHERE id = ${topup.connectionId} FOR UPDATE`,
       );
@@ -502,7 +474,10 @@ export class SellerSourceConnectionService {
       // Credit customer wallet (source of truth)
       if (connection.downstreamTelegramChatId) {
         const customer = await tx.customer.findFirst({
-          where: { shopId: connection.upstreamShopId, telegramChatId: connection.downstreamTelegramChatId },
+          where: {
+            shopId: connection.upstreamShopId,
+            telegramChatId: connection.downstreamTelegramChatId,
+          },
           include: { wallet: true },
         });
 
@@ -510,12 +485,25 @@ export class SellerSourceConnectionService {
           let wallet = customer.wallet;
           if (!wallet) {
             wallet = await tx.customerWallet.create({
-              data: { customerId: customer.id, balance: toDecimal(0), balanceUsdt: toDecimal(0), currency: "VND" },
+              data: {
+                customerId: customer.id,
+                balance: toDecimal(0),
+                balanceUsdt: toDecimal(0),
+                currency: "VND",
+              },
             });
           }
 
-          await tx.$queryRaw(Prisma.sql`SELECT id FROM customer_wallets WHERE id = ${wallet.id} FOR UPDATE`);
-          const walletBefore = decimalToNumber(wallet.balance);
+          await tx.$queryRaw(
+            Prisma.sql`SELECT id FROM customer_wallets WHERE id = ${wallet.id} FOR UPDATE`,
+          );
+          const currentWallet = await tx.customerWallet.findUnique({
+            where: { id: wallet.id },
+          });
+          if (!currentWallet) {
+            throw new NotFoundException("Customer wallet not found.");
+          }
+          const walletBefore = decimalToNumber(currentWallet.balance);
           const walletAfter = walletBefore + amount;
 
           await tx.customerWallet.update({
@@ -537,7 +525,7 @@ export class SellerSourceConnectionService {
             },
           });
 
-            await tx.internalSourceLedger.create({
+          await tx.internalSourceLedger.create({
             data: {
               connectionId: connection.id,
               type: InternalSourceLedgerType.TOPUP,
@@ -575,10 +563,15 @@ export class SellerSourceConnectionService {
       });
     });
 
-    const refreshedConnection = await this.prisma.downstreamSourceConnection.findUnique({
-      where: { id: topup.connectionId },
-      select: { id: true, upstreamShopId: true, downstreamTelegramChatId: true },
-    });
+    const refreshedConnection =
+      await this.prisma.downstreamSourceConnection.findUnique({
+        where: { id: topup.connectionId },
+        select: {
+          id: true,
+          upstreamShopId: true,
+          downstreamTelegramChatId: true,
+        },
+      });
     let walletBalanceAfter = 0;
     if (refreshedConnection?.downstreamTelegramChatId) {
       const wallet = await this.prisma.customerWallet.findFirst({
@@ -606,7 +599,10 @@ export class SellerSourceConnectionService {
   async setInheritTemplate(user: AuthenticatedUser, enabled: boolean) {
     const shop = await this.shopsService.getSellerShop(user.id);
     const result = await this.prisma.downstreamSourceConnection.updateMany({
-      where: { downstreamShopId: shop.id, status: DownstreamSourceConnectionStatus.ACTIVE },
+      where: {
+        downstreamShopId: shop.id,
+        status: DownstreamSourceConnectionStatus.ACTIVE,
+      },
       data: { inheritSourceTemplate: enabled },
     });
     if (result.count === 0) {
@@ -617,26 +613,106 @@ export class SellerSourceConnectionService {
 
   async disconnect(user: AuthenticatedUser) {
     const shop = await this.shopsService.getSellerShop(user.id);
+    const selectedConnectionId =
+      shop.providerConfig?.internalSourceConnectionId ||
+      (
+        await this.prisma.downstreamSourceConnection.findFirst({
+          where: {
+            downstreamShopId: shop.id,
+            status: DownstreamSourceConnectionStatus.ACTIVE,
+          },
+          orderBy: { createdAt: "desc" },
+          select: { id: true },
+        })
+      )?.id;
+    if (selectedConnectionId) {
+      return this.internalSourceService.disconnectConnection(
+        user,
+        selectedConnectionId,
+      );
+    }
 
-    await this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx) => {
+      const sourceProducts = await tx.sourceProduct.findMany({
+        where: { shopId: shop.id, providerName: { not: "manual" } },
+        select: {
+          id: true,
+          _count: { select: { orders: true, internalSourceOrders: true } },
+        },
+      });
+      const deletableIds = sourceProducts
+        .filter(
+          (product) =>
+            product._count.orders === 0 &&
+            product._count.internalSourceOrders === 0,
+        )
+        .map((product) => product.id);
+      const archivedIds = sourceProducts
+        .filter(
+          (product) =>
+            product._count.orders > 0 ||
+            product._count.internalSourceOrders > 0,
+        )
+        .map((product) => product.id);
+
+      if (deletableIds.length > 0) {
+        await tx.sourceProduct.deleteMany({
+          where: { id: { in: deletableIds } },
+        });
+      }
+      if (archivedIds.length > 0) {
+        await tx.sourceProduct.updateMany({
+          where: { id: { in: archivedIds } },
+          data: {
+            providerName: "disconnected_archive",
+            available: 0,
+            internalSourceEnabled: false,
+          },
+        });
+      }
+
       await tx.downstreamSourceConnection.updateMany({
-        where: { downstreamShopId: shop.id, status: DownstreamSourceConnectionStatus.ACTIVE },
+        where: {
+          downstreamShopId: shop.id,
+          status: DownstreamSourceConnectionStatus.ACTIVE,
+        },
         data: { status: DownstreamSourceConnectionStatus.DISABLED },
       });
       await tx.providerConfig.updateMany({
         where: { shopId: shop.id },
-        data: { providerKind: ProviderKind.EXTERNAL, internalSourceConnectionId: null, connectionStatus: ConnectionStatus.DISABLED },
+        data: {
+          providerKind: ProviderKind.EXTERNAL,
+          providerName: "disconnected",
+          buyerKeyEncrypted: encryptSecret("", this.config.encryptionKey),
+          internalSourceConnectionId: null,
+          sourceNotificationSyncEnabled: false,
+          connectionStatus: ConnectionStatus.DISABLED,
+          lastVerifiedAt: null,
+        },
       });
+
+      return {
+        deletedProducts: deletableIds.length,
+        archivedProducts: archivedIds.length,
+      };
     });
 
-    return { ok: true };
+    return { ok: true, ...result, ordersPreserved: true };
   }
 
   private async getConnectionById(id: string) {
     const connection = await this.prisma.downstreamSourceConnection.findUnique({
       where: { id },
       include: {
-        apiKey: { select: { id: true, label: true, keyPrefix: true, status: true, expiresAt: true } },
+        apiKey: {
+          select: {
+            id: true,
+            label: true,
+            keyPrefix: true,
+            status: true,
+            expiresAt: true,
+          },
+        },
         upstreamSeller: { select: { id: true, displayName: true, tier: true } },
         upstreamShop: { select: { id: true, name: true, slug: true } },
       },
@@ -650,7 +726,10 @@ export class SellerSourceConnectionService {
     if (connection.downstreamTelegramChatId) {
       const wallet = await this.prisma.customerWallet.findFirst({
         where: {
-          customer: { shopId: connection.upstreamShopId, telegramChatId: connection.downstreamTelegramChatId },
+          customer: {
+            shopId: connection.upstreamShopId,
+            telegramChatId: connection.downstreamTelegramChatId,
+          },
         },
         select: { balance: true },
       });
@@ -700,7 +779,13 @@ export class SellerSourceConnectionService {
         orders: { none: {} },
         internalSourceOrders: { none: {} },
       },
-      select: { id: true, sourceName: true, externalProductId: true, providerName: true, available: true },
+      select: {
+        id: true,
+        sourceName: true,
+        externalProductId: true,
+        providerName: true,
+        available: true,
+      },
     });
 
     // Only delete those that are stale (available=0) OR no longer match the current provider naming.
@@ -711,17 +796,22 @@ export class SellerSourceConnectionService {
     });
     let upstreamShopId: string | null = null;
     if (currentProvider?.internalSourceConnectionId) {
-      const connection = await this.prisma.downstreamSourceConnection.findUnique({
-        where: { id: currentProvider.internalSourceConnectionId },
-        select: { upstreamShopId: true },
-      });
+      const connection =
+        await this.prisma.downstreamSourceConnection.findUnique({
+          where: { id: currentProvider.internalSourceConnectionId },
+          select: { upstreamShopId: true },
+        });
       upstreamShopId = connection?.upstreamShopId ?? null;
     }
 
     let activeUpstreamIds = new Set<string>();
     if (upstreamShopId) {
       const activeUpstream = await this.prisma.sourceProduct.findMany({
-        where: { shopId: upstreamShopId, internalSourceEnabled: true },
+        where: {
+          shopId: upstreamShopId,
+          internalSourceEnabled: true,
+          archivedAt: null,
+        },
         select: { id: true },
       });
       activeUpstreamIds = new Set(activeUpstream.map((p) => p.id));
@@ -729,9 +819,17 @@ export class SellerSourceConnectionService {
 
     const toDelete = candidates.filter((c) => {
       // Drop if: not in current upstream catalog
-      if (activeUpstreamIds.size > 0 && !activeUpstreamIds.has(c.externalProductId)) return true;
+      if (
+        activeUpstreamIds.size > 0 &&
+        !activeUpstreamIds.has(c.externalProductId)
+      )
+        return true;
       // Drop if: legacy provider (e.g. canboso) — different from current internal_pro
-      if (currentProvider?.internalSourceConnectionId && c.providerName !== "internal_pro") return true;
+      if (
+        currentProvider?.internalSourceConnectionId &&
+        c.providerName !== "internal_pro"
+      )
+        return true;
       // Drop if: marked stale and no upstream context to verify
       if (!upstreamShopId && c.available === 0) return true;
       return false;
@@ -758,7 +856,10 @@ export class SellerSourceConnectionService {
       include: { upstreamShop: { select: { id: true, name: true } } },
     });
     if (!connection) {
-      return { error: "Connection record not found.", connectionId: shop.providerConfig.internalSourceConnectionId };
+      return {
+        error: "Connection record not found.",
+        connectionId: shop.providerConfig.internalSourceConnectionId,
+      };
     }
     const downstreamBotConfig = connection.downstreamShopId
       ? await this.prisma.botConfig.findUnique({
@@ -766,10 +867,14 @@ export class SellerSourceConnectionService {
           select: { ownerTelegramUserId: true, telegramBotUsername: true },
         })
       : null;
-    const candidateChatIds = Array.from(new Set([
-      connection.downstreamTelegramChatId,
-      downstreamBotConfig?.ownerTelegramUserId,
-    ].filter((v): v is string => typeof v === "string" && v.length > 0)));
+    const candidateChatIds = Array.from(
+      new Set(
+        [
+          connection.downstreamTelegramChatId,
+          downstreamBotConfig?.ownerTelegramUserId,
+        ].filter((v): v is string => typeof v === "string" && v.length > 0),
+      ),
+    );
 
     const customerLookups = await Promise.all(
       candidateChatIds.map(async (chatId) => {
@@ -791,12 +896,13 @@ export class SellerSourceConnectionService {
     const allDownstreamRelatedCustomers = await this.prisma.customer.findMany({
       where: {
         shopId: connection.upstreamShopId,
-        OR: candidateChatIds.length > 0
-          ? [
-              { telegramChatId: { in: candidateChatIds } },
-              { telegramUserId: { in: candidateChatIds } },
-            ]
-          : [{ id: "__never__" }],
+        OR:
+          candidateChatIds.length > 0
+            ? [
+                { telegramChatId: { in: candidateChatIds } },
+                { telegramUserId: { in: candidateChatIds } },
+              ]
+            : [{ id: "__never__" }],
       },
       select: {
         id: true,
@@ -814,15 +920,15 @@ export class SellerSourceConnectionService {
       upstreamShop: connection.upstreamShop,
       downstreamShopId: connection.downstreamShopId,
       connectionDownstreamTelegramChatId: connection.downstreamTelegramChatId,
-      downstreamBotOwnerTelegramUserId: downstreamBotConfig?.ownerTelegramUserId ?? null,
+      downstreamBotOwnerTelegramUserId:
+        downstreamBotConfig?.ownerTelegramUserId ?? null,
       downstreamBotUsername: downstreamBotConfig?.telegramBotUsername ?? null,
       candidateChatIds,
       customerLookupsByChatId: customerLookups,
       fuzzyMatchedCustomers: allDownstreamRelatedCustomers,
-      hint:
-        customerLookups.some((c) => c.customer?.wallet)
-          ? "OK — found wallet via chatId lookup. Order should pass balance check."
-          : "MISMATCH — neither connection.downstreamTelegramChatId nor downstreamBotConfig.ownerTelegramUserId points at a customer with a wallet in the upstream shop. Tell em which chatId you used to top-up the ULTRA bot.",
+      hint: customerLookups.some((c) => c.customer?.wallet)
+        ? "OK — found wallet via chatId lookup. Order should pass balance check."
+        : "MISMATCH — neither connection.downstreamTelegramChatId nor downstreamBotConfig.ownerTelegramUserId points at a customer with a wallet in the upstream shop. Tell em which chatId you used to top-up the ULTRA bot.",
     };
   }
 }

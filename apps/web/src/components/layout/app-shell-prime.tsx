@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import {
   BarChart3,
   Bell,
+  BookOpenText,
   Bot,
   Cable,
   ChartColumn,
@@ -12,6 +13,7 @@ import {
   CreditCard,
   HandCoins,
   LayoutDashboard,
+  LifeBuoy,
   TicketPercent,
   LogOut,
   Moon,
@@ -28,11 +30,15 @@ import {
   Users,
   Menu,
   X,
+  Radio,
+  KeyRound,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
+import { AdminCommandPalette } from "@/components/admin/admin-command-palette";
+import { SystemAnnouncementModal } from "@/components/system-announcement-modal";
 
 import { useAuth } from "@/auth/auth-provider";
 import { ReadOnlyNotice } from "@/components/ui/read-only-notice";
@@ -52,57 +58,111 @@ type NavItem = {
 
 const NAV_LABELS = {
   vi: {
-    overview: "Tổng quan", botConfig: "Cấu hình bot", products: "Sản phẩm",
-    sourceNetwork: "Quản lý CTV", pendingOrders: "Đơn chờ xử lý",
-    orders: "Đơn hàng", wallet: "Quản lý người dùng bot", warranty: "Bảo hành",
-    proAnalytics: "Phân tích ULTRA", topBuyers: "Top người mua",
-    topReferrers: "Top giới thiệu", revenue: "Doanh thu",
+    overview: "Tổng quan",
+    botConfig: "Cấu hình bot",
+    products: "Sản phẩm",
+    sourceNetworkBuyer: "Kết nối nguồn",
+    sourceNetworkProvider: "Quản lý đại lý",
+    pendingOrders: "Đơn chờ xử lý",
+    orders: "Đơn hàng",
+    wallet: "Quản lý người dùng bot",
+    warranty: "Bảo hành",
+    proAnalytics: "Phân tích ULTRA",
+    topBuyers: "Top người mua",
+    topReferrers: "Top giới thiệu",
+    revenue: "Doanh thu",
     customers: "Khách hàng",
-    broadcasts: "Thông báo bot", profile: "Hồ sơ",
-    adminOverview: "Tổng quan", adminAccounts: "Tài khoản CTV",
-    adminReferrers: "Top giới thiệu",
-    adminOrders: "Đơn hàng HT", adminSettings: "Cài đặt HT",
-    adminWithdraws: "Lệnh rút tiền",
+    broadcasts: "Thông báo bot",
+    profile: "Hồ sơ",
+    guides: "Hướng dẫn",
+    support: "Hỗ trợ",
+    adminOverview: "Tổng quan",
+    adminAccounts: "Tài khoản cộng tác viên",
+    adminReferrers: "Xếp hạng giới thiệu",
+    adminOrders: "Đơn hàng hệ thống",
+    adminSettings: "Cài đặt hệ thống",
+    adminWithdraws: "Yêu cầu rút tiền",
     adminDiscountCodes: "Mã giảm giá",
-    adminIcons: "Thư viện icon",
-    adminTemplate: "Bot Template",
-    coreWorkspace: "Vận hành", internalManagement: "Phân tích",
+    adminIcons: "Thư viện biểu tượng",
+    adminTemplate: "Mẫu bot",
+    adminCustomers: "Khách hàng hệ thống",
+    adminFinance: "Tài chính hệ thống",
+    adminHealth: "Tình trạng hệ thống",
+    adminAutomations: "Điều khiển vận hành",
+    coreWorkspace: "Vận hành",
+    internalManagement: "Phân tích",
     masterIntelligence: "Master Intelligence",
   },
   en: {
-    overview: "Overview", botConfig: "Bot Config", products: "Products",
-    sourceNetwork: "Manage CTV", pendingOrders: "Pending Orders",
-    orders: "Orders", wallet: "Manage Bot Users", warranty: "Warranty",
-    proAnalytics: "ULTRA Analytics", topBuyers: "Top Buyers",
-    topReferrers: "Top Referrers", revenue: "Revenue",
+    overview: "Overview",
+    botConfig: "Bot Config",
+    products: "Products",
+    sourceNetworkBuyer: "Source Connection",
+    sourceNetworkProvider: "Manage Resellers",
+    pendingOrders: "Pending Orders",
+    orders: "Orders",
+    wallet: "Manage Bot Users",
+    warranty: "Warranty",
+    proAnalytics: "ULTRA Analytics",
+    topBuyers: "Top Buyers",
+    topReferrers: "Top Referrers",
+    revenue: "Revenue",
     customers: "Customers",
-    broadcasts: "Broadcasts", profile: "Profile",
-    adminOverview: "Overview", adminAccounts: "CTV Accounts",
+    broadcasts: "Broadcasts",
+    profile: "Profile",
+    guides: "Guides",
+    support: "Support",
+    adminOverview: "Overview",
+    adminAccounts: "CTV Accounts",
     adminReferrers: "Top Referrers",
-    adminOrders: "System Orders", adminSettings: "System Settings",
+    adminOrders: "System Orders",
+    adminSettings: "System Settings",
     adminWithdraws: "Withdraw Requests",
     adminDiscountCodes: "Discount Codes",
     adminIcons: "Icon Library",
     adminTemplate: "Bot Template",
-    coreWorkspace: "Workspace", internalManagement: "Analytics",
+    adminCustomers: "System Customers",
+    adminFinance: "Finance",
+    adminHealth: "System Health",
+    adminAutomations: "Điều khiển",
+    coreWorkspace: "Workspace",
+    internalManagement: "Analytics",
     masterIntelligence: "Master Intelligence",
   },
   th: {
-    overview: "ภาพรวม", botConfig: "ตั้งค่าบอท", products: "สินค้า",
-    sourceNetwork: "จัดการ CTV", pendingOrders: "คำสั่งซื้อรอดำเนินการ",
-    orders: "คำสั่งซื้อ", wallet: "จัดการผู้ใช้บอท", warranty: "การรับประกัน",
-    proAnalytics: "วิเคราะห์ ULTRA", topBuyers: "ผู้ซื้อสูงสุด",
-    topReferrers: "ผู้แนะนำสูงสุด", revenue: "รายได้",
+    overview: "ภาพรวม",
+    botConfig: "ตั้งค่าบอท",
+    products: "สินค้า",
+    sourceNetworkBuyer: "เชื่อมต่อแหล่งสินค้า",
+    sourceNetworkProvider: "จัดการตัวแทน",
+    pendingOrders: "คำสั่งซื้อรอดำเนินการ",
+    orders: "คำสั่งซื้อ",
+    wallet: "จัดการผู้ใช้บอท",
+    warranty: "การรับประกัน",
+    proAnalytics: "วิเคราะห์ ULTRA",
+    topBuyers: "ผู้ซื้อสูงสุด",
+    topReferrers: "ผู้แนะนำสูงสุด",
+    revenue: "รายได้",
     customers: "ลูกค้า",
-    broadcasts: "ประกาศบอท", profile: "โปรไฟล์",
-    adminOverview: "ภาพรวม", adminAccounts: "บัญชีผู้ขาย",
+    broadcasts: "ประกาศบอท",
+    profile: "โปรไฟล์",
+    guides: "คู่มือ",
+    support: "ช่วยเหลือ",
+    adminOverview: "ภาพรวม",
+    adminAccounts: "บัญชีผู้ขาย",
     adminReferrers: "ผู้แนะนำสูงสุด",
-    adminOrders: "คำสั่งซื้อระบบ", adminSettings: "ตั้งค่าระบบ",
+    adminOrders: "คำสั่งซื้อระบบ",
+    adminSettings: "ตั้งค่าระบบ",
     adminWithdraws: "คำขอถอนเงิน",
     adminDiscountCodes: "รหัสส่วนลด",
     adminIcons: "คลังไอคอน",
     adminTemplate: "เทมเพลตบอท",
-    coreWorkspace: "พื้นที่ทำงาน", internalManagement: "วิเคราะห์",
+    adminCustomers: "ลูกค้าระบบ",
+    adminFinance: "การเงิน",
+    adminHealth: "System Health",
+    adminAutomations: "Điều khiển",
+    coreWorkspace: "พื้นที่ทำงาน",
+    internalManagement: "วิเคราะห์",
     masterIntelligence: "Master Intelligence",
   },
 } as const;
@@ -110,56 +170,88 @@ const NAV_LABELS = {
 function buildAdminItems(lang: Lang): readonly NavItem[] {
   const L = NAV_LABELS[lang];
   return [
-    { to: "/admin",          label: L.adminOverview,  icon: LayoutDashboard },
-    { to: "/admin/ctv",      label: L.adminAccounts,  icon: ShieldPlus },
+    { to: "/admin", label: L.adminOverview, icon: LayoutDashboard },
+    { to: "/admin/ctv", label: L.adminAccounts, icon: ShieldPlus },
     { to: "/admin/top-referrers", label: L.adminReferrers, icon: Trophy },
-    { to: "/admin/orders",   label: L.adminOrders,    icon: ShoppingBag },
+    { to: "/admin/orders", label: L.adminOrders, icon: ShoppingBag },
+    { to: "/admin/customers", label: L.adminCustomers, icon: Users },
+    { to: "/admin/finance", label: L.adminFinance, icon: CreditCard },
+    { to: "/admin/health", label: L.adminHealth, icon: BarChart3 },
+    { to: "/admin/automations", label: L.adminAutomations, icon: Sparkles },
     { to: "/admin/withdraws", label: L.adminWithdraws, icon: HandCoins },
-    { to: "/admin/discount-codes", label: L.adminDiscountCodes, icon: TicketPercent },
-    { to: "/admin/settings", label: L.adminSettings,  icon: Settings2 },
-    { to: "/admin/icons",    label: L.adminIcons,     icon: ImageIcon },
+    {
+      to: "/admin/discount-codes",
+      label: L.adminDiscountCodes,
+      icon: TicketPercent,
+    },
+    { to: "/admin/settings", label: L.adminSettings, icon: Settings2 },
+    { to: "/admin/icons", label: L.adminIcons, icon: ImageIcon },
     { to: "/admin/template-bot", label: L.adminTemplate, icon: Settings2 },
+    { to: "/admin/userbot-licenses", label: "Key Userbot", icon: KeyRound },
   ];
 }
 
-function buildSellerNavGroups(session: ReturnType<typeof useAuth>["session"], lang: Lang, warrantyCount = 0) {
+function buildSellerNavGroups(
+  session: ReturnType<typeof useAuth>["session"],
+  lang: Lang,
+  warrantyCount = 0,
+) {
   const L = NAV_LABELS[lang];
   const operations: NavItem[] = [
-    { to: "/",           label: L.overview,    icon: LayoutDashboard },
-    { to: "/bot-config", label: L.botConfig,   icon: Bot },
-    { to: "/products",   label: L.products,    icon: Package },
+    { to: "/", label: L.overview, icon: LayoutDashboard },
+    { to: "/bot-config", label: L.botConfig, icon: Bot },
+    { to: "/products", label: L.products, icon: Package },
   ];
 
   if (
+    hasSellerCapability(session, "source_external_use") ||
     hasSellerCapability(session, "source_internal_use") ||
+    hasSellerCapability(session, "source_internal_manage")
+  )
+    operations.push({
+      to: "/source-network",
+      label: L.sourceNetworkBuyer,
+      icon: Cable,
+    });
+
+  if (
     hasSellerCapability(session, "source_internal_manage") ||
     hasSellerCapability(session, "source_key_manage")
   )
-    operations.push({ to: "/source-network", label: L.sourceNetwork, icon: Cable });
+    operations.push({
+      to: "/source-clients",
+      label: L.sourceNetworkProvider,
+      icon: Users,
+    });
 
   operations.push(
     { to: "/orders/pending", label: L.pendingOrders, icon: ShoppingBag },
-    { to: "/orders",         label: L.orders,        icon: ShoppingBag },
-    { to: "/wallet",         label: L.wallet,        icon: CreditCard },
+    { to: "/orders", label: L.orders, icon: ShoppingBag },
+    { to: "/wallet", label: L.wallet, icon: CreditCard },
   );
 
   if (hasSellerCapability(session, "warranty_manage"))
-    operations.push({ to: "/warranty", label: L.warranty, icon: ShieldCheck, badge: warrantyCount || undefined });
+    operations.push({
+      to: "/warranty",
+      label: L.warranty,
+      icon: ShieldCheck,
+      badge: warrantyCount || undefined,
+    });
 
   const insights: NavItem[] = [];
 
-  if (hasSellerCapability(session, "source_key_manage"))
-    insights.push({ to: "/pro-analytics", label: L.proAnalytics, icon: BarChart3 });
-
   insights.push(
-    { to: "/reports/revenue",       label: L.revenue,      icon: ChartColumn },
-    { to: "/affiliate",             label: "🎁 Affiliate",  icon: Sparkles },
-    { to: "/broadcasts",            label: L.broadcasts,   icon: Bell },
-    { to: "/profile",               label: L.profile,      icon: UserCircle2 },
+    { to: "/reports/revenue", label: L.revenue, icon: ChartColumn },
+    { to: "/affiliate", label: "Affiliate", icon: Sparkles },
+    { to: "/broadcasts", label: L.broadcasts, icon: Bell },
+    { to: "/userbot-campaign", label: "Tele Campaign", icon: Radio },
+    { to: "/profile", label: L.profile, icon: UserCircle2 },
+    { to: "/guides", label: L.guides, icon: BookOpenText },
+    { to: "/support", label: L.support, icon: LifeBuoy },
   );
 
   return [
-    { title: L.coreWorkspace,      items: operations },
+    { title: L.coreWorkspace, items: operations },
     { title: L.internalManagement, items: insights },
   ];
 }
@@ -170,9 +262,14 @@ function isItemActive(pathname: string, itemPath: string) {
 }
 
 function ModeToggle() {
-  const [dark, setDark] = useState(() =>
-    document.documentElement.classList.contains("dark"),
-  );
+  const [dark, setDark] = useState(() => {
+    try {
+      const storedTheme = localStorage.getItem("theme");
+      if (storedTheme === "dark") return true;
+      if (storedTheme === "light") return false;
+    } catch {}
+    return document.documentElement.classList.contains("dark");
+  });
 
   useEffect(() => {
     if (dark) {
@@ -180,7 +277,10 @@ function ModeToggle() {
     } else {
       document.documentElement.classList.remove("dark");
     }
-    try { localStorage.setItem("theme", dark ? "dark" : "light"); } catch {}
+    document.documentElement.style.colorScheme = dark ? "dark" : "light";
+    try {
+      localStorage.setItem("theme", dark ? "dark" : "light");
+    } catch {}
   }, [dark]);
 
   return (
@@ -199,7 +299,12 @@ function LangToggle() {
   const { lang, setLang } = useLang();
   const next = lang === "vi" ? "en" : lang === "en" ? "th" : "vi";
   const label = lang === "vi" ? "EN" : lang === "en" ? "TH" : "VI";
-  const title = lang === "vi" ? "Switch to English" : lang === "en" ? "เปลี่ยนเป็นภาษาไทย" : "Chuyển sang Tiếng Việt";
+  const title =
+    lang === "vi"
+      ? "Switch to English"
+      : lang === "en"
+        ? "เปลี่ยนเป็นภาษาไทย"
+        : "Chuyển sang Tiếng Việt";
   return (
     <button
       type="button"
@@ -219,44 +324,72 @@ export function AppShellPrime({ children }: { children: ReactNode }) {
   const navigate = useNavigate();
 
   const [collapsed, setCollapsed] = useState(() => {
-    try { return localStorage.getItem("sidebar-collapsed") === "true"; } catch { return false; }
+    try {
+      return localStorage.getItem("sidebar-collapsed") === "true";
+    } catch {
+      return false;
+    }
   });
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+
+  useEffect(() => {
+    window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+    const scrollingElement = document.scrollingElement;
+    if (scrollingElement) {
+      scrollingElement.scrollTop = 0;
+      scrollingElement.scrollLeft = 0;
+    }
+  }, [location.pathname]);
 
   function toggleCollapsed() {
     setCollapsed((prev) => {
       const next = !prev;
-      try { localStorage.setItem("sidebar-collapsed", String(next)); } catch {}
+      try {
+        localStorage.setItem("sidebar-collapsed", String(next));
+      } catch {}
       return next;
     });
   }
 
   const isSuperAdmin = session?.user.role === "super_admin";
-  const sellerTier   = session?.user.sellerTier;
-  const displayName  =
+  const sellerTier = session?.user.sellerTier;
+  const displayName =
     session?.user.displayName ||
     (isSuperAdmin ? "Quản trị viên" : session?.user.email) ||
     "Seller";
 
   const warrantyQuery = useQuery({
     queryKey: ["warranty-claims-count"],
-    queryFn: async () => (await api.get("/warranty/claims", { params: { status: "PENDING" } })).data,
+    queryFn: async () =>
+      (await api.get("/warranty/claims", { params: { status: "PENDING" } }))
+        .data,
     refetchInterval: 60000,
     retry: false,
     enabled: !isSuperAdmin,
   });
-  const warrantyCount = Array.isArray(warrantyQuery.data) ? warrantyQuery.data.length : 0;
+  const warrantyCount = Array.isArray(warrantyQuery.data)
+    ? warrantyQuery.data.length
+    : 0;
 
-  const navGroups  = isSuperAdmin
-    ? [{ title: NAV_LABELS[lang].masterIntelligence, items: buildAdminItems(lang) }]
+  const navGroups = isSuperAdmin
+    ? [
+        {
+          title: NAV_LABELS[lang].masterIntelligence,
+          items: buildAdminItems(lang),
+        },
+      ]
     : buildSellerNavGroups(session, lang, warrantyCount);
   const currentItems = navGroups.flatMap((g) => g.items);
   const currentLabel =
-    currentItems.find((item) => isItemActive(location.pathname, item.to))?.label ||
-    "Bảng điều khiển";
+    currentItems.find((item) => isItemActive(location.pathname, item.to))
+      ?.label || "Bảng điều khiển";
 
   return (
-    <div className="min-h-screen" style={{ backgroundColor: "var(--bg)", color: "var(--tx)" }}>
+    <div
+      className="min-h-screen"
+      style={{ backgroundColor: "var(--bg)", color: "var(--tx)" }}
+    >
+      {!isSuperAdmin && <SystemAnnouncementModal />}
 
       {/* ── Sidebar (desktop) ───────────────────────────────── */}
       <aside
@@ -277,7 +410,12 @@ export function AppShellPrime({ children }: { children: ReactNode }) {
           style={{ borderBottom: "1px solid var(--bd)" }}
         >
           <div className="absolute -left-10 -top-10 w-24 h-24 bg-orange-500/8 blur-3xl rounded-full pointer-events-none" />
-          <div className={cn("flex items-center gap-4 flex-1 min-w-0", collapsed && "justify-center")}>
+          <div
+            className={cn(
+              "flex items-center gap-4 flex-1 min-w-0",
+              collapsed && "justify-center",
+            )}
+          >
             <div className="flex size-10 min-w-[40px] items-center justify-center rounded-2xl bg-orange-500 text-white font-black shadow-lg shadow-orange-500/20 shrink-0">
               <CheckCircle2 className="size-5" />
             </div>
@@ -287,7 +425,9 @@ export function AppShellPrime({ children }: { children: ReactNode }) {
                 style={{ color: "var(--tx)" }}
               >
                 Altivox{" "}
-                <span className="text-orange-500 font-medium lowercase not-italic">AI</span>
+                <span className="text-orange-500 font-medium lowercase not-italic">
+                  AI
+                </span>
               </span>
             )}
           </div>
@@ -297,8 +437,12 @@ export function AppShellPrime({ children }: { children: ReactNode }) {
               onClick={toggleCollapsed}
               className="p-1.5 rounded-xl transition-colors shrink-0"
               style={{ color: "var(--tx-f)" }}
-              onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = "var(--tx)"; }}
-              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = "var(--tx-f)"; }}
+              onMouseEnter={(e) => {
+                (e.currentTarget as HTMLElement).style.color = "var(--tx)";
+              }}
+              onMouseLeave={(e) => {
+                (e.currentTarget as HTMLElement).style.color = "var(--tx-f)";
+              }}
             >
               <ChevronLeft className="size-4" />
             </button>
@@ -331,7 +475,10 @@ export function AppShellPrime({ children }: { children: ReactNode }) {
                       )}
                       style={
                         active
-                          ? { backgroundColor: "rgba(249,115,22,0.1)", color: "var(--tx)" }
+                          ? {
+                              backgroundColor: "rgba(249,115,22,0.1)",
+                              color: "var(--tx)",
+                            }
                           : { color: "var(--tx-m)" }
                       }
                     >
@@ -340,10 +487,23 @@ export function AppShellPrime({ children }: { children: ReactNode }) {
                         <span className="absolute left-0 top-1/2 -translate-y-1/2 h-5 w-[3px] rounded-r-full bg-orange-500" />
                       )}
                       <item.icon
-                        className={cn("size-5 min-w-[20px] shrink-0 transition-colors", active ? "text-orange-500" : "group-hover:text-orange-400")}
+                        className={cn(
+                          "size-5 min-w-[20px] shrink-0 transition-colors",
+                          active
+                            ? "text-orange-500"
+                            : "group-hover:text-orange-400",
+                        )}
                       />
                       {!collapsed && (
-                        <span className={cn("flex-1 text-[13px] font-bold tracking-tight transition-colors", !active && "group-hover:text-[var(--tx)]")} style={active ? { color: "var(--s-act-tx)" } : undefined}>
+                        <span
+                          className={cn(
+                            "flex-1 text-[13px] font-bold tracking-tight transition-colors",
+                            !active && "group-hover:text-[var(--tx)]",
+                          )}
+                          style={
+                            active ? { color: "var(--s-act-tx)" } : undefined
+                          }
+                        >
                           {item.label}
                         </span>
                       )}
@@ -363,7 +523,10 @@ export function AppShellPrime({ children }: { children: ReactNode }) {
         {/* User footer */}
         <div
           className="p-4 shrink-0"
-          style={{ borderTop: "1px solid var(--bd)", backgroundColor: "var(--surface)" }}
+          style={{
+            borderTop: "1px solid var(--bd)",
+            backgroundColor: "var(--surface)",
+          }}
         >
           {!isSuperAdmin && !collapsed && (
             <button
@@ -376,7 +539,12 @@ export function AppShellPrime({ children }: { children: ReactNode }) {
             </button>
           )}
 
-          <div className={cn("flex items-center gap-3", collapsed && "justify-center flex-col")}>
+          <div
+            className={cn(
+              "flex items-center gap-3",
+              collapsed && "justify-center flex-col",
+            )}
+          >
             <div className="flex size-10 min-w-[40px] items-center justify-center rounded-xl bg-orange-500 text-white font-black text-sm shadow-lg shadow-orange-500/20 shrink-0">
               {displayName[0]?.toUpperCase()}
             </div>
@@ -390,7 +558,9 @@ export function AppShellPrime({ children }: { children: ReactNode }) {
                     {displayName}
                   </p>
                   <p className="text-[9px] font-black text-orange-500 uppercase tracking-[0.2em] truncate">
-                    {isSuperAdmin ? "Master" : (sellerTier?.toUpperCase() ?? "Seller")}
+                    {isSuperAdmin
+                      ? "Master"
+                      : (sellerTier?.toUpperCase() ?? "Seller")}
                   </p>
                 </div>
                 <button
@@ -449,10 +619,15 @@ export function AppShellPrime({ children }: { children: ReactNode }) {
           </nav>
 
           <div className="flex items-center gap-3">
+            {isSuperAdmin && <AdminCommandPalette />}
             {/* User chip */}
             <div
               className="flex items-center gap-1.5 px-4 py-2.5 rounded-full border text-sm"
-              style={{ borderColor: "var(--bd)", backgroundColor: "var(--surface)", color: "var(--tx-m)" }}
+              style={{
+                borderColor: "var(--bd)",
+                backgroundColor: "var(--surface)",
+                color: "var(--tx-m)",
+              }}
             >
               {displayName}
             </div>
@@ -477,7 +652,10 @@ export function AppShellPrime({ children }: { children: ReactNode }) {
         {/* Mobile bar */}
         <div
           className="shell-mobilebar xl:hidden px-4 py-3 sticky top-0 z-20"
-          style={{ borderBottom: "1px solid var(--bd)", backgroundColor: "var(--sidebar)" }}
+          style={{
+            borderBottom: "1px solid var(--bd)",
+            backgroundColor: "var(--sidebar)",
+          }}
         >
           <div className="flex items-center justify-between gap-3">
             <div className="flex items-center gap-2.5">
@@ -493,9 +671,14 @@ export function AppShellPrime({ children }: { children: ReactNode }) {
               <div className="flex size-8 items-center justify-center rounded-xl bg-orange-500 text-white font-black text-xs shadow-lg shadow-orange-500/20">
                 <CheckCircle2 className="size-4" />
               </div>
-              <span className="font-black text-base uppercase italic tracking-tighter" style={{ color: "var(--tx)" }}>
+              <span
+                className="font-black text-base uppercase italic tracking-tighter"
+                style={{ color: "var(--tx)" }}
+              >
                 Altivox{" "}
-                <span className="text-orange-500 font-medium lowercase not-italic">AI</span>
+                <span className="text-orange-500 font-medium lowercase not-italic">
+                  AI
+                </span>
               </span>
             </div>
             <div className="flex items-center gap-2">
@@ -514,16 +697,28 @@ export function AppShellPrime({ children }: { children: ReactNode }) {
 
         {/* Mobile nav drawer */}
         {mobileNavOpen && (
-          <div className="fixed inset-0 z-40 xl:hidden" onClick={() => setMobileNavOpen(false)}>
+          <div
+            className="fixed inset-0 z-40 xl:hidden"
+            onClick={() => setMobileNavOpen(false)}
+          >
             <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" />
             <div
               className="absolute left-0 top-0 flex h-full w-[284px] max-w-[82%] flex-col shadow-2xl"
               style={{ backgroundColor: "var(--sidebar)" }}
               onClick={(e) => e.stopPropagation()}
             >
-              <div className="flex h-16 shrink-0 items-center justify-between px-4" style={{ borderBottom: "1px solid var(--bd)" }}>
-                <span className="font-black text-base uppercase italic tracking-tighter" style={{ color: "var(--tx)" }}>
-                  Altivox <span className="text-orange-500 font-medium lowercase not-italic">AI</span>
+              <div
+                className="flex h-16 shrink-0 items-center justify-between px-4"
+                style={{ borderBottom: "1px solid var(--bd)" }}
+              >
+                <span
+                  className="font-black text-base uppercase italic tracking-tighter"
+                  style={{ color: "var(--tx)" }}
+                >
+                  Altivox{" "}
+                  <span className="text-orange-500 font-medium lowercase not-italic">
+                    AI
+                  </span>
                 </span>
                 <button
                   type="button"
@@ -538,7 +733,10 @@ export function AppShellPrime({ children }: { children: ReactNode }) {
               <div className="flex-1 overflow-y-auto px-3 py-4 custom-scrollbar">
                 {navGroups.map((group) => (
                   <div key={group.title} className="mb-5">
-                    <p className="px-3 pb-3 text-[9px] font-black uppercase tracking-[0.3em]" style={{ color: "var(--tx-f)" }}>
+                    <p
+                      className="px-3 pb-3 text-[9px] font-black uppercase tracking-[0.3em]"
+                      style={{ color: "var(--tx-f)" }}
+                    >
                       {group.title}
                     </p>
                     <div className="space-y-1">
@@ -552,13 +750,25 @@ export function AppShellPrime({ children }: { children: ReactNode }) {
                             className="relative flex h-11 items-center gap-3 rounded-xl px-3 transition"
                             style={
                               active
-                                ? { backgroundColor: "rgba(249,115,22,0.1)", color: "var(--tx)" }
+                                ? {
+                                    backgroundColor: "rgba(249,115,22,0.1)",
+                                    color: "var(--tx)",
+                                  }
                                 : { color: "var(--tx-m)" }
                             }
                           >
-                            {active && <span className="absolute left-0 top-1/2 h-5 w-[3px] -translate-y-1/2 rounded-r-full bg-orange-500" />}
-                            <item.icon className={cn("size-5 min-w-[20px] shrink-0", active ? "text-orange-500" : "")} />
-                            <span className="flex-1 text-[13px] font-bold tracking-tight">{item.label}</span>
+                            {active && (
+                              <span className="absolute left-0 top-1/2 h-5 w-[3px] -translate-y-1/2 rounded-r-full bg-orange-500" />
+                            )}
+                            <item.icon
+                              className={cn(
+                                "size-5 min-w-[20px] shrink-0",
+                                active ? "text-orange-500" : "",
+                              )}
+                            />
+                            <span className="flex-1 text-[13px] font-bold tracking-tight">
+                              {item.label}
+                            </span>
                             {item.badge != null && item.badge > 0 && (
                               <span className="flex h-5 min-w-[20px] items-center justify-center rounded-full bg-orange-500 px-1.5 text-[10px] font-black text-white">
                                 {item.badge > 99 ? "99+" : item.badge}
@@ -576,7 +786,7 @@ export function AppShellPrime({ children }: { children: ReactNode }) {
         )}
 
         {/* Content */}
-        <main className="flex-1 p-6 lg:p-10 relative overflow-hidden">
+        <main className="relative flex-1 overflow-hidden p-3 sm:p-6 lg:p-10">
           <div
             className="absolute -right-40 -bottom-40 w-[600px] h-[600px] blur-[120px] rounded-full pointer-events-none z-0"
             style={{ backgroundColor: "var(--blob)" }}

@@ -5,12 +5,14 @@ import {
   Logger,
   NotFoundException,
 } from "@nestjs/common";
+import { createHash } from "node:crypto";
 import { PaymentProvider, PaymentTransactionStatus, Prisma } from "@prisma/client";
 
 import { AppConfigService } from "../config/app-config.service";
 import { PrismaService } from "../db/prisma.service";
 import { OrdersService } from "../orders/orders.service";
 import { CustomerWalletService } from "../customer-wallet/customer-wallet.service";
+import { PaymentService } from "./payment.service";
 
 type SubmitTelegramTxHashInput = {
   shopId: string;
@@ -20,17 +22,17 @@ type SubmitTelegramTxHashInput = {
 };
 
 type ManualCryptoPayload = {
-  provider?: "BINANCE" | "OKX" | "USDT_TRC20";
+  provider?: "BINANCE" | "OKX" | "USDT_TRC20" | "USDT_BEP20";
   uid?: string | null;
   address?: string | null;
-  network?: "TRC20" | null;
+  network?: "TRC20" | "BEP20" | null;
   usdtAmount?: number;
   usdtVndRate?: number;
   note?: string;
 };
 
 type VerifiedTransfer = {
-  network: "TRC20";
+  network: "TRC20" | "BEP20";
   token: "USDT";
   txHash: string;
   fromAddress: string | null;
@@ -38,6 +40,8 @@ type VerifiedTransfer = {
   amountUsdt: number;
   confirmedAt: Date | null;
   blockNumber: number | null;
+  confirmations: number | null;
+  tokenAddress: string;
   rawPayload: Record<string, unknown>;
 };
 
@@ -90,6 +94,8 @@ export class OnchainPaymentService {
     private readonly config: AppConfigService,
     @Inject(CustomerWalletService)
     private readonly customerWalletService: CustomerWalletService,
+    @Inject(PaymentService)
+    private readonly paymentService: PaymentService,
   ) {}
 
   async submitTelegramTxHash(input: SubmitTelegramTxHashInput) {
@@ -124,8 +130,11 @@ export class OnchainPaymentService {
       throw new BadRequestException("This payment does not belong to your Telegram account.");
     }
 
-    if (paymentTransaction.provider !== PaymentProvider.USDT_TRC20) {
-      throw new BadRequestException("Only USDT TRC20 payments accept tx hash confirmation.");
+    if (
+      paymentTransaction.provider !== PaymentProvider.USDT_TRC20 &&
+      paymentTransaction.provider !== PaymentProvider.USDT_BEP20
+    ) {
+      throw new BadRequestException("Only USDT TRC20/BEP20 payments accept tx hash confirmation.");
     }
 
     if (paymentTransaction.status === PaymentTransactionStatus.PAID) {
@@ -162,12 +171,15 @@ export class OnchainPaymentService {
     }
 
     const manualCrypto = this.extractManualCryptoPayload(paymentTransaction.rawPayloadJson);
+    const isBep20 = paymentTransaction.provider === PaymentProvider.USDT_BEP20;
     const receiverAddress = String(
-      manualCrypto?.address || paymentTransaction.order.shop.paymentConfig?.usdtTrc20Address || "",
+      manualCrypto?.address || (isBep20
+        ? paymentTransaction.order.shop.paymentConfig?.usdtBep20Address
+        : paymentTransaction.order.shop.paymentConfig?.usdtTrc20Address) || "",
     ).trim();
 
     if (!receiverAddress) {
-      throw new BadRequestException("USDT TRC20 address is not configured.");
+      throw new BadRequestException(`USDT ${isBep20 ? "BEP20" : "TRC20"} address is not configured.`);
     }
 
     const expectedAmount = Number(manualCrypto?.usdtAmount || 0);
@@ -178,17 +190,39 @@ export class OnchainPaymentService {
 
     const verifiedTransfer = this.isMockTxHash(normalizedTxHash)
       ? this.buildMockVerifiedTransfer(normalizedTxHash, receiverAddress, expectedAmount)
-      : await this.verifyUsdtTrc20Transfer({
+      : isBep20
+        ? await this.verifyUsdtBep20Transfer({
+          txHash: normalizedTxHash,
+          receiverAddress,
+          expectedAmount,
+          createdAt: paymentTransaction.createdAt,
+        })
+        : await this.verifyUsdtTrc20Transfer({
           txHash: normalizedTxHash,
           receiverAddress,
           expectedAmount,
           createdAt: paymentTransaction.createdAt,
         });
 
+    const receipt = this.isMockTxHash(normalizedTxHash)
+      ? null
+      : await this.paymentService.claimOnchainPaymentReceipt({
+          provider: paymentTransaction.provider,
+          txHash: verifiedTransfer.txHash,
+          externalOrderCode: input.externalOrderCode,
+          amountUsdt: verifiedTransfer.amountUsdt,
+          destination: verifiedTransfer.toAddress,
+          transactionAt: verifiedTransfer.confirmedAt!,
+          tokenAddress: verifiedTransfer.tokenAddress,
+          blockReference: verifiedTransfer.blockNumber,
+          confirmations: verifiedTransfer.confirmations,
+          rawPayload: verifiedTransfer.rawPayload,
+        });
+
     const order = await this.ordersService.markPaymentCompleted(
       input.externalOrderCode,
       {
-        source: verifiedTransfer.rawPayload.source || "trc20_tx_hash",
+        source: verifiedTransfer.rawPayload.source || (isBep20 ? "bep20_tx_hash" : "trc20_tx_hash"),
         externalOrderCode: input.externalOrderCode,
         txHash: verifiedTransfer.txHash,
         network: verifiedTransfer.network,
@@ -206,6 +240,9 @@ export class OnchainPaymentService {
         cryptoTxHash: verifiedTransfer.txHash,
       },
     );
+    if (receipt) {
+      await this.paymentService.markOnchainPaymentReceiptProcessed(receipt.id, verifiedTransfer.rawPayload);
+    }
 
     return {
       alreadyPaid: false,
@@ -231,8 +268,8 @@ export class OnchainPaymentService {
     if (topup.customer?.telegramUserId !== input.telegramUserId) {
       throw new BadRequestException("This topup does not belong to your Telegram account.");
     }
-    if (topup.provider !== PaymentProvider.USDT_TRC20) {
-      throw new BadRequestException("Only USDT TRC20 topups accept tx hash confirmation.");
+    if (topup.provider !== PaymentProvider.USDT_TRC20 && topup.provider !== PaymentProvider.USDT_BEP20) {
+      throw new BadRequestException("Only USDT TRC20/BEP20 topups accept tx hash confirmation.");
     }
     if (topup.status === PaymentTransactionStatus.PAID) {
       return { alreadyPaid: true, txHash: normalizedTxHash };
@@ -256,12 +293,15 @@ export class OnchainPaymentService {
     }
 
     const manualCrypto = this.extractManualCryptoPayload(topup.rawPayloadJson);
+    const isBep20 = topup.provider === PaymentProvider.USDT_BEP20;
     const receiverAddress = String(
-      manualCrypto?.address || topup.shop?.paymentConfig?.usdtTrc20Address || "",
+      manualCrypto?.address || (isBep20
+        ? topup.shop?.paymentConfig?.usdtBep20Address
+        : topup.shop?.paymentConfig?.usdtTrc20Address) || "",
     ).trim();
 
     if (!receiverAddress) {
-      throw new BadRequestException("USDT TRC20 address is not configured.");
+      throw new BadRequestException(`USDT ${isBep20 ? "BEP20" : "TRC20"} address is not configured.`);
     }
 
     const expectedAmount = Number(manualCrypto?.usdtAmount || 0);
@@ -271,11 +311,33 @@ export class OnchainPaymentService {
 
     const verifiedTransfer = this.isMockTxHash(normalizedTxHash)
       ? this.buildMockVerifiedTransfer(normalizedTxHash, receiverAddress, expectedAmount)
-      : await this.verifyUsdtTrc20Transfer({
+      : isBep20
+        ? await this.verifyUsdtBep20Transfer({
           txHash: normalizedTxHash,
           receiverAddress,
           expectedAmount,
           createdAt: topup.createdAt,
+        })
+        : await this.verifyUsdtTrc20Transfer({
+          txHash: normalizedTxHash,
+          receiverAddress,
+          expectedAmount,
+          createdAt: topup.createdAt,
+        });
+
+    const receipt = this.isMockTxHash(normalizedTxHash)
+      ? null
+      : await this.paymentService.claimOnchainPaymentReceipt({
+          provider: topup.provider,
+          txHash: verifiedTransfer.txHash,
+          externalOrderCode: input.externalOrderCode,
+          amountUsdt: verifiedTransfer.amountUsdt,
+          destination: verifiedTransfer.toAddress,
+          transactionAt: verifiedTransfer.confirmedAt!,
+          tokenAddress: verifiedTransfer.tokenAddress,
+          blockReference: verifiedTransfer.blockNumber,
+          confirmations: verifiedTransfer.confirmations,
+          rawPayload: verifiedTransfer.rawPayload,
         });
 
     await this.prisma.customerWalletTopup.update({
@@ -284,10 +346,13 @@ export class OnchainPaymentService {
     });
 
     await this.customerWalletService.markTopupPaid(input.externalOrderCode, {
-      source: "trc20_tx_hash",
+      source: isBep20 ? "bep20_tx_hash" : "trc20_tx_hash",
       txHash: verifiedTransfer.txHash,
       amountUsdt: verifiedTransfer.amountUsdt,
     });
+    if (receipt) {
+      await this.paymentService.markOnchainPaymentReceiptProcessed(receipt.id, verifiedTransfer.rawPayload);
+    }
 
     return {
       alreadyPaid: false,
@@ -296,18 +361,51 @@ export class OnchainPaymentService {
     };
   }
 
-  private async verifyUsdtTrc20Transfer(input: {
+  async verifyUsdtBep20Transfer(input: {
+    txHash: string;
+    receiverAddress: string;
+    expectedAmount: number;
+    createdAt: Date;
+  }) {
+    const { fetchBep20TxReceipt, normalizeBep20Address } = await import("@reseller/shared/server");
+    const txHash = input.txHash.startsWith("0x") ? input.txHash : `0x${input.txHash}`;
+    const receiver = normalizeBep20Address(input.receiverAddress);
+    if (!receiver) throw new BadRequestException("Invalid configured BEP20 address.");
+    const receipt = await fetchBep20TxReceipt({
+      endpoints: this.config.bscRpcUrls,
+      txHash,
+      contractAddress: this.config.bscUsdtContractAddress,
+      decimals: this.config.bscUsdtDecimals,
+    });
+    if (!receipt || receipt.status !== 1) throw new BadRequestException("BEP20 transaction is not confirmed or failed.");
+    if (receipt.confirmations < this.config.bscMinConfirmations) throw new BadRequestException("Not enough BEP20 confirmations.");
+    const minAllowedTime = input.createdAt.getTime() - 60 * 1000;
+    if (receipt.blockTimestamp.getTime() < minAllowedTime) {
+      throw new BadRequestException("This BEP20 transaction is from before the payment request was created.");
+    }
+    const transfer = receipt.transfers.find((row) => row.toAddress === receiver);
+    if (!transfer) throw new BadRequestException("TX hash does not transfer USDT to the configured BEP20 address.");
+    if (Math.abs(transfer.amountUsdt - input.expectedAmount) > this.config.usdtPaymentTolerance + 1e-9) {
+      throw new BadRequestException("Transferred USDT amount does not match the invoice.");
+    }
+    return {
+      network: "BEP20" as const, token: "USDT" as const, txHash,
+      fromAddress: transfer.fromAddress, toAddress: transfer.toAddress,
+      amountUsdt: transfer.amountUsdt, confirmedAt: receipt.blockTimestamp,
+      blockNumber: transfer.blockNumber,
+      confirmations: receipt.confirmations,
+      tokenAddress: this.config.bscUsdtContractAddress,
+      rawPayload: { source: "bsc_tx_receipt", confirmations: receipt.confirmations, tokenAddress: this.config.bscUsdtContractAddress },
+    };
+  }
+  async verifyUsdtTrc20Transfer(input: {
     txHash: string;
     receiverAddress: string;
     expectedAmount: number;
     createdAt: Date;
   }): Promise<VerifiedTransfer> {
-    const transferFromHistory = await this.findTransferFromReceiverHistory(input);
-
-    if (transferFromHistory) {
-      return transferFromHistory;
-    }
-
+    // The exact-tx endpoint is much cheaper than listing up to 200 receiver
+    // transfers, so prefer it to avoid exhausting TronGrid's public quota.
     const transferFromEvents = await this.findTransferFromTxEvents({
       txHash: input.txHash,
       receiverAddress: input.receiverAddress,
@@ -317,6 +415,12 @@ export class OnchainPaymentService {
 
     if (transferFromEvents) {
       return transferFromEvents;
+    }
+
+    const transferFromHistory = await this.findTransferFromReceiverHistory(input);
+
+    if (transferFromHistory) {
+      return transferFromHistory;
     }
 
     throw new BadRequestException("We could not find a confirmed USDT TRC20 transfer for this tx hash yet.");
@@ -339,13 +443,10 @@ export class OnchainPaymentService {
     url.searchParams.set("contract_address", this.config.tronUsdtContractAddress);
     url.searchParams.set(
       "min_timestamp",
-      String(Math.max(0, input.createdAt.getTime() - 5 * 60 * 1000)),
+      String(Math.max(0, input.createdAt.getTime() - 60 * 1000)),
     );
 
-    const response = await fetch(url, {
-      method: "GET",
-      headers: this.buildTronGridHeaders(),
-    });
+    const response = await this.fetchTronGridWithRetry(url);
 
     if (!response.ok) {
       this.logger.warn(
@@ -377,10 +478,7 @@ export class OnchainPaymentService {
     );
     url.searchParams.set("only_confirmed", "true");
 
-    const response = await fetch(url, {
-      method: "GET",
-      headers: this.buildTronGridHeaders(),
-    });
+    const response = await this.fetchTronGridWithRetry(url);
 
     if (!response.ok) {
       this.logger.warn(
@@ -398,7 +496,7 @@ export class OnchainPaymentService {
 
       return (
         eventName === "transfer" &&
-        (!contractAddress || contractAddress === this.config.tronUsdtContractAddress)
+        contractAddress === this.config.tronUsdtContractAddress
       );
     });
 
@@ -406,20 +504,21 @@ export class OnchainPaymentService {
       return null;
     }
 
-    const toAddress = String(transferEvent.result.to || "").trim();
+    const toAddress = this.normalizeTronAddress(transferEvent.result.to);
+    const expectedReceiver = this.normalizeTronAddress(input.receiverAddress);
     const amountUsdt = this.parseUsdtAmount(transferEvent.result.value, 6, input.expectedAmount);
     const blockTimestamp = this.parseTimestamp(transferEvent.block_timestamp);
 
-    if (toAddress !== input.receiverAddress) {
+    if (!toAddress || !expectedReceiver || toAddress !== expectedReceiver) {
       throw new BadRequestException("The tx hash does not transfer USDT to the configured TRC20 address.");
     }
 
-    if (amountUsdt + this.config.usdtPaymentTolerance < input.expectedAmount) {
-      throw new BadRequestException("The transferred USDT amount is lower than required for this order.");
+    if (Math.abs(amountUsdt - input.expectedAmount) > this.config.usdtPaymentTolerance + 1e-9) {
+      throw new BadRequestException("The transferred USDT amount does not match this order.");
     }
 
-    // Time window check: reject tx hashes from before order creation (minus 5 min grace)
-    const minAllowedTime = input.createdAt.getTime() - 5 * 60 * 1000;
+    // Allow only minimal clock skew; older transactions must never satisfy a new invoice.
+    const minAllowedTime = input.createdAt.getTime() - 60 * 1000;
     if (blockTimestamp && blockTimestamp.getTime() < minAllowedTime) {
       throw new BadRequestException("This tx hash is from before the order was created.");
     }
@@ -432,11 +531,13 @@ export class OnchainPaymentService {
       network: "TRC20" as const,
       token: "USDT" as const,
       txHash: input.txHash,
-      fromAddress: String(transferEvent.result.from || "").trim() || null,
+      fromAddress: this.normalizeTronAddress(transferEvent.result.from) || null,
       toAddress,
       amountUsdt,
       confirmedAt: blockTimestamp,
       blockNumber: this.parseNullableNumber(transferEvent.block_number),
+      confirmations: null,
+      tokenAddress: this.config.tronUsdtContractAddress,
       rawPayload: {
         source: "trongrid_tx_events",
         event: transferEvent,
@@ -450,14 +551,14 @@ export class OnchainPaymentService {
       txHash: string;
       receiverAddress: string;
       expectedAmount: number;
+      createdAt: Date;
     },
   ): VerifiedTransfer {
     const confirmed = this.isTruthyStatus(row.confirmed);
     const finalResult = String(row.final_result || row.contract_ret || "SUCCESS").toUpperCase();
-    const toAddress = String(row.to || "").trim();
-    const contractAddress = String(
-      row.token_info?.address || row.contract_address || this.config.tronUsdtContractAddress,
-    ).trim();
+    const toAddress = this.normalizeTronAddress(row.to);
+    const expectedReceiver = this.normalizeTronAddress(input.receiverAddress);
+    const contractAddress = String(row.token_info?.address || row.contract_address || "").trim();
     const decimals = this.parseNullableNumber(row.token_info?.decimals ?? row.decimals) ?? 6;
     const amountUsdt = this.parseUsdtAmount(row.value ?? row.amount, decimals, input.expectedAmount);
 
@@ -473,23 +574,33 @@ export class OnchainPaymentService {
       throw new BadRequestException("The tx hash is not a USDT TRC20 transfer.");
     }
 
-    if (toAddress !== input.receiverAddress) {
+    if (!toAddress || !expectedReceiver || toAddress !== expectedReceiver) {
       throw new BadRequestException("The tx hash does not transfer USDT to the configured TRC20 address.");
     }
 
-    if (amountUsdt + this.config.usdtPaymentTolerance < input.expectedAmount) {
-      throw new BadRequestException("The transferred USDT amount is lower than required for this order.");
+    if (Math.abs(amountUsdt - input.expectedAmount) > this.config.usdtPaymentTolerance + 1e-9) {
+      throw new BadRequestException("The transferred USDT amount does not match this order.");
+    }
+
+    const confirmedAt = this.parseTimestamp(row.block_timestamp);
+    if (!confirmedAt) {
+      throw new BadRequestException("Could not verify timing of this TRC20 transfer.");
+    }
+    if (confirmedAt.getTime() < input.createdAt.getTime() - 60 * 1000) {
+      throw new BadRequestException("This tx hash is from before the order was created.");
     }
 
     return {
       network: "TRC20",
       token: "USDT",
       txHash: input.txHash,
-      fromAddress: String(row.from || "").trim() || null,
+      fromAddress: this.normalizeTronAddress(row.from) || null,
       toAddress,
       amountUsdt,
-      confirmedAt: this.parseTimestamp(row.block_timestamp),
+      confirmedAt,
       blockNumber: this.parseNullableNumber(row.block),
+      confirmations: null,
+      tokenAddress: this.config.tronUsdtContractAddress,
       rawPayload: {
         source: "trongrid_receiver_history",
         transfer: row,
@@ -511,6 +622,8 @@ export class OnchainPaymentService {
       amountUsdt: expectedAmount,
       confirmedAt: new Date(),
       blockNumber: 99999999,
+      confirmations: 999,
+      tokenAddress: this.config.tronUsdtContractAddress,
       rawPayload: {
         source: "mock_trc20_tx_hash",
       },
@@ -527,6 +640,65 @@ export class OnchainPaymentService {
     }
 
     return headers;
+  }
+
+  private async fetchTronGridWithRetry(url: URL) {
+    let lastResponse: Response | null = null;
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const response = await fetch(url, {
+        method: "GET",
+        headers: this.buildTronGridHeaders(),
+      });
+      lastResponse = response;
+
+      if (response.ok || (response.status !== 429 && response.status < 500)) {
+        return response;
+      }
+
+      if (attempt < 2) {
+        const retryAfterSeconds = Number(response.headers.get("retry-after") || 0);
+        const waitMs = retryAfterSeconds > 0
+          ? Math.min(5_000, retryAfterSeconds * 1_000)
+          : 500 * 2 ** attempt;
+        await new Promise((resolve) => setTimeout(resolve, waitMs));
+      }
+    }
+
+    return lastResponse!;
+  }
+
+  private normalizeTronAddress(value: unknown) {
+    const raw = String(value || "").trim();
+    if (/^T[1-9A-HJ-NP-Za-km-z]{33}$/.test(raw)) {
+      return raw;
+    }
+
+    let hex = raw.replace(/^0x/i, "").toLowerCase();
+    if (/^[a-f0-9]{40}$/.test(hex)) {
+      hex = `41${hex}`;
+    }
+    if (!/^41[a-f0-9]{40}$/.test(hex)) {
+      return "";
+    }
+
+    const payload = Buffer.from(hex, "hex");
+    const firstHash = createHash("sha256").update(payload).digest();
+    const checksum = createHash("sha256").update(firstHash).digest().subarray(0, 4);
+    const bytes = Buffer.concat([payload, checksum]);
+    const alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+    let number = BigInt(`0x${bytes.toString("hex")}`);
+    let encoded = "";
+    while (number > 0n) {
+      const remainder = Number(number % 58n);
+      encoded = alphabet[remainder] + encoded;
+      number /= 58n;
+    }
+    for (const byte of bytes) {
+      if (byte !== 0) break;
+      encoded = `1${encoded}`;
+    }
+    return encoded;
   }
 
   private extractManualCryptoPayload(rawPayload: Prisma.JsonValue | null): ManualCryptoPayload | null {

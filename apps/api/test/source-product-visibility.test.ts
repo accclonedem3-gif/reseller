@@ -20,3 +20,14 @@ test("synced source products are hidden only while own-products-only mode is act
   assert.equal(isProductVisibleForBot(synced, false), true);
   assert.equal(isProductVisibleForBot(synced, true), false);
 });
+
+test("archived products are hidden from the bot in every catalog mode", () => {
+  const archived = {
+    providerName: "manual",
+    metadataJson: { manual: true },
+    archivedAt: new Date(),
+  };
+
+  assert.equal(isProductVisibleForBot(archived, false), false);
+  assert.equal(isProductVisibleForBot(archived, true), false);
+});

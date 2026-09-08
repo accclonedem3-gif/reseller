@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { createPortal } from "react-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Crown, Download, Gift, Handshake, Plus, RefreshCw, Search, Trash2, TrendingUp, Users, X } from "lucide-react";
+import { Crown, Download, Gift, Handshake, ImagePlus, Plus, RefreshCw, Search, Trash2, TrendingUp, Users, X } from "lucide-react";
 
 import { useToast } from "@/components/ui/toast";
 import { api } from "@/lib/api";
@@ -56,6 +56,27 @@ type CustomerOrdersResp = {
   summary: { totalSpent: number; totalCost: number; totalProfit: number };
 };
 
+type CustomerWalletLedgerResp = {
+  customer: { id: string; displayName: string };
+  wallet: { balance: number; commissionBalance: number; balanceUsdt: number; currency: string };
+  items: Array<{
+    id: string;
+    type: string;
+    currency: string;
+    amount: number;
+    balanceBefore: number;
+    balanceAfter: number;
+    commissionBalanceBefore: number | null;
+    commissionBalanceAfter: number | null;
+    referenceType: string | null;
+    referenceId: string | null;
+    note: string | null;
+    createdAt: string;
+  }>;
+  total: number;
+  limit: number;
+  offset: number;
+};
 type LeaderboardRow = {
   rank: number;
   id: string;
@@ -255,7 +276,9 @@ type PageTab = "users" | "top-buyers" | "top-referrers";
 
 type Promotion = {
   id: string;
+  minAmount: number;
   bonusPercent: number;
+  imageUrl: string | null;
   startAt: string;
   endAt: string;
   status: "upcoming" | "active" | "ended";
@@ -266,6 +289,23 @@ function fmtDate(d: string) {
   return `${String(dt.getDate()).padStart(2, "0")}/${String(dt.getMonth() + 1).padStart(2, "0")}/${dt.getFullYear()}`;
 }
 
+function walletLedgerLabel(type: string) {
+  const labels: Record<string, string> = {
+    TOPUP: "Nạp tiền",
+    TOPUP_BONUS: "Thưởng nạp tiền",
+    SPEND_ORDER: "Thanh toán đơn hàng",
+    REFUND_ORDER: "Hoàn tiền đơn hàng",
+    ADJUST: "Điều chỉnh thủ công",
+    AFFILIATE_COMMISSION: "Hoa hồng giới thiệu",
+  };
+  return labels[type] || type;
+}
+
+function formatLedgerMoney(value: number, currency: string) {
+  return currency === "USDT"
+    ? `${Number(value).toLocaleString("vi-VN", { maximumFractionDigits: 8 })} USDT`
+    : formatCurrency(value);
+}
 export function WalletPage() {
   const { lang } = useLang();
   const queryClient = useQueryClient();
@@ -276,9 +316,11 @@ export function WalletPage() {
   const [filterTab, setFilterTab] = useState<FilterTab>("all");
   const [selectedCustomer, setSelectedCustomer] = useState<WalletItem | null>(null);
   const [historyCustomerId, setHistoryCustomerId] = useState<string | null>(null);
+  const [ledgerCustomerId, setLedgerCustomerId] = useState<string | null>(null);
+  const [ledgerOffset, setLedgerOffset] = useState(0);
   const [defaultTopup, setDefaultTopup] = useState(false);
   const [showPromoForm, setShowPromoForm] = useState(false);
-  const [promoForm, setPromoForm] = useState({ bonusPercent: "", startAt: "", endAt: "" });
+  const [promoForm, setPromoForm] = useState({ minAmount: "", bonusPercent: "", imageUrl: "", startAt: "", endAt: "" });
 
   const customerWalletsQuery = useQuery({
     queryKey: ["wallet", "customer-wallets"],
@@ -307,16 +349,37 @@ export function WalletPage() {
     queryFn: async () => (await api.get(`/customers/${historyCustomerId}/orders`, { params: { limit: 100 } })).data,
   });
 
+  const customerLedgerQuery = useQuery<CustomerWalletLedgerResp>({
+    queryKey: ["customer-wallet-ledgers", ledgerCustomerId, ledgerOffset],
+    enabled: Boolean(ledgerCustomerId),
+    queryFn: async () => (
+      await api.get(`/wallet/customer-wallets/${ledgerCustomerId}/ledgers`, {
+        params: { limit: 50, offset: ledgerOffset },
+      })
+    ).data,
+  });
   const createPromoMutation = useMutation({
-    mutationFn: (data: { bonusPercent: number; startAt: string; endAt: string }) =>
+    mutationFn: (data: { minAmount: number; bonusPercent: number; imageUrl?: string; startAt: string; endAt: string }) =>
       api.post("/wallet/promotions", data).then((r) => r.data),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["wallet", "promotions"] });
-      setPromoForm({ bonusPercent: "", startAt: "", endAt: "" });
+      setPromoForm({ minAmount: "", bonusPercent: "", imageUrl: "", startAt: "", endAt: "" });
       setShowPromoForm(false);
       showToast({ tone: "success", message: "Đã tạo chương trình khuyến mãi." });
     },
     onError: () => showToast({ tone: "error", message: "Không thể tạo chương trình." }),
+  });
+
+  const uploadPromoImageMutation = useMutation({
+    mutationFn: async (file: File) => {
+      const form = new FormData();
+      form.append("file", file);
+      return (await api.post<{ url: string }>("/wallet/promotions/upload-image", form, {
+        headers: { "Content-Type": "multipart/form-data" },
+      })).data;
+    },
+    onSuccess: ({ url }) => setPromoForm((form) => ({ ...form, imageUrl: url })),
+    onError: () => showToast({ tone: "error", message: "Không thể tải ảnh khuyến mãi." }),
   });
 
   const deletePromoMutation = useMutation({
@@ -453,6 +516,16 @@ export function WalletPage() {
             {showPromoForm && (
               <div className="px-5 py-4 flex flex-wrap items-end gap-3" style={{ borderBottom: "1px solid var(--bd)", background: "rgba(249,115,22,0.04)" }}>
                 <div>
+                  <p className="mb-1 text-[11px] font-black uppercase tracking-widest" style={{ color: "var(--tx-f)" }}>Mốc nạp tối thiểu</p>
+                  <input
+                    type="number" min="0" step="1000" placeholder="1000000"
+                    value={promoForm.minAmount}
+                    onChange={(e) => setPromoForm((f) => ({ ...f, minAmount: e.target.value }))}
+                    className="w-36 rounded-xl px-3 py-2 text-[13px] font-black outline-none"
+                    style={{ background: "var(--inp)", border: "1px solid var(--bd)", color: "var(--tx)" }}
+                  />
+                </div>
+                <div>
                   <p className="mb-1 text-[11px] font-black uppercase tracking-widest" style={{ color: "var(--tx-f)" }}>Bonus %</p>
                   <input
                     type="number" min="0.01" max="100" step="0.01" placeholder="10"
@@ -482,11 +555,30 @@ export function WalletPage() {
                     style={{ background: "var(--inp)", border: "1px solid var(--bd)", color: "var(--tx)" }}
                   />
                 </div>
+                <label className="cursor-pointer rounded-xl px-3 py-2 text-[12px] font-black transition hover:opacity-80" style={{ background: "var(--inp)", border: "1px solid var(--bd)", color: "var(--tx-f)" }}>
+                  <span className="flex items-center gap-1.5">
+                    <ImagePlus className="h-3.5 w-3.5" />
+                    {uploadPromoImageMutation.isPending ? "Đang tải..." : promoForm.imageUrl ? "Đổi ảnh" : "Thêm ảnh"}
+                  </span>
+                  <input
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp,image/gif"
+                    className="hidden"
+                    disabled={uploadPromoImageMutation.isPending}
+                    onChange={(event) => {
+                      const file = event.target.files?.[0];
+                      if (file) uploadPromoImageMutation.mutate(file);
+                      event.currentTarget.value = "";
+                    }}
+                  />
+                </label>
                 <button
                   type="button"
-                  disabled={createPromoMutation.isPending || !promoForm.bonusPercent || !promoForm.startAt || !promoForm.endAt}
+                  disabled={createPromoMutation.isPending || promoForm.minAmount === "" || !promoForm.bonusPercent || !promoForm.startAt || !promoForm.endAt}
                   onClick={() => createPromoMutation.mutate({
+                    minAmount: parseFloat(promoForm.minAmount),
                     bonusPercent: parseFloat(promoForm.bonusPercent),
+                    imageUrl: promoForm.imageUrl || undefined,
                     startAt: new Date(promoForm.startAt).toISOString(),
                     endAt: new Date(promoForm.endAt).toISOString(),
                   })}
@@ -510,12 +602,16 @@ export function WalletPage() {
                   return (
                     <div key={promo.id} className="flex items-center justify-between gap-4 px-5 py-3.5">
                       <div className="flex items-center gap-3">
-                        <div className="flex h-9 w-9 items-center justify-center rounded-xl text-base font-black" style={{ background: "rgba(249,115,22,0.12)", color: "rgb(249,115,22)" }}>
-                          +{promo.bonusPercent}%
-                        </div>
+                        {promo.imageUrl ? (
+                          <img src={promo.imageUrl} alt="" className="h-12 w-12 rounded-xl object-cover" />
+                        ) : (
+                          <div className="flex h-9 w-9 items-center justify-center rounded-xl text-base font-black" style={{ background: "rgba(249,115,22,0.12)", color: "rgb(249,115,22)" }}>
+                            +{promo.bonusPercent}%
+                          </div>
+                        )}
                         <div>
                           <p className="text-[13px] font-black" style={{ color: "var(--tx)" }}>
-                            Nạp ví được thêm <span style={{ color: "rgb(249,115,22)" }}>+{promo.bonusPercent}%</span>
+                            Nạp từ <span style={{ color: "rgb(249,115,22)" }}>{formatCurrency(promo.minAmount)}</span> được thêm <span style={{ color: "rgb(249,115,22)" }}>+{promo.bonusPercent}%</span>
                           </p>
                           <p className="text-[11px]" style={{ color: "var(--tx-f)" }}>
                             {fmtDate(promo.startAt)} → {fmtDate(promo.endAt)}
@@ -573,10 +669,10 @@ export function WalletPage() {
             </div>
 
             <div className="overflow-x-auto">
-              <table className="w-full" style={{ minWidth: 700 }}>
+              <table className="w-full" style={{ minWidth: 860 }}>
                 <thead>
                   <tr style={{ borderBottom: "1px solid var(--bd)" }}>
-                    {["KHÁCH HÀNG", "CHAT ID", "SỐ DƯ VÍ (đ)", "SỐ DƯ USD", "TỔNG ĐƠN", "TỔNG CHI", "PHÂN LOẠI", "THAO TÁC"].map((col, i) => (
+                    {["KHÁCH HÀNG", "CHAT ID", "SỐ DƯ NẠP (đ)", "SỐ DƯ HOA HỒNG", "SỐ DƯ USD", "TỔNG ĐƠN", "TỔNG CHI", "PHÂN LOẠI", "THAO TÁC"].map((col, i) => (
                       <th key={col} className={`px-4 py-3 text-[10px] font-black uppercase tracking-widest ${i === 0 ? "text-left" : "text-center"}`}
                         style={{ color: "var(--tx-f)" }}>{col}</th>
                     ))}
@@ -585,10 +681,10 @@ export function WalletPage() {
                 <tbody>
                   {customerWalletsQuery.isLoading ? (
                     Array.from({ length: 5 }).map((_, i) => (
-                      <tr key={i}><td colSpan={8} className="px-4 py-3"><div className="h-8 animate-pulse rounded-lg" style={{ background: "var(--inp)" }} /></td></tr>
+                      <tr key={i}><td colSpan={9} className="px-4 py-3"><div className="h-8 animate-pulse rounded-lg" style={{ background: "var(--inp)" }} /></td></tr>
                     ))
                   ) : filtered.length === 0 ? (
-                    <tr><td colSpan={8} className="px-4 py-12 text-center text-[13px]" style={{ color: "var(--tx-f)" }}>Chưa có khách nào</td></tr>
+                    <tr><td colSpan={9} className="px-4 py-12 text-center text-[13px]" style={{ color: "var(--tx-f)" }}>Chưa có khách nào</td></tr>
                   ) : filtered.map((w) => {
                     const name = displayName(w);
                     return (
@@ -605,6 +701,7 @@ export function WalletPage() {
                         </td>
                         <td className="px-4 py-3 text-center font-mono text-[12px] tabular-nums" style={{ color: "var(--tx-f)" }}>{w.telegramChatId}</td>
                         <td className="px-4 py-3 text-center text-[13px] font-black tabular-nums text-emerald-400">{formatCurrency(w.balance)}</td>
+                        <td className="px-4 py-3 text-center text-[13px] font-black tabular-nums text-amber-400">{formatCurrency(w.commissionBalance)}</td>
                         <td className="px-4 py-3 text-center text-[12px] tabular-nums text-sky-400">${w.balanceUsdt.toFixed(2)}</td>
                         <td className="px-4 py-3 text-center text-[12px] tabular-nums" style={{ color: "var(--tx-m)" }}>{w.orderCount ?? 0}</td>
                         <td className="px-4 py-3 text-center text-[13px] font-black tabular-nums" style={{ color: "var(--tx)" }}>{formatCurrency(w.totalSpent ?? 0)}</td>
@@ -648,6 +745,12 @@ export function WalletPage() {
                               className="rounded-lg px-2.5 py-1.5 text-[11px] font-black transition hover:opacity-80"
                               style={{ background: "rgba(168,85,247,0.12)", border: "1px solid rgba(168,85,247,0.3)", color: "rgb(168,85,247)" }}>
                               🕐 Lịch sử
+                            </button>
+                            <button type="button"
+                              onClick={() => { setLedgerOffset(0); setLedgerCustomerId(w.customerId); }}
+                              className="rounded-lg px-2.5 py-1.5 text-[11px] font-black transition hover:opacity-80"
+                              style={{ background: "rgba(245,158,11,0.12)", border: "1px solid rgba(245,158,11,0.3)", color: "rgb(245,158,11)" }}>
+                              💳 Biến động
                             </button>
                           </div>
                         </td>
@@ -873,6 +976,18 @@ export function WalletPage() {
             </div>
             {historyQuery.isLoading ? (
               <div className="py-10 text-center text-sm" style={{ color: "var(--tx-f)" }}>Đang tải...</div>
+            ) : historyQuery.isError ? (
+              <div className="px-5 py-10 text-center">
+                <p className="text-sm font-semibold text-red-400">Không thể tải lịch sử mua hàng.</p>
+                <button
+                  type="button"
+                  onClick={() => historyQuery.refetch()}
+                  className="mt-3 rounded-xl px-3 py-1.5 text-xs font-bold"
+                  style={{ background: "var(--inp)", border: "1px solid var(--bd)", color: "var(--tx-m)" }}
+                >
+                  Thử lại
+                </button>
+              </div>
             ) : historyQuery.data ? (
               <>
                 <div className="grid grid-cols-4 gap-2 border-b p-4" style={{ borderColor: "var(--bd)" }}>
@@ -923,6 +1038,149 @@ export function WalletPage() {
                   {historyQuery.data.orders.length === 0 && (
                     <p className="py-8 text-center text-sm" style={{ color: "var(--tx-f)" }}>Khách chưa có đơn nào.</p>
                   )}
+                </div>
+              </>
+            ) : null}
+          </div>
+        </div>
+      )}
+      {ledgerCustomerId && (
+        <div
+          className="fixed inset-0 z-[80] flex items-center justify-center p-4"
+          style={{ backgroundColor: "rgba(0,0,0,0.55)" }}
+          onClick={() => setLedgerCustomerId(null)}
+        >
+          <div
+            className="relative flex w-full flex-col overflow-hidden rounded-2xl"
+            style={{ backgroundColor: "var(--surface)", border: "1px solid var(--bd)", maxWidth: 1080, maxHeight: "88vh" }}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex shrink-0 items-center justify-between gap-4 px-5 py-4" style={{ borderBottom: "1px solid var(--bd)" }}>
+              <div>
+                <p className="text-[10px] font-black uppercase tracking-widest" style={{ color: "rgb(245,158,11)" }}>Biến động số dư</p>
+                <p className="text-sm font-black" style={{ color: "var(--tx)" }}>
+                  {customerLedgerQuery.data?.customer.displayName ?? "Đang tải..."}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setLedgerCustomerId(null)}
+                className="rounded-xl px-3 py-1.5 text-[11px] font-bold"
+                style={{ background: "var(--inp)", border: "1px solid var(--bd)", color: "var(--tx-m)" }}
+              >
+                Đóng
+              </button>
+            </div>
+
+            {customerLedgerQuery.isLoading ? (
+              <div className="py-12 text-center text-sm" style={{ color: "var(--tx-f)" }}>Đang tải biến động...</div>
+            ) : customerLedgerQuery.isError ? (
+              <div className="px-5 py-12 text-center">
+                <p className="text-sm font-semibold text-red-400">Không thể tải biến động số dư.</p>
+                <button
+                  type="button"
+                  onClick={() => void customerLedgerQuery.refetch()}
+                  className="mt-3 rounded-xl px-3 py-1.5 text-xs font-bold"
+                  style={{ background: "var(--inp)", border: "1px solid var(--bd)", color: "var(--tx-m)" }}
+                >
+                  Thử lại
+                </button>
+              </div>
+            ) : customerLedgerQuery.data ? (
+              <>
+                <div className="grid shrink-0 grid-cols-2 gap-2 border-b p-4 sm:grid-cols-4" style={{ borderColor: "var(--bd)" }}>
+                  {[
+                    { label: "Ví nạp", value: formatCurrency(customerLedgerQuery.data.wallet.balance), color: "rgb(52,211,153)" },
+                    { label: "Ví hoa hồng", value: formatCurrency(customerLedgerQuery.data.wallet.commissionBalance), color: "rgb(245,158,11)" },
+                    { label: "Số dư USDT", value: `${customerLedgerQuery.data.wallet.balanceUsdt.toLocaleString("vi-VN", { maximumFractionDigits: 8 })} USDT`, color: "rgb(56,189,248)" },
+                    { label: "Tổng biến động", value: String(customerLedgerQuery.data.total), color: "var(--tx)" },
+                  ].map((stat) => (
+                    <div key={stat.label} className="rounded-xl p-3" style={{ background: "var(--inp)", border: "1px solid var(--bd)" }}>
+                      <p className="text-[9px] font-black uppercase tracking-widest" style={{ color: "var(--tx-f)" }}>{stat.label}</p>
+                      <p className="mt-1 text-sm font-black tabular-nums" style={{ color: stat.color }}>{stat.value}</p>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="flex-1 overflow-auto">
+                  <table className="w-full text-sm" style={{ minWidth: 980 }}>
+                    <thead className="sticky top-0 z-10" style={{ background: "var(--surface)" }}>
+                      <tr style={{ borderBottom: "1px solid var(--bd)" }}>
+                        {[
+                          "Thời gian",
+                          "Loại giao dịch",
+                          "Thay đổi",
+                          "Ví chính trước → sau",
+                          "Hoa hồng trước → sau",
+                          "Tham chiếu / Ghi chú",
+                        ].map((heading) => (
+                          <th key={heading} className="px-4 py-2.5 text-left text-[10px] font-black uppercase tracking-widest" style={{ color: "var(--tx-f)" }}>
+                            {heading}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {customerLedgerQuery.data.items.map((item) => (
+                        <tr key={item.id} style={{ borderBottom: "1px solid var(--bd)" }}>
+                          <td className="whitespace-nowrap px-4 py-3 text-[11px]" style={{ color: "var(--tx-m)" }}>
+                            {new Date(item.createdAt).toLocaleString("vi-VN")}
+                          </td>
+                          <td className="px-4 py-3">
+                            <span className="rounded-lg px-2 py-1 text-[10px] font-black" style={{ background: "var(--inp)", color: "var(--tx)" }}>
+                              {walletLedgerLabel(item.type)}
+                            </span>
+                          </td>
+                          <td className={`whitespace-nowrap px-4 py-3 text-[12px] font-black tabular-nums ${item.amount >= 0 ? "text-emerald-400" : "text-red-400"}`}>
+                            {item.amount > 0 ? "+" : ""}{formatLedgerMoney(item.amount, item.currency)}
+                          </td>
+                          <td className="whitespace-nowrap px-4 py-3 text-[11px] tabular-nums" style={{ color: "var(--tx-m)" }}>
+                            {formatLedgerMoney(item.balanceBefore, item.currency)} → <b style={{ color: "var(--tx)" }}>{formatLedgerMoney(item.balanceAfter, item.currency)}</b>
+                          </td>
+                          <td className="whitespace-nowrap px-4 py-3 text-[11px] tabular-nums" style={{ color: "var(--tx-m)" }}>
+                            {item.commissionBalanceBefore == null || item.commissionBalanceAfter == null
+                              ? "—"
+                              : <>{formatCurrency(item.commissionBalanceBefore)} → <b style={{ color: "rgb(245,158,11)" }}>{formatCurrency(item.commissionBalanceAfter)}</b></>}
+                          </td>
+                          <td className="max-w-[300px] px-4 py-3 text-[11px]" style={{ color: "var(--tx-m)" }}>
+                            {item.referenceType && <p className="font-mono text-[10px]" style={{ color: "var(--tx-f)" }}>{item.referenceType}{item.referenceId ? ` · ${item.referenceId}` : ""}</p>}
+                            <p className="mt-0.5 break-words">{item.note || "—"}</p>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  {customerLedgerQuery.data.items.length === 0 && (
+                    <p className="py-10 text-center text-sm" style={{ color: "var(--tx-f)" }}>Khách chưa có biến động số dư.</p>
+                  )}
+                </div>
+
+                <div className="flex shrink-0 items-center justify-between gap-3 border-t px-5 py-3" style={{ borderColor: "var(--bd)" }}>
+                  <p className="text-[11px]" style={{ color: "var(--tx-f)" }}>
+                    {customerLedgerQuery.data.total === 0
+                      ? "0 giao dịch"
+                      : `${ledgerOffset + 1}–${Math.min(ledgerOffset + customerLedgerQuery.data.limit, customerLedgerQuery.data.total)} / ${customerLedgerQuery.data.total}`}
+                  </p>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      disabled={ledgerOffset === 0}
+                      onClick={() => setLedgerOffset((value) => Math.max(0, value - 50))}
+                      className="rounded-lg px-3 py-1.5 text-[11px] font-bold disabled:opacity-40"
+                      style={{ background: "var(--inp)", border: "1px solid var(--bd)", color: "var(--tx-m)" }}
+                    >
+                      Trang trước
+                    </button>
+                    <button
+                      type="button"
+                      disabled={ledgerOffset + customerLedgerQuery.data.limit >= customerLedgerQuery.data.total}
+                      onClick={() => setLedgerOffset((value) => value + 50)}
+                      className="rounded-lg px-3 py-1.5 text-[11px] font-bold disabled:opacity-40"
+                      style={{ background: "var(--inp)", border: "1px solid var(--bd)", color: "var(--tx-m)" }}
+                    >
+                      Trang sau
+                    </button>
+                  </div>
                 </div>
               </>
             ) : null}

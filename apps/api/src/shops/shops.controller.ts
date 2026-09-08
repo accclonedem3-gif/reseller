@@ -1,5 +1,21 @@
-import { Body, Controller, Get, Inject, Post, Put, UseGuards } from "@nestjs/common";
+import {
+  BadRequestException,
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Inject,
+  Param,
+  Post,
+  Put,
+  Query,
+  UploadedFile,
+  UseGuards,
+  UseInterceptors,
+} from "@nestjs/common";
+import { FileInterceptor } from "@nestjs/platform-express";
 import { SellerTier } from "@prisma/client";
+import { memoryStorage } from "multer";
 
 import { CurrentUser } from "../common/decorators/current-user.decorator";
 import { RequireSellerCapabilities } from "../common/decorators/seller-capabilities.decorator";
@@ -9,7 +25,12 @@ import { SellerCapabilitiesGuard } from "../common/guards/seller-capabilities.gu
 import { SellerTierGuard } from "../common/guards/seller-tier.guard";
 import type { AuthenticatedUser } from "../types";
 
-import { UpdateBotConfigDto, UpdateShopDto } from "./shops.dto";
+import {
+  CreateProviderSourceDto,
+  ProviderSourceOrdersQueryDto,
+  UpdateBotConfigDto,
+  UpdateShopDto,
+} from "./shops.dto";
 import { ShopsService } from "./shops.service";
 
 @Controller()
@@ -39,6 +60,35 @@ export class ShopsController {
   @Get("bot-config")
   getBotConfig(@CurrentUser() user: AuthenticatedUser) {
     return this.shopsService.getBotConfig(user);
+  }
+
+  @Post("bot-config/upload-banner")
+  @UseGuards(SellerTierGuard, SellerCapabilitiesGuard)
+  @RequireSellerTier(SellerTier.PRO, SellerTier.ULTRA)
+  @RequireSellerCapabilities("bot_manage")
+  @UseInterceptors(
+    FileInterceptor("file", {
+      storage: memoryStorage(),
+      limits: { fileSize: 5 * 1024 * 1024 },
+      fileFilter: (_request, file, callback) => {
+        if (
+          !["image/jpeg", "image/png", "image/webp"].includes(file.mimetype)
+        ) {
+          callback(
+            new BadRequestException("Chỉ chấp nhận ảnh JPG, PNG hoặc WEBP."),
+            false,
+          );
+          return;
+        }
+        callback(null, true);
+      },
+    }),
+  )
+  uploadShopBanner(
+    @CurrentUser() user: AuthenticatedUser,
+    @UploadedFile() file: Express.Multer.File,
+  ) {
+    return this.shopsService.uploadShopBanner(user, file);
   }
 
   @Put("bot-config")
@@ -74,6 +124,96 @@ export class ShopsController {
   @RequireSellerCapabilities("source_external_use")
   syncProducts(@CurrentUser() user: AuthenticatedUser) {
     return this.shopsService.syncProducts(user);
+  }
+
+  @Get("provider-sources")
+  @UseGuards(SellerCapabilitiesGuard)
+  @RequireSellerCapabilities("source_external_use")
+  listProviderSources(@CurrentUser() user: AuthenticatedUser) {
+    return this.shopsService.listProviderSources(user);
+  }
+
+  @Get("provider-sources-summary")
+  @UseGuards(SellerCapabilitiesGuard)
+  @RequireSellerCapabilities("source_external_use")
+  getProviderSourcesSummary(@CurrentUser() user: AuthenticatedUser) {
+    return this.shopsService.getProviderSourcesSummary(user);
+  }
+
+  @Get("provider-sources/:id/detail")
+  @UseGuards(SellerCapabilitiesGuard)
+  @RequireSellerCapabilities("source_external_use")
+  getProviderSourceDetail(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param("id") id: string,
+  ) {
+    return this.shopsService.getProviderSourceDetail(user, id);
+  }
+
+  @Get("provider-sources/:id/orders")
+  @UseGuards(SellerCapabilitiesGuard)
+  @RequireSellerCapabilities("source_external_use")
+  getProviderSourceOrders(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param("id") id: string,
+    @Query() query: ProviderSourceOrdersQueryDto,
+  ) {
+    return this.shopsService.getProviderSourceOrders(user, id, query);
+  }
+
+  @Post("provider-sources")
+  @UseGuards(SellerTierGuard, SellerCapabilitiesGuard)
+  @RequireSellerTier(SellerTier.PRO, SellerTier.ULTRA)
+  @RequireSellerCapabilities("source_external_use")
+  createProviderSource(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() body: CreateProviderSourceDto,
+  ) {
+    return this.shopsService.createProviderSource(user, body);
+  }
+
+  @Post("provider-sources/:id/sync")
+  @UseGuards(SellerTierGuard, SellerCapabilitiesGuard)
+  @RequireSellerTier(SellerTier.PRO, SellerTier.ULTRA)
+  @RequireSellerCapabilities("source_external_use")
+  syncProviderSource(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param("id") id: string,
+  ) {
+    return this.shopsService.syncProviderSource(user, id);
+  }
+
+  @Post("provider-sources/:id/reconnect")
+  @UseGuards(SellerTierGuard, SellerCapabilitiesGuard)
+  @RequireSellerTier(SellerTier.PRO, SellerTier.ULTRA)
+  @RequireSellerCapabilities("source_external_use")
+  reconnectProviderSource(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param("id") id: string,
+  ) {
+    return this.shopsService.reconnectProviderSource(user, id);
+  }
+
+  @Delete("provider-sources/:id/permanent")
+  @UseGuards(SellerTierGuard, SellerCapabilitiesGuard)
+  @RequireSellerTier(SellerTier.PRO, SellerTier.ULTRA)
+  @RequireSellerCapabilities("source_external_use")
+  removeProviderSource(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param("id") id: string,
+  ) {
+    return this.shopsService.removeProviderSource(user, id);
+  }
+
+  @Delete("provider-sources/:id")
+  @UseGuards(SellerTierGuard, SellerCapabilitiesGuard)
+  @RequireSellerTier(SellerTier.PRO, SellerTier.ULTRA)
+  @RequireSellerCapabilities("source_external_use")
+  disconnectProviderSource(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param("id") id: string,
+  ) {
+    return this.shopsService.disconnectProviderSource(user, id);
   }
 
   @Post("bot-config/verify-okx-personal")

@@ -31,6 +31,9 @@ npm run build
 echo "Applying database migrations..."
 npx prisma migrate deploy --schema prisma/schema.prisma
 
+echo "Applying nginx config..."
+bash scripts/apply-nginx-security.sh
+
 echo "Reloading PM2 processes..."
 pm2 startOrReload ecosystem.config.cjs --env production
 pm2 save

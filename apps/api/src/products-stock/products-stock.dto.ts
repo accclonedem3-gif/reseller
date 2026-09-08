@@ -9,6 +9,7 @@ import {
   IsNumber,
   IsOptional,
   IsString,
+  MaxLength,
   Max,
   Min,
 } from "class-validator";
@@ -147,7 +148,7 @@ export class StockEntriesQueryDto {
   @Type(() => Number)
   @IsInt()
   @Min(1)
-  @Max(2000)
+  @Max(100000)
   limit?: number;
 
   @IsOptional()
@@ -158,6 +159,7 @@ export class StockEntriesQueryDto {
 
   @IsOptional()
   @IsString()
+  @MaxLength(10000)
   search?: string;
 
   @IsOptional()

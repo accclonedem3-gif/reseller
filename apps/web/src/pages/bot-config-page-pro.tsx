@@ -1,7 +1,21 @@
 import type { AxiosError } from "axios";
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { BellOff, BellRing, Bot, Cable, ChevronDown, Handshake, KeyRound, ScanSearch, ShieldCheck, Store, Wallet } from "lucide-react";
+import { Link } from "react-router-dom";
+import {
+  BellOff,
+  BellRing,
+  Bot,
+  Cable,
+  ChevronDown,
+  Handshake,
+  ImageUp,
+  ScanSearch,
+  ShieldCheck,
+  Store,
+  Trash2,
+  Wallet,
+} from "lucide-react";
 
 import { Field } from "@/components/dashboard/field";
 import { Button } from "@/components/ui/button";
@@ -18,7 +32,8 @@ const T = {
   vi: {
     eyebrow: "Thiết lập tự động",
     title: "Cấu hình bot",
-    description: "Seller chỉ cần nhập những khóa bắt buộc. Toàn bộ phần verify bot, verify upstream, sync catalog và thiết lập pipeline sẽ được điều phối từ cùng một mặt điều khiển.",
+    description:
+      "Seller chỉ cần nhập những khóa bắt buộc. Toàn bộ phần verify bot, verify upstream, sync catalog và thiết lập pipeline sẽ được điều phối từ cùng một mặt điều khiển.",
     statShopEmpty: "Chưa đặt tên",
     statPayment: "Thanh toán",
     errorBothKeys: "Vui lòng nhập cả Personal API Key và Secret Key cùng lúc.",
@@ -35,11 +50,17 @@ const T = {
     syncProducts: "Đồng bộ sản phẩm",
     toastConnectSuccess: "Kết nối nguồn thành công! Đang đồng bộ sản phẩm...",
     toastSyncCatalog: (n: number) => `Đã đồng bộ ${n} sản phẩm từ nguồn.`,
-    toastSaveSuccess: "Đã lưu cấu hình. Tất cả khóa bí mật seller tiếp tục được giữ trong database dưới dạng mã hóa.",
+    toastSaveSuccess:
+      "Đã lưu cấu hình. Tất cả khóa bí mật seller tiếp tục được giữ trong database dưới dạng mã hóa.",
     toastFallbackError: "Có lỗi xảy ra. Hãy kiểm tra lại dữ liệu rồi thử lại.",
-    toastTelegramVerified: (u: string) => `Telegram đã xác thực thành công với @${u}.`,
-    toastProviderVerified: (n: number | null) => n !== null ? `API nguồn đã xác thực, hiện đọc được ${n} sản phẩm từ upstream.` : "API nguồn đã xác thực thành công.",
-    toastSyncProducts: (n: number) => `Đã đồng bộ ${n} sản phẩm về shop seller.`,
+    toastTelegramVerified: (u: string) =>
+      `Telegram đã xác thực thành công với @${u}.`,
+    toastProviderVerified: (n: number | null) =>
+      n !== null
+        ? `API nguồn đã xác thực, hiện đọc được ${n} sản phẩm từ upstream.`
+        : "API nguồn đã xác thực thành công.",
+    toastSyncProducts: (n: number) =>
+      `Đã đồng bộ ${n} sản phẩm về shop seller.`,
     toastNotifOn: "Đã bật đồng bộ thông báo từ bot nguồn.",
     toastNotifOff: "Đã tắt đồng bộ thông báo từ bot nguồn.",
     toastAffiliateSaved: "Đã lưu cấu hình affiliate.",
@@ -54,39 +75,48 @@ const T = {
     cardBot: "Kết nối bot & nguồn",
     fieldBotDesc: "Token bot seller. Chỉ cần nhập lại khi muốn thay mới.",
     phBotToken: "Nhập BOT_TOKEN",
-    fieldOwnerTelegramDesc: "Telegram User ID của bạn (chủ bot). Dùng để xác thực khi mở cài đặt bot trong Telegram.",
+    fieldOwnerTelegramDesc:
+      "Telegram User ID của bạn (chủ bot). Dùng để xác thực khi mở cài đặt bot trong Telegram.",
     phOwnerTelegramUserId: "VD: 123456789",
     ultraTitle: "🏪 Tài khoản ULTRA — Bạn là Tổng sỉ",
-    ultraDesc: "PRO seller kết nối kho của bạn qua API key tại trang Source Network. Nếu shop riêng cũng dùng nguồn ngoài, điền buyer key bên dưới.",
-    sourceConnectedDesc: (name: string, balance: string) => `Đang kết nối ULTRA: ${name} — Số dư: ${balance}đ`,
-    sourceKeyDesc: "Nhập buyer key (canboso) hoặc API key ULTRA (isk_...). Hệ thống tự nhận loại nguồn.",
+    ultraDesc:
+      "PRO seller kết nối kho của bạn qua API key tại trang Source Network. Nếu shop riêng cũng dùng nguồn ngoài, điền buyer key bên dưới.",
+    sourceConnectedDesc: (name: string, balance: string) =>
+      `Đang kết nối ULTRA: ${name} — Số dư: ${balance}đ`,
+    sourceKeyDesc:
+      "Nhập buyer key (canboso) hoặc API key ULTRA (isk_...). Hệ thống tự nhận loại nguồn.",
     phSourceConnected: "isk_... (đổi key ULTRA)",
     phSourceKey: "buyer key hoặc isk_...",
     connectingSource: "Đang kết nối...",
     changeKey: "Đổi key",
     connectKey: "Kết nối",
     notifSyncLabel: "Đồng bộ thông báo từ bot nguồn",
-    notifSyncDesc: "Bật để bot seller gửi thông báo khi nguồn báo có thêm hàng.",
+    notifSyncDesc:
+      "Bật để bot seller gửi thông báo khi nguồn báo có thêm hàng.",
     toggleOn: "Đang bật",
     toggleOff: "Đang tắt",
     markupLabel: "% tăng giá so với nguồn",
-    markupDesc: "Giá bán = giá nguồn × (1 + %/100). Để trống = giá nguồn + 10.000đ.",
+    markupDesc:
+      "Giá bán = giá nguồn × (1 + %/100). Để trống = giá nguồn + 10.000đ.",
     markupPlaceholder: "VD: 15 (tức +15%)",
     cardPayment: "Cài đặt thanh toán",
     payosDesc: "Tạo link thanh toán VNĐ tự động. Lấy key tại dashboard PayOS.",
     phClientId: "Nhập Client ID",
     phApiKey: "Nhập API Key",
     phChecksumKey: "Nhập Checksum Key",
-    usdtDesc: "Bot hiển thị UID/ví cho khách chuyển tay. Personal API tự xác minh lịch sử Pay.",
+    usdtDesc:
+      "Bot hiển thị UID/ví cho khách chuyển tay. Personal API tự xác minh lịch sử Pay.",
     phBinanceUid: "UID Binance nhận Pay",
     fieldUsdtRate: "Tỉ giá USDT/VND (tùy chỉnh)",
     usdtRateDesc: (rate: number) => `Mặc định ${rate} VND = 1 USDT`,
     fieldUsdtAddress: "Địa chỉ ví USDT TRC20",
     phUsdtAddress: "Địa chỉ ví TRC20 (TRON)",
-    binancePayHint: "Khi bật, bot tự tạo checkout link và nhận webhook xác nhận thanh toán tự động. Khách không cần gửi mã giao dịch.",
+    binancePayHint:
+      "Khi bật, bot tự tạo checkout link và nhận webhook xác nhận thanh toán tự động. Khách không cần gửi mã giao dịch.",
     binancePayHintLabel: "Xem ghi chú Binance Pay Auto",
     binancePayAutoLabel: "Binance Pay Auto",
-    binancePayAutoDesc: "Bật để dùng Merchant API thay cho chuyển USDT thủ công.",
+    binancePayAutoDesc:
+      "Bật để dùng Merchant API thay cho chuyển USDT thủ công.",
     binancePayCertDesc: "Certificate SN từ Merchant Admin Portal.",
     binancePayEncDesc: "Được mã hóa trước khi lưu.",
     cardAffiliate: "Chương trình Affiliate",
@@ -96,17 +126,20 @@ const T = {
     affiliateCommission: "Hoa hồng / đơn",
     affiliateProgramLabel: "Nội dung hiển thị trong bot",
     affiliateProgramHint: "Khách bấm Affiliate sẽ thấy nội dung này",
-    affiliateProgramPh: (pct: string) => `Ví dụ: Giới thiệu bạn bè — nhận ${pct || "X"}% hoa hồng mỗi đơn thành công. Hoa hồng tích lũy không giới hạn.`,
+    affiliateProgramPh: (pct: string) =>
+      `Ví dụ: Giới thiệu bạn bè — nhận ${pct || "X"}% hoa hồng mỗi đơn thành công. Hoa hồng tích lũy không giới hạn.`,
     affiliateSaving: "Đang lưu...",
     affiliateSave: "Lưu cấu hình",
   },
   en: {
     eyebrow: "Auto Setup",
     title: "Bot Configuration",
-    description: "Just enter the required keys. Bot verification, upstream sync, catalog sync, and pipeline setup are all managed from this single control panel.",
+    description:
+      "Just enter the required keys. Bot verification, upstream sync, catalog sync, and pipeline setup are all managed from this single control panel.",
     statShopEmpty: "Unnamed",
     statPayment: "Payment",
-    errorBothKeys: "Please enter both Personal API Key and Secret Key together.",
+    errorBothKeys:
+      "Please enter both Personal API Key and Secret Key together.",
     saving: "Saving...",
     saveAll: "Save All Config",
     telegramNotVerified: "Not verified",
@@ -120,10 +153,15 @@ const T = {
     syncProducts: "Sync Products",
     toastConnectSuccess: "Source connected! Syncing products...",
     toastSyncCatalog: (n: number) => `Synced ${n} products from source.`,
-    toastSaveSuccess: "Config saved. All secret keys remain encrypted in the database.",
-    toastFallbackError: "An error occurred. Please check your data and try again.",
+    toastSaveSuccess:
+      "Config saved. All secret keys remain encrypted in the database.",
+    toastFallbackError:
+      "An error occurred. Please check your data and try again.",
     toastTelegramVerified: (u: string) => `Telegram verified with @${u}.`,
-    toastProviderVerified: (n: number | null) => n !== null ? `Source API verified, reading ${n} products from upstream.` : "Source API verified successfully.",
+    toastProviderVerified: (n: number | null) =>
+      n !== null
+        ? `Source API verified, reading ${n} products from upstream.`
+        : "Source API verified successfully.",
     toastSyncProducts: (n: number) => `Synced ${n} products to seller shop.`,
     toastNotifOn: "Source notification sync enabled.",
     toastNotifOff: "Source notification sync disabled.",
@@ -139,39 +177,49 @@ const T = {
     cardBot: "Bot & Source Connection",
     fieldBotDesc: "Seller bot token. Only re-enter when changing.",
     phBotToken: "Enter BOT_TOKEN",
-    fieldOwnerTelegramDesc: "Your Telegram User ID (bot owner). Used to authenticate when opening bot settings in Telegram.",
+    fieldOwnerTelegramDesc:
+      "Your Telegram User ID (bot owner). Used to authenticate when opening bot settings in Telegram.",
     phOwnerTelegramUserId: "e.g. 123456789",
     ultraTitle: "🏪 ULTRA Account — You are a Wholesaler",
-    ultraDesc: "PRO sellers connect to your inventory via API key on the Source Network page. If your own shop also uses an external source, enter the buyer key below.",
-    sourceConnectedDesc: (name: string, balance: string) => `Connected to ULTRA: ${name} — Balance: ${balance}`,
-    sourceKeyDesc: "Enter buyer key (canboso) or ULTRA API key (isk_...). The system auto-detects the source type.",
+    ultraDesc:
+      "PRO sellers connect to your inventory via API key on the Source Network page. If your own shop also uses an external source, enter the buyer key below.",
+    sourceConnectedDesc: (name: string, balance: string) =>
+      `Connected to ULTRA: ${name} — Balance: ${balance}`,
+    sourceKeyDesc:
+      "Enter buyer key (canboso) or ULTRA API key (isk_...). The system auto-detects the source type.",
     phSourceConnected: "isk_... (change ULTRA key)",
     phSourceKey: "buyer key or isk_...",
     connectingSource: "Connecting...",
     changeKey: "Change Key",
     connectKey: "Connect",
     notifSyncLabel: "Source notification sync",
-    notifSyncDesc: "Enable to forward stock notifications from the source bot to seller bot.",
+    notifSyncDesc:
+      "Enable to forward stock notifications from the source bot to seller bot.",
     toggleOn: "On",
     toggleOff: "Off",
     markupLabel: "Price markup % vs source",
-    markupDesc: "Sale price = source price × (1 + %/100). Leave empty = source + 10,000₫.",
+    markupDesc:
+      "Sale price = source price × (1 + %/100). Leave empty = source + 10,000₫.",
     markupPlaceholder: "e.g. 15 (= +15%)",
     cardPayment: "Payment Settings",
-    payosDesc: "Auto-generate VND payment links. Get keys from PayOS dashboard.",
+    payosDesc:
+      "Auto-generate VND payment links. Get keys from PayOS dashboard.",
     phClientId: "Enter Client ID",
     phApiKey: "Enter API Key",
     phChecksumKey: "Enter Checksum Key",
-    usdtDesc: "Bot displays UID/wallet for manual transfer. Personal API auto-verifies Pay history.",
+    usdtDesc:
+      "Bot displays UID/wallet for manual transfer. Personal API auto-verifies Pay history.",
     phBinanceUid: "Binance UID for Pay",
     fieldUsdtRate: "USDT/VND Rate (custom)",
     usdtRateDesc: (rate: number) => `Default ${rate} VND = 1 USDT`,
     fieldUsdtAddress: "USDT TRC20 Wallet Address",
     phUsdtAddress: "TRC20 wallet address (TRON)",
-    binancePayHint: "When enabled, the bot auto-creates checkout links and receives webhook payment confirmations. Customers don't need to submit transaction codes.",
+    binancePayHint:
+      "When enabled, the bot auto-creates checkout links and receives webhook payment confirmations. Customers don't need to submit transaction codes.",
     binancePayHintLabel: "View Binance Pay Auto note",
     binancePayAutoLabel: "Binance Pay Auto",
-    binancePayAutoDesc: "Enable to use Merchant API instead of manual USDT transfer.",
+    binancePayAutoDesc:
+      "Enable to use Merchant API instead of manual USDT transfer.",
     binancePayCertDesc: "Certificate SN from Merchant Admin Portal.",
     binancePayEncDesc: "Encrypted before saving.",
     cardAffiliate: "Affiliate Program",
@@ -181,14 +229,16 @@ const T = {
     affiliateCommission: "Commission / order",
     affiliateProgramLabel: "Bot display content",
     affiliateProgramHint: "Customers see this when they tap Affiliate",
-    affiliateProgramPh: (pct: string) => `e.g. Refer friends — earn ${pct || "X"}% commission per successful order. Unlimited accumulation.`,
+    affiliateProgramPh: (pct: string) =>
+      `e.g. Refer friends — earn ${pct || "X"}% commission per successful order. Unlimited accumulation.`,
     affiliateSaving: "Saving...",
     affiliateSave: "Save Config",
   },
   th: {
     eyebrow: "ตั้งค่าอัตโนมัติ",
     title: "ตั้งค่าบอท",
-    description: "ใส่แค่คีย์ที่จำเป็น ระบบจะจัดการยืนยันบอท ซิงค์แหล่งข้อมูล และตั้งค่าไปป์ไลน์ให้เองจากแผงควบคุมเดียว",
+    description:
+      "ใส่แค่คีย์ที่จำเป็น ระบบจะจัดการยืนยันบอท ซิงค์แหล่งข้อมูล และตั้งค่าไปป์ไลน์ให้เองจากแผงควบคุมเดียว",
     statShopEmpty: "ยังไม่ตั้งชื่อ",
     statPayment: "การชำระเงิน",
     errorBothKeys: "กรุณาใส่ทั้ง Personal API Key และ Secret Key พร้อมกัน",
@@ -205,10 +255,14 @@ const T = {
     syncProducts: "ซิงค์สินค้า",
     toastConnectSuccess: "เชื่อมต่อแหล่งสินค้าสำเร็จ กำลังซิงค์สินค้า...",
     toastSyncCatalog: (n: number) => `ซิงค์ ${n} สินค้าจากแหล่งแล้ว`,
-    toastSaveSuccess: "บันทึกการตั้งค่าแล้ว คีย์ลับทั้งหมดยังคงเข้ารหัสในฐานข้อมูล",
+    toastSaveSuccess:
+      "บันทึกการตั้งค่าแล้ว คีย์ลับทั้งหมดยังคงเข้ารหัสในฐานข้อมูล",
     toastFallbackError: "เกิดข้อผิดพลาด กรุณาตรวจสอบข้อมูลแล้วลองใหม่",
     toastTelegramVerified: (u: string) => `ยืนยัน Telegram สำเร็จกับ @${u}`,
-    toastProviderVerified: (n: number | null) => n !== null ? `ยืนยัน API แหล่งสินค้าแล้ว อ่านได้ ${n} สินค้า` : "ยืนยัน API แหล่งสินค้าสำเร็จ",
+    toastProviderVerified: (n: number | null) =>
+      n !== null
+        ? `ยืนยัน API แหล่งสินค้าแล้ว อ่านได้ ${n} สินค้า`
+        : "ยืนยัน API แหล่งสินค้าสำเร็จ",
     toastSyncProducts: (n: number) => `ซิงค์ ${n} สินค้าไปยังร้านค้าแล้ว`,
     toastNotifOn: "เปิดการซิงค์การแจ้งเตือนจากบอทแหล่งสินค้าแล้ว",
     toastNotifOff: "ปิดการซิงค์การแจ้งเตือนจากบอทแหล่งสินค้าแล้ว",
@@ -224,19 +278,24 @@ const T = {
     cardBot: "เชื่อมต่อบอทและแหล่งสินค้า",
     fieldBotDesc: "Token บอทผู้ขาย ใส่ใหม่เฉพาะเมื่อต้องการเปลี่ยน",
     phBotToken: "ใส่ BOT_TOKEN",
-    fieldOwnerTelegramDesc: "Telegram User ID ของคุณ (เจ้าของบอท) ใช้ยืนยันตัวตนเมื่อเปิดการตั้งค่าบอทใน Telegram",
+    fieldOwnerTelegramDesc:
+      "Telegram User ID ของคุณ (เจ้าของบอท) ใช้ยืนยันตัวตนเมื่อเปิดการตั้งค่าบอทใน Telegram",
     phOwnerTelegramUserId: "เช่น 123456789",
     ultraTitle: "🏪 บัญชี ULTRA — คุณคือผู้ค้าส่ง",
-    ultraDesc: "ผู้ขาย PRO เชื่อมต่อคลังของคุณผ่าน API key ที่หน้า Source Network หากร้านของคุณใช้แหล่งภายนอกด้วย ให้ใส่ buyer key ด้านล่าง",
-    sourceConnectedDesc: (name: string, balance: string) => `เชื่อมต่อ ULTRA: ${name} — ยอดคงเหลือ: ${balance}`,
-    sourceKeyDesc: "ใส่ buyer key (canboso) หรือ ULTRA API key (isk_...) ระบบตรวจจับประเภทแหล่งสินค้าอัตโนมัติ",
+    ultraDesc:
+      "ผู้ขาย PRO เชื่อมต่อคลังของคุณผ่าน API key ที่หน้า Source Network หากร้านของคุณใช้แหล่งภายนอกด้วย ให้ใส่ buyer key ด้านล่าง",
+    sourceConnectedDesc: (name: string, balance: string) =>
+      `เชื่อมต่อ ULTRA: ${name} — ยอดคงเหลือ: ${balance}`,
+    sourceKeyDesc:
+      "ใส่ buyer key (canboso) หรือ ULTRA API key (isk_...) ระบบตรวจจับประเภทแหล่งสินค้าอัตโนมัติ",
     phSourceConnected: "isk_... (เปลี่ยน ULTRA key)",
     phSourceKey: "buyer key หรือ isk_...",
     connectingSource: "กำลังเชื่อมต่อ...",
     changeKey: "เปลี่ยน Key",
     connectKey: "เชื่อมต่อ",
     notifSyncLabel: "ซิงค์การแจ้งเตือนจากบอทแหล่งสินค้า",
-    notifSyncDesc: "เปิดเพื่อให้บอทผู้ขายส่งการแจ้งเตือนเมื่อแหล่งสินค้ามีสินค้าเพิ่ม",
+    notifSyncDesc:
+      "เปิดเพื่อให้บอทผู้ขายส่งการแจ้งเตือนเมื่อแหล่งสินค้ามีสินค้าเพิ่ม",
     toggleOn: "เปิด",
     toggleOff: "ปิด",
     markupLabel: "% เพิ่มราคาจากแหล่งสินค้า",
@@ -247,13 +306,15 @@ const T = {
     phClientId: "ใส่ Client ID",
     phApiKey: "ใส่ API Key",
     phChecksumKey: "ใส่ Checksum Key",
-    usdtDesc: "บอทแสดง UID/กระเป๋าเงินให้ลูกค้าโอน Personal API ยืนยันประวัติการชำระอัตโนมัติ",
+    usdtDesc:
+      "บอทแสดง UID/กระเป๋าเงินให้ลูกค้าโอน Personal API ยืนยันประวัติการชำระอัตโนมัติ",
     phBinanceUid: "Binance UID สำหรับ Pay",
     fieldUsdtRate: "อัตรา USDT/VND (กำหนดเอง)",
     usdtRateDesc: (rate: number) => `ค่าเริ่มต้น ${rate} VND = 1 USDT`,
     fieldUsdtAddress: "ที่อยู่กระเป๋า USDT TRC20",
     phUsdtAddress: "ที่อยู่กระเป๋า TRC20 (TRON)",
-    binancePayHint: "เมื่อเปิด บอทจะสร้างลิงก์ checkout และรับ webhook ยืนยันการชำระอัตโนมัติ ลูกค้าไม่ต้องส่งรหัสธุรกรรม",
+    binancePayHint:
+      "เมื่อเปิด บอทจะสร้างลิงก์ checkout และรับ webhook ยืนยันการชำระอัตโนมัติ ลูกค้าไม่ต้องส่งรหัสธุรกรรม",
     binancePayHintLabel: "ดูหมายเหตุ Binance Pay Auto",
     binancePayAutoLabel: "Binance Pay Auto",
     binancePayAutoDesc: "เปิดเพื่อใช้ Merchant API แทนการโอน USDT ด้วยตนเอง",
@@ -266,7 +327,8 @@ const T = {
     affiliateCommission: "ค่าคอมมิชชัน / คำสั่ง",
     affiliateProgramLabel: "เนื้อหาแสดงในบอท",
     affiliateProgramHint: "ลูกค้าเห็นเนื้อหานี้เมื่อแตะ Affiliate",
-    affiliateProgramPh: (pct: string) => `เช่น แนะนำเพื่อน — รับ ${pct || "X"}% ค่าคอมมิชชันทุกคำสั่งที่สำเร็จ สะสมไม่จำกัด`,
+    affiliateProgramPh: (pct: string) =>
+      `เช่น แนะนำเพื่อน — รับ ${pct || "X"}% ค่าคอมมิชชันทุกคำสั่งที่สำเร็จ สะสมไม่จำกัด`,
     affiliateSaving: "กำลังบันทึก...",
     affiliateSave: "บันทึกการตั้งค่า",
   },
@@ -327,9 +389,60 @@ type BotConfigForm = {
   okxPersonalPassphrase: string;
   okxPersonalApiEnabled: boolean;
   usdtBep20Address: string;
+  usdtBep20Enabled: boolean;
 };
 
-type ReceivingMethodKey = "binance" | "okx" | "trc20" | "solana" | "ton" | "paypal";
+type ConnectedInternalSource = {
+  id: string;
+  status: string;
+  balance: number;
+  currency: string;
+  productCount?: number;
+  lastCatalogSyncAt: string | null;
+  upstreamSeller: { displayName: string };
+  upstreamShop: { name: string };
+};
+
+type ProviderSourceSummary = {
+  id: string;
+  label: string;
+  providerName: string;
+  connectionStatus: string;
+  productCount: number;
+  balance: number | null;
+  balanceText: string | null;
+  orderCount: number;
+  lastCatalogSyncAt: string | null;
+  recentOrders: Array<{
+    id: string;
+    orderCode: string;
+    productName: string;
+    quantity: number;
+    totalSourceAmount: number;
+    status: string;
+    createdAt: string;
+  }>;
+};
+
+type PurchasedSourceOrder = {
+  id: string;
+  orderCode: string;
+  quantity: number;
+  totalAmount: number;
+  status: string;
+  createdAt: string;
+  product: { sourceName: string; providerName: string };
+  connection: { id: string; currency: string };
+};
+
+type ReceivingMethodKey =
+  | "binance"
+  | "okx"
+  | "trc20"
+  | "bep20"
+  | "solana"
+  | "ton"
+  | "paypal";
 
 function normalizeOptionalValue(value: string) {
   const trimmed = value.trim();
@@ -339,10 +452,31 @@ function normalizeOptionalValue(value: string) {
 function buildBotConfigPayload(form: BotConfigForm) {
   const payload: Record<string, string | boolean | number | null> = {
     sourceNotificationSyncEnabled: form.sourceNotificationSyncEnabled,
-    priceMarkupPercent: form.priceMarkupPercent.trim() === "" ? null : Number(form.priceMarkupPercent),
+    priceMarkupPercent:
+      form.priceMarkupPercent.trim() === ""
+        ? null
+        : Number(form.priceMarkupPercent),
   };
 
-  const fields: Array<[Exclude<keyof BotConfigForm, "sourceNotificationSyncEnabled" | "binancePayEnabled" | "okxPersonalApiEnabled" | "paypalEnabled" | "paypalSandbox" | "binanceEnabled" | "okxEnabled" | "usdtTrc20Enabled" | "usdtSolanaEnabled" | "usdtTonEnabled" | "priceMarkupPercent">, string]> = [
+  const fields: Array<
+    [
+      Exclude<
+        keyof BotConfigForm,
+        | "sourceNotificationSyncEnabled"
+        | "binancePayEnabled"
+        | "okxPersonalApiEnabled"
+        | "paypalEnabled"
+        | "paypalSandbox"
+        | "binanceEnabled"
+        | "okxEnabled"
+        | "usdtTrc20Enabled"
+        | "usdtSolanaEnabled"
+        | "usdtTonEnabled"
+        | "priceMarkupPercent"
+      >,
+      string,
+    ]
+  > = [
     ["shopName", "shopName"],
     ["shopTagline", "shopTagline"],
     ["botToken", "botToken"],
@@ -400,6 +534,7 @@ function buildBotConfigPayload(form: BotConfigForm) {
   payload.usdtTrc20Enabled = form.usdtTrc20Enabled;
   payload.usdtSolanaEnabled = form.usdtSolanaEnabled;
   payload.usdtTonEnabled = form.usdtTonEnabled;
+  payload.usdtBep20Enabled = form.usdtBep20Enabled;
   payload.usdtVndRateOverride = form.usdtVndRateOverride.trim();
 
   return payload;
@@ -409,7 +544,8 @@ function getApiErrorMessage(error: unknown, fallback: string) {
   const axiosError = error as AxiosError<{ message?: string | string[] }>;
   const apiMessage = axiosError.response?.data?.message;
   if (Array.isArray(apiMessage)) return apiMessage.join(", ");
-  if (typeof apiMessage === "string" && apiMessage.trim() !== "") return apiMessage;
+  if (typeof apiMessage === "string" && apiMessage.trim() !== "")
+    return apiMessage;
   return fallback;
 }
 
@@ -469,14 +605,21 @@ function getInitialForm(): BotConfigForm {
     okxPersonalPassphrase: "",
     okxPersonalApiEnabled: false,
     usdtBep20Address: "",
+    usdtBep20Enabled: false,
   };
 }
 
 function toneByStatus(value?: string | null) {
   const normalized = String(value || "").toLowerCase();
-  if (normalized === "verified" || normalized === "active" || normalized === "mock") return "success" as const;
+  if (
+    normalized === "verified" ||
+    normalized === "active" ||
+    normalized === "mock"
+  )
+    return "success" as const;
   if (normalized === "failed") return "danger" as const;
-  if (normalized === "pending" || normalized === "polling") return "warning" as const;
+  if (normalized === "pending" || normalized === "polling")
+    return "warning" as const;
   return "neutral" as const;
 }
 
@@ -496,30 +639,37 @@ export function BotConfigPage() {
   });
   const [form, setForm] = useState<BotConfigForm>(getInitialForm);
   const [simulationOutput, setSimulationOutput] = useState("");
-  const [sourceKeyInput, setSourceKeyInput] = useState("");
-  const [activeTab, setActiveTab] = useState<"shop" | "bot" | "payment" | "crypto" | "affiliate">("bot");
-  const [expandedReceivingMethod, setExpandedReceivingMethod] = useState<ReceivingMethodKey | null>(null);
+  const [activeTab, setActiveTab] = useState<
+    "shop" | "bot" | "payment" | "crypto" | "affiliate"
+  >("bot");
+  const [expandedReceivingMethod, setExpandedReceivingMethod] =
+    useState<ReceivingMethodKey | null>(null);
   const { showToast } = useToast();
 
-  const sourceConnectionQuery = useQuery({
-    queryKey: ["seller-source-connection"],
-    queryFn: async () => (await api.get("/seller/source-connection")).data,
+  const sourceConnectionsQuery = useQuery({
+    queryKey: ["source-network", "connections"],
+    queryFn: async () =>
+      (await api.get<ConnectedInternalSource[]>("/source/connections")).data,
     enabled: canUseSource,
   });
 
-  const connectSourceMutation = useMutation({
-    mutationFn: async (apiKey: string) =>
-      (await api.post("/seller/source-connection", { apiKey })).data,
-    onSuccess: async () => {
-      setSourceKeyInput("");
-      showToast({ tone: "success", message: t.toastConnectSuccess });
-      queryClient.invalidateQueries({ queryKey: ["seller-source-connection"] });
-      try {
-        const syncResult = await api.post<{ synced: number }>("/seller/source-connection/sync-catalog");
-        showToast({ tone: "success", message: t.toastSyncCatalog(syncResult.data.synced) });
-      } catch { /* worker syncs later */ }
-    },
-    onError: (error) => showToast({ tone: "error", message: getApiErrorMessage(error, t.toastFallbackError) }),
+  const providerSourceSummariesQuery = useQuery({
+    queryKey: ["source-network", "provider-source-summaries"],
+    queryFn: async () =>
+      (await api.get<ProviderSourceSummary[]>("/provider-sources-summary"))
+        .data,
+    enabled: canUseSource,
+  });
+
+  const purchasedSourceOrdersQuery = useQuery({
+    queryKey: ["source-network", "current-orders"],
+    queryFn: async () =>
+      (
+        await api.get<PurchasedSourceOrder[]>(
+          "/source/connections/current/orders",
+        )
+      ).data,
+    enabled: canUseSource,
   });
 
   useEffect(() => {
@@ -529,15 +679,22 @@ export function BotConfigPage() {
       shopTagline: configQuery.data.shopTagline || "",
       botToken: "",
       ownerTelegramUserId: configQuery.data.ownerTelegramUserId || "",
-      providerBaseUrl: configQuery.data.providerBaseUrl || "https://canboso.com",
+      providerBaseUrl:
+        configQuery.data.providerBaseUrl || "https://canboso.com",
       providerBuyerKey: "",
       supportTelegram: configQuery.data.supportTelegram || "",
       supportZalo: configQuery.data.supportZalo || "",
       supportNote: (configQuery.data as any).supportNote || "",
       logoUrl: configQuery.data.logoUrl || "",
-      sourceNotificationSyncEnabled: configQuery.data.sourceNotificationSyncEnabled ?? true,
-      priceMarkupPercent: configQuery.data.priceMarkupPercent != null ? String(configQuery.data.priceMarkupPercent) : "",
-      paymentProvider: ["PAYOS", "PAY2S", "WEB2M"].includes(String((configQuery.data as any).paymentProvider || "").toUpperCase())
+      sourceNotificationSyncEnabled:
+        configQuery.data.sourceNotificationSyncEnabled ?? true,
+      priceMarkupPercent:
+        configQuery.data.priceMarkupPercent != null
+          ? String(configQuery.data.priceMarkupPercent)
+          : "",
+      paymentProvider: ["PAYOS", "PAY2S", "WEB2M"].includes(
+        String((configQuery.data as any).paymentProvider || "").toUpperCase(),
+      )
         ? String((configQuery.data as any).paymentProvider).toUpperCase()
         : "PAYOS",
       payosClientId: "",
@@ -558,8 +715,8 @@ export function BotConfigPage() {
       paypalClientSecret: "",
       paypalWebhookId: (configQuery.data as any).paypalWebhookId || "",
       paypalVndRateOverride:
-        (configQuery.data as any).paypalVndRateOverride !== null
-        && (configQuery.data as any).paypalVndRateOverride !== undefined
+        (configQuery.data as any).paypalVndRateOverride !== null &&
+        (configQuery.data as any).paypalVndRateOverride !== undefined
           ? String((configQuery.data as any).paypalVndRateOverride)
           : "",
       paypalEnabled: (configQuery.data as any).paypalEnabled ?? false,
@@ -575,7 +732,8 @@ export function BotConfigPage() {
       usdtTonAddress: (configQuery.data as any).usdtTonAddress || "",
       usdtTonEnabled: (configQuery.data as any).usdtTonEnabled ?? false,
       usdtVndRateOverride:
-        configQuery.data.usdtVndRateOverride !== null && configQuery.data.usdtVndRateOverride !== undefined
+        configQuery.data.usdtVndRateOverride !== null &&
+        configQuery.data.usdtVndRateOverride !== undefined
           ? String(configQuery.data.usdtVndRateOverride)
           : "",
       binancePersonalApiKey: "",
@@ -586,25 +744,20 @@ export function BotConfigPage() {
       okxPersonalApiKey: "",
       okxPersonalSecretKey: "",
       okxPersonalPassphrase: "",
-      okxPersonalApiEnabled: (configQuery.data as any).okxPersonalApiEnabled ?? false,
+      okxPersonalApiEnabled:
+        (configQuery.data as any).okxPersonalApiEnabled ?? false,
       usdtBep20Address: (configQuery.data as any).usdtBep20Address || "",
+      usdtBep20Enabled: (configQuery.data as any).usdtBep20Enabled ?? false,
     });
   }, [configQuery.data]);
 
   const saveMutation = useMutation({
     mutationFn: async () => {
       const payload = buildBotConfigPayload(form);
-      // The Source-key box is driven by `sourceKeyInput`, which can desync from
-      // `form.providerBuyerKey` (the form re-seeds providerBuyerKey="" on every configQuery
-      // refetch — e.g. window focus after copying the key from the canboso bot). Persist the
-      // value actually shown in the box so a typed canboso buyer key isn't dropped on save.
-      const sk = sourceKeyInput.trim();
-      if (sk && !sk.startsWith("isk_")) payload.providerBuyerKey = sk;
       return api.put("/bot-config", payload);
     },
     onSuccess: async () => {
       showToast({ tone: "success", message: t.toastSaveSuccess });
-      setSourceKeyInput("");
       setForm((current) => ({
         ...current,
         botToken: "",
@@ -622,19 +775,57 @@ export function BotConfigPage() {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["bot-config"] }),
         queryClient.invalidateQueries({ queryKey: ["shop"] }),
-        // Switching to a canboso key disables the ULTRA connection server-side — refetch so the
-        // Source-key box drops the "đổi key ULTRA" placeholder and shows the masked canboso key.
-        queryClient.invalidateQueries({ queryKey: ["seller-source-connection"] }),
       ]);
     },
-    onError: (error) => showToast({ tone: "error", message: getApiErrorMessage(error, t.toastFallbackError) }),
+    onError: (error) =>
+      showToast({
+        tone: "error",
+        message: getApiErrorMessage(error, t.toastFallbackError),
+      }),
+  });
+
+  const uploadBannerMutation = useMutation({
+    mutationFn: async (file: File) => {
+      const payload = new FormData();
+      payload.append("file", file);
+      return (
+        await api.post<{ url: string }>("/bot-config/upload-banner", payload, {
+          headers: { "Content-Type": "multipart/form-data" },
+        })
+      ).data;
+    },
+    onSuccess: ({ url }) => {
+      setForm((current) => ({ ...current, logoUrl: url }));
+      showToast({
+        tone: "success",
+        message:
+          lang === "vi"
+            ? "Đã tải banner lên. Bấm Lưu thay đổi để áp dụng cho bot."
+            : "Banner uploaded. Save changes to apply it to the bot.",
+      });
+    },
+    onError: (error) =>
+      showToast({
+        tone: "error",
+        message: getApiErrorMessage(error, t.toastFallbackError),
+      }),
   });
 
   const toggleReceivingMethod = (method: ReceivingMethodKey) => {
-    const fieldByMethod: Record<ReceivingMethodKey, "binanceEnabled" | "okxEnabled" | "usdtTrc20Enabled" | "usdtSolanaEnabled" | "usdtTonEnabled" | "paypalEnabled"> = {
+    const fieldByMethod: Record<
+      ReceivingMethodKey,
+      | "binanceEnabled"
+      | "okxEnabled"
+      | "usdtTrc20Enabled"
+      | "usdtBep20Enabled"
+      | "usdtSolanaEnabled"
+      | "usdtTonEnabled"
+      | "paypalEnabled"
+    > = {
       binance: "binanceEnabled",
       okx: "okxEnabled",
       trc20: "usdtTrc20Enabled",
+      bep20: "usdtBep20Enabled",
       solana: "usdtSolanaEnabled",
       ton: "usdtTonEnabled",
       paypal: "paypalEnabled",
@@ -647,35 +838,19 @@ export function BotConfigPage() {
   const verifyTelegramMutation = useMutation({
     mutationFn: async () => api.post("/bot-config/verify-telegram"),
     onSuccess: async (response) => {
-      showToast({ tone: "success", message: t.toastTelegramVerified(response.data.telegramBotUsername || "bot") });
-      await queryClient.invalidateQueries({ queryKey: ["bot-config"] });
-    },
-    onError: (error) => showToast({ tone: "error", message: getApiErrorMessage(error, t.toastFallbackError) }),
-  });
-
-  const verifyProviderMutation = useMutation({
-    mutationFn: async () => api.post("/bot-config/verify-provider"),
-    onSuccess: async (response) => {
-      const sampleSize = response.data.providerSampleSize;
       showToast({
         tone: "success",
-        message: t.toastProviderVerified(typeof sampleSize === "number" ? sampleSize : null),
+        message: t.toastTelegramVerified(
+          response.data.telegramBotUsername || "bot",
+        ),
       });
       await queryClient.invalidateQueries({ queryKey: ["bot-config"] });
     },
-    onError: (error) => showToast({ tone: "error", message: getApiErrorMessage(error, t.toastFallbackError) }),
-  });
-
-  const syncProductsMutation = useMutation({
-    mutationFn: async () => api.post("/bot-config/sync-products"),
-    onSuccess: async (response) => {
-      showToast({ tone: "success", message: t.toastSyncProducts(response.data.synced || 0) });
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["bot-config"] }),
-        queryClient.invalidateQueries({ queryKey: ["products"] }),
-      ]);
-    },
-    onError: (error) => showToast({ tone: "error", message: getApiErrorMessage(error, t.toastFallbackError) }),
+    onError: (error) =>
+      showToast({
+        tone: "error",
+        message: getApiErrorMessage(error, t.toastFallbackError),
+      }),
   });
 
   const sourceNotificationSyncMutation = useMutation({
@@ -683,27 +858,43 @@ export function BotConfigPage() {
       api.put("/bot-config", { sourceNotificationSyncEnabled: enabled }),
     onSuccess: async (_response, enabled) => {
       queryClient.setQueryData(["bot-config"], (current: any) =>
-        current ? { ...current, sourceNotificationSyncEnabled: enabled } : current,
+        current
+          ? { ...current, sourceNotificationSyncEnabled: enabled }
+          : current,
       );
-      showToast({ tone: "success", message: enabled ? t.toastNotifOn : t.toastNotifOff });
+      showToast({
+        tone: "success",
+        message: enabled ? t.toastNotifOn : t.toastNotifOff,
+      });
     },
     onError: (error, enabled) => {
-      setForm((current) => ({ ...current, sourceNotificationSyncEnabled: !enabled }));
-      showToast({ tone: "error", message: getApiErrorMessage(error, t.toastFallbackError) });
+      setForm((current) => ({
+        ...current,
+        sourceNotificationSyncEnabled: !enabled,
+      }));
+      showToast({
+        tone: "error",
+        message: getApiErrorMessage(error, t.toastFallbackError),
+      });
     },
   });
 
   function toggleSourceNotificationSync() {
     const nextEnabled = !form.sourceNotificationSyncEnabled;
-    setForm((current) => ({ ...current, sourceNotificationSyncEnabled: nextEnabled }));
+    setForm((current) => ({
+      ...current,
+      sourceNotificationSyncEnabled: nextEnabled,
+    }));
     sourceNotificationSyncMutation.mutate(nextEnabled);
   }
 
   const simulateMutation = useMutation({
     mutationFn: async (payload: { text?: string; callbackData?: string }) =>
       api.post(`/dev/telegram/${configQuery.data.shopId}/simulate`, payload),
-    onSuccess: (response) => setSimulationOutput(JSON.stringify(response.data.actions, null, 2)),
-    onError: (error) => setSimulationOutput(getApiErrorMessage(error, t.toastFallbackError)),
+    onSuccess: (response) =>
+      setSimulationOutput(JSON.stringify(response.data.actions, null, 2)),
+    onError: (error) =>
+      setSimulationOutput(getApiErrorMessage(error, t.toastFallbackError)),
   });
 
   const affiliateQuery = useQuery({
@@ -734,8 +925,71 @@ export function BotConfigPage() {
       showToast({ tone: "success", message: t.toastAffiliateSaved });
       await queryClient.invalidateQueries({ queryKey: ["affiliate-config"] });
     },
-    onError: (error) => showToast({ tone: "error", message: getApiErrorMessage(error, t.toastFallbackError) }),
+    onError: (error) =>
+      showToast({
+        tone: "error",
+        message: getApiErrorMessage(error, t.toastFallbackError),
+      }),
   });
+
+  const connectedInternalSources = sourceConnectionsQuery.data || [];
+  const providerSourceSummaries = providerSourceSummariesQuery.data || [];
+  const purchasedSourceOrders = purchasedSourceOrdersQuery.data || [];
+  const connectedSourceCards = [
+    ...providerSourceSummaries.map((source) => ({
+      id: source.id,
+      label: source.label,
+      providerName: source.providerName,
+      status: source.connectionStatus,
+      productCount: source.productCount,
+      balanceText:
+        source.balanceText ||
+        (source.balance != null
+          ? source.balance.toLocaleString("vi-VN")
+          : "Không đọc được"),
+      orderCount: source.orderCount,
+      lastCatalogSyncAt: source.lastCatalogSyncAt,
+    })),
+    ...connectedInternalSources.map((source) => ({
+      id: source.id,
+      label: source.upstreamShop.name,
+      providerName: source.upstreamSeller.displayName,
+      status: source.status,
+      productCount: source.productCount || 0,
+      balanceText: `${source.balance.toLocaleString("vi-VN")} ${source.currency}`,
+      orderCount: purchasedSourceOrders.filter(
+        (order) => order.connection.id === source.id,
+      ).length,
+      lastCatalogSyncAt: source.lastCatalogSyncAt,
+    })),
+  ];
+  const recentSourceOrders = [
+    ...providerSourceSummaries.flatMap((source) =>
+      source.recentOrders.map((order) => ({
+        ...order,
+        sourceLabel: source.label,
+        amount: order.totalSourceAmount,
+      })),
+    ),
+    ...purchasedSourceOrders.map((order) => ({
+      id: order.id,
+      orderCode: order.orderCode,
+      productName: order.product.sourceName,
+      quantity: order.quantity,
+      status: order.status,
+      createdAt: order.createdAt,
+      sourceLabel:
+        connectedInternalSources.find(
+          (source) => source.id === order.connection.id,
+        )?.upstreamShop.name || order.product.providerName,
+      amount: order.totalAmount,
+    })),
+  ]
+    .sort(
+      (a, b) =>
+        new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+    )
+    .slice(0, 10);
 
   const _ = simulationOutput; // suppress unused warning
 
@@ -744,159 +998,370 @@ export function BotConfigPage() {
       {/* Header */}
       <div className="flex items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-black" style={{ color: "rgb(249,115,22)" }}>{t.title}</h1>
-          <p className="mt-0.5 text-[13px]" style={{ color: "var(--tx-f)" }}>{t.eyebrow}</p>
+          <h1
+            className="text-2xl font-black"
+            style={{ color: "rgb(249,115,22)" }}
+          >
+            {t.title}
+          </h1>
+          <p className="mt-0.5 text-[13px]" style={{ color: "var(--tx-f)" }}>
+            {t.eyebrow}
+          </p>
         </div>
         <div className="flex items-center gap-2">
           {isUltra && (
-            <span className="flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[11px] font-black"
-              style={{ background: "rgba(167,139,250,0.12)", border: "1px solid rgba(167,139,250,0.3)", color: "rgb(167,139,250)" }}>
+            <span
+              className="flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[11px] font-black"
+              style={{
+                background: "rgba(167,139,250,0.12)",
+                border: "1px solid rgba(167,139,250,0.3)",
+                color: "rgb(167,139,250)",
+              }}
+            >
               ★ ULTRA · Tổng sỉ
             </span>
           )}
-          <button type="button"
+          <button
+            type="button"
             onClick={async () => {
-              if (!window.confirm("Reset bot về mặc định admin? Tất cả customize (welcome, label, emoji) sẽ bị xoá. Không reset product overrides.")) return;
+              if (
+                !window.confirm(
+                  "Reset bot về mặc định admin? Tất cả customize (welcome, label, emoji) sẽ bị xoá. Không reset product overrides.",
+                )
+              )
+                return;
               try {
-                await api.post("/admin-template/reset", { alsoResetProductOverrides: false });
-                showToast({ tone: "success", message: "Đã reset về mặc định admin." });
+                await api.post("/admin-template/reset", {
+                  alsoResetProductOverrides: false,
+                });
+                showToast({
+                  tone: "success",
+                  message: "Đã reset về mặc định admin.",
+                });
                 queryClient.invalidateQueries({ queryKey: ["bot-config"] });
               } catch (err: any) {
-                showToast({ tone: "error", message: err?.response?.data?.message || "Không reset được." });
+                showToast({
+                  tone: "error",
+                  message: err?.response?.data?.message || "Không reset được.",
+                });
               }
             }}
             className="flex items-center gap-1.5 rounded-xl px-3 py-2 text-[12px] font-black transition hover:opacity-80"
-            style={{ background: "var(--inp)", border: "1px solid var(--bd)", color: "var(--tx-m)" }}>
+            style={{
+              background: "var(--inp)",
+              border: "1px solid var(--bd)",
+              color: "var(--tx-m)",
+            }}
+          >
             ↻ Reset về mặc định
           </button>
-          <button type="button" disabled={saveMutation.isPending}
+          <button
+            type="button"
+            disabled={saveMutation.isPending}
             onClick={() => {
               const hasApiKey = form.binancePersonalApiKey.trim().length > 0;
-              const hasSecretKey = form.binancePersonalSecretKey.trim().length > 0;
-              if (hasApiKey !== hasSecretKey) { showToast({ tone: "error", message: t.errorBothKeys }); return; }
+              const hasSecretKey =
+                form.binancePersonalSecretKey.trim().length > 0;
+              if (hasApiKey !== hasSecretKey) {
+                showToast({ tone: "error", message: t.errorBothKeys });
+                return;
+              }
               saveMutation.mutate();
             }}
             className="flex items-center gap-1.5 rounded-xl px-4 py-2 text-[12px] font-black transition hover:opacity-80 disabled:opacity-40"
-            style={{ background: "rgb(249,115,22)", color: "#fff" }}>
+            style={{ background: "rgb(249,115,22)", color: "#fff" }}
+          >
             {saveMutation.isPending ? t.saving : t.saveAll}
           </button>
         </div>
       </div>
 
       {/* Status bar */}
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl px-4 py-3" style={{ background: "var(--surface)", border: "1px solid var(--bd)" }}>
+      <div
+        className="flex flex-wrap items-center justify-between gap-3 rounded-2xl px-4 py-3"
+        style={{ background: "var(--surface)", border: "1px solid var(--bd)" }}
+      >
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
           <div className="flex items-center gap-1.5">
-            <span className="h-2 w-2 rounded-full" style={{ background: configQuery.data?.telegramWebhookStatus === "verified" ? "rgb(52,211,153)" : "rgb(248,113,113)" }} />
-            <span className="text-[12px]" style={{ color: "var(--tx-f)" }}>Telegram</span>
-            <span className="text-[12px] font-black" style={{ color: "var(--tx)" }}>
-              {configQuery.data?.telegramBotUsername ? `@${configQuery.data.telegramBotUsername}` : t.telegramNotVerified}
+            <span
+              className="h-2 w-2 rounded-full"
+              style={{
+                background:
+                  configQuery.data?.telegramWebhookStatus === "verified"
+                    ? "rgb(52,211,153)"
+                    : "rgb(248,113,113)",
+              }}
+            />
+            <span className="text-[12px]" style={{ color: "var(--tx-f)" }}>
+              Telegram
+            </span>
+            <span
+              className="text-[12px] font-black"
+              style={{ color: "var(--tx)" }}
+            >
+              {configQuery.data?.telegramBotUsername
+                ? `@${configQuery.data.telegramBotUsername}`
+                : t.telegramNotVerified}
             </span>
           </div>
           <div className="h-3 w-px" style={{ background: "var(--bd)" }} />
           <div className="flex items-center gap-1.5">
-            {configQuery.data?.providerConnectionStatus === "verified"
-              ? <span className="text-[12px] text-emerald-400 font-black">✓</span>
-              : <span className="h-2 w-2 rounded-full bg-slate-500" />}
-            <span className="text-[12px] font-black" style={{ color: "var(--tx)" }}>Nguồn</span>
+            {configQuery.data?.providerConnectionStatus === "verified" ? (
+              <span className="text-[12px] text-emerald-400 font-black">✓</span>
+            ) : (
+              <span className="h-2 w-2 rounded-full bg-slate-500" />
+            )}
+            <span
+              className="text-[12px] font-black"
+              style={{ color: "var(--tx)" }}
+            >
+              Nguồn
+            </span>
           </div>
           <div className="h-3 w-px" style={{ background: "var(--bd)" }} />
           <div className="flex items-center gap-1.5">
             <span className="h-2 w-2 rounded-full bg-amber-400" />
-            <span className="text-[12px]" style={{ color: "var(--tx-f)" }}>Thanh toán</span>
-            <span className="text-[12px] font-black" style={{ color: "var(--tx)" }}>
+            <span className="text-[12px]" style={{ color: "var(--tx-f)" }}>
+              Thanh toán
+            </span>
+            <span
+              className="text-[12px] font-black"
+              style={{ color: "var(--tx)" }}
+            >
               {formatStatusLabel(configQuery.data?.paymentProvider) || "—"}
             </span>
           </div>
         </div>
         <div className="flex flex-wrap gap-2">
-          <button type="button" disabled={verifyTelegramMutation.isPending} onClick={() => verifyTelegramMutation.mutate()}
+          <button
+            type="button"
+            disabled={verifyTelegramMutation.isPending}
+            onClick={() => verifyTelegramMutation.mutate()}
             className="flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-[11px] font-black transition hover:opacity-80 disabled:opacity-40"
-            style={{ background: "var(--inp)", border: "1px solid var(--bd)", color: "var(--tx)" }}>
+            style={{
+              background: "var(--inp)",
+              border: "1px solid var(--bd)",
+              color: "var(--tx)",
+            }}
+          >
             <ScanSearch className="h-3.5 w-3.5" />
-            {verifyTelegramMutation.isPending ? t.checkingTelegram : t.checkTelegram}
-          </button>
-          <button type="button" disabled={verifyProviderMutation.isPending} onClick={() => verifyProviderMutation.mutate()}
-            className="flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-[11px] font-black transition hover:opacity-80 disabled:opacity-40"
-            style={{ background: "var(--inp)", border: "1px solid var(--bd)", color: "var(--tx)" }}>
-            <Cable className="h-3.5 w-3.5" />
-            {verifyProviderMutation.isPending ? t.checkingSource : t.checkSource}
-          </button>
-          <button type="button" disabled={syncProductsMutation.isPending} onClick={() => syncProductsMutation.mutate()}
-            className="flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-[11px] font-black transition hover:opacity-80 disabled:opacity-40"
-            style={{ background: "var(--inp)", border: "1px solid var(--bd)", color: "var(--tx)" }}>
-            <KeyRound className="h-3.5 w-3.5" />
-            {syncProductsMutation.isPending ? t.syncing : t.syncProducts}
+            {verifyTelegramMutation.isPending
+              ? t.checkingTelegram
+              : t.checkTelegram}
           </button>
         </div>
       </div>
 
       {/* Tab nav */}
-      <div className="flex gap-1 rounded-2xl p-1" style={{ background: "var(--surface)", border: "1px solid var(--bd)" }}>
-        {(["shop", "bot", "payment", "crypto", "affiliate"] as const).map((key) => {
-          const label = { shop: "Shop", bot: "Bot & Nguồn", payment: "Thanh toán", crypto: "USDT", affiliate: "Affiliate" }[key];
-          const active = activeTab === key;
-          return (
-            <button key={key} type="button" onClick={() => setActiveTab(key)}
-              className="relative flex flex-1 items-center justify-center gap-1.5 rounded-xl py-2.5 text-[12px] font-black transition"
-              style={{ background: active ? "rgba(249,115,22,0.1)" : "transparent", color: active ? "rgb(249,115,22)" : "var(--tx-f)", border: active ? "1px solid rgba(249,115,22,0.25)" : "1px solid transparent" }}>
-              {label}
-              {key === "payment" && configQuery.data?.paymentProvider && (
-                <span className="h-1.5 w-1.5 rounded-full bg-amber-400" />
-              )}
-            </button>
-          );
-        })}
+      <div
+        className="flex gap-1 rounded-2xl p-1"
+        style={{ background: "var(--surface)", border: "1px solid var(--bd)" }}
+      >
+        {(["shop", "bot", "payment", "crypto", "affiliate"] as const).map(
+          (key) => {
+            const label = {
+              shop: "Shop",
+              bot: "Bot & Nguồn",
+              payment: "Thanh toán",
+              crypto: "USDT",
+              affiliate: "Affiliate",
+            }[key];
+            const active = activeTab === key;
+            return (
+              <button
+                key={key}
+                type="button"
+                onClick={() => setActiveTab(key)}
+                className="relative flex flex-1 items-center justify-center gap-1.5 rounded-xl py-2.5 text-[12px] font-black transition"
+                style={{
+                  background: active ? "rgba(249,115,22,0.1)" : "transparent",
+                  color: active ? "rgb(249,115,22)" : "var(--tx-f)",
+                  border: active
+                    ? "1px solid rgba(249,115,22,0.25)"
+                    : "1px solid transparent",
+                }}
+              >
+                {label}
+                {key === "payment" && configQuery.data?.paymentProvider && (
+                  <span className="h-1.5 w-1.5 rounded-full bg-amber-400" />
+                )}
+              </button>
+            );
+          },
+        )}
       </div>
 
       {/* Tab content */}
-      <div className="rounded-2xl p-6" style={{ background: "var(--surface)", border: "1px solid var(--bd)" }}>
-
+      <div
+        className="rounded-2xl p-6"
+        style={{ background: "var(--surface)", border: "1px solid var(--bd)" }}
+      >
         {/* ── SHOP ── */}
         {activeTab === "shop" && (
           <div>
             <div className="mb-5 flex items-center gap-2">
-              <div className="flex h-8 w-8 items-center justify-center rounded-xl" style={{ background: "rgba(245,158,11,0.12)" }}>
+              <div
+                className="flex h-8 w-8 items-center justify-center rounded-xl"
+                style={{ background: "rgba(245,158,11,0.12)" }}
+              >
                 <Store className="h-4 w-4 text-amber-400" />
               </div>
-              <h2 className="text-base font-black" style={{ color: "var(--tx)" }}>{t.cardShop}</h2>
+              <h2
+                className="text-base font-black"
+                style={{ color: "var(--tx)" }}
+              >
+                {t.cardShop}
+              </h2>
             </div>
             <div className="grid gap-5 sm:grid-cols-2">
               <Field label={t.fieldShopName} hint="Required">
-                <Input value={form.shopName} onChange={(e) => setForm((c) => ({ ...c, shopName: e.target.value }))} placeholder={t.phShopName} />
-              </Field>
-              <Field label="Logo URL" hint="Optional">
-                <Input value={form.logoUrl} onChange={(e) => setForm((c) => ({ ...c, logoUrl: e.target.value }))} placeholder="https://..." />
+                <Input
+                  value={form.shopName}
+                  onChange={(e) =>
+                    setForm((c) => ({ ...c, shopName: e.target.value }))
+                  }
+                  placeholder={t.phShopName}
+                />
               </Field>
               <div className="sm:col-span-2">
+                <Field label="Banner shop" hint="Optional">
+                  <div
+                    className="overflow-hidden rounded-2xl"
+                    style={{
+                      background: "var(--inp)",
+                      border: "1px solid var(--bd)",
+                    }}
+                  >
+                    <div className="aspect-video w-full overflow-hidden">
+                      {form.logoUrl ? (
+                        <img
+                          src={form.logoUrl}
+                          alt="Banner shop"
+                          className="h-full w-full object-cover"
+                        />
+                      ) : (
+                        <div
+                          className="flex h-full flex-col items-center justify-center gap-2"
+                          style={{ color: "var(--tx-f)" }}
+                        >
+                          <ImageUp className="h-7 w-7" />
+                          <span className="text-xs font-semibold">
+                            Chưa có banner
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                    <div
+                      className="flex flex-wrap items-center justify-between gap-2 px-3 py-2"
+                      style={{ borderTop: "1px solid var(--bd)" }}
+                    >
+                      <p
+                        className="text-[11px]"
+                        style={{ color: "var(--tx-f)" }}
+                      >
+                        Ảnh ngang 16:9 · JPG, PNG, WEBP · tối đa 5 MB
+                      </p>
+                      <div className="flex items-center gap-2">
+                        {form.logoUrl && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setForm((current) => ({
+                                ...current,
+                                logoUrl: "",
+                              }))
+                            }
+                            className="flex h-8 items-center gap-1 rounded-lg px-2 text-[11px] font-bold"
+                            style={{ color: "#ef4444" }}
+                          >
+                            <Trash2 className="h-3.5 w-3.5" /> Xóa
+                          </button>
+                        )}
+                        <label
+                          className="flex h-8 cursor-pointer items-center gap-1 rounded-lg px-3 text-[11px] font-black text-white transition hover:opacity-80"
+                          style={{ background: "rgb(249,115,22)" }}
+                        >
+                          <ImageUp className="h-3.5 w-3.5" />
+                          {uploadBannerMutation.isPending
+                            ? "Đang tải..."
+                            : form.logoUrl
+                              ? "Đổi banner"
+                              : "Tải banner"}
+                          <input
+                            type="file"
+                            accept="image/jpeg,image/png,image/webp"
+                            className="hidden"
+                            disabled={uploadBannerMutation.isPending}
+                            onChange={(event) => {
+                              const file = event.target.files?.[0];
+                              if (file) uploadBannerMutation.mutate(file);
+                              event.currentTarget.value = "";
+                            }}
+                          />
+                        </label>
+                      </div>
+                    </div>
+                  </div>
+                </Field>
+              </div>
+              <div className="sm:col-span-2">
                 <Field label={t.fieldTagline} hint="Optional">
-                  <Textarea className="min-h-[80px]" value={form.shopTagline} onChange={(e) => setForm((c) => ({ ...c, shopTagline: e.target.value }))} placeholder={t.phTagline} />
+                  <Textarea
+                    className="min-h-[80px]"
+                    value={form.shopTagline}
+                    onChange={(e) =>
+                      setForm((c) => ({ ...c, shopTagline: e.target.value }))
+                    }
+                    placeholder={t.phTagline}
+                  />
                 </Field>
               </div>
               <Field label={t.fieldTelegramSupport}>
-                <Input value={form.supportTelegram} onChange={(e) => setForm((c) => ({ ...c, supportTelegram: e.target.value }))} placeholder="@support_shop" />
+                <Input
+                  value={form.supportTelegram}
+                  onChange={(e) =>
+                    setForm((c) => ({ ...c, supportTelegram: e.target.value }))
+                  }
+                  placeholder="@support_shop"
+                />
               </Field>
               <Field label={t.fieldZaloSupport}>
-                <Input value={form.supportZalo} onChange={(e) => setForm((c) => ({ ...c, supportZalo: e.target.value }))} placeholder={t.phZalo} />
+                <Input
+                  value={form.supportZalo}
+                  onChange={(e) =>
+                    setForm((c) => ({ ...c, supportZalo: e.target.value }))
+                  }
+                  placeholder={t.phZalo}
+                />
               </Field>
               <div className="sm:col-span-2">
                 <Field label="Tin nhắn hỗ trợ tùy chọn" hint="Optional">
                   <Textarea
                     className="min-h-[80px]"
                     value={form.supportNote}
-                    onChange={(e) => setForm((c) => ({ ...c, supportNote: e.target.value }))}
+                    onChange={(e) =>
+                      setForm((c) => ({ ...c, supportNote: e.target.value }))
+                    }
                     placeholder="VD: Vui lòng cung cấp email đã đặt hàng và ảnh chụp màn hình lỗi để được hỗ trợ nhanh hơn."
                   />
-                  <p className="mt-1 text-[11px]" style={{ color: "var(--tx-f)" }}>
-                    Hiển thị phía trên thông tin liên hệ Telegram/Zalo khi khách bấm Hỗ trợ.
+                  <p
+                    className="mt-1 text-[11px]"
+                    style={{ color: "var(--tx-f)" }}
+                  >
+                    Hiển thị phía trên thông tin liên hệ Telegram/Zalo khi khách
+                    bấm Hỗ trợ.
                   </p>
                 </Field>
               </div>
             </div>
             <div className="mt-6 flex justify-end">
-              <button type="button" disabled={saveMutation.isPending} onClick={() => saveMutation.mutate()}
+              <button
+                type="button"
+                disabled={saveMutation.isPending}
+                onClick={() => saveMutation.mutate()}
                 className="rounded-xl px-4 py-2 text-[12px] font-black transition hover:opacity-80 disabled:opacity-40"
-                style={{ background: "rgb(249,115,22)", color: "#fff" }}>
+                style={{ background: "rgb(249,115,22)", color: "#fff" }}
+              >
                 {saveMutation.isPending ? t.saving : "Lưu thay đổi"}
               </button>
             </div>
@@ -907,69 +1372,376 @@ export function BotConfigPage() {
         {activeTab === "bot" && (
           <div>
             <div className="mb-5 flex items-center gap-2">
-              <div className="flex h-8 w-8 items-center justify-center rounded-xl" style={{ background: "rgba(56,189,248,0.12)" }}>
+              <div
+                className="flex h-8 w-8 items-center justify-center rounded-xl"
+                style={{ background: "rgba(56,189,248,0.12)" }}
+              >
                 <Bot className="h-4 w-4 text-sky-400" />
               </div>
-              <h2 className="text-base font-black" style={{ color: "var(--tx)" }}>{t.cardBot}</h2>
+              <h2
+                className="text-base font-black"
+                style={{ color: "var(--tx)" }}
+              >
+                {t.cardBot}
+              </h2>
             </div>
             <div className="grid gap-5">
-              <Field label="BOT_TOKEN" hint={configQuery.data?.botTokenMasked ? "Đã mã hoá" : "Required"} description={t.fieldBotDesc}>
-                <Input value={form.botToken} onChange={(e) => setForm((c) => ({ ...c, botToken: e.target.value }))} placeholder={configQuery.data?.botTokenMasked || t.phBotToken} />
+              <Field
+                label="BOT_TOKEN"
+                hint={
+                  configQuery.data?.botTokenMasked ? "Đã mã hoá" : "Required"
+                }
+                description={t.fieldBotDesc}
+              >
+                <Input
+                  value={form.botToken}
+                  onChange={(e) =>
+                    setForm((c) => ({ ...c, botToken: e.target.value }))
+                  }
+                  placeholder={configQuery.data?.botTokenMasked || t.phBotToken}
+                />
               </Field>
-              <Field label="OWNER_TELEGRAM_USER_ID" hint={configQuery.data?.ownerTelegramUserId ? "Đã lưu" : "Tùy chọn"} description={t.fieldOwnerTelegramDesc}>
-                <Input value={form.ownerTelegramUserId} onChange={(e) => setForm((c) => ({ ...c, ownerTelegramUserId: e.target.value }))} placeholder={configQuery.data?.ownerTelegramUserId || t.phOwnerTelegramUserId} />
+              <Field
+                label="OWNER_TELEGRAM_USER_ID"
+                hint={
+                  configQuery.data?.ownerTelegramUserId ? "Đã lưu" : "Tùy chọn"
+                }
+                description={t.fieldOwnerTelegramDesc}
+              >
+                <Input
+                  value={form.ownerTelegramUserId}
+                  onChange={(e) =>
+                    setForm((c) => ({
+                      ...c,
+                      ownerTelegramUserId: e.target.value,
+                    }))
+                  }
+                  placeholder={
+                    configQuery.data?.ownerTelegramUserId ||
+                    t.phOwnerTelegramUserId
+                  }
+                />
               </Field>
-              {isUltra && (
-                <div className="rounded-2xl px-4 py-4" style={{ background: "rgba(167,139,250,0.08)", border: "1px solid rgba(167,139,250,0.2)" }}>
-                  <p className="text-sm font-black" style={{ color: "rgb(196,181,253)" }}>{t.ultraTitle}</p>
-                  <p className="mt-2 text-sm leading-6" style={{ color: "var(--tx-m)" }}>{t.ultraDesc}</p>
+              <div
+                className="overflow-hidden rounded-2xl"
+                style={{
+                  background: "var(--inp)",
+                  border: "1px solid var(--bd)",
+                }}
+              >
+                <div
+                  className="flex flex-col gap-3 px-4 py-4 sm:flex-row sm:items-center sm:justify-between"
+                  style={{ borderBottom: "1px solid var(--bd)" }}
+                >
+                  <div>
+                    <p
+                      className="text-sm font-black"
+                      style={{ color: "var(--tx)" }}
+                    >
+                      Nguồn shop đang kết nối
+                    </p>
+                    <p
+                      className="mt-1 text-xs"
+                      style={{ color: "var(--tx-f)" }}
+                    >
+                      Chỉ hiển thị thông tin. Thêm, đồng bộ hoặc ngắt nguồn tại
+                      trang Kết nối nguồn.
+                    </p>
+                  </div>
+                  <Link
+                    to="/source-network"
+                    className="inline-flex shrink-0 items-center justify-center gap-2 rounded-xl px-3 py-2 text-[11px] font-black transition hover:opacity-80"
+                    style={{
+                      background: "rgba(249,115,22,0.12)",
+                      border: "1px solid rgba(249,115,22,0.25)",
+                      color: "rgb(249,115,22)",
+                    }}
+                  >
+                    <Cable className="h-3.5 w-3.5" />
+                    Mở Kết nối nguồn
+                  </Link>
                 </div>
-              )}
-              <Field label="Source key"
-                hint={configQuery.data?.providerBuyerKeyMasked || sourceConnectionQuery.data?.status === "active" ? "Đã mã hoá" : isUltra ? "Optional" : "Required"}
-                description={sourceConnectionQuery.data?.status === "active"
-                  ? t.sourceConnectedDesc(sourceConnectionQuery.data.upstreamShop?.name ?? "", (sourceConnectionQuery.data.balance ?? 0).toLocaleString("vi-VN"))
-                  : t.sourceKeyDesc}>
-                <div className="flex gap-3">
-                  <Input value={sourceKeyInput || form.providerBuyerKey}
-                    onChange={(e) => { const val = e.target.value; setSourceKeyInput(val); if (!val.startsWith("isk_")) setForm((c) => ({ ...c, providerBuyerKey: val })); }}
-                    placeholder={sourceConnectionQuery.data?.status === "active" ? t.phSourceConnected : configQuery.data?.providerBuyerKeyMasked || t.phSourceKey}
-                    className="font-mono text-sm" />
-                  {sourceKeyInput.trim().startsWith("isk_") && (
-                    <Button type="button" onClick={() => connectSourceMutation.mutate(sourceKeyInput.trim())} disabled={connectSourceMutation.isPending}>
-                      {connectSourceMutation.isPending ? t.connectingSource : sourceConnectionQuery.data?.status === "active" ? t.changeKey : t.connectKey}
-                    </Button>
-                  )}
-                </div>
-              </Field>
+
+                {sourceConnectionsQuery.isLoading ||
+                providerSourceSummariesQuery.isLoading ? (
+                  <p
+                    className="px-4 py-8 text-center text-xs"
+                    style={{ color: "var(--tx-f)" }}
+                  >
+                    Đang tải thông tin nguồn...
+                  </p>
+                ) : connectedSourceCards.length === 0 ? (
+                  <p
+                    className="px-4 py-8 text-center text-xs"
+                    style={{ color: "var(--tx-f)" }}
+                  >
+                    Shop chưa kết nối nguồn nào.
+                  </p>
+                ) : (
+                  <div className="grid gap-3 p-4 md:grid-cols-2 xl:grid-cols-3">
+                    {connectedSourceCards.map((source) => {
+                      const healthy = ["active", "verified", "mock"].includes(
+                        source.status.toLowerCase(),
+                      );
+                      return (
+                        <div
+                          key={source.id}
+                          className="rounded-xl p-4"
+                          style={{
+                            background: "var(--surface)",
+                            border: "1px solid var(--bd)",
+                          }}
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <p
+                                className="truncate text-sm font-black"
+                                style={{ color: "var(--tx)" }}
+                              >
+                                {source.label}
+                              </p>
+                              <p
+                                className="mt-1 truncate text-[11px]"
+                                style={{ color: "var(--tx-f)" }}
+                              >
+                                {source.providerName}
+                              </p>
+                            </div>
+                            <span
+                              className="shrink-0 rounded-full px-2 py-1 text-[10px] font-black"
+                              style={{
+                                background: healthy
+                                  ? "rgba(16,185,129,0.12)"
+                                  : "rgba(245,158,11,0.12)",
+                                color: healthy
+                                  ? "rgb(52,211,153)"
+                                  : "rgb(251,191,36)",
+                              }}
+                            >
+                              {formatStatusLabel(source.status)}
+                            </span>
+                          </div>
+                          <div className="mt-4 grid grid-cols-3 gap-2 text-center">
+                            <div>
+                              <p
+                                className="text-base font-black"
+                                style={{ color: "var(--tx)" }}
+                              >
+                                {source.productCount}
+                              </p>
+                              <p
+                                className="text-[9px] uppercase"
+                                style={{ color: "var(--tx-f)" }}
+                              >
+                                Sản phẩm
+                              </p>
+                            </div>
+                            <div>
+                              <p
+                                className="truncate text-xs font-black"
+                                style={{ color: "rgb(249,115,22)" }}
+                              >
+                                {source.balanceText}
+                              </p>
+                              <p
+                                className="text-[9px] uppercase"
+                                style={{ color: "var(--tx-f)" }}
+                              >
+                                Số dư
+                              </p>
+                            </div>
+                            <div>
+                              <p
+                                className="text-base font-black"
+                                style={{ color: "var(--tx)" }}
+                              >
+                                {source.orderCount}
+                              </p>
+                              <p
+                                className="text-[9px] uppercase"
+                                style={{ color: "var(--tx-f)" }}
+                              >
+                                Đơn nguồn
+                              </p>
+                            </div>
+                          </div>
+                          <p
+                            className="mt-3 text-[10px]"
+                            style={{ color: "var(--tx-f)" }}
+                          >
+                            Đồng bộ gần nhất:{" "}
+                            {source.lastCatalogSyncAt
+                              ? new Date(
+                                  source.lastCatalogSyncAt,
+                                ).toLocaleString("vi-VN")
+                              : "Chưa có"}
+                          </p>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {recentSourceOrders.length > 0 && (
+                  <div style={{ borderTop: "1px solid var(--bd)" }}>
+                    <div className="px-4 py-3">
+                      <p
+                        className="text-xs font-black"
+                        style={{ color: "var(--tx)" }}
+                      >
+                        Lịch sử đơn hàng qua nguồn gần nhất
+                      </p>
+                    </div>
+                    <div className="overflow-x-auto">
+                      <table className="w-full min-w-[720px] text-left text-xs">
+                        <thead style={{ background: "var(--surface)" }}>
+                          <tr
+                            className="text-[10px] uppercase"
+                            style={{ color: "var(--tx-f)" }}
+                          >
+                            <th className="px-4 py-2.5">Mã đơn</th>
+                            <th className="px-4 py-2.5">Nguồn</th>
+                            <th className="px-4 py-2.5">Sản phẩm</th>
+                            <th className="px-4 py-2.5 text-center">SL</th>
+                            <th className="px-4 py-2.5 text-right">
+                              Tiền nguồn
+                            </th>
+                            <th className="px-4 py-2.5">Trạng thái</th>
+                            <th className="px-4 py-2.5">Thời gian</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {recentSourceOrders.map((order) => (
+                            <tr
+                              key={`${order.sourceLabel}:${order.id}`}
+                              style={{ borderTop: "1px solid var(--bd)" }}
+                            >
+                              <td
+                                className="px-4 py-3 font-mono font-black"
+                                style={{ color: "rgb(249,115,22)" }}
+                              >
+                                {order.orderCode}
+                              </td>
+                              <td
+                                className="px-4 py-3"
+                                style={{ color: "var(--tx-m)" }}
+                              >
+                                {order.sourceLabel}
+                              </td>
+                              <td
+                                className="max-w-[240px] truncate px-4 py-3"
+                                style={{ color: "var(--tx)" }}
+                              >
+                                {order.productName}
+                              </td>
+                              <td className="px-4 py-3 text-center">
+                                {order.quantity}
+                              </td>
+                              <td className="px-4 py-3 text-right font-black">
+                                {order.amount.toLocaleString("vi-VN")}₫
+                              </td>
+                              <td className="px-4 py-3">
+                                {formatStatusLabel(order.status)}
+                              </td>
+                              <td
+                                className="whitespace-nowrap px-4 py-3"
+                                style={{ color: "var(--tx-f)" }}
+                              >
+                                {new Date(order.createdAt).toLocaleString(
+                                  "vi-VN",
+                                )}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+              </div>
               <Field label={t.markupLabel} hint={t.markupDesc}>
-                <Input type="number" min={0} max={500} step={0.1} value={form.priceMarkupPercent}
-                  onChange={(e) => setForm((c) => ({ ...c, priceMarkupPercent: e.target.value }))} placeholder={t.markupPlaceholder} />
+                <Input
+                  type="number"
+                  min={0}
+                  max={500}
+                  step={0.1}
+                  value={form.priceMarkupPercent}
+                  onChange={(e) =>
+                    setForm((c) => ({
+                      ...c,
+                      priceMarkupPercent: e.target.value,
+                    }))
+                  }
+                  placeholder={t.markupPlaceholder}
+                />
               </Field>
-              <div className="flex flex-col gap-4 rounded-2xl px-4 py-4 sm:flex-row sm:items-center sm:justify-between" style={{ background: "var(--inp)", border: "1px solid var(--bd)" }}>
+              <div
+                className="flex flex-col gap-4 rounded-2xl px-4 py-4 sm:flex-row sm:items-center sm:justify-between"
+                style={{
+                  background: "var(--inp)",
+                  border: "1px solid var(--bd)",
+                }}
+              >
                 <div>
-                  <p className="font-semibold" style={{ color: "var(--tx)" }}>{t.notifSyncLabel}</p>
-                  <p className="mt-1 text-sm" style={{ color: "var(--tx-f)" }}>{t.notifSyncDesc}</p>
+                  <p className="font-semibold" style={{ color: "var(--tx)" }}>
+                    {t.notifSyncLabel}
+                  </p>
+                  <p className="mt-1 text-sm" style={{ color: "var(--tx-f)" }}>
+                    {t.notifSyncDesc}
+                  </p>
                 </div>
-                <button type="button" role="switch" aria-checked={form.sourceNotificationSyncEnabled}
-                  aria-busy={sourceNotificationSyncMutation.isPending} disabled={sourceNotificationSyncMutation.isPending}
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={form.sourceNotificationSyncEnabled}
+                  aria-busy={sourceNotificationSyncMutation.isPending}
+                  disabled={sourceNotificationSyncMutation.isPending}
                   onClick={toggleSourceNotificationSync}
                   className="inline-flex h-12 w-full shrink-0 items-center justify-between gap-3 rounded-2xl border px-3 text-sm font-semibold transition disabled:opacity-55 sm:w-[164px]"
-                  style={form.sourceNotificationSyncEnabled
-                    ? { borderColor: "rgba(249,115,22,0.3)", background: "rgba(249,115,22,0.08)", color: "var(--tx)" }
-                    : { borderColor: "var(--bd)", background: "var(--surface)", color: "var(--tx-m)" }}>
-                  <span className="flex h-8 w-8 items-center justify-center rounded-xl transition"
-                    style={form.sourceNotificationSyncEnabled ? { background: "rgb(249,115,22)", color: "white" } : { background: "var(--inp)", color: "var(--tx-f)" }}>
-                    {form.sourceNotificationSyncEnabled ? <BellRing className="h-4 w-4" /> : <BellOff className="h-4 w-4" />}
+                  style={
+                    form.sourceNotificationSyncEnabled
+                      ? {
+                          borderColor: "rgba(249,115,22,0.3)",
+                          background: "rgba(249,115,22,0.08)",
+                          color: "var(--tx)",
+                        }
+                      : {
+                          borderColor: "var(--bd)",
+                          background: "var(--surface)",
+                          color: "var(--tx-m)",
+                        }
+                  }
+                >
+                  <span
+                    className="flex h-8 w-8 items-center justify-center rounded-xl transition"
+                    style={
+                      form.sourceNotificationSyncEnabled
+                        ? { background: "rgb(249,115,22)", color: "white" }
+                        : { background: "var(--inp)", color: "var(--tx-f)" }
+                    }
+                  >
+                    {form.sourceNotificationSyncEnabled ? (
+                      <BellRing className="h-4 w-4" />
+                    ) : (
+                      <BellOff className="h-4 w-4" />
+                    )}
                   </span>
-                  <span>{form.sourceNotificationSyncEnabled ? t.toggleOn : t.toggleOff}</span>
+                  <span>
+                    {form.sourceNotificationSyncEnabled
+                      ? t.toggleOn
+                      : t.toggleOff}
+                  </span>
                 </button>
               </div>
             </div>
             <div className="mt-6 flex justify-end">
-              <button type="button" disabled={saveMutation.isPending} onClick={() => saveMutation.mutate()}
+              <button
+                type="button"
+                disabled={saveMutation.isPending}
+                onClick={() => saveMutation.mutate()}
                 className="rounded-xl px-4 py-2 text-[12px] font-black transition hover:opacity-80 disabled:opacity-40"
-                style={{ background: "rgb(249,115,22)", color: "#fff" }}>
+                style={{ background: "rgb(249,115,22)", color: "#fff" }}
+              >
                 {saveMutation.isPending ? t.saving : "Lưu thay đổi"}
               </button>
             </div>
@@ -980,31 +1752,70 @@ export function BotConfigPage() {
         {activeTab === "payment" && (
           <div>
             {/* Provider selector */}
-            <div className="mb-6 rounded-2xl p-4" style={{ background: "var(--inp)", border: "1px solid var(--bd)" }}>
-              <p className="mb-3 text-[11px] font-black uppercase tracking-widest" style={{ color: "var(--tx-f)" }}>Cổng thanh toán chính</p>
+            <div
+              className="mb-6 rounded-2xl p-4"
+              style={{
+                background: "var(--inp)",
+                border: "1px solid var(--bd)",
+              }}
+            >
+              <p
+                className="mb-3 text-[11px] font-black uppercase tracking-widest"
+                style={{ color: "var(--tx-f)" }}
+              >
+                Cổng thanh toán chính
+              </p>
               <div className="grid gap-2.5 sm:grid-cols-3">
                 {[
-                  { key: "PAYOS", label: "PayOS", desc: "Nhanh, tin cậy. Phí cao." },
+                  {
+                    key: "PAYOS",
+                    label: "PayOS",
+                    desc: "Nhanh, tin cậy. Phí cao.",
+                  },
                   { key: "PAY2S", label: "Pay2s", desc: "Webhook. Phí thấp." },
-                  { key: "WEB2M", label: "Web2m", desc: "Polling. Phí rẻ nhất." },
+                  {
+                    key: "WEB2M",
+                    label: "Web2m",
+                    desc: "Polling. Phí rẻ nhất.",
+                  },
                 ].map((opt) => {
                   const isSelected = form.paymentProvider === opt.key;
                   return (
                     <button
                       key={opt.key}
                       type="button"
-                      onClick={() => setForm((c) => ({ ...c, paymentProvider: opt.key }))}
+                      onClick={() =>
+                        setForm((c) => ({ ...c, paymentProvider: opt.key }))
+                      }
                       className="rounded-xl border-2 p-3 text-left transition"
                       style={{
-                        borderColor: isSelected ? "rgb(249,115,22)" : "var(--bd)",
-                        background: isSelected ? "rgba(249,115,22,0.08)" : "var(--surface)",
+                        borderColor: isSelected
+                          ? "rgb(249,115,22)"
+                          : "var(--bd)",
+                        background: isSelected
+                          ? "rgba(249,115,22,0.08)"
+                          : "var(--surface)",
                       }}
                     >
                       <div className="flex items-center justify-between">
-                        <p className="text-sm font-black" style={{ color: "var(--tx)" }}>{opt.label}</p>
-                        {isSelected && <span className="text-xs font-bold text-orange-500">● ĐANG DÙNG</span>}
+                        <p
+                          className="text-sm font-black"
+                          style={{ color: "var(--tx)" }}
+                        >
+                          {opt.label}
+                        </p>
+                        {isSelected && (
+                          <span className="text-xs font-bold text-orange-500">
+                            ● ĐANG DÙNG
+                          </span>
+                        )}
                       </div>
-                      <p className="mt-0.5 text-[11px]" style={{ color: "var(--tx-f)" }}>{opt.desc}</p>
+                      <p
+                        className="mt-0.5 text-[11px]"
+                        style={{ color: "var(--tx-f)" }}
+                      >
+                        {opt.desc}
+                      </p>
                     </button>
                   );
                 })}
@@ -1012,157 +1823,382 @@ export function BotConfigPage() {
             </div>
 
             {form.paymentProvider === "PAYOS" && (
-            <>
-            <div className="mb-5 flex items-center gap-2">
-              <div className="flex h-8 w-8 items-center justify-center rounded-xl" style={{ background: "rgba(99,102,241,0.12)" }}>
-                <Wallet className="h-4 w-4 text-violet-400" />
-              </div>
-              <h2 className="text-base font-black" style={{ color: "var(--tx)" }}>PayOS — VNĐ</h2>
-            </div>
-            <div className="mb-4 rounded-2xl px-4 py-3" style={{ background: "rgba(52,211,153,0.06)", border: "1px solid rgba(52,211,153,0.15)" }}>
-              <p className="text-[12px]" style={{ color: "rgb(52,211,153)" }}>ⓘ {t.payosDesc}</p>
-            </div>
-            <div className="grid gap-5 sm:grid-cols-2">
-              <Field label="Client ID" hint={configQuery.data?.payosClientIdMasked ? "Đã mã hoá" : "Optional"}>
-                <Input value={form.payosClientId} onChange={(e) => setForm((c) => ({ ...c, payosClientId: e.target.value }))} placeholder={configQuery.data?.payosClientIdMasked || t.phClientId} />
-              </Field>
-              <Field label="API Key" hint={configQuery.data?.payosApiKeyMasked ? "Đã mã hoá" : "Optional"}>
-                <Input value={form.payosApiKey} onChange={(e) => setForm((c) => ({ ...c, payosApiKey: e.target.value }))} placeholder={configQuery.data?.payosApiKeyMasked || t.phApiKey} />
-              </Field>
-              <div className="sm:col-span-2">
-                <Field label="Checksum Key" hint={configQuery.data?.payosChecksumKeyMasked ? "Đã mã hoá" : "Optional"}>
-                  <Input value={form.payosChecksumKey} onChange={(e) => setForm((c) => ({ ...c, payosChecksumKey: e.target.value }))} placeholder={configQuery.data?.payosChecksumKeyMasked || t.phChecksumKey} />
-                </Field>
-              </div>
-            </div>
-            <div className="mt-6 flex justify-end">
-              <button type="button" disabled={saveMutation.isPending} onClick={() => saveMutation.mutate()}
-                className="rounded-xl px-4 py-2 text-[12px] font-black transition hover:opacity-80 disabled:opacity-40"
-                style={{ background: "rgb(249,115,22)", color: "#fff" }}>
-                {saveMutation.isPending ? t.saving : "Lưu thay đổi"}
-              </button>
-            </div>
-            </>
+              <>
+                <div className="mb-5 flex items-center gap-2">
+                  <div
+                    className="flex h-8 w-8 items-center justify-center rounded-xl"
+                    style={{ background: "rgba(99,102,241,0.12)" }}
+                  >
+                    <Wallet className="h-4 w-4 text-violet-400" />
+                  </div>
+                  <h2
+                    className="text-base font-black"
+                    style={{ color: "var(--tx)" }}
+                  >
+                    PayOS — VNĐ
+                  </h2>
+                </div>
+                <div
+                  className="mb-4 rounded-2xl px-4 py-3"
+                  style={{
+                    background: "rgba(52,211,153,0.06)",
+                    border: "1px solid rgba(52,211,153,0.15)",
+                  }}
+                >
+                  <p
+                    className="text-[12px]"
+                    style={{ color: "rgb(52,211,153)" }}
+                  >
+                    ⓘ {t.payosDesc}
+                  </p>
+                </div>
+                <div className="grid gap-5 sm:grid-cols-2">
+                  <Field
+                    label="Client ID"
+                    hint={
+                      configQuery.data?.payosClientIdMasked
+                        ? "Đã mã hoá"
+                        : "Optional"
+                    }
+                  >
+                    <Input
+                      value={form.payosClientId}
+                      onChange={(e) =>
+                        setForm((c) => ({
+                          ...c,
+                          payosClientId: e.target.value,
+                        }))
+                      }
+                      placeholder={
+                        configQuery.data?.payosClientIdMasked || t.phClientId
+                      }
+                    />
+                  </Field>
+                  <Field
+                    label="API Key"
+                    hint={
+                      configQuery.data?.payosApiKeyMasked
+                        ? "Đã mã hoá"
+                        : "Optional"
+                    }
+                  >
+                    <Input
+                      value={form.payosApiKey}
+                      onChange={(e) =>
+                        setForm((c) => ({ ...c, payosApiKey: e.target.value }))
+                      }
+                      placeholder={
+                        configQuery.data?.payosApiKeyMasked || t.phApiKey
+                      }
+                    />
+                  </Field>
+                  <div className="sm:col-span-2">
+                    <Field
+                      label="Checksum Key"
+                      hint={
+                        configQuery.data?.payosChecksumKeyMasked
+                          ? "Đã mã hoá"
+                          : "Optional"
+                      }
+                    >
+                      <Input
+                        value={form.payosChecksumKey}
+                        onChange={(e) =>
+                          setForm((c) => ({
+                            ...c,
+                            payosChecksumKey: e.target.value,
+                          }))
+                        }
+                        placeholder={
+                          configQuery.data?.payosChecksumKeyMasked ||
+                          t.phChecksumKey
+                        }
+                      />
+                    </Field>
+                  </div>
+                </div>
+                <div className="mt-6 flex justify-end">
+                  <button
+                    type="button"
+                    disabled={saveMutation.isPending}
+                    onClick={() => saveMutation.mutate()}
+                    className="rounded-xl px-4 py-2 text-[12px] font-black transition hover:opacity-80 disabled:opacity-40"
+                    style={{ background: "rgb(249,115,22)", color: "#fff" }}
+                  >
+                    {saveMutation.isPending ? t.saving : "Lưu thay đổi"}
+                  </button>
+                </div>
+              </>
             )}
 
             {form.paymentProvider === "PAY2S" && (
-            <div>
-              <div className="mb-5 flex items-center gap-2">
-                <div className="flex h-8 w-8 items-center justify-center rounded-xl" style={{ background: "rgba(56,189,248,0.12)" }}>
-                  <Wallet className="h-4 w-4 text-sky-400" />
+              <div>
+                <div className="mb-5 flex items-center gap-2">
+                  <div
+                    className="flex h-8 w-8 items-center justify-center rounded-xl"
+                    style={{ background: "rgba(56,189,248,0.12)" }}
+                  >
+                    <Wallet className="h-4 w-4 text-sky-400" />
+                  </div>
+                  <h2
+                    className="text-base font-black"
+                    style={{ color: "var(--tx)" }}
+                  >
+                    Pay2s — VNĐ
+                  </h2>
                 </div>
-                <h2 className="text-base font-black" style={{ color: "var(--tx)" }}>Pay2s — VNĐ</h2>
-              </div>
-              <div className="mb-4 rounded-2xl px-4 py-3" style={{ background: "rgba(56,189,248,0.06)", border: "1px solid rgba(56,189,248,0.15)" }}>
-                <p className="text-[12px]" style={{ color: "rgb(56,189,248)" }}>ⓘ Nhập credentials Pay2s. Để dùng làm cổng thanh toán mặc định, đổi provider ở DB hoặc liên hệ admin.</p>
-              </div>
-              <div className="grid gap-5 sm:grid-cols-2">
-                <Field label="Partner Code">
-                  <Input value={form.pay2sPartnerCode} onChange={(e) => setForm((c) => ({ ...c, pay2sPartnerCode: e.target.value }))} placeholder={(configQuery.data as any)?.pay2sPartnerCodeMasked || "MOMOXXXX"} />
-                </Field>
-                <Field label="Access Key">
-                  <Input value={form.pay2sAccessKey} onChange={(e) => setForm((c) => ({ ...c, pay2sAccessKey: e.target.value }))} placeholder={(configQuery.data as any)?.pay2sAccessKeyMasked || "AccessKey"} />
-                </Field>
-                <div className="sm:col-span-2">
-                  <Field label="Secret Key">
-                    <Input value={form.pay2sSecretKey} onChange={(e) => setForm((c) => ({ ...c, pay2sSecretKey: e.target.value }))} placeholder={(configQuery.data as any)?.pay2sSecretKeyMasked || "SecretKey"} />
+                <div
+                  className="mb-4 rounded-2xl px-4 py-3"
+                  style={{
+                    background: "rgba(56,189,248,0.06)",
+                    border: "1px solid rgba(56,189,248,0.15)",
+                  }}
+                >
+                  <p
+                    className="text-[12px]"
+                    style={{ color: "rgb(56,189,248)" }}
+                  >
+                    ⓘ Nhập credentials Pay2s. Để dùng làm cổng thanh toán mặc
+                    định, đổi provider ở DB hoặc liên hệ admin.
+                  </p>
+                </div>
+                <div className="grid gap-5 sm:grid-cols-2">
+                  <Field label="Partner Code">
+                    <Input
+                      value={form.pay2sPartnerCode}
+                      onChange={(e) =>
+                        setForm((c) => ({
+                          ...c,
+                          pay2sPartnerCode: e.target.value,
+                        }))
+                      }
+                      placeholder={
+                        (configQuery.data as any)?.pay2sPartnerCodeMasked ||
+                        "MOMOXXXX"
+                      }
+                    />
+                  </Field>
+                  <Field label="Access Key">
+                    <Input
+                      value={form.pay2sAccessKey}
+                      onChange={(e) =>
+                        setForm((c) => ({
+                          ...c,
+                          pay2sAccessKey: e.target.value,
+                        }))
+                      }
+                      placeholder={
+                        (configQuery.data as any)?.pay2sAccessKeyMasked ||
+                        "AccessKey"
+                      }
+                    />
+                  </Field>
+                  <div className="sm:col-span-2">
+                    <Field label="Secret Key">
+                      <Input
+                        value={form.pay2sSecretKey}
+                        onChange={(e) =>
+                          setForm((c) => ({
+                            ...c,
+                            pay2sSecretKey: e.target.value,
+                          }))
+                        }
+                        placeholder={
+                          (configQuery.data as any)?.pay2sSecretKeyMasked ||
+                          "SecretKey"
+                        }
+                      />
+                    </Field>
+                  </div>
+                  <Field label="Số tài khoản ngân hàng">
+                    <Input
+                      value={form.pay2sBankAccount}
+                      onChange={(e) =>
+                        setForm((c) => ({
+                          ...c,
+                          pay2sBankAccount: e.target.value,
+                        }))
+                      }
+                      placeholder="9999000xxxx"
+                    />
+                  </Field>
+                  <Field label="Ngân hàng">
+                    <select
+                      value={form.pay2sBankId}
+                      onChange={(e) =>
+                        setForm((c) => ({ ...c, pay2sBankId: e.target.value }))
+                      }
+                      className="w-full rounded-xl px-3 py-2.5 text-sm outline-none"
+                      style={{
+                        background: "var(--inp)",
+                        border: "1px solid var(--bd)",
+                        color: "var(--tx)",
+                      }}
+                    >
+                      <option value="">-- Chọn ngân hàng --</option>
+                      <option value="VCB">Vietcombank (VCB)</option>
+                      <option value="CTG">VietinBank (CTG)</option>
+                      <option value="TCB">Techcombank (TCB)</option>
+                      <option value="BIDV">BIDV</option>
+                      <option value="ACB">ACB</option>
+                      <option value="MBB">MBBank (MBB)</option>
+                      <option value="TPB">TPBank (TPB)</option>
+                      <option value="VPB">VPBank (VPB)</option>
+                      <option value="STB">Sacombank (STB)</option>
+                      <option value="AGRIBANK">Agribank</option>
+                      <option value="VIB">VIB</option>
+                      <option value="HDB">HDBank (HDB)</option>
+                      <option value="MSB">MSB</option>
+                      <option value="SHB">SHB</option>
+                      <option value="OCB">OCB</option>
+                      <option value="EIB">Eximbank (EIB)</option>
+                      <option value="SCB">SCB</option>
+                      <option value="NAB">Nam A Bank (NAB)</option>
+                      <option value="SEAB">SeABank (SEAB)</option>
+                      <option value="LPB">LPBank (LPB)</option>
+                    </select>
+                  </Field>
+                  <Field label="Webhook Token (biến động số dư)">
+                    <Input
+                      value={form.pay2sWebhookToken}
+                      onChange={(e) =>
+                        setForm((c) => ({
+                          ...c,
+                          pay2sWebhookToken: e.target.value,
+                        }))
+                      }
+                      placeholder={
+                        (configQuery.data as any)?.pay2sWebhookTokenMasked ||
+                        "Dán token webhook Pay2s"
+                      }
+                    />
                   </Field>
                 </div>
-                <Field label="Số tài khoản ngân hàng">
-                  <Input value={form.pay2sBankAccount} onChange={(e) => setForm((c) => ({ ...c, pay2sBankAccount: e.target.value }))} placeholder="9999000xxxx" />
-                </Field>
-                <Field label="Ngân hàng">
-                  <select
-                    value={form.pay2sBankId}
-                    onChange={(e) => setForm((c) => ({ ...c, pay2sBankId: e.target.value }))}
-                    className="w-full rounded-xl px-3 py-2.5 text-sm outline-none"
-                    style={{ background: "var(--inp)", border: "1px solid var(--bd)", color: "var(--tx)" }}
+                <div className="mt-6 flex justify-end">
+                  <button
+                    type="button"
+                    disabled={saveMutation.isPending}
+                    onClick={() => saveMutation.mutate()}
+                    className="rounded-xl px-4 py-2 text-[12px] font-black transition hover:opacity-80 disabled:opacity-40"
+                    style={{ background: "rgb(249,115,22)", color: "#fff" }}
                   >
-                    <option value="">-- Chọn ngân hàng --</option>
-                    <option value="VCB">Vietcombank (VCB)</option>
-                    <option value="CTG">VietinBank (CTG)</option>
-                    <option value="TCB">Techcombank (TCB)</option>
-                    <option value="BIDV">BIDV</option>
-                    <option value="ACB">ACB</option>
-                    <option value="MBB">MBBank (MBB)</option>
-                    <option value="TPB">TPBank (TPB)</option>
-                    <option value="VPB">VPBank (VPB)</option>
-                    <option value="STB">Sacombank (STB)</option>
-                    <option value="AGRIBANK">Agribank</option>
-                    <option value="VIB">VIB</option>
-                    <option value="HDB">HDBank (HDB)</option>
-                    <option value="MSB">MSB</option>
-                    <option value="SHB">SHB</option>
-                    <option value="OCB">OCB</option>
-                    <option value="EIB">Eximbank (EIB)</option>
-                    <option value="SCB">SCB</option>
-                    <option value="NAB">Nam A Bank (NAB)</option>
-                    <option value="SEAB">SeABank (SEAB)</option>
-                    <option value="LPB">LPBank (LPB)</option>
-                  </select>
-                </Field>
-                <Field label="Webhook Token (biến động số dư)">
-                  <Input value={form.pay2sWebhookToken} onChange={(e) => setForm((c) => ({ ...c, pay2sWebhookToken: e.target.value }))} placeholder={(configQuery.data as any)?.pay2sWebhookTokenMasked || "Dán token webhook Pay2s"} />
-                </Field>
+                    {saveMutation.isPending ? t.saving : "Lưu thay đổi"}
+                  </button>
+                </div>
               </div>
-              <div className="mt-6 flex justify-end">
-                <button type="button" disabled={saveMutation.isPending} onClick={() => saveMutation.mutate()}
-                  className="rounded-xl px-4 py-2 text-[12px] font-black transition hover:opacity-80 disabled:opacity-40"
-                  style={{ background: "rgb(249,115,22)", color: "#fff" }}>
-                  {saveMutation.isPending ? t.saving : "Lưu thay đổi"}
-                </button>
-              </div>
-            </div>
             )}
 
             {form.paymentProvider === "WEB2M" && (
-            <div>
-              <div className="mb-5 flex items-center gap-2">
-                <div className="flex h-8 w-8 items-center justify-center rounded-xl" style={{ background: "rgba(245,158,11,0.12)" }}>
-                  <Wallet className="h-4 w-4 text-amber-400" />
-                </div>
-                <h2 className="text-base font-black" style={{ color: "var(--tx)" }}>Web2m — VNĐ</h2>
-              </div>
-              <div className="mb-4 rounded-2xl px-4 py-3" style={{ background: "rgba(245,158,11,0.06)", border: "1px solid rgba(245,158,11,0.15)" }}>
-                <p className="text-[12px]" style={{ color: "rgb(245,158,11)" }}>ⓘ Tạo WebHook trên dashboard Web2m → URL: <code className="font-mono">https://api.altivoxai.com/api/v1/webhooks/web2m</code> → copy Access Token paste vào đây.</p>
-              </div>
-              <div className="grid gap-5 sm:grid-cols-2">
-                <Field label="Số tài khoản" hint="STK đã đăng ký Web2m">
-                  <Input value={form.web2mAccountNumber} onChange={(e) => setForm((c) => ({ ...c, web2mAccountNumber: e.target.value }))} placeholder="9999000xxxx" />
-                </Field>
-                <Field label="Ngân hàng" hint="Chọn bank Web2m hỗ trợ">
-                  <select
-                    value={form.web2mBankCode}
-                    onChange={(e) => setForm((c) => ({ ...c, web2mBankCode: e.target.value }))}
-                    className="w-full rounded-xl px-3 py-2.5 text-sm outline-none"
-                    style={{ background: "var(--inp)", border: "1px solid var(--bd)", color: "var(--tx)" }}
+              <div>
+                <div className="mb-5 flex items-center gap-2">
+                  <div
+                    className="flex h-8 w-8 items-center justify-center rounded-xl"
+                    style={{ background: "rgba(245,158,11,0.12)" }}
                   >
-                    <option value="">-- Chọn ngân hàng --</option>
-                    <option value="vcb">Vietcombank</option>
-                    <option value="bidv">BIDV</option>
-                    <option value="acb">ACB</option>
-                    <option value="mb">MBBank</option>
-                    <option value="tcb">Techcombank</option>
-                    <option value="ctg">VietinBank</option>
-                    <option value="tpb">TPBank</option>
-                  </select>
-                </Field>
-                <div className="sm:col-span-2">
-                  <Field label="Access Token (Bearer)" hint={(configQuery.data as any)?.web2mAccessTokenMasked ? "Đã mã hoá" : "Copy từ webhook entry trên Web2m dashboard"}>
-                    <Input value={form.web2mAccessToken} onChange={(e) => setForm((c) => ({ ...c, web2mAccessToken: e.target.value }))} placeholder={(configQuery.data as any)?.web2mAccessTokenMasked || "eyJ0eXAiOiJKV1QiLCJhbGciOiJ..."} />
+                    <Wallet className="h-4 w-4 text-amber-400" />
+                  </div>
+                  <h2
+                    className="text-base font-black"
+                    style={{ color: "var(--tx)" }}
+                  >
+                    Web2m — VNĐ
+                  </h2>
+                </div>
+                <div
+                  className="mb-4 rounded-2xl px-4 py-3"
+                  style={{
+                    background: "rgba(245,158,11,0.06)",
+                    border: "1px solid rgba(245,158,11,0.15)",
+                  }}
+                >
+                  <p
+                    className="text-[12px]"
+                    style={{ color: "rgb(245,158,11)" }}
+                  >
+                    ⓘ Tạo WebHook trên dashboard Web2m → URL:{" "}
+                    <code className="font-mono">
+                      https://api.altivoxai.com/api/v1/webhooks/web2m
+                    </code>{" "}
+                    → copy Access Token paste vào đây.
+                  </p>
+                </div>
+                <div className="grid gap-5 sm:grid-cols-2">
+                  <Field label="Số tài khoản" hint="STK đã đăng ký Web2m">
+                    <Input
+                      value={form.web2mAccountNumber}
+                      onChange={(e) =>
+                        setForm((c) => ({
+                          ...c,
+                          web2mAccountNumber: e.target.value,
+                        }))
+                      }
+                      placeholder="9999000xxxx"
+                    />
                   </Field>
+                  <Field label="Ngân hàng" hint="Chọn bank Web2m hỗ trợ">
+                    <select
+                      value={form.web2mBankCode}
+                      onChange={(e) =>
+                        setForm((c) => ({
+                          ...c,
+                          web2mBankCode: e.target.value,
+                        }))
+                      }
+                      className="w-full rounded-xl px-3 py-2.5 text-sm outline-none"
+                      style={{
+                        background: "var(--inp)",
+                        border: "1px solid var(--bd)",
+                        color: "var(--tx)",
+                      }}
+                    >
+                      <option value="">-- Chọn ngân hàng --</option>
+                      <option value="vcb">Vietcombank</option>
+                      <option value="bidv">BIDV</option>
+                      <option value="acb">ACB</option>
+                      <option value="mb">MBBank</option>
+                      <option value="tcb">Techcombank</option>
+                      <option value="ctg">VietinBank</option>
+                      <option value="tpb">TPBank</option>
+                    </select>
+                  </Field>
+                  <div className="sm:col-span-2">
+                    <Field
+                      label="Access Token (Bearer)"
+                      hint={
+                        (configQuery.data as any)?.web2mAccessTokenMasked
+                          ? "Đã mã hoá"
+                          : "Copy từ webhook entry trên Web2m dashboard"
+                      }
+                    >
+                      <Input
+                        value={form.web2mAccessToken}
+                        onChange={(e) =>
+                          setForm((c) => ({
+                            ...c,
+                            web2mAccessToken: e.target.value,
+                          }))
+                        }
+                        placeholder={
+                          (configQuery.data as any)?.web2mAccessTokenMasked ||
+                          "eyJ0eXAiOiJKV1QiLCJhbGciOiJ..."
+                        }
+                      />
+                    </Field>
+                  </div>
+                </div>
+                <div className="mt-6 flex justify-end">
+                  <button
+                    type="button"
+                    disabled={saveMutation.isPending}
+                    onClick={() => saveMutation.mutate()}
+                    className="rounded-xl px-4 py-2 text-[12px] font-black transition hover:opacity-80 disabled:opacity-40"
+                    style={{ background: "rgb(249,115,22)", color: "#fff" }}
+                  >
+                    {saveMutation.isPending ? t.saving : "Lưu thay đổi"}
+                  </button>
                 </div>
               </div>
-              <div className="mt-6 flex justify-end">
-                <button type="button" disabled={saveMutation.isPending} onClick={() => saveMutation.mutate()}
-                  className="rounded-xl px-4 py-2 text-[12px] font-black transition hover:opacity-80 disabled:opacity-40"
-                  style={{ background: "rgb(249,115,22)", color: "#fff" }}>
-                  {saveMutation.isPending ? t.saving : "Lưu thay đổi"}
-                </button>
-              </div>
-            </div>
             )}
-
           </div>
         )}
 
@@ -1170,44 +2206,124 @@ export function BotConfigPage() {
         {activeTab === "crypto" && (
           <div>
             <div className="mb-5 flex items-center gap-2">
-              <div className="flex h-8 w-8 items-center justify-center rounded-xl text-amber-400 font-black text-sm" style={{ background: "rgba(245,158,11,0.12)" }}>$</div>
-              <h2 className="text-base font-black" style={{ color: "var(--tx)" }}>USDT & phương thức nhận tiền</h2>
+              <div
+                className="flex h-8 w-8 items-center justify-center rounded-xl text-amber-400 font-black text-sm"
+                style={{ background: "rgba(245,158,11,0.12)" }}
+              >
+                $
+              </div>
+              <h2
+                className="text-base font-black"
+                style={{ color: "var(--tx)" }}
+              >
+                USDT & phương thức nhận tiền
+              </h2>
             </div>
-            <div className="mb-4 rounded-2xl px-4 py-3" style={{ background: "rgba(52,211,153,0.06)", border: "1px solid rgba(52,211,153,0.15)" }}>
-              <p className="text-[12px]" style={{ color: "rgb(52,211,153)" }}>ⓘ {t.usdtDesc}</p>
+            <div
+              className="mb-4 rounded-2xl px-4 py-3"
+              style={{
+                background: "rgba(52,211,153,0.06)",
+                border: "1px solid rgba(52,211,153,0.15)",
+              }}
+            >
+              <p className="text-[12px]" style={{ color: "rgb(52,211,153)" }}>
+                ⓘ {t.usdtDesc}
+              </p>
             </div>
             <div className="mb-5 grid gap-3 sm:grid-cols-2">
-              {([
-                { key: "binance", label: "Binance UID", detail: "Nhận USDT qua Binance Pay ID", enabled: form.binanceEnabled },
-                { key: "okx", label: "OKX", detail: "UID và Personal API tự đối soát", enabled: form.okxEnabled },
-                { key: "trc20", label: "USDT TRC20", detail: "Ví USDT mạng TRON", enabled: form.usdtTrc20Enabled },
-                { key: "solana", label: "USDT Solana", detail: "Ví USDT mạng Solana", enabled: form.usdtSolanaEnabled },
-                { key: "ton", label: "USDT TON", detail: "Ví USDT Jetton mạng TON", enabled: form.usdtTonEnabled },
-                { key: "paypal", label: "PayPal", detail: "Checkout USD và tự động giao hàng", enabled: form.paypalEnabled },
-              ] satisfies Array<{ key: ReceivingMethodKey; label: string; detail: string; enabled: boolean }>).map((method) => {
+              {(
+                [
+                  {
+                    key: "binance",
+                    label: "Binance UID",
+                    detail: "Nhận USDT qua Binance Pay ID",
+                    enabled: form.binanceEnabled,
+                  },
+                  {
+                    key: "okx",
+                    label: "OKX",
+                    detail: "UID và Personal API tự đối soát",
+                    enabled: form.okxEnabled,
+                  },
+                  {
+                    key: "trc20",
+                    label: "USDT TRC20",
+                    detail: "Ví USDT mạng TRON",
+                    enabled: form.usdtTrc20Enabled,
+                  },
+                  {
+                    key: "bep20",
+                    label: "USDT BEP20",
+                    detail: "Ví USDT mạng BSC (auto)",
+                    enabled: form.usdtBep20Enabled,
+                  },
+                  {
+                    key: "solana",
+                    label: "USDT Solana",
+                    detail: "Ví USDT mạng Solana",
+                    enabled: form.usdtSolanaEnabled,
+                  },
+                  {
+                    key: "ton",
+                    label: "USDT TON",
+                    detail: "Ví USDT Jetton mạng TON",
+                    enabled: form.usdtTonEnabled,
+                  },
+                  {
+                    key: "paypal",
+                    label: "PayPal",
+                    detail: "Checkout USD và tự động giao hàng",
+                    enabled: form.paypalEnabled,
+                  },
+                ] satisfies Array<{
+                  key: ReceivingMethodKey;
+                  label: string;
+                  detail: string;
+                  enabled: boolean;
+                }>
+              ).map((method) => {
                 const expanded = expandedReceivingMethod === method.key;
                 return (
                   <div
                     key={method.key}
                     className="flex items-center gap-2 rounded-2xl p-2"
                     style={{
-                      background: expanded ? "rgba(249,115,22,0.06)" : "var(--inp)",
+                      background: expanded
+                        ? "rgba(249,115,22,0.06)"
+                        : "var(--inp)",
                       border: `1px solid ${expanded ? "rgba(249,115,22,0.28)" : "var(--bd)"}`,
                     }}
                   >
                     <button
                       type="button"
                       aria-expanded={expanded}
-                      onClick={() => setExpandedReceivingMethod(expanded ? null : method.key)}
+                      onClick={() =>
+                        setExpandedReceivingMethod(expanded ? null : method.key)
+                      }
                       className="flex min-w-0 flex-1 items-center justify-between gap-3 rounded-xl px-3 py-2 text-left"
                     >
                       <span className="min-w-0">
-                        <span className="block text-sm font-black" style={{ color: "var(--tx)" }}>{method.label}</span>
-                        <span className="mt-0.5 block truncate text-[11px]" style={{ color: "var(--tx-f)" }}>{method.detail}</span>
+                        <span
+                          className="block text-sm font-black"
+                          style={{ color: "var(--tx)" }}
+                        >
+                          {method.label}
+                        </span>
+                        <span
+                          className="mt-0.5 block truncate text-[11px]"
+                          style={{ color: "var(--tx-f)" }}
+                        >
+                          {method.detail}
+                        </span>
                       </span>
                       <ChevronDown
                         className="h-4 w-4 shrink-0 transition-transform"
-                        style={{ color: "var(--tx-f)", transform: expanded ? "rotate(180deg)" : "rotate(0deg)" }}
+                        style={{
+                          color: "var(--tx-f)",
+                          transform: expanded
+                            ? "rotate(180deg)"
+                            : "rotate(0deg)",
+                        }}
                       />
                     </button>
                     <button
@@ -1218,9 +2334,13 @@ export function BotConfigPage() {
                       onClick={() => toggleReceivingMethod(method.key)}
                       className="shrink-0 rounded-xl px-3 py-2 text-[10px] font-black"
                       style={{
-                        background: method.enabled ? "rgba(34,197,94,0.14)" : "var(--surface)",
+                        background: method.enabled
+                          ? "rgba(34,197,94,0.14)"
+                          : "var(--surface)",
                         border: `1px solid ${method.enabled ? "rgba(34,197,94,0.35)" : "var(--bd)"}`,
-                        color: method.enabled ? "rgb(34,197,94)" : "var(--tx-f)",
+                        color: method.enabled
+                          ? "rgb(34,197,94)"
+                          : "var(--tx-f)",
                       }}
                     >
                       {method.enabled ? "BẬT" : "TẮT"}
@@ -1231,183 +2351,551 @@ export function BotConfigPage() {
             </div>
             <div className="grid gap-5 sm:grid-cols-2">
               {expandedReceivingMethod === "binance" && (
-              <Field label="Binance UID" hint="Optional">
-                <Input value={form.binanceUid} onChange={(e) => setForm((c) => ({ ...c, binanceUid: e.target.value }))} placeholder={t.phBinanceUid} />
-              </Field>
-              )}
-              {expandedReceivingMethod !== null && expandedReceivingMethod !== "paypal" && (
-              <Field label={t.fieldUsdtRate} hint="Optional" description={t.usdtRateDesc(configQuery.data?.defaultUsdtVndRate || 26000)}>
-                <Input inputMode="decimal" value={form.usdtVndRateOverride} onChange={(e) => setForm((c) => ({ ...c, usdtVndRateOverride: e.target.value }))} placeholder={String(configQuery.data?.defaultUsdtVndRate || 26000)} />
-              </Field>
-              )}
-              {expandedReceivingMethod === "trc20" && (
-              <div className="sm:col-span-2">
-                <Field label={t.fieldUsdtAddress} hint="Optional">
-                  <Input value={form.usdtTrc20Address} onChange={(e) => setForm((c) => ({ ...c, usdtTrc20Address: e.target.value }))} placeholder={t.phUsdtAddress} />
+                <Field label="Binance UID" hint="Optional">
+                  <Input
+                    value={form.binanceUid}
+                    onChange={(e) =>
+                      setForm((c) => ({ ...c, binanceUid: e.target.value }))
+                    }
+                    placeholder={t.phBinanceUid}
+                  />
                 </Field>
-              </div>
+              )}
+              {expandedReceivingMethod !== null &&
+                expandedReceivingMethod !== "paypal" && (
+                  <Field
+                    label={t.fieldUsdtRate}
+                    hint="Optional"
+                    description={t.usdtRateDesc(
+                      configQuery.data?.defaultUsdtVndRate || 26000,
+                    )}
+                  >
+                    <Input
+                      inputMode="decimal"
+                      value={form.usdtVndRateOverride}
+                      onChange={(e) =>
+                        setForm((c) => ({
+                          ...c,
+                          usdtVndRateOverride: e.target.value,
+                        }))
+                      }
+                      placeholder={String(
+                        configQuery.data?.defaultUsdtVndRate || 26000,
+                      )}
+                    />
+                  </Field>
+                )}
+              {expandedReceivingMethod === "trc20" && (
+                <div className="sm:col-span-2">
+                  <Field label={t.fieldUsdtAddress} hint="Optional">
+                    <Input
+                      value={form.usdtTrc20Address}
+                      onChange={(e) =>
+                        setForm((c) => ({
+                          ...c,
+                          usdtTrc20Address: e.target.value,
+                        }))
+                      }
+                      placeholder={t.phUsdtAddress}
+                    />
+                  </Field>
+                </div>
               )}
               {expandedReceivingMethod === "solana" && (
-              <div className="sm:col-span-2">
-                <Field label="USDT Solana Address" hint="Optional" description="Địa chỉ ví Solana nhận USDT (SPL). Bot sẽ tự dò giao dịch, không cần khách paste tx hash.">
-                  <Input value={form.usdtSolanaAddress} onChange={(e) => setForm((c) => ({ ...c, usdtSolanaAddress: e.target.value }))} placeholder="Ví dụ: 7xKXtg2C...88 ký tự" />
-                </Field>
-              </div>
+                <div className="sm:col-span-2">
+                  <Field
+                    label="USDT Solana Address"
+                    hint="Optional"
+                    description="Địa chỉ ví Solana nhận USDT (SPL). Bot sẽ tự dò giao dịch, không cần khách paste tx hash."
+                  >
+                    <Input
+                      value={form.usdtSolanaAddress}
+                      onChange={(e) =>
+                        setForm((c) => ({
+                          ...c,
+                          usdtSolanaAddress: e.target.value,
+                        }))
+                      }
+                      placeholder="Ví dụ: 7xKXtg2C...88 ký tự"
+                    />
+                  </Field>
+                </div>
               )}
               {expandedReceivingMethod === "ton" && (
-              <div className="sm:col-span-2">
-                <Field label="USDT TON Address" hint="Tự động" description="Địa chỉ ví TON nhận USDT Jetton. Bot đối chiếu đúng master USDT chính thức và tự xác nhận trong 30-60 giây.">
-                  <Input value={form.usdtTonAddress} onChange={(e) => setForm((c) => ({ ...c, usdtTonAddress: e.target.value }))} placeholder="Ví dụ: EQ... hoặc UQ..." />
-                </Field>
-              </div>
+                <div className="sm:col-span-2">
+                  <Field
+                    label="USDT TON Address"
+                    hint="Tự động"
+                    description="Địa chỉ ví TON nhận USDT Jetton. Bot đối chiếu đúng master USDT chính thức và tự xác nhận trong 30-60 giây."
+                  >
+                    <Input
+                      value={form.usdtTonAddress}
+                      onChange={(e) =>
+                        setForm((c) => ({
+                          ...c,
+                          usdtTonAddress: e.target.value,
+                        }))
+                      }
+                      placeholder="Ví dụ: EQ... hoặc UQ..."
+                    />
+                  </Field>
+                </div>
+              )}
+              {expandedReceivingMethod === "bep20" && (
+                <div className="sm:col-span-2">
+                  <Field
+                    label="USDT BEP20 Address"
+                    hint="Tự động"
+                    description="Địa chỉ ví BSC (BEP20) nhận USDT. Bot đọc log qua BSC RPC public, tự xác nhận trong 30-60 giây (không cần khách paste tx hash)."
+                  >
+                    <Input
+                      value={form.usdtBep20Address}
+                      onChange={(e) =>
+                        setForm((c) => ({
+                          ...c,
+                          usdtBep20Address: e.target.value,
+                        }))
+                      }
+                      placeholder="Ví dụ: 0x1234...abcd (42 ký tự hex)"
+                    />
+                  </Field>
+                </div>
               )}
               {expandedReceivingMethod === "binance" && (
-              <>
-              <Field label="Personal API Key" hint={configQuery.data?.binancePersonalApiKeyMasked ? "Đã mã hoá" : "Optional"}>
-                <Input value={form.binancePersonalApiKey} onChange={(e) => setForm((c) => ({ ...c, binancePersonalApiKey: e.target.value }))} placeholder={configQuery.data?.binancePersonalApiKeyMasked || t.phApiKey} />
-              </Field>
-              <Field label="Personal Secret Key" hint={configQuery.data?.binancePersonalSecretKeyMasked ? "Đã mã hoá" : "Optional"}>
-                <Input value={form.binancePersonalSecretKey} onChange={(e) => setForm((c) => ({ ...c, binancePersonalSecretKey: e.target.value }))} placeholder={configQuery.data?.binancePersonalSecretKeyMasked || t.phApiKey} />
-              </Field>
-              </>
+                <>
+                  <Field
+                    label="Personal API Key"
+                    hint={
+                      configQuery.data?.binancePersonalApiKeyMasked
+                        ? "Đã mã hoá"
+                        : "Optional"
+                    }
+                  >
+                    <Input
+                      value={form.binancePersonalApiKey}
+                      onChange={(e) =>
+                        setForm((c) => ({
+                          ...c,
+                          binancePersonalApiKey: e.target.value,
+                        }))
+                      }
+                      placeholder={
+                        configQuery.data?.binancePersonalApiKeyMasked ||
+                        t.phApiKey
+                      }
+                    />
+                  </Field>
+                  <Field
+                    label="Personal Secret Key"
+                    hint={
+                      configQuery.data?.binancePersonalSecretKeyMasked
+                        ? "Đã mã hoá"
+                        : "Optional"
+                    }
+                  >
+                    <Input
+                      value={form.binancePersonalSecretKey}
+                      onChange={(e) =>
+                        setForm((c) => ({
+                          ...c,
+                          binancePersonalSecretKey: e.target.value,
+                        }))
+                      }
+                      placeholder={
+                        configQuery.data?.binancePersonalSecretKeyMasked ||
+                        t.phApiKey
+                      }
+                    />
+                  </Field>
+                </>
               )}
             </div>
             {/* Binance Pay Merchant — UI HIDDEN. Field giữ trong form state để không phá payload. */}
             {false && (
-            <div className="mt-6" style={{ borderTop: "1px solid var(--bd)", paddingTop: 24 }}>
-              <p className="mb-3 text-[11px] font-black uppercase tracking-widest" style={{ color: "var(--tx-f)" }}>Binance Pay Merchant (deprecated)</p>
-            </div>
+              <div
+                className="mt-6"
+                style={{ borderTop: "1px solid var(--bd)", paddingTop: 24 }}
+              >
+                <p
+                  className="mb-3 text-[11px] font-black uppercase tracking-widest"
+                  style={{ color: "var(--tx-f)" }}
+                >
+                  Binance Pay Merchant (deprecated)
+                </p>
+              </div>
             )}
 
             {expandedReceivingMethod === "okx" && (
-            <div className="mt-6" style={{ borderTop: "1px solid var(--bd)", paddingTop: 24 }}>
-              <div className="mb-3 flex items-center gap-2">
-                <p className="text-[11px] font-black uppercase tracking-widest" style={{ color: "var(--tx-f)" }}>OKX Personal API</p>
-                <span className="rounded-md px-1.5 py-0.5 text-[10px] font-bold" style={{ background: "rgba(56,189,248,0.12)", color: "rgb(56,189,248)" }}>Auto-detect USDT</span>
-              </div>
-              <p className="mb-3 text-[12px]" style={{ color: "var(--tx-f)" }}>
-                Cấp Read-only API ở OKX (Funding → API). Bot sẽ tự dò deposit khi khách chuyển USDT (TRC20 / BEP20 / Solana).
-              </p>
-              <div className="mb-4 flex flex-col gap-4 rounded-2xl px-4 py-4 sm:flex-row sm:items-center sm:justify-between" style={{ background: "var(--inp)", border: "1px solid var(--bd)" }}>
-                <div>
-                  <p className="font-semibold" style={{ color: "var(--tx)" }}>Bật auto-detect OKX</p>
-                  <p className="mt-1 text-sm" style={{ color: "var(--tx-f)" }}>Khi bật, khách chọn OKX → bot sẽ check deposit history để verify.</p>
-                </div>
-                <button type="button" role="switch" aria-checked={form.okxPersonalApiEnabled}
-                  onClick={() => setForm((c) => ({ ...c, okxPersonalApiEnabled: !c.okxPersonalApiEnabled }))}
-                  className="inline-flex h-12 w-full shrink-0 items-center justify-between gap-3 rounded-2xl border px-3 text-sm font-semibold transition sm:w-[164px]"
-                  style={form.okxPersonalApiEnabled
-                    ? { borderColor: "rgba(56,189,248,0.3)", background: "rgba(56,189,248,0.08)", color: "var(--tx)" }
-                    : { borderColor: "var(--bd)", background: "var(--surface)", color: "var(--tx-m)" }}>
-                  <span className="flex h-8 w-8 items-center justify-center rounded-xl transition"
-                    style={form.okxPersonalApiEnabled ? { background: "rgb(56,189,248)", color: "white" } : { background: "var(--inp)", color: "var(--tx-f)" }}>⚪</span>
-                  <span>{form.okxPersonalApiEnabled ? t.toggleOn : t.toggleOff}</span>
-                </button>
-              </div>
-              <div className="grid gap-5 sm:grid-cols-2">
-                <Field label="OKX UID" hint="Optional">
-                  <Input value={form.okxUid} onChange={(e) => setForm((c) => ({ ...c, okxUid: e.target.value }))} placeholder="VD: 12345678" />
-                </Field>
-                <Field label="USDT BEP20 Address" hint="Optional">
-                  <Input value={form.usdtBep20Address} onChange={(e) => setForm((c) => ({ ...c, usdtBep20Address: e.target.value }))} placeholder="0x..." />
-                </Field>
-                <Field label="OKX API Key" hint={(configQuery.data as any)?.okxPersonalApiKeyMasked ? "Đã mã hoá" : "Optional"}>
-                  <Input value={form.okxPersonalApiKey} onChange={(e) => setForm((c) => ({ ...c, okxPersonalApiKey: e.target.value }))} placeholder={(configQuery.data as any)?.okxPersonalApiKeyMasked || t.phApiKey} />
-                </Field>
-                <Field label="OKX Secret Key" hint={(configQuery.data as any)?.okxPersonalSecretKeyMasked ? "Đã mã hoá" : "Optional"}>
-                  <Input value={form.okxPersonalSecretKey} onChange={(e) => setForm((c) => ({ ...c, okxPersonalSecretKey: e.target.value }))} placeholder={(configQuery.data as any)?.okxPersonalSecretKeyMasked || t.phApiKey} />
-                </Field>
-                <Field label="OKX Passphrase" hint={(configQuery.data as any)?.okxPersonalPassphraseMasked ? "Đã mã hoá" : "Optional"} description="Passphrase do anh đặt khi tạo OKX API.">
-                  <Input value={form.okxPersonalPassphrase} onChange={(e) => setForm((c) => ({ ...c, okxPersonalPassphrase: e.target.value }))} placeholder={(configQuery.data as any)?.okxPersonalPassphraseMasked || "•••••••"} />
-                </Field>
-                <div className="flex items-end">
-                  <button type="button"
-                    onClick={async () => {
-                      try {
-                        const res = await api.post("/bot-config/verify-okx-personal", {
-                          apiKey: form.okxPersonalApiKey || undefined,
-                          secretKey: form.okxPersonalSecretKey || undefined,
-                          passphrase: form.okxPersonalPassphrase || undefined,
-                        });
-                        showToast({ tone: "success", message: `OKX OK — UID ${res.data?.uid || "(none)"}` });
-                      } catch (e) {
-                        showToast({ tone: "error", message: getApiErrorMessage(e, "Kết nối OKX thất bại.") });
-                      }
+              <div
+                className="mt-6"
+                style={{ borderTop: "1px solid var(--bd)", paddingTop: 24 }}
+              >
+                <div className="mb-3 flex items-center gap-2">
+                  <p
+                    className="text-[11px] font-black uppercase tracking-widest"
+                    style={{ color: "var(--tx-f)" }}
+                  >
+                    OKX Personal API
+                  </p>
+                  <span
+                    className="rounded-md px-1.5 py-0.5 text-[10px] font-bold"
+                    style={{
+                      background: "rgba(56,189,248,0.12)",
+                      color: "rgb(56,189,248)",
                     }}
-                    className="rounded-xl px-4 py-2.5 text-[12px] font-black transition hover:opacity-90"
-                    style={{ background: "rgb(56,189,248)", color: "#fff" }}>
-                    🧪 Kiểm tra kết nối
+                  >
+                    Auto-detect USDT
+                  </span>
+                </div>
+                <p
+                  className="mb-3 text-[12px]"
+                  style={{ color: "var(--tx-f)" }}
+                >
+                  Cấp Read-only API ở OKX (Funding → API). Bot sẽ tự dò deposit
+                  khi khách chuyển USDT (TRC20 / BEP20 / Solana).
+                </p>
+                <div
+                  className="mb-4 flex flex-col gap-4 rounded-2xl px-4 py-4 sm:flex-row sm:items-center sm:justify-between"
+                  style={{
+                    background: "var(--inp)",
+                    border: "1px solid var(--bd)",
+                  }}
+                >
+                  <div>
+                    <p className="font-semibold" style={{ color: "var(--tx)" }}>
+                      Bật auto-detect OKX
+                    </p>
+                    <p
+                      className="mt-1 text-sm"
+                      style={{ color: "var(--tx-f)" }}
+                    >
+                      Khi bật, khách chọn OKX → bot sẽ check deposit history để
+                      verify.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={form.okxPersonalApiEnabled}
+                    onClick={() =>
+                      setForm((c) => ({
+                        ...c,
+                        okxPersonalApiEnabled: !c.okxPersonalApiEnabled,
+                      }))
+                    }
+                    className="inline-flex h-12 w-full shrink-0 items-center justify-between gap-3 rounded-2xl border px-3 text-sm font-semibold transition sm:w-[164px]"
+                    style={
+                      form.okxPersonalApiEnabled
+                        ? {
+                            borderColor: "rgba(56,189,248,0.3)",
+                            background: "rgba(56,189,248,0.08)",
+                            color: "var(--tx)",
+                          }
+                        : {
+                            borderColor: "var(--bd)",
+                            background: "var(--surface)",
+                            color: "var(--tx-m)",
+                          }
+                    }
+                  >
+                    <span
+                      className="flex h-8 w-8 items-center justify-center rounded-xl transition"
+                      style={
+                        form.okxPersonalApiEnabled
+                          ? { background: "rgb(56,189,248)", color: "white" }
+                          : { background: "var(--inp)", color: "var(--tx-f)" }
+                      }
+                    >
+                      ⚪
+                    </span>
+                    <span>
+                      {form.okxPersonalApiEnabled ? t.toggleOn : t.toggleOff}
+                    </span>
                   </button>
                 </div>
+                <div className="grid gap-5 sm:grid-cols-2">
+                  <Field label="OKX UID" hint="Optional">
+                    <Input
+                      value={form.okxUid}
+                      onChange={(e) =>
+                        setForm((c) => ({ ...c, okxUid: e.target.value }))
+                      }
+                      placeholder="VD: 12345678"
+                    />
+                  </Field>
+                  <Field
+                    label="OKX API Key"
+                    hint={
+                      (configQuery.data as any)?.okxPersonalApiKeyMasked
+                        ? "Đã mã hoá"
+                        : "Optional"
+                    }
+                  >
+                    <Input
+                      value={form.okxPersonalApiKey}
+                      onChange={(e) =>
+                        setForm((c) => ({
+                          ...c,
+                          okxPersonalApiKey: e.target.value,
+                        }))
+                      }
+                      placeholder={
+                        (configQuery.data as any)?.okxPersonalApiKeyMasked ||
+                        t.phApiKey
+                      }
+                    />
+                  </Field>
+                  <Field
+                    label="OKX Secret Key"
+                    hint={
+                      (configQuery.data as any)?.okxPersonalSecretKeyMasked
+                        ? "Đã mã hoá"
+                        : "Optional"
+                    }
+                  >
+                    <Input
+                      value={form.okxPersonalSecretKey}
+                      onChange={(e) =>
+                        setForm((c) => ({
+                          ...c,
+                          okxPersonalSecretKey: e.target.value,
+                        }))
+                      }
+                      placeholder={
+                        (configQuery.data as any)?.okxPersonalSecretKeyMasked ||
+                        t.phApiKey
+                      }
+                    />
+                  </Field>
+                  <Field
+                    label="OKX Passphrase"
+                    hint={
+                      (configQuery.data as any)?.okxPersonalPassphraseMasked
+                        ? "Đã mã hoá"
+                        : "Optional"
+                    }
+                    description="Passphrase do anh đặt khi tạo OKX API."
+                  >
+                    <Input
+                      value={form.okxPersonalPassphrase}
+                      onChange={(e) =>
+                        setForm((c) => ({
+                          ...c,
+                          okxPersonalPassphrase: e.target.value,
+                        }))
+                      }
+                      placeholder={
+                        (configQuery.data as any)
+                          ?.okxPersonalPassphraseMasked || "•••••••"
+                      }
+                    />
+                  </Field>
+                  <div className="flex items-end">
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        try {
+                          const res = await api.post(
+                            "/bot-config/verify-okx-personal",
+                            {
+                              apiKey: form.okxPersonalApiKey || undefined,
+                              secretKey: form.okxPersonalSecretKey || undefined,
+                              passphrase:
+                                form.okxPersonalPassphrase || undefined,
+                            },
+                          );
+                          showToast({
+                            tone: "success",
+                            message: `OKX OK — UID ${res.data?.uid || "(none)"}`,
+                          });
+                        } catch (e) {
+                          showToast({
+                            tone: "error",
+                            message: getApiErrorMessage(
+                              e,
+                              "Kết nối OKX thất bại.",
+                            ),
+                          });
+                        }
+                      }}
+                      className="rounded-xl px-4 py-2.5 text-[12px] font-black transition hover:opacity-90"
+                      style={{ background: "rgb(56,189,248)", color: "#fff" }}
+                    >
+                      🧪 Kiểm tra kết nối
+                    </button>
+                  </div>
+                </div>
               </div>
-            </div>
             )}
             {expandedReceivingMethod === "paypal" && (
-              <div className="mt-6 rounded-2xl p-5" style={{ background: "var(--inp)", border: "1px solid var(--bd)" }}>
-                <div className="mb-5 rounded-xl px-4 py-3" style={{ background: "rgba(59,130,246,0.06)", border: "1px solid rgba(59,130,246,0.18)" }}>
-                  <p className="text-[12px]" style={{ color: "rgb(96,165,250)" }}>
-                    PayPal nhận USD. Bot ưu tiên giá USD của sản phẩm; nếu chưa có sẽ quy đổi từ VND theo tỷ giá bên dưới.
+              <div
+                className="mt-6 rounded-2xl p-5"
+                style={{
+                  background: "var(--inp)",
+                  border: "1px solid var(--bd)",
+                }}
+              >
+                <div
+                  className="mb-5 rounded-xl px-4 py-3"
+                  style={{
+                    background: "rgba(59,130,246,0.06)",
+                    border: "1px solid rgba(59,130,246,0.18)",
+                  }}
+                >
+                  <p
+                    className="text-[12px]"
+                    style={{ color: "rgb(96,165,250)" }}
+                  >
+                    PayPal nhận USD. Bot ưu tiên giá USD của sản phẩm; nếu chưa
+                    có sẽ quy đổi từ VND theo tỷ giá bên dưới.
                   </p>
                 </div>
                 <div className="grid gap-5 sm:grid-cols-2">
-                  <Field label="Client ID" hint={(configQuery.data as any)?.paypalClientIdMasked ? "Đã mã hóa" : "PayPal Developer → Apps & Credentials"}>
+                  <Field
+                    label="Client ID"
+                    hint={
+                      (configQuery.data as any)?.paypalClientIdMasked
+                        ? "Đã mã hóa"
+                        : "PayPal Developer → Apps & Credentials"
+                    }
+                  >
                     <Input
                       value={form.paypalClientId}
-                      onChange={(e) => setForm((c) => ({ ...c, paypalClientId: e.target.value }))}
-                      placeholder={(configQuery.data as any)?.paypalClientIdMasked || "PayPal Client ID"}
+                      onChange={(e) =>
+                        setForm((c) => ({
+                          ...c,
+                          paypalClientId: e.target.value,
+                        }))
+                      }
+                      placeholder={
+                        (configQuery.data as any)?.paypalClientIdMasked ||
+                        "PayPal Client ID"
+                      }
                     />
                   </Field>
-                  <Field label="Client Secret" hint={(configQuery.data as any)?.paypalClientSecretMasked ? "Đã mã hóa" : "Không chia sẻ khóa này"}>
+                  <Field
+                    label="Client Secret"
+                    hint={
+                      (configQuery.data as any)?.paypalClientSecretMasked
+                        ? "Đã mã hóa"
+                        : "Không chia sẻ khóa này"
+                    }
+                  >
                     <Input
                       type="password"
                       value={form.paypalClientSecret}
-                      onChange={(e) => setForm((c) => ({ ...c, paypalClientSecret: e.target.value }))}
-                      placeholder={(configQuery.data as any)?.paypalClientSecretMasked || "PayPal Client Secret"}
+                      onChange={(e) =>
+                        setForm((c) => ({
+                          ...c,
+                          paypalClientSecret: e.target.value,
+                        }))
+                      }
+                      placeholder={
+                        (configQuery.data as any)?.paypalClientSecretMasked ||
+                        "PayPal Client Secret"
+                      }
                     />
                   </Field>
-                  <Field label="Webhook ID" hint="ID của webhook, không phải Webhook URL">
+                  <Field
+                    label="Webhook ID"
+                    hint="ID của webhook, không phải Webhook URL"
+                  >
                     <Input
                       value={form.paypalWebhookId}
-                      onChange={(e) => setForm((c) => ({ ...c, paypalWebhookId: e.target.value }))}
+                      onChange={(e) =>
+                        setForm((c) => ({
+                          ...c,
+                          paypalWebhookId: e.target.value,
+                        }))
+                      }
                       placeholder="Ví dụ: 8PT..."
                     />
                   </Field>
-                  <Field label="Tỷ giá VND cho 1 USD" hint={`Mặc định ${(configQuery.data as any)?.defaultPaypalVndRate || 26000}`}>
+                  <Field
+                    label="Tỷ giá VND cho 1 USD"
+                    hint={`Mặc định ${(configQuery.data as any)?.defaultPaypalVndRate || 26000}`}
+                  >
                     <Input
                       type="number"
                       min="1"
                       step="1"
                       value={form.paypalVndRateOverride}
-                      onChange={(e) => setForm((c) => ({ ...c, paypalVndRateOverride: e.target.value }))}
-                      placeholder={String((configQuery.data as any)?.defaultPaypalVndRate || 26000)}
+                      onChange={(e) =>
+                        setForm((c) => ({
+                          ...c,
+                          paypalVndRateOverride: e.target.value,
+                        }))
+                      }
+                      placeholder={String(
+                        (configQuery.data as any)?.defaultPaypalVndRate ||
+                          26000,
+                      )}
                     />
                   </Field>
                 </div>
-                <label className="mt-5 flex cursor-pointer items-center gap-3 rounded-xl p-3" style={{ background: "var(--surface)", border: "1px solid var(--bd)" }}>
+                <label
+                  className="mt-5 flex cursor-pointer items-center gap-3 rounded-xl p-3"
+                  style={{
+                    background: "var(--surface)",
+                    border: "1px solid var(--bd)",
+                  }}
+                >
                   <input
                     type="checkbox"
                     checked={form.paypalSandbox}
-                    onChange={(e) => setForm((c) => ({ ...c, paypalSandbox: e.target.checked }))}
+                    onChange={(e) =>
+                      setForm((c) => ({
+                        ...c,
+                        paypalSandbox: e.target.checked,
+                      }))
+                    }
                   />
-                  <span className="text-[12px] font-bold" style={{ color: "var(--tx)" }}>
-                    Sandbox — bật khi test; tắt để dùng Live credentials và nhận tiền thật
+                  <span
+                    className="text-[12px] font-bold"
+                    style={{ color: "var(--tx)" }}
+                  >
+                    Sandbox — bật khi test; tắt để dùng Live credentials và nhận
+                    tiền thật
                   </span>
                 </label>
-                <div className="mt-5 rounded-xl px-4 py-3" style={{ background: "var(--surface)", border: "1px solid var(--bd)" }}>
-                  <p className="text-[11px] font-black uppercase tracking-wider" style={{ color: "var(--tx-f)" }}>Webhook URL của shop</p>
-                  <code className="mt-2 block break-all text-[12px]" style={{ color: "rgb(96,165,250)" }}>
-                    {(configQuery.data as any)?.paypalWebhookUrl || "Lưu cấu hình để lấy URL"}
+                <div
+                  className="mt-5 rounded-xl px-4 py-3"
+                  style={{
+                    background: "var(--surface)",
+                    border: "1px solid var(--bd)",
+                  }}
+                >
+                  <p
+                    className="text-[11px] font-black uppercase tracking-wider"
+                    style={{ color: "var(--tx-f)" }}
+                  >
+                    Webhook URL của shop
+                  </p>
+                  <code
+                    className="mt-2 block break-all text-[12px]"
+                    style={{ color: "rgb(96,165,250)" }}
+                  >
+                    {(configQuery.data as any)?.paypalWebhookUrl ||
+                      "Lưu cấu hình để lấy URL"}
                   </code>
-                  <p className="mt-2 text-[11px]" style={{ color: "var(--tx-f)" }}>
-                    Sự kiện: CHECKOUT.ORDER.APPROVED và PAYMENT.CAPTURE.COMPLETED.
+                  <p
+                    className="mt-2 text-[11px]"
+                    style={{ color: "var(--tx-f)" }}
+                  >
+                    Sự kiện: CHECKOUT.ORDER.APPROVED và
+                    PAYMENT.CAPTURE.COMPLETED.
                   </p>
                 </div>
               </div>
             )}
             <div className="mt-6 flex justify-end">
-              <button type="button" disabled={saveMutation.isPending} onClick={() => saveMutation.mutate()}
+              <button
+                type="button"
+                disabled={saveMutation.isPending}
+                onClick={() => saveMutation.mutate()}
                 className="rounded-xl px-4 py-2 text-[12px] font-black transition hover:opacity-80 disabled:opacity-40"
-                style={{ background: "rgb(249,115,22)", color: "#fff" }}>
+                style={{ background: "rgb(249,115,22)", color: "#fff" }}
+              >
                 {saveMutation.isPending ? t.saving : "Lưu thay đổi"}
               </button>
             </div>
@@ -1418,52 +2906,147 @@ export function BotConfigPage() {
         {activeTab === "affiliate" && (
           <div>
             <div className="mb-5 flex items-center gap-2">
-              <div className="flex h-8 w-8 items-center justify-center rounded-xl" style={{ background: "rgba(249,115,22,0.12)" }}>
+              <div
+                className="flex h-8 w-8 items-center justify-center rounded-xl"
+                style={{ background: "rgba(249,115,22,0.12)" }}
+              >
                 <Handshake className="h-4 w-4 text-orange-400" />
               </div>
-              <h2 className="text-base font-black" style={{ color: "var(--tx)" }}>{t.cardAffiliate}</h2>
+              <h2
+                className="text-base font-black"
+                style={{ color: "var(--tx)" }}
+              >
+                {t.cardAffiliate}
+              </h2>
             </div>
             <div className="grid gap-5 sm:grid-cols-2">
-              <button type="button" onClick={() => setAffiliateForm((f) => ({ ...f, enabled: !f.enabled }))}
+              <button
+                type="button"
+                onClick={() =>
+                  setAffiliateForm((f) => ({ ...f, enabled: !f.enabled }))
+                }
                 className="flex items-center justify-between rounded-2xl px-4 py-3 transition-all"
-                style={{ background: affiliateForm.enabled ? "rgba(249,115,22,0.08)" : "var(--inp)", border: `1px solid ${affiliateForm.enabled ? "rgba(249,115,22,0.4)" : "var(--bd)"}` }}>
+                style={{
+                  background: affiliateForm.enabled
+                    ? "rgba(249,115,22,0.08)"
+                    : "var(--inp)",
+                  border: `1px solid ${affiliateForm.enabled ? "rgba(249,115,22,0.4)" : "var(--bd)"}`,
+                }}
+              >
                 <div className="flex items-center gap-3">
-                  <span className="flex h-8 w-8 items-center justify-center rounded-xl text-sm transition-all"
-                    style={{ background: affiliateForm.enabled ? "rgb(249,115,22)" : "var(--surface)", color: affiliateForm.enabled ? "white" : "var(--tx-f)" }}>
+                  <span
+                    className="flex h-8 w-8 items-center justify-center rounded-xl text-sm transition-all"
+                    style={{
+                      background: affiliateForm.enabled
+                        ? "rgb(249,115,22)"
+                        : "var(--surface)",
+                      color: affiliateForm.enabled ? "white" : "var(--tx-f)",
+                    }}
+                  >
                     {affiliateForm.enabled ? "✓" : "○"}
                   </span>
                   <div className="text-left">
-                    <p className="text-sm font-semibold" style={{ color: "var(--tx)" }}>{affiliateForm.enabled ? t.affiliateActive : t.affiliateInactive}</p>
-                    <p className="text-xs" style={{ color: "var(--tx-f)" }}>{t.affiliateToggleHint}</p>
+                    <p
+                      className="text-sm font-semibold"
+                      style={{ color: "var(--tx)" }}
+                    >
+                      {affiliateForm.enabled
+                        ? t.affiliateActive
+                        : t.affiliateInactive}
+                    </p>
+                    <p className="text-xs" style={{ color: "var(--tx-f)" }}>
+                      {t.affiliateToggleHint}
+                    </p>
                   </div>
                 </div>
-                <div className="h-5 w-9 rounded-full transition-all" style={{ background: affiliateForm.enabled ? "rgb(249,115,22)" : "var(--bd)" }}>
-                  <div className="m-0.5 h-4 w-4 rounded-full bg-white shadow transition-all" style={{ transform: affiliateForm.enabled ? "translateX(16px)" : "translateX(0)" }} />
+                <div
+                  className="h-5 w-9 rounded-full transition-all"
+                  style={{
+                    background: affiliateForm.enabled
+                      ? "rgb(249,115,22)"
+                      : "var(--bd)",
+                  }}
+                >
+                  <div
+                    className="m-0.5 h-4 w-4 rounded-full bg-white shadow transition-all"
+                    style={{
+                      transform: affiliateForm.enabled
+                        ? "translateX(16px)"
+                        : "translateX(0)",
+                    }}
+                  />
                 </div>
               </button>
-              <div className="flex items-center gap-3 rounded-2xl px-4 py-3" style={{ background: "var(--inp)", border: "1px solid var(--bd)" }}>
-                <span className="text-sm font-medium" style={{ color: "var(--tx-f)" }}>{t.affiliateCommission}</span>
-                <Input type="number" min={0} max={100} step={0.5} value={affiliateForm.commissionPct}
-                  onChange={(e) => setAffiliateForm((f) => ({ ...f, commissionPct: e.target.value }))} className="w-20 text-center" />
-                <span className="text-sm font-bold" style={{ color: "rgb(249,115,22)" }}>%</span>
+              <div
+                className="flex items-center gap-3 rounded-2xl px-4 py-3"
+                style={{
+                  background: "var(--inp)",
+                  border: "1px solid var(--bd)",
+                }}
+              >
+                <span
+                  className="text-sm font-medium"
+                  style={{ color: "var(--tx-f)" }}
+                >
+                  {t.affiliateCommission}
+                </span>
+                <Input
+                  type="number"
+                  min={0}
+                  max={100}
+                  step={0.5}
+                  value={affiliateForm.commissionPct}
+                  onChange={(e) =>
+                    setAffiliateForm((f) => ({
+                      ...f,
+                      commissionPct: e.target.value,
+                    }))
+                  }
+                  className="w-20 text-center"
+                />
+                <span
+                  className="text-sm font-bold"
+                  style={{ color: "rgb(249,115,22)" }}
+                >
+                  %
+                </span>
               </div>
               <div className="sm:col-span-2">
-                <Field label={t.affiliateProgramLabel} hint={t.affiliateProgramHint}>
-                  <Textarea value={affiliateForm.programText} onChange={(e) => setAffiliateForm((f) => ({ ...f, programText: e.target.value }))}
-                    placeholder={t.affiliateProgramPh(affiliateForm.commissionPct)} rows={3} />
+                <Field
+                  label={t.affiliateProgramLabel}
+                  hint={t.affiliateProgramHint}
+                >
+                  <Textarea
+                    value={affiliateForm.programText}
+                    onChange={(e) =>
+                      setAffiliateForm((f) => ({
+                        ...f,
+                        programText: e.target.value,
+                      }))
+                    }
+                    placeholder={t.affiliateProgramPh(
+                      affiliateForm.commissionPct,
+                    )}
+                    rows={3}
+                  />
                 </Field>
               </div>
             </div>
             <div className="mt-6 flex justify-end">
-              <button type="button" disabled={affiliateMutation.isPending} onClick={() => affiliateMutation.mutate()}
+              <button
+                type="button"
+                disabled={affiliateMutation.isPending}
+                onClick={() => affiliateMutation.mutate()}
                 className="rounded-xl px-4 py-2 text-[12px] font-black transition hover:opacity-80 disabled:opacity-40"
-                style={{ background: "rgb(249,115,22)", color: "#fff" }}>
-                {affiliateMutation.isPending ? t.affiliateSaving : t.affiliateSave}
+                style={{ background: "rgb(249,115,22)", color: "#fff" }}
+              >
+                {affiliateMutation.isPending
+                  ? t.affiliateSaving
+                  : t.affiliateSave}
               </button>
             </div>
           </div>
         )}
-
       </div>
     </div>
   );

@@ -16,6 +16,7 @@ import {
 
 import { PrismaService } from "../db/prisma.service";
 import { TelegramBotService } from "../lib/telegram-bot.service.v2";
+import { ShopsService } from "../shops/shops.service";
 import type { AuthenticatedUser } from "../types";
 
 import type {
@@ -32,6 +33,8 @@ export class SourceStockService {
     private readonly prisma: PrismaService,
     @Inject(TelegramBotService)
     private readonly telegramBotService: TelegramBotService,
+    @Inject(ShopsService)
+    private readonly shopsService: ShopsService,
   ) {}
 
   // ============================================================
@@ -200,6 +203,9 @@ export class SourceStockService {
           available: result.availableTotal,
         },
       ])
+      .catch(() => undefined);
+    this.shopsService
+      .syncDownstreamCatalogTree(product.shopId)
       .catch(() => undefined);
 
     return {

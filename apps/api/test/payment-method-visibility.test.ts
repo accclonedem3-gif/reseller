@@ -17,6 +17,8 @@ test("bot hides receiving methods that are configured but turned off on the web"
     okxEnabled: false,
     usdtTrc20Address: "TRON_ADDRESS",
     usdtTrc20Enabled: false,
+    usdtBep20Address: "0x1111111111111111111111111111111111111111",
+    usdtBep20Enabled: false,
     usdtSolanaAddress: "SOLANA_ADDRESS",
     usdtSolanaEnabled: false,
     usdtTonAddress: "TON_ADDRESS",
@@ -41,6 +43,8 @@ test("bot shows only enabled and fully configured receiving methods", () => {
     okxEnabled: true,
     usdtTrc20Address: "TRON_ADDRESS",
     usdtTrc20Enabled: true,
+    usdtBep20Address: "0x1111111111111111111111111111111111111111",
+    usdtBep20Enabled: true,
     usdtSolanaAddress: "SOLANA_ADDRESS",
     usdtSolanaEnabled: false,
     usdtTonAddress: "TON_ADDRESS",
@@ -56,6 +60,7 @@ test("bot shows only enabled and fully configured receiving methods", () => {
     PaymentProvider.PAYPAL,
     PaymentProvider.BINANCE,
     PaymentProvider.USDT_TRC20,
+    PaymentProvider.USDT_BEP20,
     PaymentProvider.USDT_TON,
   ]);
 });

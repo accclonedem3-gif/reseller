@@ -1,12 +1,14 @@
 import { useState } from "react";
 import { createPortal } from "react-dom";
-import { useQuery } from "@tanstack/react-query";
-import { Search, X, ChevronLeft, ChevronRight } from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Download, Search, X, ChevronLeft, ChevronRight, RotateCcw } from "lucide-react";
+import { useSearchParams } from "react-router-dom";
 
 import { SectionHeading } from "@/components/dashboard/section-heading";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { useToast } from "@/components/ui/toast";
 import { api } from "@/lib/api";
 import { formatCurrency, formatDate, formatStatusLabel } from "@/lib/format";
 
@@ -23,10 +25,13 @@ type OrderRow = {
 };
 
 type OrderDetail = OrderRow & {
+  paymentStatus: string;
   unitPrice: number;
   deliveredAccountText: string | null;
   customerTelegramId: string | null;
   customerName: string | null;
+  customerWalletBalance: number;
+  refundedAmount: number;
   warrantyPolicy: string | null;
   warrantyClaims: Array<{
     id: string;
@@ -55,10 +60,41 @@ function statusTone(status: string) {
 }
 
 function DetailDrawer({ orderId, onClose }: { orderId: string; onClose: () => void }) {
+  const queryClient = useQueryClient();
+  const { showToast } = useToast();
+  const [refundAmount, setRefundAmount] = useState("");
+  const [refundNote, setRefundNote] = useState("");
   const { data, isLoading } = useQuery<OrderDetail>({
     queryKey: ["admin", "order-detail", orderId],
     queryFn: () => api.get(`/admin/orders/${orderId}`).then((r) => r.data),
   });
+
+  const refundMutation = useMutation({
+    mutationFn: async () => {
+      const amount = Number(refundAmount);
+      return (await api.post(`/admin/orders/${orderId}/refund`, {
+        amount,
+        note: refundNote.trim() || undefined,
+      })).data as { amount: number; balanceAfter: number; remaining: number; isFullRefund: boolean };
+    },
+    onSuccess: (result) => {
+      void queryClient.invalidateQueries({ queryKey: ["admin", "order-detail", orderId] });
+      void queryClient.invalidateQueries({ queryKey: ["admin", "orders"] });
+      setRefundAmount("");
+      setRefundNote("");
+      showToast({
+        tone: "success",
+        message: `Đã hoàn ${formatCurrency(result.amount)} vào ví khách. Số dư mới: ${formatCurrency(result.balanceAfter)}.`,
+      });
+    },
+    onError: (error: any) => showToast({
+      tone: "error",
+      message: error?.response?.data?.message || "Không thể hoàn tiền vào ví khách.",
+    }),
+  });
+
+  const remainingRefund = data && data.paymentStatus === "paid" ? Math.max(0, data.totalAmount - data.refundedAmount) : 0;
+  const parsedRefundAmount = Number(refundAmount);
 
   return createPortal(
     <div className="fixed inset-0 z-[80] flex justify-end" style={{ background: "rgba(0,0,0,0.55)" }} onClick={onClose}>
@@ -110,6 +146,69 @@ function DetailDrawer({ orderId, onClose }: { orderId: string; onClose: () => vo
               ))}
             </div>
 
+            <div className="rounded-[14px] border border-amber-400/20 bg-amber-400/[0.06] p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-sm font-semibold text-white">Hoàn tiền vào ví khách</p>
+                  <p className="mt-1 text-xs text-slate-400">
+                    Ví hiện tại: {formatCurrency(data.customerWalletBalance)} · Đã hoàn: {formatCurrency(data.refundedAmount)} · Còn có thể hoàn: {formatCurrency(remainingRefund)}
+                  </p>
+                </div>
+                <RotateCcw className="h-5 w-5 shrink-0 text-amber-300" />
+              </div>
+
+              {data.paymentStatus !== "paid" && data.status !== "refunded" ? (
+                <p className="mt-3 rounded-[10px] bg-slate-400/10 px-3 py-2 text-xs font-semibold text-slate-300">
+                  Chỉ có thể hoàn tiền cho đơn đã thanh toán.
+                </p>
+              ) : remainingRefund > 0 ? (
+                <div className="mt-3 space-y-2">
+                  <div className="flex gap-2">
+                    <input
+                      type="number"
+                      min={1}
+                      max={remainingRefund}
+                      step={1}
+                      value={refundAmount}
+                      onChange={(event) => setRefundAmount(event.target.value)}
+                      placeholder="Số tiền hoàn (VND)"
+                      className="min-w-0 flex-1 rounded-[10px] border border-white/10 bg-[#121a2e] px-3 py-2 text-sm text-white outline-none focus:border-amber-300/40"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setRefundAmount(String(remainingRefund))}
+                      className="rounded-[10px] border border-white/10 px-3 py-2 text-xs font-semibold text-slate-300 hover:bg-white/5"
+                    >
+                      Hoàn đủ
+                    </button>
+                  </div>
+                  <input
+                    value={refundNote}
+                    onChange={(event) => setRefundNote(event.target.value)}
+                    maxLength={500}
+                    placeholder="Lý do / ghi chú (không bắt buộc)"
+                    className="w-full rounded-[10px] border border-white/10 bg-[#121a2e] px-3 py-2 text-sm text-white outline-none focus:border-amber-300/40"
+                  />
+                  <button
+                    type="button"
+                    disabled={refundMutation.isPending || !Number.isInteger(parsedRefundAmount) || parsedRefundAmount < 1 || parsedRefundAmount > remainingRefund}
+                    onClick={() => {
+                      if (window.confirm(`Xác nhận hoàn ${formatCurrency(parsedRefundAmount)} vào số dư ví của khách?`)) {
+                        refundMutation.mutate();
+                      }
+                    }}
+                    className="w-full rounded-[10px] bg-amber-400 px-3 py-2.5 text-sm font-bold text-slate-950 transition hover:bg-amber-300 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    {refundMutation.isPending ? "Đang hoàn tiền..." : "Xác nhận hoàn vào ví"}
+                  </button>
+                </div>
+              ) : (
+                <p className="mt-3 rounded-[10px] bg-emerald-400/10 px-3 py-2 text-xs font-semibold text-emerald-300">
+                  Đơn này đã được hoàn đủ vào ví khách.
+                </p>
+              )}
+            </div>
+
             {data.deliveredAccountText && (
               <div>
                 <p className="text-xs uppercase tracking-wide text-slate-500">Tài khoản đã giao</p>
@@ -151,8 +250,9 @@ function DetailDrawer({ orderId, onClose }: { orderId: string; onClose: () => vo
 }
 
 export function AdminOrdersPage() {
+  const [urlParams] = useSearchParams();
   const [page, setPage] = useState(1);
-  const [search, setSearch] = useState("");
+  const [search, setSearch] = useState(() => urlParams.get("search") || "");
   const [filterStatus, setFilterStatus] = useState("");
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
 
@@ -167,6 +267,12 @@ export function AdminOrdersPage() {
   });
 
   const orders = query.data?.data || [];
+  const exportCurrentPage = () => {
+    const rows = [["Mã đơn", "Sản phẩm", "Trạng thái", "Tổng tiền", "Seller", "Shop", "Ngày tạo"], ...orders.map((order) => [order.orderCode, order.productName, order.status, String(order.totalAmount), order.sellerName || "", order.shopName || "", order.createdAt])];
+    const csv = rows.map((row) => row.map((cell) => `"${String(cell).replaceAll('"', '""')}"`).join(",")).join("\n");
+    const url = URL.createObjectURL(new Blob([`\uFEFF${csv}`], { type: "text/csv;charset=utf-8" }));
+    const anchor = document.createElement("a"); anchor.href = url; anchor.download = `orders-page-${page}.csv`; anchor.click(); URL.revokeObjectURL(url);
+  };
 
   return (
     <div className="space-y-6">
@@ -206,7 +312,10 @@ export function AdminOrdersPage() {
           <option value="refunded" className="bg-slate-950">Refunded</option>
           <option value="awaiting_payment" className="bg-slate-950">Awaiting payment</option>
         </select>
+        <Button variant="secondary" onClick={exportCurrentPage}><Download className="mr-2 size-4" /> Xuất CSV</Button>
       </div>
+
+      <div className="flex flex-wrap gap-2">{[{ value: "", label: "Tất cả" }, { value: "failed", label: "Đơn lỗi" }, { value: "processing_purchase", label: "Đang xử lý" }, { value: "awaiting_payment", label: "Chờ thanh toán" }, { value: "refunded", label: "Đã hoàn" }].map((item) => <button key={item.value} onClick={() => { setFilterStatus(item.value); setPage(1); }} className={`rounded-full border px-3 py-1.5 text-xs font-bold transition ${filterStatus === item.value ? "border-orange-500/40 bg-orange-500/15 text-orange-300" : "border-white/10 text-slate-400 hover:text-white"}`}>{item.label}</button>)}</div>
 
       <Card className="p-0 overflow-hidden">
         {orders.length === 0 ? (

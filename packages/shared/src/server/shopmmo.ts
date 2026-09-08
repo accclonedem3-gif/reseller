@@ -25,8 +25,25 @@ export function isShopMmoKey(buyerKey?: string | null): boolean {
   return /^[a-zA-Z0-9]{64}$/.test(key);
 }
 
-export function isShopMmoProvider(credentials: { baseUrl?: string | null, buyerKey?: string | null }): boolean {
-  return isShopMmoBaseUrl(credentials.baseUrl) || isShopMmoKey(credentials.buyerKey);
+export function isShopMmoProvider(credentials: {
+  baseUrl?: string | null;
+  buyerKey?: string | null;
+  providerName?: string | null;
+}): boolean {
+  const baseUrl = String(credentials.baseUrl || "").trim();
+
+  // The configured URL is the authoritative provider identity. Older shop
+  // records can retain the default "canboso" label after their credentials
+  // are changed to ShopMMO (and both providers can use 64-character keys).
+  if (isShopMmoBaseUrl(baseUrl)) return true;
+  if (/(^|\/\/|\.)canboso\.com/i.test(baseUrl)) return false;
+
+  const providerName = String(credentials.providerName || "")
+    .trim()
+    .toLowerCase();
+  if (providerName.includes("shopmmo")) return true;
+  if (providerName.includes("canboso")) return false;
+  return isShopMmoKey(credentials.buyerKey);
 }
 
 function getTimeout(credentials: ProviderCredentials, fallback = 15000) {
@@ -34,7 +51,10 @@ function getTimeout(credentials: ProviderCredentials, fallback = 15000) {
   return Number.isFinite(timeout) && timeout > 0 ? timeout : fallback;
 }
 
-function client(credentials: ProviderCredentials, perRequestTimeout?: number): AxiosInstance {
+function client(
+  credentials: ProviderCredentials,
+  perRequestTimeout?: number,
+): AxiosInstance {
   if (!credentials.buyerKey) {
     throw new Error("ShopMMO API key (X-API-Key) is missing.");
   }
@@ -57,13 +77,14 @@ function client(credentials: ProviderCredentials, perRequestTimeout?: number): A
 
     config.__retryCount = config.__retryCount || 0;
     const status = error.response?.status;
-    
+
     // 429 Rate Limit or 5xx server errors
-    const isRetryable = status === 429 || (status && status >= 500 && status <= 599);
+    const isRetryable =
+      status === 429 || (status && status >= 500 && status <= 599);
 
     if (isRetryable && config.__retryCount < 4) {
       config.__retryCount += 1;
-      
+
       let delayMs = 1500 * Math.pow(1.5, config.__retryCount - 1);
       const retryAfter = error.response?.headers?.["retry-after"];
       if (retryAfter) {
@@ -72,10 +93,10 @@ function client(credentials: ProviderCredentials, perRequestTimeout?: number): A
           delayMs = parsed * 1000;
         }
       }
-      
+
       delayMs += Math.random() * 500;
       await delay(delayMs);
-      
+
       return instance(config);
     }
     return Promise.reject(error);
@@ -93,7 +114,14 @@ function errorMessage(error: unknown): string {
     const data = error.response?.data as Record<string, any> | undefined;
     const reqId = error.response?.headers?.["x-request-id"];
     const reqIdStr = reqId ? ` (ReqID: ${reqId})` : "";
-    return String(data?.error?.message || data?.message || error.message || "ShopMMO request failed") + reqIdStr;
+    return (
+      String(
+        data?.error?.message ||
+          data?.message ||
+          error.message ||
+          "ShopMMO request failed",
+      ) + reqIdStr
+    );
   }
   return error instanceof Error ? error.message : "ShopMMO request failed";
 }
@@ -102,10 +130,17 @@ function isOutOfStockError(error: unknown): boolean {
   if (!axios.isAxiosError(error)) return false;
   const status = Number(error.response?.status);
   const data = error.response?.data as Record<string, any> | undefined;
-  const msg = (data?.error?.message || data?.message || error.message || "").toLowerCase();
-  
+  const msg = (
+    data?.error?.message ||
+    data?.message ||
+    error.message ||
+    ""
+  ).toLowerCase();
+
   return (
-    status === 404 || status === 409 || status === 410 ||
+    status === 404 ||
+    status === 409 ||
+    status === 410 ||
     msg.includes("không đủ") ||
     msg.includes("hết hàng") ||
     msg.includes("out of stock")
@@ -119,28 +154,29 @@ export async function fetchShopMmoProducts(
 ): Promise<ProviderProduct[]> {
   const api = client(credentials);
   const products: ProviderProduct[] = [];
-  
+
   let page = 1;
   const perPage = 50;
 
   for (let guard = 0; guard < 50; guard += 1) {
-    const { data } = await api.get("/products", { 
-      params: { 
-        in_stock: 1, 
+    const { data } = await api.get("/products", {
+      params: {
+        in_stock: 1,
         per_page: perPage,
-        page 
-      } 
+        page,
+      },
     });
 
     const rows = Array.isArray(data?.data) ? data.data : [];
-    
+
     for (const item of rows) {
       if (!item || !item.id) continue;
-      
-      const available = item.api_stock !== undefined && item.api_stock !== null 
-        ? Number(item.api_stock) 
-        : null;
-        
+
+      const available =
+        item.api_stock !== undefined && item.api_stock !== null
+          ? Number(item.api_stock)
+          : null;
+
       products.push({
         externalId: String(item.id),
         sourceName: String(item.name || "Untitled product"),
@@ -181,7 +217,7 @@ export async function fetchShopMmoBalance(
 ): Promise<ProviderBalanceResult> {
   const api = client(credentials);
   const { data } = await api.get("/profile");
-  
+
   const balance = Number(data?.money || 0);
 
   return {
@@ -224,16 +260,22 @@ export async function purchaseFromShopMmo(
   const idempotencyKey = input.clientOrderCode || crypto.randomUUID();
 
   try {
-    const { data } = await api.post("/order", {
-      product_id: input.productId,
-      amount: input.quantity,
-    }, {
-      headers: {
-        "Idempotency-Key": idempotencyKey,
-      }
-    });
+    const { data } = await api.post(
+      "/order",
+      {
+        product_id: input.productId,
+        amount: input.quantity,
+      },
+      {
+        headers: {
+          "Idempotency-Key": idempotencyKey,
+        },
+      },
+    );
 
-    const status = String(data?.status || "").trim().toLowerCase();
+    const status = String(data?.status || "")
+      .trim()
+      .toLowerCase();
     const transId = String(data?.trans_id || "").trim();
 
     if (!transId) {
@@ -267,7 +309,9 @@ export async function purchaseFromShopMmo(
         pending: !deliveredText,
         providerOrderId: null,
         providerOrderCode: transId,
-        message: deliveredText ? undefined : "Order success but delivery is empty.",
+        message: deliveredText
+          ? undefined
+          : "Order success but delivery is empty.",
         rawPayload: data,
       };
     }
@@ -285,15 +329,15 @@ export async function purchaseFromShopMmo(
     };
   } catch (error) {
     if (axios.isAxiosError(error) && error.response?.status === 402) {
-       return {
-         success: false,
-         deliveredText: null,
-         outOfStock: false,
-         message: "Số dư ShopMMO không đủ (HTTP 402).",
-         rawPayload: error.response?.data,
-       };
+      return {
+        success: false,
+        deliveredText: null,
+        outOfStock: false,
+        message: "Số dư ShopMMO không đủ (HTTP 402).",
+        rawPayload: error.response?.data,
+      };
     }
-    
+
     return {
       success: false,
       deliveredText: null,
@@ -329,7 +373,9 @@ export async function fetchShopMmoOrderStatus(
   const api = client(credentials);
   try {
     const { data } = await api.get(`/orders/${encodeURIComponent(transId)}`);
-    const status = String(data?.status || "").trim().toLowerCase();
+    const status = String(data?.status || "")
+      .trim()
+      .toLowerCase();
 
     if (status === "success") {
       const deliveredText = formatDelivery(data?.items);

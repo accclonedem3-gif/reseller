@@ -18,6 +18,7 @@ export const sellerCapabilitySchema = z.enum([
   "source_internal_manage",
   "source_key_manage",
   "warranty_manage",
+  "userbot_campaign_manage",
 ]);
 export type SellerCapability = z.infer<typeof sellerCapabilitySchema>;
 

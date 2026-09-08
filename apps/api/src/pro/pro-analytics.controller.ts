@@ -74,7 +74,7 @@ class OrdersQueryDto {
 
 @Controller("pro/analytics")
 @UseGuards(JwtAuthGuard, SellerTierGuard)
-@RequireSellerTier(SellerTier.ULTRA)
+@RequireSellerTier(SellerTier.PRO, SellerTier.ULTRA)
 export class ProAnalyticsController {
   constructor(
     @Inject(ProAnalyticsService)

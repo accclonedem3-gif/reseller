@@ -248,6 +248,60 @@ export class CacheService implements OnModuleDestroy {
     return entry.value as T;
   }
 
+  /**
+   * Atomically checks if (current_hold + quantity <= max_available) and if so, increments the hold.
+   * Returns true if successful (stock reserved), false if not enough stock.
+   */
+  async holdStockAtomic(key: string, maxAvailable: number, quantity: number): Promise<boolean> {
+    if (this.circuitOpen()) return true; // fail-open, assume we can hold it, DB will catch it later if it's strict
+    try {
+      const script = `
+        local hold = tonumber(redis.call("GET", KEYS[1]) or "0")
+        local max_avail = tonumber(ARGV[1])
+        local qty = tonumber(ARGV[2])
+        if hold + qty <= max_avail then
+          redis.call("INCRBY", KEYS[1], qty)
+          redis.call("EXPIRE", KEYS[1], 300) -- 5 mins (matches checkout timeout)
+          return 1
+        else
+          return 0
+        end
+      `;
+      const result = await this.redis.eval(script, 1, key, maxAvailable, quantity);
+      this.recordSuccess();
+      return result === 1;
+    } catch (err) {
+      this.recordFailure();
+      this.logger.warn(`holdStockAtomic(${key}) failed: ${(err as Error).message}`);
+      return true; // fail-open
+    }
+  }
+
+  /**
+   * Releases previously held stock.
+   */
+  async releaseStockAtomic(key: string, quantity: number): Promise<void> {
+    if (this.circuitOpen()) return;
+    try {
+      const script = `
+        local hold = tonumber(redis.call("GET", KEYS[1]) or "0")
+        local qty = tonumber(ARGV[1])
+        local new_hold = hold - qty
+        if new_hold < 0 then new_hold = 0 end
+        if new_hold > 0 then
+          redis.call("SET", KEYS[1], new_hold, "EX", 300)
+        else
+          redis.call("DEL", KEYS[1])
+        end
+      `;
+      await this.redis.eval(script, 1, key, quantity);
+      this.recordSuccess();
+    } catch (err) {
+      this.recordFailure();
+      this.logger.warn(`releaseStockAtomic(${key}) failed: ${(err as Error).message}`);
+    }
+  }
+
   memoSet(key: string, value: unknown, ttlSeconds: number): void {
     this.mem.set(key, { value, expiresAt: Date.now() + ttlSeconds * 1000 });
   }

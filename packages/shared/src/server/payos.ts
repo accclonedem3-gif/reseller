@@ -236,3 +236,31 @@ export function verifyPayOSWebhook(
   const expectedSignature = buildPayOSSignature(body, checksumKey);
   return expectedSignature.toLowerCase() === signature.toLowerCase();
 }
+
+/**
+ * A create-payment response is also signed by payOS, but it is not proof that
+ * money was received. Keep this check separate from signature verification so
+ * callers cannot replay a signed PENDING create response as a payment webhook.
+ */
+export function isSuccessfulPayOSWebhook(body: Record<string, unknown>) {
+  const data = body.data;
+
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    return false;
+  }
+
+  const payload = data as Record<string, unknown>;
+  const orderCode = String(payload.orderCode ?? "").trim();
+  const amount = Number(payload.amount);
+  const currency = String(payload.currency ?? "").trim().toUpperCase();
+
+  return (
+    body.success === true
+    && String(body.code ?? "").trim() === "00"
+    && String(payload.code ?? "").trim() === "00"
+    && Boolean(orderCode)
+    && Number.isFinite(amount)
+    && amount > 0
+    && currency === "VND"
+  );
+}

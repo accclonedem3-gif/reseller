@@ -645,6 +645,13 @@ function DeliveryModeHint({ mode }: { mode: string }) {
         <p className="text-xs leading-5 text-emerald-300">{t.hintAutoStock}</p>
       </div>
     );
+  if (mode === "ADD_MAIL")
+    return (
+      <div className="flex items-start gap-2 rounded-[12px] border border-violet-400/20 bg-violet-500/8 px-3 py-2.5">
+        <span className="mt-px text-sm">✉️</span>
+        <p className="text-xs leading-5 text-violet-300">Bot yêu cầu email trước khi thanh toán; seller copy email trong Đơn chờ xử lý và thêm khách vào Family.</p>
+      </div>
+    );
   if (mode === "MANUAL")
     return (
       <div className="flex items-start gap-2 rounded-[12px] border border-amber-400/20 bg-amber-500/8 px-3 py-2.5">
@@ -877,7 +884,7 @@ function ProductForm({
       <div className="grid gap-3 sm:grid-cols-2">
         <div className="space-y-2">
           <Field label={t.fieldDeliveryMode}>
-            <SelectBox value={form.sourceDeliveryMode} onChange={(v) => set("sourceDeliveryMode", v)} options={sourceDeliveryModeOptions} placeholder={t.phDeliveryMode} />
+            <SelectBox value={form.sourceDeliveryMode} onChange={(v) => setForm((f) => ({ ...f, sourceDeliveryMode: v, accountType: v === "ADD_MAIL" ? "ADD_FAMILY" : f.accountType, accountTypeOther: v === "ADD_MAIL" ? "" : f.accountTypeOther, deliveryText: v === "ADD_MAIL" ? "" : f.deliveryText }))} options={sourceDeliveryModeOptions} placeholder={t.phDeliveryMode} />
           </Field>
           <DeliveryModeHint mode={form.sourceDeliveryMode} />
         </div>

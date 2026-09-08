@@ -141,7 +141,8 @@ export class OkxPersonalApiService {
     const hit = deposits.find(
       (d) =>
         String(d.txId || "").trim().toLowerCase() === normalized &&
-        (d.state === "2" || d.state === "1"),
+        d.state === "2" &&
+        String(d.ccy || "").trim().toUpperCase() === "USDT",
     );
     return hit ?? null;
   }
@@ -162,6 +163,7 @@ export class OkxPersonalApiService {
     const hit = deposits.find(
       (d) =>
         d.state === "2" &&
+        String(d.ccy || "").trim().toUpperCase() === "USDT" &&
         Math.abs(Number(d.amt) - targetAmount) <= tolerance,
     );
     return hit ?? null;

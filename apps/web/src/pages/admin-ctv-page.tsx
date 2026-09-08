@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { EmptyState } from "@/components/dashboard/empty-state";
@@ -493,6 +494,13 @@ export function AdminCtvPage() {
                         </td>
                         <td className="px-4 py-3">
                           <div className="flex items-center justify-end gap-2">
+                            <Link
+                              to={`/admin/ctv/${account.id}`}
+                              title="Seller 360°"
+                              className="rounded-[8px] border border-white/8 bg-[#18233c] px-2 py-1.5 text-[11px] font-bold text-orange-300 transition hover:text-orange-200"
+                            >
+                              360°
+                            </Link>
                             <button
                               type="button"
                               title="Đổi gói"

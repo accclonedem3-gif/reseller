@@ -16,7 +16,13 @@ import {
   UnauthorizedException,
 } from "@nestjs/common";
 import { Request, Response } from "express";
-import { verifyPay2sIpnSignature, verifyPayOSWebhook } from "@reseller/shared/server";
+import {
+  decryptSecret,
+  fetchTonUsdtTransfers,
+  isSuccessfulPayOSWebhook,
+  verifyPay2sIpnSignature,
+  verifyPayOSWebhook,
+} from "@reseller/shared/server";
 import { PaymentProvider } from "@prisma/client";
 import { SkipThrottle } from "@nestjs/throttler";
 
@@ -30,6 +36,11 @@ import { ShopsService } from "../shops/shops.service";
 import { UpgradeService } from "../upgrade/upgrade.service";
 import { TiersService } from "../tiers/tiers.service";
 import { WalletService } from "../wallet/wallet.service";
+import { AlchemyBep20Service, type AlchemyAddressActivity } from "../lib/alchemy-bep20.service";
+import { OnchainPaymentService } from "../lib/onchain-payment.service";
+import { SolanaPaymentService } from "../lib/solana-payment.service";
+import { OkxPersonalApiService } from "../lib/okx-personal-api.service";
+import { PrismaService } from "../db/prisma.service";
 
 // Payment-provider IPNs (PayOS / Pay2s / Web2m / BinancePay) are signature-verified and can arrive
 // in bursts from a single provider IP — a per-IP throttle here would drop legitimate callbacks and
@@ -60,7 +71,94 @@ export class WebhooksController {
     private readonly tiersService: TiersService,
     @Inject(SellerSourceConnectionService)
     private readonly connectionService: SellerSourceConnectionService,
+    @Inject(AlchemyBep20Service)
+    private readonly alchemyBep20: AlchemyBep20Service,
+    @Inject(OnchainPaymentService)
+    private readonly onchainPaymentService: OnchainPaymentService,
+    @Inject(SolanaPaymentService)
+    private readonly solanaPaymentService: SolanaPaymentService,
+    @Inject(OkxPersonalApiService)
+    private readonly okxPersonalApiService: OkxPersonalApiService,
+    @Inject(PrismaService)
+    private readonly prisma: PrismaService,
   ) { }
+
+  @Post("alchemy/bep20")
+  async handleAlchemyBep20(
+    @Req() request: RawBodyRequest<Request>,
+    @Headers("x-alchemy-signature") signature: string | undefined,
+    @Body() body: Record<string, any>,
+  ) {
+    if (!this.alchemyBep20.isConfigured()) {
+      throw new UnauthorizedException("Alchemy BEP20 webhook is not configured.");
+    }
+    if (!this.alchemyBep20.verifySignature(request.rawBody, signature)) {
+      throw new UnauthorizedException("Invalid Alchemy webhook signature.");
+    }
+    if (body.webhookId !== this.config.alchemyBep20WebhookId) {
+      throw new UnauthorizedException("Unexpected Alchemy webhook id.");
+    }
+    const network = String(body?.event?.network || "").toUpperCase();
+    const isBnbMainnet = network.includes("MAINNET")
+      && (network.includes("BNB") || network.includes("BSC"));
+    if (body.type !== "ADDRESS_ACTIVITY" || !isBnbMainnet) {
+      return { success: true, accepted: 0, ignored: true };
+    }
+
+    const activities = Array.isArray(body?.event?.activity)
+      ? body.event.activity as AlchemyAddressActivity[]
+      : [];
+    const results: Array<Record<string, unknown>> = [];
+    for (const activity of activities) {
+      const resolved = await this.alchemyBep20.resolveConfirmedTransfer(activity);
+      if (resolved.status !== "matched") {
+        results.push(resolved);
+        continue;
+      }
+      const receipt = await this.paymentService.claimOnchainPaymentReceipt({
+        provider: PaymentProvider.USDT_BEP20,
+        txHash: resolved.txHash,
+        externalOrderCode: resolved.externalOrderCode,
+        amountUsdt: resolved.amountUsdt,
+        destination: resolved.toAddress,
+        transactionAt: resolved.blockTimestamp,
+        tokenAddress: this.config.bscUsdtContractAddress,
+        blockReference: resolved.blockNumber,
+        confirmations: resolved.confirmations,
+        rawPayload: activity,
+      });
+      const completion = await this.processPaymentCompletion(
+        resolved.externalOrderCode,
+        {
+          source: "alchemy_bep20_webhook",
+          webhookEventId: body.id,
+          webhookId: body.webhookId,
+          txHash: resolved.txHash,
+          network,
+          token: "USDT",
+          amountUsdt: resolved.amountUsdt,
+          fromAddress: resolved.fromAddress,
+          toAddress: resolved.toAddress,
+          blockNumber: resolved.blockNumber,
+          blockTimestamp: resolved.blockTimestamp.toISOString(),
+          confirmations: resolved.confirmations,
+        },
+      );
+      if (completion.reconciled) {
+        await this.paymentService.markOnchainPaymentReceiptProcessed(receipt.id, {
+          source: "alchemy_bep20_webhook",
+          webhookEventId: body.id,
+          activity,
+        });
+      }
+      results.push({ ...resolved, completion });
+    }
+    return {
+      success: true,
+      accepted: results.filter((row) => row.status === "matched").length,
+      results,
+    };
+  }
 
   @Post("payos")
   async handlePayOS(@Body() body: Record<string, any>) {
@@ -89,6 +187,16 @@ export class WebhooksController {
 
     if (!externalOrderCode) {
       return { success: true };
+    }
+
+    // A signed create-link response only means that PayOS accepted the invoice;
+    // it can still have status PENDING. Only the documented successful webhook
+    // shape is allowed to complete an order/deposit/tier purchase.
+    if (!isSuccessfulPayOSWebhook(body)) {
+      this.logger.warn(
+        `[payos] ignored non-payment payload for ${externalOrderCode}`,
+      );
+      return { success: true, ignored: true };
     }
 
     return this.processPaymentCompletion(externalOrderCode, body);
@@ -421,44 +529,180 @@ export class WebhooksController {
     }
     const provider = String(body?.provider || "").trim().toUpperCase() as PaymentProvider;
     const txHash = String(body?.txHash || body?.signature || "").trim();
-    const destination = String(body?.destination || "").trim();
-    const amountUsdt = Number(body?.amountUsdt || 0);
-    const transactionAt = new Date(String(body?.transactionAt || ""));
-    // Backward-compatible path for the existing Binance/OKX/TRC20/Solana worker calls.
-    // TON additionally uses the durable receipt claim below to prevent cross-table replay.
-    if (provider !== PaymentProvider.USDT_TON) {
-      return this.processPaymentCompletion(externalOrderCode, {
-        source: body?.source || "internal_crypto_auto_scan",
-        signature: body?.signature,
-        amountUsdt: body?.amountUsdt,
-        detectedAt: new Date().toISOString(),
-      });
+    const allowedProviders = new Set<PaymentProvider>([
+      PaymentProvider.USDT_TRC20,
+      PaymentProvider.USDT_BEP20,
+      PaymentProvider.USDT_SOL,
+      PaymentProvider.USDT_TON,
+      PaymentProvider.OKX,
+    ]);
+    if (!allowedProviders.has(provider)) {
+      throw new BadRequestException("Unsupported internal on-chain provider.");
     }
-    if (!txHash || !destination || !Number.isFinite(amountUsdt)) {
+    if (!txHash) {
       throw new BadRequestException("Invalid internal on-chain confirmation payload.");
     }
-    if (!Number.isFinite(transactionAt.getTime())) {
-      throw new BadRequestException("Invalid on-chain transaction time.");
+
+    const expectation = await this.paymentService.getOnchainPaymentExpectation(externalOrderCode);
+    if (expectation.provider !== provider) {
+      throw new BadRequestException("On-chain provider does not match the invoice.");
+    }
+
+    let verified: {
+      txHash: string;
+      amountUsdt: number;
+      destination: string;
+      transactionAt: Date;
+      tokenAddress: string;
+      blockReference: string | number | null;
+      confirmations: number | null;
+      chainPayload: unknown;
+    };
+    if (provider === PaymentProvider.USDT_TRC20 || provider === PaymentProvider.USDT_BEP20) {
+      const transfer = provider === PaymentProvider.USDT_TRC20
+        ? await this.onchainPaymentService.verifyUsdtTrc20Transfer({
+          txHash,
+          receiverAddress: expectation.destination,
+          expectedAmount: expectation.amountUsdt,
+          createdAt: expectation.createdAt,
+        })
+        : await this.onchainPaymentService.verifyUsdtBep20Transfer({
+          txHash,
+          receiverAddress: expectation.destination,
+          expectedAmount: expectation.amountUsdt,
+          createdAt: expectation.createdAt,
+        });
+      verified = {
+        txHash: transfer.txHash,
+        amountUsdt: transfer.amountUsdt,
+        destination: transfer.toAddress,
+        transactionAt: transfer.confirmedAt!,
+        tokenAddress: transfer.tokenAddress,
+        blockReference: transfer.blockNumber,
+        confirmations: transfer.confirmations,
+        chainPayload: transfer.rawPayload,
+      };
+    } else if (provider === PaymentProvider.USDT_SOL) {
+      const transfer = await this.solanaPaymentService.verifyUsdtSolTransfer({
+        signature: txHash,
+        receiverAddress: expectation.destination,
+        expectedAmount: expectation.amountUsdt,
+        createdAt: expectation.createdAt,
+      });
+      verified = {
+        txHash: transfer.signature,
+        amountUsdt: transfer.amountUsdt,
+        destination: transfer.toOwner,
+        transactionAt: transfer.confirmedAt!,
+        tokenAddress: this.config.solanaUsdtMintAddress,
+        blockReference: transfer.slot,
+        confirmations: null,
+        chainPayload: transfer.rawPayload,
+      };
+    } else if (provider === PaymentProvider.OKX) {
+      const paymentConfig = await this.prisma.paymentConfig.findUnique({
+        where: { shopId: expectation.shopId },
+        select: {
+          okxPersonalApiEnabled: true,
+          okxPersonalApiKeyEncrypted: true,
+          okxPersonalSecretKeyEncrypted: true,
+          okxPersonalPassphraseEncrypted: true,
+        },
+      });
+      if (
+        !paymentConfig?.okxPersonalApiEnabled
+        || !paymentConfig.okxPersonalApiKeyEncrypted
+        || !paymentConfig.okxPersonalSecretKeyEncrypted
+        || !paymentConfig.okxPersonalPassphraseEncrypted
+      ) {
+        throw new BadRequestException("OKX automatic verification is not configured for this shop.");
+      }
+      const apiKey = decryptSecret(
+        paymentConfig.okxPersonalApiKeyEncrypted,
+        this.config.encryptionKey,
+      ).trim();
+      const secret = decryptSecret(
+        paymentConfig.okxPersonalSecretKeyEncrypted,
+        this.config.encryptionKey,
+      ).trim();
+      const passphrase = decryptSecret(
+        paymentConfig.okxPersonalPassphraseEncrypted,
+        this.config.encryptionKey,
+      ).trim();
+      const deposit = await this.okxPersonalApiService.findDepositByTxHash(
+        apiKey,
+        secret,
+        passphrase,
+        txHash,
+        Math.max(0, expectation.createdAt.getTime() - 60 * 1000),
+      );
+      if (!deposit) {
+        throw new BadRequestException("OKX deposit was not found or is not fully credited.");
+      }
+      verified = {
+        txHash: deposit.txId,
+        amountUsdt: Number(deposit.amt),
+        destination: expectation.destination,
+        transactionAt: new Date(Number(deposit.ts)),
+        tokenAddress: deposit.chain,
+        blockReference: deposit.depId,
+        confirmations: null,
+        chainPayload: deposit,
+      };
+    } else {
+      const since = new Date(expectation.createdAt.getTime() - 60 * 1000);
+      const transfers = await fetchTonUsdtTransfers({
+        ownerAddresses: [expectation.destination],
+        since,
+        apiBaseUrl: this.config.tonCenterApiBaseUrl,
+        apiKey: this.config.tonCenterApiKey,
+        jettonMasterAddress: this.config.tonUsdtMasterAddress,
+        decimals: 6,
+      });
+      const normalizedHash = this.paymentService.normalizeOnchainTxHash(txHash);
+      const transfer = transfers.find((item) =>
+        this.paymentService.normalizeOnchainTxHash(item.txHash) === normalizedHash,
+      );
+      if (!transfer) {
+        throw new BadRequestException("TON transaction was not found or is not finalized.");
+      }
+      verified = {
+        txHash: transfer.txHash,
+        amountUsdt: transfer.amountUsdt,
+        destination: transfer.destinationAddress,
+        transactionAt: transfer.transactionAt,
+        tokenAddress: transfer.jettonMasterAddress,
+        blockReference: transfer.transactionLt,
+        confirmations: null,
+        chainPayload: transfer,
+      };
     }
 
     const confirmationPayload = {
-      source: body?.source || "internal_crypto_auto_scan",
+      source: "server_verified_internal_crypto",
+      detectorSource: body?.source || "internal_crypto_auto_scan",
       provider,
-      signature: txHash,
-      txHash,
-      amountUsdt,
-      destination,
-      transactionAt: transactionAt.toISOString(),
-      chainPayload: body?.chainPayload,
+      signature: verified.txHash,
+      txHash: verified.txHash,
+      amountUsdt: verified.amountUsdt,
+      destination: verified.destination,
+      transactionAt: verified.transactionAt.toISOString(),
+      tokenAddress: verified.tokenAddress,
+      blockReference: verified.blockReference,
+      confirmations: verified.confirmations,
+      chainPayload: verified.chainPayload,
       detectedAt: new Date().toISOString(),
     };
     const receipt = await this.paymentService.claimOnchainPaymentReceipt({
       provider,
-      txHash,
+      txHash: verified.txHash,
       externalOrderCode,
-      amountUsdt,
-      destination,
-      transactionAt,
+      amountUsdt: verified.amountUsdt,
+      destination: verified.destination,
+      transactionAt: verified.transactionAt,
+      tokenAddress: verified.tokenAddress,
+      blockReference: verified.blockReference,
+      confirmations: verified.confirmations,
       rawPayload: confirmationPayload,
     });
     const completion = await this.processPaymentCompletion(externalOrderCode, confirmationPayload);
@@ -493,7 +737,10 @@ export class WebhooksController {
     }
 
     try {
-      const topup = await this.customerWalletService.markTopupPaid(externalOrderCode, rawPayload, { cryptoTxHash });
+      const topup = await this.customerWalletService.markTopupPaid(externalOrderCode, rawPayload, {
+        cryptoTxHash,
+        confirmedExternalPayment: true,
+      });
       await this.telegramBotService.sendWalletTopupPaidMessage(
         topup.topup.shopId,
         topup.topup.amount,

@@ -65,7 +65,7 @@ export function SellerAffiliatePage() {
     return <div className="p-10 text-center text-slate-400">Đang tải...</div>;
   }
 
-  const effectivePercent = (s.effectiveRate * 100).toFixed(0);
+  const effectivePercent = (s.effectiveRate * 100).toFixed(2).replace(/\.?0+$/, "");
   const tierInfo = TIER_LABELS[s.unlockedTier] ?? TIER_LABELS[1]!;
 
   // Progress to next tier

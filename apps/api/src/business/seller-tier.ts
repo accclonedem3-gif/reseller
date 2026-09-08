@@ -12,6 +12,7 @@ export const sellerCapabilityValues = [
   "source_internal_manage",
   "source_key_manage",
   "warranty_manage",
+  "userbot_campaign_manage",
 ] as const;
 
 export type SellerCapability = (typeof sellerCapabilityValues)[number];
@@ -25,17 +26,16 @@ const proCapabilities: SellerCapability[] = [
   "broadcast_manage",
   "source_external_use",
   "source_internal_use",
+  "source_internal_manage",
+  "source_key_manage",
   "warranty_manage",
+  "userbot_campaign_manage",
 ];
 
 const tierCapabilityMap: Record<SellerTier, SellerCapability[]> = {
   [SellerTier.FREE]: [],
   [SellerTier.PRO]: proCapabilities,
-  [SellerTier.ULTRA]: [
-    ...proCapabilities,
-    "source_internal_manage",
-    "source_key_manage",
-  ],
+  [SellerTier.ULTRA]: [...proCapabilities],
 };
 
 export function getSellerCapabilities(tier: SellerTier | null | undefined) {

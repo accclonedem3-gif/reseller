@@ -107,6 +107,7 @@ export class ReportsService {
         label: string;
         grossRevenue: number;
         estimatedProfit: number;
+        totalOrders: number;
         deliveredOrders: number;
       }
     >();
@@ -117,6 +118,7 @@ export class ReportsService {
         label,
         grossRevenue: 0,
         estimatedProfit: 0,
+        totalOrders: 0,
         deliveredOrders: 0,
       };
 
@@ -124,6 +126,7 @@ export class ReportsService {
       const totalSource = decimalToNumber(order.totalSourceAmount);
       current.grossRevenue += totalSale;
       current.estimatedProfit += totalSale - totalSource;
+      current.totalOrders += 1;
       if (order.status === "DELIVERED") {
         current.deliveredOrders += 1;
       }
@@ -135,9 +138,10 @@ export class ReportsService {
       (accumulator, item) => ({
         grossRevenue: accumulator.grossRevenue + item.grossRevenue,
         estimatedProfit: accumulator.estimatedProfit + item.estimatedProfit,
+        totalOrders: accumulator.totalOrders + item.totalOrders,
         deliveredOrders: accumulator.deliveredOrders + item.deliveredOrders,
       }),
-      { grossRevenue: 0, estimatedProfit: 0, deliveredOrders: 0 },
+      { grossRevenue: 0, estimatedProfit: 0, totalOrders: 0, deliveredOrders: 0 },
     );
 
     const profitSummary = { today: 0, last7d: 0, last30d: 0, last90d: 0, allTime: 0 };

@@ -12,12 +12,12 @@ import {
   PaymentTransactionStatus,
   Prisma,
 } from "@prisma/client";
-import { DEFAULT_USDT_VND_RATE } from "@reseller/shared/server";
-
 import { WalletPromotionService } from "../wallet/wallet-promotion.service";
 
+import { AppConfigService } from "../config/app-config.service";
 import { PrismaService } from "../db/prisma.service";
 import { PaymentService } from "../lib/payment.service";
+import { FeatureFlagService } from "../lib/feature-flag.service";
 import {
   decimalToNumber,
   generateExternalPaymentCode,
@@ -26,9 +26,7 @@ import {
 import { ShopsService } from "../shops/shops.service";
 
 const TOPUP_EXPIRY_MS = 5 * 60 * 1000;
-const TOPUP_EXPIRY_TRC20_MS = 60 * 60 * 1000;
-const USDT_VND_RATE = DEFAULT_USDT_VND_RATE;
-
+const TOPUP_EXPIRY_ONCHAIN_MS = 30 * 60 * 1000;
 type TelegramCustomerProfile = {
   telegramUserId: string;
   telegramChatId: string;
@@ -48,6 +46,10 @@ export class CustomerWalletService {
     private readonly paymentService: PaymentService,
     @Inject(WalletPromotionService)
     private readonly promotionService: WalletPromotionService,
+    @Inject(FeatureFlagService)
+    private readonly featureFlags: FeatureFlagService,
+    @Inject(AppConfigService)
+    private readonly config: AppConfigService,
   ) {}
 
   async getWalletSummaryForTelegram(shopId: string, telegramUserId: string) {
@@ -83,7 +85,12 @@ export class CustomerWalletService {
   }
 
   /** Recent wallet ledger entries (all balance movements) for the bot history view. */
-  async getWalletLedgerForTelegram(shopId: string, telegramUserId: string, limit = 15) {
+  async getWalletLedgerForTelegram(
+    shopId: string,
+    telegramUserId: string,
+    limit = 15,
+    offset = 0,
+  ) {
     const customer = await this.prisma.customer.findUnique({
       where: { shopId_telegramUserId: { shopId, telegramUserId } },
       select: { id: true },
@@ -98,6 +105,7 @@ export class CustomerWalletService {
       },
       orderBy: { createdAt: "desc" },
       take: limit,
+      skip: Math.max(0, offset),
       select: {
         type: true,
         amount: true,
@@ -124,6 +132,7 @@ export class CustomerWalletService {
     customer: TelegramCustomerProfile;
     providerOverride?: import("@prisma/client").PaymentProvider;
   }) {
+    await this.featureFlags.assertEnabled("wallet_topups");
     const amount = Number(input.amount);
 
     if (!Number.isInteger(amount) || amount < 1000) {
@@ -145,9 +154,10 @@ export class CustomerWalletService {
 
     const externalOrderCode = generateExternalPaymentCode();
     const isOnchain = input.providerOverride === PaymentProvider.USDT_TRC20
+      || input.providerOverride === PaymentProvider.USDT_BEP20
       || input.providerOverride === PaymentProvider.USDT_SOL
       || input.providerOverride === PaymentProvider.USDT_TON;
-    const expiresAt = new Date(Date.now() + (isOnchain ? TOPUP_EXPIRY_TRC20_MS : TOPUP_EXPIRY_MS));
+    const expiresAt = new Date(Date.now() + (isOnchain ? TOPUP_EXPIRY_ONCHAIN_MS : TOPUP_EXPIRY_MS));
     const payment = await this.paymentService.createPaymentLink({
       shopId: input.shopId,
       externalOrderCode,
@@ -158,7 +168,7 @@ export class CustomerWalletService {
     });
 
     // Snapshot active promotion at payment creation time
-    const activePromo = await this.promotionService.getActivePromotion(input.shopId);
+    const activePromo = await this.promotionService.getActivePromotion(input.shopId, amount);
     const bonusPercent = activePromo ? activePromo.bonusPercent : null;
     const bonusAmount = bonusPercent !== null ? Math.floor(amount * bonusPercent / 100) : null;
 
@@ -191,7 +201,7 @@ export class CustomerWalletService {
   async markTopupPaid(
     externalOrderCode: string,
     rawPayload?: unknown,
-    options?: { cryptoTxHash?: string | null },
+    options?: { cryptoTxHash?: string | null; confirmedExternalPayment?: boolean },
   ) {
     const topup = await this.prisma.customerWalletTopup.findUnique({
       where: {
@@ -215,7 +225,17 @@ export class CustomerWalletService {
       };
     }
 
-    if (topup.status !== PaymentTransactionStatus.PENDING) {
+    await this.paymentService.assertCryptoReceiptClaimed(
+      externalOrderCode,
+      topup.provider,
+      options?.cryptoTxHash,
+    );
+
+    const canRecoverCanceled =
+      topup.status === PaymentTransactionStatus.CANCELED &&
+      options?.confirmedExternalPayment === true;
+
+    if (topup.status !== PaymentTransactionStatus.PENDING && !canRecoverCanceled) {
       return {
         topup: this.mapTopup(topup, topup.shopId),
         customer: topup.customer,
@@ -231,10 +251,14 @@ export class CustomerWalletService {
     });
     const usdtVndRateForTopup = (() => {
       const override = Number(paymentConfigForRate?.usdtVndRateOverride ?? NaN);
-      return Number.isFinite(override) && override > 0 ? override : USDT_VND_RATE;
+      return Number.isFinite(override) && override > 0 ? override : this.config.usdtVndRate;
     })();
 
     const result = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw(
+        Prisma.sql`SELECT id FROM customer_wallet_topups WHERE id = ${topup.id} FOR UPDATE`,
+      );
+
       const currentTopup = await tx.customerWalletTopup.findUnique({
         where: {
           id: topup.id,
@@ -249,7 +273,14 @@ export class CustomerWalletService {
         throw new NotFoundException("Customer wallet topup not found.");
       }
 
-      if (currentTopup.status !== PaymentTransactionStatus.PENDING) {
+      const canRecoverCurrentCanceled =
+        currentTopup.status === PaymentTransactionStatus.CANCELED &&
+        options?.confirmedExternalPayment === true;
+
+      if (
+        currentTopup.status !== PaymentTransactionStatus.PENDING &&
+        !canRecoverCurrentCanceled
+      ) {
         return {
           topup: this.mapTopup(currentTopup, currentTopup.shopId),
           customer: currentTopup.customer,
@@ -261,11 +292,18 @@ export class CustomerWalletService {
         Prisma.sql`SELECT id FROM customer_wallets WHERE id = ${currentTopup.walletId} FOR UPDATE`,
       );
 
-      const balanceBefore = decimalToNumber(currentTopup.wallet.balance);
+      const currentWallet = await tx.customerWallet.findUnique({
+        where: { id: currentTopup.walletId },
+      });
+      if (!currentWallet) {
+        throw new NotFoundException("Customer wallet not found.");
+      }
+
+      const balanceBefore = decimalToNumber(currentWallet.balance);
       const topupAmount = decimalToNumber(currentTopup.amount);
       const bonusAmount = currentTopup.bonusAmount ? decimalToNumber(currentTopup.bonusAmount) : 0;
       const balanceAfter = balanceBefore + topupAmount + bonusAmount;
-      const usdtBefore = decimalToNumber(currentTopup.wallet.balanceUsdt);
+      const usdtBefore = decimalToNumber(currentWallet.balanceUsdt);
       const rawPayloadTyped = rawPayload != null && typeof rawPayload === "object" ? rawPayload as Record<string, unknown> : null;
       const actualAmountUsdt = typeof rawPayloadTyped?.amountUsdt === "number" && Number.isFinite(rawPayloadTyped.amountUsdt as number)
         ? rawPayloadTyped.amountUsdt as number
@@ -339,6 +377,7 @@ export class CustomerWalletService {
         data: {
           status: PaymentTransactionStatus.PAID,
           paidAt: new Date(),
+          canceledAt: null,
           cryptoTxHash: options?.cryptoTxHash || undefined,
           rawPayloadJson: rawPayload as Prisma.InputJsonValue,
         },

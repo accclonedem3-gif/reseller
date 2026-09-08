@@ -110,14 +110,21 @@ async function createUserWithSeller(input: {
     },
   });
 
-  const encryptionKey = process.env.APP_ENCRYPTION_KEY || "change-me-32-byte-key";
-  const botToken = String(input.botToken || process.env.SEED_SELLER_BOT_TOKEN || "").trim();
-  const buyerKey = String(input.buyerKey || process.env.SEED_SELLER_PROVIDER_KEY || "").trim();
+  const encryptionKey =
+    process.env.APP_ENCRYPTION_KEY || "change-me-32-byte-key";
+  const botToken = String(
+    input.botToken || process.env.SEED_SELLER_BOT_TOKEN || "",
+  ).trim();
+  const buyerKey = String(
+    input.buyerKey || process.env.SEED_SELLER_PROVIDER_KEY || "",
+  ).trim();
 
   await prisma.botConfig.upsert({
     where: { shopId: shop.id },
     update: {
-      telegramBotTokenEncrypted: botToken ? encryptSecret(botToken, encryptionKey) : "",
+      telegramBotTokenEncrypted: botToken
+        ? encryptSecret(botToken, encryptionKey)
+        : "",
       webhookUrl: null,
       webhookStatus: WebhookStatus.DISABLED,
       deliveryMode: TelegramDeliveryMode.POLLING,
@@ -127,7 +134,9 @@ async function createUserWithSeller(input: {
     },
     create: {
       shopId: shop.id,
-      telegramBotTokenEncrypted: botToken ? encryptSecret(botToken, encryptionKey) : "",
+      telegramBotTokenEncrypted: botToken
+        ? encryptSecret(botToken, encryptionKey)
+        : "",
       webhookUrl: null,
       webhookStatus: WebhookStatus.DISABLED,
       deliveryMode: TelegramDeliveryMode.POLLING,
@@ -141,7 +150,8 @@ async function createUserWithSeller(input: {
     where: { shopId: shop.id },
     update: {
       providerName: "canboso",
-      baseUrl: process.env.DEFAULT_PROVIDER_BASE_URL || DEFAULT_PROVIDER_BASE_URL,
+      baseUrl:
+        process.env.DEFAULT_PROVIDER_BASE_URL || DEFAULT_PROVIDER_BASE_URL,
       buyerKeyEncrypted: buyerKey ? encryptSecret(buyerKey, encryptionKey) : "",
       connectionStatus: ConnectionStatus.PENDING,
       lastVerifiedAt: null,
@@ -149,7 +159,8 @@ async function createUserWithSeller(input: {
     create: {
       shopId: shop.id,
       providerName: "canboso",
-      baseUrl: process.env.DEFAULT_PROVIDER_BASE_URL || DEFAULT_PROVIDER_BASE_URL,
+      baseUrl:
+        process.env.DEFAULT_PROVIDER_BASE_URL || DEFAULT_PROVIDER_BASE_URL,
       buyerKeyEncrypted: buyerKey ? encryptSecret(buyerKey, encryptionKey) : "",
       connectionStatus: ConnectionStatus.PENDING,
       lastVerifiedAt: null,
@@ -219,8 +230,9 @@ async function seedCatalog(shopId: string, sellerId: string) {
   for (const product of products) {
     const sourceProduct = await prisma.sourceProduct.upsert({
       where: {
-        shopId_externalProductId: {
+        shopId_sourceScope_externalProductId: {
           shopId,
+          sourceScope: "legacy",
           externalProductId: product.externalProductId,
         },
       },
@@ -363,7 +375,8 @@ async function seedOrders(shopId: string, sellerId: string, walletId: string) {
     update: {
       status: PaymentTransactionStatus.PAID,
       amount: toDecimal(50000),
-      checkoutUrl: "http://localhost:3000/api/v1/dev/mock-payments/ORD-DEMO-0001",
+      checkoutUrl:
+        "http://localhost:3000/api/v1/dev/mock-payments/ORD-DEMO-0001",
       qrCode: "mock://ORD-DEMO-0001",
       paidAt: deliveredOrder.paidAt,
     },
@@ -372,7 +385,8 @@ async function seedOrders(shopId: string, sellerId: string, walletId: string) {
       provider: PaymentProvider.MOCK,
       externalOrderCode: "1000001",
       amount: toDecimal(50000),
-      checkoutUrl: "http://localhost:3000/api/v1/dev/mock-payments/ORD-DEMO-0001",
+      checkoutUrl:
+        "http://localhost:3000/api/v1/dev/mock-payments/ORD-DEMO-0001",
       qrCode: "mock://ORD-DEMO-0001",
       status: PaymentTransactionStatus.PAID,
       paidAt: deliveredOrder.paidAt,
@@ -413,7 +427,8 @@ async function seedOrders(shopId: string, sellerId: string, walletId: string) {
       provider: PaymentProvider.MOCK,
       externalOrderCode: "1000002",
       amount: toDecimal(115000),
-      checkoutUrl: "http://localhost:3000/api/v1/dev/mock-payments/ORD-DEMO-0002",
+      checkoutUrl:
+        "http://localhost:3000/api/v1/dev/mock-payments/ORD-DEMO-0002",
       qrCode: "mock://ORD-DEMO-0002",
       status: PaymentTransactionStatus.PAID,
       paidAt: paidWaitingOrder.paidAt,
@@ -472,7 +487,8 @@ async function seedOrders(shopId: string, sellerId: string, walletId: string) {
 }
 
 async function main() {
-  const shouldSeedDemoData = String(process.env.SEED_DEMO_DATA || "false") === "true";
+  const shouldSeedDemoData =
+    String(process.env.SEED_DEMO_DATA || "false") === "true";
 
   const { user: adminUser } = await createUserWithSeller({
     email: process.env.SEED_SUPER_ADMIN_EMAIL || "thaidem57",
@@ -518,7 +534,9 @@ async function main() {
   console.log(`Demo data: ${shouldSeedDemoData ? "enabled" : "disabled"}`);
   console.log(`Super admin: ${adminUser.email}`);
   console.log(`PRO seller:   ${process.env.SEED_SELLER_EMAIL || "j97shop"}`);
-  console.log(`ULTRA seller: ${process.env.SEED_PRO_SELLER_EMAIL || "proseller"}`);
+  console.log(
+    `ULTRA seller: ${process.env.SEED_PRO_SELLER_EMAIL || "proseller"}`,
+  );
 }
 
 main()

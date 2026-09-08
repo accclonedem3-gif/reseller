@@ -11,6 +11,7 @@ import { AppConfigService } from "../config/app-config.service";
 import { PrismaService } from "../db/prisma.service";
 import { OrdersService } from "../orders/orders.service";
 import { CustomerWalletService } from "../customer-wallet/customer-wallet.service";
+import { PaymentService } from "./payment.service";
 
 type SubmitTelegramSolTxInput = {
   shopId: string;
@@ -48,6 +49,7 @@ export class SolanaPaymentService {
     @Inject(OrdersService) private readonly ordersService: OrdersService,
     @Inject(AppConfigService) private readonly config: AppConfigService,
     @Inject(CustomerWalletService) private readonly customerWalletService: CustomerWalletService,
+    @Inject(PaymentService) private readonly paymentService: PaymentService,
   ) {}
 
   normalizeSignature(raw: string) {
@@ -135,6 +137,17 @@ export class SolanaPaymentService {
       expectedAmount,
       createdAt: paymentTransaction.createdAt,
     });
+    const receipt = await this.paymentService.claimOnchainPaymentReceipt({
+      provider: paymentTransaction.provider,
+      txHash: verified.signature,
+      externalOrderCode: input.externalOrderCode,
+      amountUsdt: verified.amountUsdt,
+      destination: verified.toOwner,
+      transactionAt: verified.confirmedAt!,
+      tokenAddress: this.config.solanaUsdtMintAddress,
+      blockReference: verified.slot,
+      rawPayload: verified.rawPayload,
+    });
 
     const order = await this.ordersService.markPaymentCompleted(
       input.externalOrderCode,
@@ -153,6 +166,7 @@ export class SolanaPaymentService {
       },
       { cryptoTxHash: verified.signature },
     );
+    await this.paymentService.markOnchainPaymentReceiptProcessed(receipt.id, verified.rawPayload);
 
     return { alreadyPaid: false, txHash: verified.signature, verification: verified, order };
   }
@@ -214,6 +228,17 @@ export class SolanaPaymentService {
       expectedAmount,
       createdAt: topup.createdAt,
     });
+    const receipt = await this.paymentService.claimOnchainPaymentReceipt({
+      provider: topup.provider,
+      txHash: verified.signature,
+      externalOrderCode: input.externalOrderCode,
+      amountUsdt: verified.amountUsdt,
+      destination: verified.toOwner,
+      transactionAt: verified.confirmedAt!,
+      tokenAddress: this.config.solanaUsdtMintAddress,
+      blockReference: verified.slot,
+      rawPayload: verified.rawPayload,
+    });
 
     await this.prisma.customerWalletTopup.update({
       where: { externalOrderCode: input.externalOrderCode },
@@ -225,6 +250,7 @@ export class SolanaPaymentService {
       txHash: verified.signature,
       amountUsdt: verified.amountUsdt,
     });
+    await this.paymentService.markOnchainPaymentReceiptProcessed(receipt.id, verified.rawPayload);
 
     return { alreadyPaid: false, txHash: verified.signature, verification: verified };
   }
@@ -244,7 +270,7 @@ export class SolanaPaymentService {
         method: "getTransaction",
         params: [
           input.signature,
-          { encoding: "jsonParsed", commitment: "confirmed", maxSupportedTransactionVersion: 0 },
+          { encoding: "jsonParsed", commitment: "finalized", maxSupportedTransactionVersion: 0 },
         ],
       }),
     });
@@ -274,7 +300,7 @@ export class SolanaPaymentService {
     const confirmedAt = blockTime ? new Date(blockTime * 1000) : null;
 
     // Time window check
-    const minAllowedTime = input.createdAt.getTime() - 5 * 60 * 1000;
+    const minAllowedTime = input.createdAt.getTime() - 60 * 1000;
     if (!confirmedAt || confirmedAt.getTime() < minAllowedTime) {
       throw new BadRequestException("This signature is from before the order was created.");
     }
@@ -294,11 +320,13 @@ export class SolanaPaymentService {
       const info: SolanaParsedTokenTransfer = inst.parsed.info;
 
       // For transferChecked: mint is included directly
-      const mint = info.mint || (await this.resolveMintForAccount(info.destination));
+      const destinationBalance = this.findTokenBalanceForAccount(info.destination || "", tx, meta);
+      const mint = info.mint || String(destinationBalance?.mint || "");
       if (!mint || mint !== usdtMint) continue;
 
       // Resolve owner of destination token account
-      const toOwner = await this.resolveOwnerForAccount(info.destination || "", meta);
+      const toOwner = String(destinationBalance?.owner || "")
+        || await this.resolveOwnerForAccount(info.destination || "");
       if (toOwner !== input.receiverAddress) continue;
 
       const decimals = info.tokenAmount?.decimals ?? 6;
@@ -318,8 +346,8 @@ export class SolanaPaymentService {
       throw new BadRequestException("This signature does not transfer USDT to the configured Solana address.");
     }
 
-    if (bestMatch.amountUsdt + this.config.usdtPaymentTolerance < input.expectedAmount) {
-      throw new BadRequestException("The transferred USDT amount is lower than required for this order.");
+    if (Math.abs(bestMatch.amountUsdt - input.expectedAmount) > this.config.usdtPaymentTolerance + 1e-9) {
+      throw new BadRequestException("The transferred USDT amount does not match this order.");
     }
 
     const fromOwner = bestMatch.parsed.authority || bestMatch.parsed.source || null;
@@ -382,7 +410,7 @@ export class SolanaPaymentService {
         params: [
           walletAddress,
           { mint: this.config.solanaUsdtMintAddress },
-          { encoding: "jsonParsed", commitment: "confirmed" },
+          { encoding: "jsonParsed", commitment: "finalized" },
         ],
       }),
     });
@@ -402,7 +430,7 @@ export class SolanaPaymentService {
         jsonrpc: "2.0",
         id: 1,
         method: "getSignaturesForAddress",
-        params: [accountAddress, { limit, commitment: "confirmed" }],
+        params: [accountAddress, { limit, commitment: "finalized" }],
       }),
     });
     if (!response.ok) return [];
@@ -410,24 +438,23 @@ export class SolanaPaymentService {
     return (json.result || []).filter((s) => !s.err).map((s) => ({ signature: s.signature, blockTime: s.blockTime }));
   }
 
-  private async resolveMintForAccount(_account?: string): Promise<string | null> {
-    // For plain "transfer" (not transferChecked), mint isn't included. Would need extra RPC.
-    // For now we rely on transferChecked which provides mint directly.
-    return null;
+  private findTokenBalanceForAccount(tokenAccount: string, tx: any, meta: any) {
+    const staticKeys = (tx.transaction?.message?.accountKeys || []).map((key: any) =>
+      typeof key === "string" ? key : String(key?.pubkey || ""),
+    );
+    const loadedKeys = [
+      ...(meta?.loadedAddresses?.writable || []),
+      ...(meta?.loadedAddresses?.readonly || []),
+    ].map((key: any) => String(key || ""));
+    const accountIndex = [...staticKeys, ...loadedKeys].indexOf(tokenAccount);
+    if (accountIndex < 0) return null;
+    return (meta?.postTokenBalances || []).find((balance: any) =>
+      balance.accountIndex === accountIndex
+      && balance.mint === this.config.solanaUsdtMintAddress,
+    ) || null;
   }
 
-  private async resolveOwnerForAccount(tokenAccount: string, meta: any): Promise<string> {
-    // Try to resolve from post-balance entries (these include account owner info)
-    const postBalances: any[] = meta?.postTokenBalances ?? [];
-    for (const b of postBalances) {
-      if (b.accountIndex !== undefined && b.owner && tokenAccount) {
-        // Cannot trivially map without account keys; try matching mint
-        if (b.mint === this.config.solanaUsdtMintAddress) {
-          return String(b.owner);
-        }
-      }
-    }
-    // Fallback: query token account info
+  private async resolveOwnerForAccount(tokenAccount: string): Promise<string> {
     try {
       const response = await fetch(this.config.solanaRpcUrl, {
         method: "POST",
@@ -436,7 +463,7 @@ export class SolanaPaymentService {
           jsonrpc: "2.0",
           id: 1,
           method: "getAccountInfo",
-          params: [tokenAccount, { encoding: "jsonParsed", commitment: "confirmed" }],
+          params: [tokenAccount, { encoding: "jsonParsed", commitment: "finalized" }],
         }),
       });
       const json = (await response.json()) as { result?: { value?: { data?: { parsed?: { info?: { owner?: string } } } } } };

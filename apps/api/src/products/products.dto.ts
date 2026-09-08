@@ -1,8 +1,12 @@
 import {
+  ArrayMaxSize,
+  ArrayNotEmpty,
+  ArrayUnique,
   IsEnum,
   IsArray,
   IsBoolean,
   IsInt,
+  IsIn,
   IsNumber,
   IsOptional,
   IsString,
@@ -18,7 +22,30 @@ import {
   SourceWarrantyPolicy,
 } from "@prisma/client";
 
+export class BulkUpdateSourceProductsDto {
+  @IsArray()
+  @ArrayNotEmpty()
+  @ArrayMaxSize(500)
+  @ArrayUnique()
+  @IsString({ each: true })
+  productIds!: string[];
+
+  @IsString()
+  @IsIn(["PUBLISH", "PENDING"])
+  action!: "PUBLISH" | "PENDING";
+}
+
 export class UpdateProductDto {
+  @IsOptional()
+  @IsBoolean()
+  preorderEnabled?: boolean;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Max(100)
+  preorderFeePercent?: number;
+
   @IsOptional()
   @IsString()
   displayName?: string;
@@ -112,7 +139,9 @@ export class UpdateProductDto {
   @IsEnum(SourceAccountType)
   accountType?: SourceAccountType;
 
-  @ValidateIf((input: UpdateProductDto) => input.accountType === SourceAccountType.OTHER)
+  @ValidateIf(
+    (input: UpdateProductDto) => input.accountType === SourceAccountType.OTHER,
+  )
   @IsString()
   accountTypeOther?: string;
 
@@ -120,7 +149,10 @@ export class UpdateProductDto {
   @IsEnum(SourceDurationType)
   durationType?: SourceDurationType;
 
-  @ValidateIf((input: UpdateProductDto) => input.durationType === SourceDurationType.OTHER)
+  @ValidateIf(
+    (input: UpdateProductDto) =>
+      input.durationType === SourceDurationType.OTHER,
+  )
   @IsString()
   durationTypeOther?: string;
 
@@ -163,6 +195,14 @@ export class UpdateProductDto {
   promoGetM?: number;
 
   @IsOptional()
+  @IsArray()
+  promoTiers?: Array<{ buy: number; get: number }>;
+
+  @IsOptional()
+  @IsArray()
+  promoPriceTiers?: Array<{ minQty: number; price: number }>;
+
+  @IsOptional()
   @IsNumber()
   @Min(0)
   promoBulkMinQty?: number;
@@ -191,6 +231,16 @@ export class UpdateProductDto {
 }
 
 export class CreateManualProductDto {
+  @IsOptional()
+  @IsBoolean()
+  preorderEnabled?: boolean;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Max(100)
+  preorderFeePercent?: number;
+
   @IsString()
   displayName!: string;
 
@@ -257,7 +307,9 @@ export class CreateManualProductDto {
   @IsString()
   productFamily?: string;
 
-  @ValidateIf((input: CreateManualProductDto) => input.productFamily === "OTHER")
+  @ValidateIf(
+    (input: CreateManualProductDto) => input.productFamily === "OTHER",
+  )
   @IsString()
   productFamilyOther?: string;
 
@@ -269,7 +321,10 @@ export class CreateManualProductDto {
   @IsEnum(SourceAccountType)
   accountType?: SourceAccountType;
 
-  @ValidateIf((input: CreateManualProductDto) => input.accountType === SourceAccountType.OTHER)
+  @ValidateIf(
+    (input: CreateManualProductDto) =>
+      input.accountType === SourceAccountType.OTHER,
+  )
   @IsString()
   accountTypeOther?: string;
 
@@ -277,7 +332,10 @@ export class CreateManualProductDto {
   @IsEnum(SourceDurationType)
   durationType?: SourceDurationType;
 
-  @ValidateIf((input: CreateManualProductDto) => input.durationType === SourceDurationType.OTHER)
+  @ValidateIf(
+    (input: CreateManualProductDto) =>
+      input.durationType === SourceDurationType.OTHER,
+  )
   @IsString()
   durationTypeOther?: string;
 

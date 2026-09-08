@@ -1,5 +1,6 @@
 import { Body, Controller, Get, Inject, Param, Put, Query, UseGuards } from "@nestjs/common";
 import { IsBoolean, IsInt, IsOptional, Max, Min } from "class-validator";
+import { Type } from "class-transformer";
 
 import { CurrentUser } from "../common/decorators/current-user.decorator";
 import { JwtAuthGuard } from "../common/guards/jwt-auth.guard";
@@ -26,12 +27,14 @@ class SetDiscountPercentDto {
 
 class OrdersQueryDto {
   @IsOptional()
+  @Type(() => Number)
   @IsInt()
   @Min(1)
   @Max(200)
   limit?: number;
 
   @IsOptional()
+  @Type(() => Number)
   @IsInt()
   @Min(0)
   offset?: number;

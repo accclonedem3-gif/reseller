@@ -1,6 +1,7 @@
 type ProductVisibilityInput = {
   providerName?: string | null;
   metadataJson?: unknown;
+  archivedAt?: Date | string | null;
 };
 
 export function isOwnShopProduct(product: ProductVisibilityInput) {
@@ -21,5 +22,6 @@ export function isProductVisibleForBot(
   product: ProductVisibilityInput,
   ownProductsOnly: boolean,
 ) {
+  if (product.archivedAt) return false;
   return !ownProductsOnly || isOwnShopProduct(product);
 }

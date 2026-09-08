@@ -155,22 +155,18 @@ export class WarrantyAutoCheckService {
   }
 
   resolveToolForFamily(family: SourceProductFamily | string | null | undefined): AutoCheckTool | null {
+    // Global auto-check kill switch: default disabled unless explicitly enabled via WARRANTY_AUTO_CHECK_ENABLED=true
+    if (process.env.WARRANTY_AUTO_CHECK_ENABLED !== "true") {
+      return null;
+    }
     if (!family) return null;
     const key = String(family).toUpperCase();
     const tool = (PRODUCT_FAMILY_TO_TOOL[key] as AutoCheckTool | undefined) ?? null;
     if (!tool) return null;
-    // Operator-controlled kill switch. Comma-separated list of tools to disable, e.g.
-    // `WARRANTY_DISABLED_TOOLS=gpt` to take the ChatGPT auto-check offline until its
-    // underlying single-check.js is stable. Disabled tools cause the warranty flow to fall
-    // through to `UNSUPPORTED` → customer sees "hệ thống chưa cập nhật, liên hệ admin" and
-    // the seller handles the claim manually. No code change needed to re-enable.
     const disabled = String(process.env.WARRANTY_DISABLED_TOOLS || "")
       .split(",")
       .map((s) => s.trim().toLowerCase())
       .filter(Boolean);
-    // Safety FLOOR: gpt's single-check.js defaults transient failures (timeout/error) AND
-    // wrong-password to DIE → wrongful auto-refund. Until that tool is hardened, keep gpt disabled
-    // regardless of the env value so an unrelated WARRANTY_DISABLED_TOOLS edit can't silently expose it.
     if (!disabled.includes("gpt")) disabled.push("gpt");
     if (disabled.includes(tool)) return null;
     return tool;

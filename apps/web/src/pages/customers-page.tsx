@@ -208,7 +208,7 @@ export function CustomersPage() {
             <table className="w-full text-sm">
               <thead>
                 <tr style={{ borderBottom: "1px solid var(--bd)" }}>
-                  {[t.colCustomer, t.colChatId, t.colBalance, t.colOrders, "Tổng chi", t.colLang, t.colCtv, "Lịch sử"].map((h) => (
+                  {[t.colCustomer, t.colChatId, t.colBalance, "Hoa hồng", t.colOrders, "Tổng chi", t.colLang, t.colCtv, "Lịch sử"].map((h) => (
                     <th
                       key={h}
                       className="px-4 py-3 text-left text-[11px] font-semibold uppercase tracking-[0.18em]"
@@ -242,6 +242,9 @@ export function CustomersPage() {
                     </td>
                     <td className="px-4 py-3" style={{ color: "var(--tx)" }}>
                       {formatCurrency(customer.walletBalance)}
+                    </td>
+                    <td className="px-4 py-3" style={{ color: "var(--tx)" }}>
+                      {formatCurrency(customer.commissionBalance)}
                     </td>
                     <td className="px-4 py-3" style={{ color: "var(--tx-m)" }}>
                       {customer.orderCount}
@@ -329,6 +332,18 @@ export function CustomersPage() {
 
             {historyQuery.isLoading ? (
               <div className="py-10 text-center text-sm" style={{ color: "var(--tx-f)" }}>Đang tải...</div>
+            ) : historyQuery.isError ? (
+              <div className="px-5 py-10 text-center">
+                <p className="text-sm font-semibold text-red-400">Không thể tải lịch sử mua hàng.</p>
+                <button
+                  type="button"
+                  onClick={() => historyQuery.refetch()}
+                  className="mt-3 rounded-xl px-3 py-1.5 text-xs font-bold"
+                  style={{ background: "var(--inp)", border: "1px solid var(--bd)", color: "var(--tx-m)" }}
+                >
+                  Thử lại
+                </button>
+              </div>
             ) : historyQuery.data ? (
               <>
                 <div className="grid grid-cols-4 gap-2 border-b p-4" style={{ borderColor: "var(--bd)" }}>

@@ -67,6 +67,8 @@ const T = {
     toastConfirmed: "Đã xác nhận thanh toán USDT.",
     toastErr: "Không thể xác nhận thanh toán.",
     searchPlaceholder: "Tìm đơn, khách, sản phẩm...",
+    searchAction: "Tìm",
+    providerAll: "Tất cả provider",
     export: "Xuất",
     createOrder: "+ Tạo đơn",
     updatedAt: "Cập nhật lúc",
@@ -113,6 +115,8 @@ const T = {
     toastConfirmed: "USDT payment confirmed.",
     toastErr: "Could not confirm payment.",
     searchPlaceholder: "Search order, customer, product...",
+    searchAction: "Search",
+    providerAll: "All providers",
     export: "Export",
     createOrder: "+ New order",
     updatedAt: "Updated at",
@@ -159,6 +163,8 @@ const T = {
     toastConfirmed: "ยืนยันการชำระแล้ว",
     toastErr: "ไม่สามารถยืนยันได้",
     searchPlaceholder: "ค้นหาคำสั่งซื้อ ลูกค้า สินค้า...",
+    searchAction: "ค้นหา",
+    providerAll: "ผู้ให้บริการทั้งหมด",
     export: "ส่งออก",
     createOrder: "+ สร้างคำสั่งซื้อ",
     updatedAt: "อัปเดตเมื่อ",
@@ -197,6 +203,21 @@ function nowTime() {
   return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}:${String(d.getSeconds()).padStart(2, "0")}`;
 }
 
+function displayProviderName(value: unknown) {
+  const provider = String(value || "").trim().toLowerCase();
+  const labels: Record<string, string> = {
+    canboso: "Canboso",
+    shopmmo: "ShopMMO",
+    roboticvn: "RoboticVN",
+    zampto: "Zampto",
+    huymai: "HuyMai",
+    gigapower: "GigaPower",
+    internal_pro: "Nguồn nội bộ",
+    manual: "Kho thủ công",
+  };
+  return labels[provider] || provider || "Không xác định";
+}
+
 type FilterTab = "all" | "delivered" | "paid" | "pending";
 type DateRange = "all" | "today" | "last7" | "last30";
 
@@ -209,7 +230,9 @@ export function OrdersPageStudio() {
   const [copiedOrderId, setCopiedOrderId] = useState<string | null>(null);
   const [expandedOrderId, setExpandedOrderId] = useState<string | null>(null);
   const [filter, setFilter] = useState<FilterTab>("all");
+  const [searchInput, setSearchInput] = useState("");
   const [search, setSearch] = useState("");
+  const [providerFilter, setProviderFilter] = useState("all");
   const [dateRange, setDateRange] = useState<DateRange>("all");
   const [page, setPage] = useState(1);
   const [lastUpdated, setLastUpdated] = useState(nowTime());
@@ -225,6 +248,19 @@ export function OrdersPageStudio() {
   });
 
   const orders: any[] = ordersQuery.data || [];
+  const providerOptions = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          orders
+            .map((order) => String(order.sourceProvider || "").trim())
+            .filter(Boolean),
+        ),
+      ).sort((left, right) =>
+        displayProviderName(left).localeCompare(displayProviderName(right)),
+      ),
+    [orders],
+  );
 
   const confirmManualPaymentMutation = useMutation({
     mutationFn: async (orderId: string) => api.post(`/orders/${orderId}/manual-payment-confirm`),
@@ -252,6 +288,12 @@ export function OrdersPageStudio() {
     else if (filter === "paid") list = list.filter((o) => String(o.paymentStatus || "").toLowerCase() === "paid");
     else if (filter === "pending") list = list.filter((o) => ["pending", "paid_waiting_stock", "processing"].includes(String(o.status || "").toLowerCase()));
 
+    if (providerFilter !== "all") {
+      list = list.filter(
+        (order) => String(order.sourceProvider || "") === providerFilter,
+      );
+    }
+
     const now = Date.now();
     if (dateRange === "today") list = list.filter((o) => new Date(o.createdAt).toDateString() === new Date().toDateString());
     else if (dateRange === "last7") list = list.filter((o) => now - new Date(o.createdAt).getTime() < 7 * 86400000);
@@ -261,15 +303,22 @@ export function OrdersPageStudio() {
       const q = search.toLowerCase();
       list = list.filter((o) =>
         (o.orderCode || "").toLowerCase().includes(q) ||
+        (o.internalSourceOrderCode || "").toLowerCase().includes(q) ||
         (o.productName || "").toLowerCase().includes(q) ||
         (o.customer?.telegramUsername || "").toLowerCase().includes(q) ||
         (o.customer?.name || "").toLowerCase().includes(q) ||
-        (o.customer?.telegramChatId || "").includes(q),
+        (o.customer?.telegramChatId || "").includes(q) ||
+        displayProviderName(o.sourceProvider).toLowerCase().includes(q),
       );
     }
 
     return list;
-  }, [orders, filter, search, dateRange]);
+  }, [orders, filter, search, dateRange, providerFilter]);
+
+  const applySearch = () => {
+    setSearch(searchInput.trim());
+    setPage(1);
+  };
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const currentPage = Math.min(page, totalPages);
@@ -375,18 +424,53 @@ export function OrdersPageStudio() {
                 {filtered.length} đơn
               </span>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <div className="relative">
                 <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2" style={{ color: "var(--tx-f)" }} />
                 <input
                   type="text"
-                  value={search}
-                  onChange={(e) => { setSearch(e.target.value); setPage(1); }}
+                  value={searchInput}
+                  onChange={(e) => setSearchInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") applySearch();
+                  }}
                   placeholder={t.searchPlaceholder}
                   className="rounded-xl py-2 pl-9 pr-3 text-[13px] outline-none"
                   style={{ background: "var(--inp)", border: "1px solid var(--bd)", color: "var(--tx)", width: 220 }}
                 />
               </div>
+              <button
+                type="button"
+                onClick={applySearch}
+                className="flex items-center gap-1.5 rounded-xl px-3 py-2 text-[12px] font-black transition hover:opacity-80"
+                style={{
+                  background: "rgba(249,115,22,0.15)",
+                  border: "1px solid rgba(249,115,22,0.35)",
+                  color: "rgb(249,115,22)",
+                }}
+              >
+                <Search className="h-3.5 w-3.5" /> {t.searchAction}
+              </button>
+              <select
+                value={providerFilter}
+                onChange={(e) => {
+                  setProviderFilter(e.target.value);
+                  setPage(1);
+                }}
+                className="rounded-xl px-3 py-2 text-[12px] outline-none"
+                style={{
+                  background: "var(--inp)",
+                  border: "1px solid var(--bd)",
+                  color: "var(--tx)",
+                }}
+              >
+                <option value="all">{t.providerAll}</option>
+                {providerOptions.map((provider) => (
+                  <option key={provider} value={provider}>
+                    {displayProviderName(provider)}
+                  </option>
+                ))}
+              </select>
               <select
                 value={dateRange}
                 onChange={(e) => { setDateRange(e.target.value as DateRange); setPage(1); }}
@@ -456,6 +540,15 @@ export function OrdersPageStudio() {
                         <p className="text-[12px]" style={{ color: "var(--tx-f)" }}>
                           {prefix}-<span className="font-black" style={{ color: "rgb(52,211,153)" }}>{suffix}</span>
                         </p>
+                        {order.internalSourceOrderCode && (
+                          <p
+                            className="mt-1 max-w-[220px] break-all font-mono text-[10px] leading-4"
+                            style={{ color: "var(--tx-f)" }}
+                            title={order.internalSourceOrderCode}
+                          >
+                            {lang === "en" ? "Source" : lang === "th" ? "Source" : "Nguồn"}: {order.internalSourceOrderCode}
+                          </p>
+                        )}
                         {order.failureReason && (
                           <p className="mt-1 max-w-[200px] text-[11px] leading-4 text-rose-400">{order.failureReason}</p>
                         )}
@@ -470,8 +563,20 @@ export function OrdersPageStudio() {
                       {/* Sản phẩm */}
                       <td className="px-4 py-3 align-top">
                         <p className="text-[13px] font-semibold" style={{ color: "var(--tx)" }}>{order.productName}</p>
+                        {order.sourceProvider && (
+                          <p className="mt-0.5 text-[10px] font-bold uppercase tracking-wide" style={{ color: "var(--tx-f)" }}>
+                            {displayProviderName(order.sourceProvider)}
+                          </p>
+                        )}
                         {status === "delivered" && (
                           <p className="mt-0.5 text-[11px] text-emerald-400">✓ Đã giao tài khoản</p>
+                        )}
+                        {order.isPreorder && (
+                          <p className="mt-1 inline-flex rounded-full border border-amber-400/30 bg-amber-400/10 px-2 py-0.5 text-[10px] font-black uppercase text-amber-400">
+                            🕒 {String(order.preorderCancellationStatus || "").toLowerCase() === "requested"
+                              ? (lang === "en" ? "Cancel review" : lang === "th" ? "รอตรวจสอบยกเลิก" : "Chờ duyệt hủy")
+                              : (lang === "en" ? "Pre-order" : lang === "th" ? "จองล่วงหน้า" : "Đặt trước")}
+                          </p>
                         )}
                       </td>
 
@@ -487,7 +592,7 @@ export function OrdersPageStudio() {
 
                       {/* Giao hàng */}
                       <td className="px-4 py-3 align-top text-center">
-                        <span title={formatStatusLabel(order.status)} className="inline-flex">
+                        <span title={order.isPreorder && status === "paid_waiting_stock" ? (lang === "en" ? "Paid pre-order, waiting for stock" : "Đơn đặt trước đã thanh toán, đang chờ hàng") : formatStatusLabel(order.status)} className="inline-flex">
                           {status === "delivered" ? (
                             <CheckCircle2 className="h-5 w-5" style={{ color: "rgb(52,211,153)" }} />
                           ) : status === "failed" || status === "refunded" ? (
@@ -545,6 +650,11 @@ export function OrdersPageStudio() {
                         <span className="text-[13px] font-black tabular-nums" style={{ color: "var(--tx)" }}>
                           {formatCurrency(order.totalSaleAmount)}
                         </span>
+                        {order.isPreorder && Number(order.preorderFeeAmount || 0) > 0 && (
+                          <p className="mt-1 text-[10px] font-semibold text-amber-400">
+                            + {lang === "en" ? "pre-order fee" : lang === "th" ? "ค่าจอง" : "phí đặt trước"} {order.preorderFeePercent}%: {formatCurrency(order.preorderFeeAmount)}
+                          </p>
+                        )}
                       </td>
 
                       {/* Giá nguồn / LN */}

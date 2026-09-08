@@ -10,6 +10,13 @@ import { LangProvider } from "@/lib/lang";
 
 import "./index.css";
 
+try {
+  const storedTheme = localStorage.getItem("theme");
+  const dark = storedTheme === "dark";
+  document.documentElement.classList.toggle("dark", dark);
+  document.documentElement.style.colorScheme = dark ? "dark" : "light";
+} catch {}
+
 const queryClient = new QueryClient();
 
 createRoot(document.getElementById("root")!).render(

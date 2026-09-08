@@ -1,0 +1,4 @@
+ALTER TYPE "PaymentProvider" ADD VALUE IF NOT EXISTS 'USDT_BEP20';
+
+ALTER TABLE "payment_configs"
+ADD COLUMN IF NOT EXISTS "usdt_bep20_enabled" BOOLEAN NOT NULL DEFAULT false;

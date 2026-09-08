@@ -146,6 +146,7 @@ enum PaymentProvider {
   USDT_TRC20
   USDT_SOL
   USDT_TON
+  USDT_BEP20
   BINANCE_PAY
 }
 
@@ -248,6 +249,7 @@ enum SourceDeliveryMode {
   AUTO_API
   AUTO_STOCK
   MANUAL
+  ADD_MAIL
 }
 
 enum SourceWarrantyPolicy {
@@ -349,11 +351,14 @@ model Seller {
   referredBySellerId          String?                      @map("referred_by_seller_id")
   referralCode                String?                      @unique @map("referral_code")
   affiliateUnlockedTier       Int                          @default(1) @map("affiliate_unlocked_tier")
+  affiliateCommissionPercent  Decimal?                     @map("affiliate_commission_percent") @db.Decimal(5, 2)
   affiliateUnlockedTier2At    DateTime?                    @map("affiliate_unlocked_tier_2_at")
   affiliateUnlockedTier3At    DateTime?                    @map("affiliate_unlocked_tier_3_at")
   autoRenewConfig             Json?                        @map("auto_renew_config")
   signupIp                    String?                      @map("signup_ip")
   signupDeviceFingerprint     String?                      @map("signup_device_fingerprint")
+  userbotLicenseType          TelegramUserbotLicenseType?  @map("userbot_license_type")
+  userbotLicenseExpiresAt     DateTime?                    @map("userbot_license_expires_at")
   createdAt                   DateTime                     @default(now()) @map("created_at")
   updatedAt                   DateTime                     @updatedAt @map("updated_at")
   user                        User                         @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -381,6 +386,10 @@ model Seller {
   tierSubscriptions           TierSubscription[]           @relation("TierSubscriptionSeller")
   level1Subscriptions         TierSubscription[]           @relation("TierSubscriptionLevel1Referrer")
   level2Subscriptions         TierSubscription[]           @relation("TierSubscriptionLevel2Referrer")
+  telegramUserSessions        TelegramUserSession[]
+  telegramUserTemplates       TelegramUserTemplate[]
+  telegramUserCampaigns       TelegramUserCampaign[]
+  userbotLicenseKeys          TelegramUserbotLicenseKey[]  @relation("UserbotLicenseKeyRedeemer")
 
   @@map("sellers")
 }
@@ -395,7 +404,7 @@ model TierSubscription {
   endsAt                DateTime               @map("ends_at")
   status                TierSubscriptionStatus @default(ACTIVE)
   paymentMethod         String?                @map("payment_method")
-  paymentTransactionId  String?                @map("payment_transaction_id")
+  paymentTransactionId  String?                @unique @map("payment_transaction_id")
   paidFromWalletBalance Boolean                @default(false) @map("paid_from_wallet_balance")
   referrerSellerId      String?                @map("referrer_seller_id")
   grandReferrerSellerId String?                @map("grand_referrer_seller_id")
@@ -417,6 +426,23 @@ model TierSubscription {
   @@index([endsAt, status])
   @@index([referrerSellerId])
   @@map("tier_subscriptions")
+}
+
+model RestockSubscription {
+  id              String   @id @default(cuid())
+  shopId          String   @map("shop_id")
+  customerId      String   @map("customer_id")
+  sourceProductId String   @map("source_product_id")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  shop          Shop          @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  customer      Customer      @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  sourceProduct SourceProduct @relation(fields: [sourceProductId], references: [id], onDelete: Cascade)
+
+  @@unique([customerId, sourceProductId])
+  @@index([shopId])
+  @@index([sourceProductId])
+  @@map("restock_subscriptions")
 }
 
 model DiscountCode {
@@ -475,6 +501,7 @@ model Shop {
   seller                      Seller                       @relation(fields: [sellerId], references: [id], onDelete: Cascade)
   botConfig                   BotConfig?
   providerConfig              ProviderConfig?
+  providerSources             ShopProviderSource[]
   paymentConfig               PaymentConfig?
   sourceProducts              SourceProduct[]
   productOverrides            SellerProductOverride[]
@@ -496,6 +523,7 @@ model Shop {
   walletPromotions            WalletPromotion[]
   iconCatalog                 IconCatalog[]
   botMediaCache               BotMediaCache[]
+  restockSubscriptions        RestockSubscription[]
 
   @@map("shops")
 }
@@ -544,6 +572,28 @@ model ProviderConfig {
   @@map("provider_configs")
 }
 
+model ShopProviderSource {
+  id                            String           @id @default(cuid())
+  shopId                        String           @map("shop_id")
+  label                         String
+  providerName                  String           @map("provider_name")
+  baseUrl                       String           @map("base_url")
+  buyerKeyEncrypted             String           @map("buyer_key_encrypted")
+  enabled                       Boolean          @default(true)
+  sourceNotificationSyncEnabled Boolean          @default(true) @map("source_notification_sync_enabled")
+  priceMarkupPercent            Decimal?         @map("price_markup_percent") @db.Decimal(5, 2)
+  connectionStatus              ConnectionStatus @default(PENDING) @map("connection_status")
+  lastVerifiedAt                DateTime?        @map("last_verified_at")
+  lastCatalogSyncAt             DateTime?        @map("last_catalog_sync_at")
+  createdAt                     DateTime         @default(now()) @map("created_at")
+  updatedAt                     DateTime         @updatedAt @map("updated_at")
+  shop                          Shop             @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  products                      SourceProduct[]
+
+  @@index([shopId, enabled, createdAt])
+  @@map("shop_provider_sources")
+}
+
 model PaymentConfig {
   id                                String          @id @default(cuid())
   shopId                            String          @unique @map("shop_id")
@@ -575,6 +625,7 @@ model PaymentConfig {
   usdtTrc20Address                  String?         @map("usdt_trc20_address")
   usdtTrc20Enabled                  Boolean         @default(false) @map("usdt_trc20_enabled")
   usdtBep20Address                  String?         @map("usdt_bep20_address")
+  usdtBep20Enabled                  Boolean         @default(false) @map("usdt_bep20_enabled")
   usdtSolanaAddress                 String?         @map("usdt_solana_address")
   usdtSolanaEnabled                 Boolean         @default(false) @map("usdt_solana_enabled")
   usdtTonAddress                    String?         @map("usdt_ton_address")
@@ -632,64 +683,84 @@ model WalletLedger {
 }
 
 model SourceProduct {
-  id                      String                  @id @default(cuid())
-  shopId                  String                  @map("shop_id")
-  externalProductId       String                  @map("external_product_id")
-  providerName            String                  @default("canboso") @map("provider_name")
-  sourceName              String                  @map("source_name")
-  sourceRawName           String?                 @map("source_raw_name")
-  sourceDescription       String?                 @map("source_description")
-  sourceDescriptionLocked Boolean                 @default(false) @map("source_description_locked")
-  sourcePrice             Decimal                 @map("source_price") @db.Decimal(18, 2)
-  available               Int?
-  soldCount               Int                     @default(0) @map("sold_count")
-  totalCount              Int                     @default(0) @map("total_count")
-  internalSourceEnabled   Boolean                 @default(false) @map("internal_source_enabled")
-  internalSourcePrice     Decimal?                @map("internal_source_price") @db.Decimal(18, 2)
-  productFamily           String?                 @map("product_family")
-  productFamilyOther      String?                 @map("product_family_other")
-  productPackage          String?                 @map("product_package")
-  accountType             SourceAccountType?      @map("account_type")
-  accountTypeOther        String?                 @map("account_type_other")
-  durationType            SourceDurationType?     @map("duration_type")
-  durationTypeOther       String?                 @map("duration_type_other")
+  id                         String                      @id @default(cuid())
+  shopId                     String                      @map("shop_id")
+  providerSourceId           String?                     @map("provider_source_id")
+  internalSourceConnectionId String?                     @map("internal_source_connection_id")
+  sourceScope                String                      @default("legacy") @map("source_scope")
+  externalProductId          String                      @map("external_product_id")
+  providerName               String                      @default("canboso") @map("provider_name")
+  sourceName                 String                      @map("source_name")
+  sourceRawName              String?                     @map("source_raw_name")
+  sourceDescription          String?                     @map("source_description")
+  sourceDescriptionLocked    Boolean                     @default(false) @map("source_description_locked")
+  sourcePrice                Decimal                     @map("source_price") @db.Decimal(18, 2)
+  available                  Int?
+  restockSubscriptions       RestockSubscription[]
+  soldCount                  Int                         @default(0) @map("sold_count")
+  totalCount                 Int                         @default(0) @map("total_count")
+  internalSourceEnabled      Boolean                     @default(false) @map("internal_source_enabled")
+  internalSourcePrice        Decimal?                    @map("internal_source_price") @db.Decimal(18, 2)
+  productFamily              String?                     @map("product_family")
+  productFamilyOther         String?                     @map("product_family_other")
+  productPackage             String?                     @map("product_package")
+  accountType                SourceAccountType?          @map("account_type")
+  accountTypeOther           String?                     @map("account_type_other")
+  durationType               SourceDurationType?         @map("duration_type")
+  durationTypeOther          String?                     @map("duration_type_other")
   // Warranty pre-die date (from warranty branch): declared lifetime (days) of the current batch,
   // counted from accBatchStartedAt (import time), NOT delivery. When set + elapsed → warranty
   // short-circuits the auto-check tool with a synthetic isDead verdict. Falls back to deliveredAt.
-  accLifetimeDays         Int?                    @map("acc_lifetime_days")
-  accBatchStartedAt       DateTime?               @map("acc_batch_started_at")
-  productIcon             String?                 @map("product_icon")
-  iconCustomEmojiId       String?                 @map("icon_custom_emoji_id")
-  iconOutOfStockEmojiId   String?                 @map("icon_out_of_stock_emoji_id")
-  imageUrl                String?                 @map("image_url")
-  isSample                Boolean                 @default(false) @map("is_sample")
-  sourceDeliveryMode      SourceDeliveryMode?     @map("source_delivery_mode")
-  warrantyPolicy          SourceWarrantyPolicy?   @map("warranty_policy")
-  stockAlertThreshold     Int                     @default(5) @map("stock_alert_threshold")
-  stockAlertEnabled       Boolean                 @default(true) @map("stock_alert_enabled")
-  lastStockAlertAt        DateTime?               @map("last_stock_alert_at")
-  promoType               String?                 @map("promo_type") // "BUY_N_GET_M" | "BULK_DISCOUNT"
-  promoBuyN               Int?                    @map("promo_buy_n")
-  promoGetM               Int?                    @map("promo_get_m")
-  promoBulkMinQty         Int?                    @map("promo_bulk_min_qty")
-  promoBulkDiscountPct    Decimal?                @map("promo_bulk_discount_pct") @db.Decimal(5, 2)
-  promoStartAt            DateTime?               @map("promo_start_at")
-  promoEndAt              DateTime?               @map("promo_end_at")
-  promoBannerUrl          String?                 @map("promo_banner_url")
-  metadataJson            Json?                   @map("metadata_json")
-  syncedAt                DateTime                @default(now()) @map("synced_at")
-  createdAt               DateTime                @default(now()) @map("created_at")
-  updatedAt               DateTime                @updatedAt @map("updated_at")
-  shop                    Shop                    @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  overrides               SellerProductOverride[]
-  orders                  Order[]
-  internalSourceOrders    InternalSourceOrder[]
-  operations              ProductStockOperation[]
-  stockBatches            StockBatch[]
-  stockEntries            StockEntry[]
+  accLifetimeDays            Int?                        @map("acc_lifetime_days")
+  accBatchStartedAt          DateTime?                   @map("acc_batch_started_at")
+  productIcon                String?                     @map("product_icon")
+  iconCustomEmojiId          String?                     @map("icon_custom_emoji_id")
+  iconOutOfStockEmojiId      String?                     @map("icon_out_of_stock_emoji_id")
+  imageUrl                   String?                     @map("image_url")
+  isSample                   Boolean                     @default(false) @map("is_sample")
+  sourceDeliveryMode         SourceDeliveryMode?         @map("source_delivery_mode")
+  warrantyPolicy             SourceWarrantyPolicy?       @map("warranty_policy")
+  stockAlertThreshold        Int                         @default(5) @map("stock_alert_threshold")
+  stockAlertEnabled          Boolean                     @default(true) @map("stock_alert_enabled")
+  lastStockAlertAt           DateTime?                   @map("last_stock_alert_at")
+  preorderEnabled            Boolean                     @default(false) @map("preorder_enabled")
+  preorderFeePercent         Decimal                     @default(0) @map("preorder_fee_percent") @db.Decimal(5, 2)
+  promoType                  String?                     @map("promo_type") // "BUY_N_GET_M" | "BULK_DISCOUNT"
+  promoBuyN                  Int?                        @map("promo_buy_n")
+  promoGetM                  Int?                        @map("promo_get_m")
+  promoBulkMinQty            Int?                        @map("promo_bulk_min_qty")
+  promoBulkDiscountPct       Decimal?                    @map("promo_bulk_discount_pct") @db.Decimal(5, 2)
+  promoStartAt               DateTime?                   @map("promo_start_at")
+  promoEndAt                 DateTime?                   @map("promo_end_at")
+  promoBannerUrl             String?                     @map("promo_banner_url")
+  metadataJson               Json?                       @map("metadata_json")
+  syncedAt                   DateTime                    @default(now()) @map("synced_at")
+  archivedAt                 DateTime?                   @map("archived_at")
+  createdAt                  DateTime                    @default(now()) @map("created_at")
+  updatedAt                  DateTime                    @updatedAt @map("updated_at")
+  shop                       Shop                        @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  providerSource             ShopProviderSource?         @relation(fields: [providerSourceId], references: [id], onDelete: SetNull)
+  internalSourceConnection   DownstreamSourceConnection? @relation("ConnectionCatalogProducts", fields: [internalSourceConnectionId], references: [id], onDelete: SetNull)
+  overrides                  SellerProductOverride[]
+  orders                     Order[]
+  internalSourceOrders       InternalSourceOrder[]
+  operations                 ProductStockOperation[]
+  stockBatches               StockBatch[]
+  stockEntries               StockEntry[]
 
-  @@unique([shopId, externalProductId])
+  @@unique([shopId, sourceScope, externalProductId])
+  @@index([providerSourceId])
+  @@index([internalSourceConnectionId])
+  @@index([shopId, archivedAt])
   @@map("source_products")
+}
+
+enum PreorderCancellationStatus {
+  NONE
+  REQUESTED
+  APPROVED
+  REJECTED
+  SELLER_CANCELED
 }
 
 /// Admin-managed catalog of product families (replaces the old hardcoded
@@ -758,16 +829,16 @@ model StockEntry {
 }
 
 model ProductStockOperation {
-  id               String              @id @default(cuid())
-  sourceProductId  String              @map("source_product_id")
-  operationType    StockOperationType  @map("operation_type")
-  extractMethod    StockExtractMethod? @map("extract_method")
-  quantity         Int
-  availableBefore  Int                 @map("available_before")
-  availableAfter   Int                 @map("available_after")
-  payloadJson      Json?               @map("payload_json")
-  createdAt        DateTime            @default(now()) @map("created_at")
-  sourceProduct    SourceProduct       @relation(fields: [sourceProductId], references: [id], onDelete: Cascade)
+  id              String              @id @default(cuid())
+  sourceProductId String              @map("source_product_id")
+  operationType   StockOperationType  @map("operation_type")
+  extractMethod   StockExtractMethod? @map("extract_method")
+  quantity        Int
+  availableBefore Int                 @map("available_before")
+  availableAfter  Int                 @map("available_after")
+  payloadJson     Json?               @map("payload_json")
+  createdAt       DateTime            @default(now()) @map("created_at")
+  sourceProduct   SourceProduct       @relation(fields: [sourceProductId], references: [id], onDelete: Cascade)
 
   @@index([sourceProductId, createdAt])
   @@map("product_stock_operations")
@@ -833,6 +904,7 @@ model ShopCatalogGroup {
   id                String                  @id @default(cuid())
   shopId            String                  @map("shop_id")
   name              String
+  description       String?
   position          Int                     @default(0)
   icon              String?
   iconCustomEmojiId String?                 @map("icon_custom_emoji_id")
@@ -846,37 +918,39 @@ model ShopCatalogGroup {
 }
 
 model Customer {
-  id                String                 @id @default(cuid())
-  sellerId          String                 @map("seller_id")
-  shopId            String                 @map("shop_id")
-  telegramUserId    String                 @map("telegram_user_id")
-  telegramChatId    String                 @map("telegram_chat_id")
-  telegramUsername  String?                @map("telegram_username")
-  firstName         String?                @map("first_name")
-  lastName          String?                @map("last_name")
-  preferredLanguage String                 @default("vi") @map("preferred_language")
-  isCtv             Boolean                @default(false) @map("is_ctv")
-  isPremium         Boolean                @default(false) @map("is_premium")
-  isPremiumCheckedAt DateTime?             @map("is_premium_checked_at")
-  blacklisted       Boolean                @default(false) @map("blacklisted")
-  discountPercent   Int                    @default(0) @map("discount_percent")
-  referredById      String?                @map("referred_by_id")
-  referralCode      String?                @unique @map("referral_code")
-  createdAt         DateTime               @default(now()) @map("created_at")
-  updatedAt         DateTime               @updatedAt @map("updated_at")
-  seller            Seller                 @relation(fields: [sellerId], references: [id], onDelete: Cascade)
-  shop              Shop                   @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  referredBy        Customer?              @relation("CustomerReferrals", fields: [referredById], references: [id], onDelete: SetNull)
-  downlines         Customer[]             @relation("CustomerReferrals")
-  orders            Order[]
-  affiliateOrders   Order[]                @relation("OrderAffiliate")
-  broadcastLogs     BroadcastLog[]
-  referrals         ReferralEvent[]
-  wallet            CustomerWallet?
-  walletLedgers     CustomerWalletLedger[]
-  walletTopups      CustomerWalletTopup[]
-  warrantyClaims    WarrantyClaim[]
-  purchasedEntries  StockEntry[]           @relation("CustomerPurchasedEntries")
+  id                   String                 @id @default(cuid())
+  sellerId             String                 @map("seller_id")
+  shopId               String                 @map("shop_id")
+  restockSubscriptions RestockSubscription[]
+  telegramUserId       String                 @map("telegram_user_id")
+  telegramChatId       String                 @map("telegram_chat_id")
+  telegramUsername     String?                @map("telegram_username")
+  firstName            String?                @map("first_name")
+  lastName             String?                @map("last_name")
+  preferredLanguage    String                 @default("vi") @map("preferred_language")
+  isCtv                Boolean                @default(false) @map("is_ctv")
+  isPremium            Boolean                @default(false) @map("is_premium")
+  isPremiumCheckedAt   DateTime?              @map("is_premium_checked_at")
+  blacklisted          Boolean                @default(false) @map("blacklisted")
+  telegramBlockedAt    DateTime?              @map("telegram_blocked_at")
+  discountPercent      Int                    @default(0) @map("discount_percent")
+  referredById         String?                @map("referred_by_id")
+  referralCode         String?                @unique @map("referral_code")
+  createdAt            DateTime               @default(now()) @map("created_at")
+  updatedAt            DateTime               @updatedAt @map("updated_at")
+  seller               Seller                 @relation(fields: [sellerId], references: [id], onDelete: Cascade)
+  shop                 Shop                   @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  referredBy           Customer?              @relation("CustomerReferrals", fields: [referredById], references: [id], onDelete: SetNull)
+  downlines            Customer[]             @relation("CustomerReferrals")
+  orders               Order[]
+  affiliateOrders      Order[]                @relation("OrderAffiliate")
+  broadcastLogs        BroadcastLog[]
+  referrals            ReferralEvent[]
+  wallet               CustomerWallet?
+  walletLedgers        CustomerWalletLedger[]
+  walletTopups         CustomerWalletTopup[]
+  warrantyClaims       WarrantyClaim[]
+  purchasedEntries     StockEntry[]           @relation("CustomerPurchasedEntries")
 
   @@unique([shopId, telegramUserId])
   @@map("customers")
@@ -951,53 +1025,69 @@ model CustomerWalletTopup {
 }
 
 model Order {
-  id                           String                @id @default(cuid())
-  shopId                       String                @map("shop_id")
-  sellerId                     String                @map("seller_id")
-  customerId                   String                @map("customer_id")
-  orderCode                    String                @unique @map("order_code")
-  sourceProductId              String                @map("source_product_id")
-  sourceProviderKindSnapshot   ProviderKind?         @map("source_provider_kind_snapshot")
-  internalSourceOrderId        String?               @unique @map("internal_source_order_id")
-  internalSourceOrderCode      String?               @map("internal_source_order_code")
-  warrantyPolicySnapshot       SourceWarrantyPolicy? @map("warranty_policy_snapshot")
-  warrantyDeliveryModeSnapshot SourceDeliveryMode?   @map("warranty_delivery_mode_snapshot")
-  warrantyStartedAt            DateTime?             @map("warranty_started_at")
-  warrantyExpiresAt            DateTime?             @map("warranty_expires_at")
-  warrantyClaimCount           Int                   @default(0) @map("warranty_claim_count")
+  id                            String                     @id @default(cuid())
+  shopId                        String                     @map("shop_id")
+  sellerId                      String                     @map("seller_id")
+  customerId                    String                     @map("customer_id")
+  orderCode                     String                     @unique @map("order_code")
+  sourceProductId               String                     @map("source_product_id")
+  sourceProviderKindSnapshot    ProviderKind?              @map("source_provider_kind_snapshot")
+  internalSourceOrderId         String?                    @unique @map("internal_source_order_id")
+  internalSourceOrderCode       String?                    @map("internal_source_order_code")
+  providerOrderId               String?                    @map("provider_order_id")
+  providerOrderCode             String?                    @map("provider_order_code")
+  warrantyPolicySnapshot        SourceWarrantyPolicy?      @map("warranty_policy_snapshot")
+  warrantyDeliveryModeSnapshot  SourceDeliveryMode?        @map("warranty_delivery_mode_snapshot")
+  warrantyStartedAt             DateTime?                  @map("warranty_started_at")
+  warrantyExpiresAt             DateTime?                  @map("warranty_expires_at")
+  warrantyClaimCount            Int                        @default(0) @map("warranty_claim_count")
   // Per-order warranty secret (from warranty branch); nullable for legacy orders. Generated at order create.
-  warrantyClaimCode            String?               @map("warranty_claim_code")
-  productNameSnapshot          String                @map("product_name_snapshot")
-  customerEmail                String?               @map("customer_email")
-  quantity                     Int                   @default(1)
-  salePrice                    Decimal               @map("sale_price") @db.Decimal(18, 2)
-  sourcePriceSnapshot          Decimal               @map("source_price_snapshot") @db.Decimal(18, 2)
-  totalSaleAmount              Decimal               @map("total_sale_amount") @db.Decimal(18, 2)
-  totalSourceAmount            Decimal               @map("total_source_amount") @db.Decimal(18, 2)
-  status                       OrderStatus           @default(AWAITING_PAYMENT)
-  paymentStatus                PaymentStatus         @default(UNPAID) @map("payment_status")
-  deliveredAccountText         String?               @map("delivered_account_text")
-  failureReason                String?               @map("failure_reason")
-  affiliateCustomerId          String?               @map("affiliate_customer_id")
-  affiliateCommission          Decimal?              @map("affiliate_commission") @db.Decimal(18, 2)
-  createdAt                    DateTime              @default(now()) @map("created_at")
-  updatedAt                    DateTime              @updatedAt @map("updated_at")
-  paidAt                       DateTime?             @map("paid_at")
-  deliveredAt                  DateTime?             @map("delivered_at")
-  shop                         Shop                  @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  seller                       Seller                @relation(fields: [sellerId], references: [id], onDelete: Cascade)
-  customer                     Customer              @relation(fields: [customerId], references: [id], onDelete: Cascade)
-  affiliateCustomer            Customer?             @relation("OrderAffiliate", fields: [affiliateCustomerId], references: [id], onDelete: SetNull)
-  sourceProduct                SourceProduct         @relation(fields: [sourceProductId], references: [id], onDelete: Restrict)
-  internalSourceOrder          InternalSourceOrder?  @relation(fields: [internalSourceOrderId], references: [id], onDelete: SetNull)
-  events                       OrderEvent[]
-  paymentTransaction           PaymentTransaction?
-  warrantyClaims               WarrantyClaim[]
-  stockEntries                 StockEntry[]          @relation("OrderStockEntries")
+  warrantyClaimCode             String?                    @map("warranty_claim_code")
+  productNameSnapshot           String                     @map("product_name_snapshot")
+  customerEmail                 String?                    @map("customer_email")
+  quantity                      Int                        @default(1)
+  salePrice                     Decimal                    @map("sale_price") @db.Decimal(18, 2)
+  sourcePriceSnapshot           Decimal                    @map("source_price_snapshot") @db.Decimal(18, 2)
+  totalSaleAmount               Decimal                    @map("total_sale_amount") @db.Decimal(18, 2)
+  totalSourceAmount             Decimal                    @map("total_source_amount") @db.Decimal(18, 2)
+  isPreorder                    Boolean                    @default(false) @map("is_preorder")
+  preorderFeePercent            Decimal                    @default(0) @map("preorder_fee_percent") @db.Decimal(5, 2)
+  preorderFeeAmount             Decimal                    @default(0) @map("preorder_fee_amount") @db.Decimal(18, 2)
+  preorderCancellationStatus    PreorderCancellationStatus @default(NONE) @map("preorder_cancellation_status")
+  preorderCancelRequestedBy     String?                    @map("preorder_cancel_requested_by")
+  preorderCancelReason          String?                    @map("preorder_cancel_reason")
+  preorderCancelRequestedAt     DateTime?                  @map("preorder_cancel_requested_at")
+  preorderCancelReviewedAt      DateTime?                  @map("preorder_cancel_reviewed_at")
+  preorderCancelReviewedBy      String?                    @map("preorder_cancel_reviewed_by")
+  preorderCancelRefundAmount    Decimal                    @default(0) @map("preorder_cancel_refund_amount") @db.Decimal(18, 2)
+  preorderCancelFeeRefundAmount Decimal                    @default(0) @map("preorder_cancel_fee_refund_amount") @db.Decimal(18, 2)
+  status                        OrderStatus                @default(AWAITING_PAYMENT)
+  paymentStatus                 PaymentStatus              @default(UNPAID) @map("payment_status")
+  deliveredAccountText          String?                    @map("delivered_account_text")
+  failureReason                 String?                    @map("failure_reason")
+  affiliateCustomerId           String?                    @map("affiliate_customer_id")
+  affiliateCommission           Decimal?                   @map("affiliate_commission") @db.Decimal(18, 2)
+  createdAt                     DateTime                   @default(now()) @map("created_at")
+  updatedAt                     DateTime                   @updatedAt @map("updated_at")
+  paidAt                        DateTime?                  @map("paid_at")
+  deliveredAt                   DateTime?                  @map("delivered_at")
+  shop                          Shop                       @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  seller                        Seller                     @relation(fields: [sellerId], references: [id], onDelete: Cascade)
+  customer                      Customer                   @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  affiliateCustomer             Customer?                  @relation("OrderAffiliate", fields: [affiliateCustomerId], references: [id], onDelete: SetNull)
+  sourceProduct                 SourceProduct              @relation(fields: [sourceProductId], references: [id], onDelete: Restrict)
+  internalSourceOrder           InternalSourceOrder?       @relation(fields: [internalSourceOrderId], references: [id], onDelete: SetNull)
+  events                        OrderEvent[]
+  paymentTransaction            PaymentTransaction?
+  warrantyClaims                WarrantyClaim[]
+  stockEntries                  StockEntry[]               @relation("OrderStockEntries")
 
   @@index([sellerId, createdAt])
   @@index([customerId, createdAt])
   @@index([shopId, status])
+  @@index([sourceProductId, isPreorder, status, paidAt])
+  @@index([providerOrderCode])
+  @@index([shopId, preorderCancellationStatus, updatedAt])
   @@map("orders")
 }
 
@@ -1051,6 +1141,9 @@ model DownstreamSourceConnection {
   downstreamTelegramChatId String?                          @map("downstream_telegram_chat_id")
   status                   DownstreamSourceConnectionStatus @default(PENDING)
   label                    String?
+  clientName               String?                          @map("client_name")
+  clientBotUsername        String?                          @map("client_bot_username")
+  clientConnectedAt        DateTime?                        @map("client_connected_at")
   currency                 String                           @default("VND")
   inheritSourceTemplate    Boolean                          @default(false) @map("inherit_source_template")
   templateOverridesJson    Json?                            @map("template_overrides_json")
@@ -1068,6 +1161,7 @@ model DownstreamSourceConnection {
   orders                   InternalSourceOrder[]
   accessLogs               InternalSourceAccessLog[]
   topupRequests            ConnectionTopupRequest[]
+  catalogProducts          SourceProduct[]                  @relation("ConnectionCatalogProducts")
 
   @@unique([upstreamShopId, downstreamShopId])
   @@index([downstreamSellerId, status, createdAt])
@@ -1411,33 +1505,203 @@ model SystemConfig {
 }
 
 model OnchainPaymentReceipt {
-  id                String          @id @default(cuid())
-  provider          PaymentProvider
-  txHash            String          @map("tx_hash")
-  externalOrderCode String          @unique @map("external_order_code")
-  amountUsdt        Decimal         @map("amount_usdt") @db.Decimal(30, 8)
-  destination       String
-  transactionAt     DateTime        @map("transaction_at")
-  rawPayloadJson    Json?           @map("raw_payload_json")
-  processedAt       DateTime?       @map("processed_at")
-  createdAt         DateTime        @default(now()) @map("created_at")
-  updatedAt         DateTime        @updatedAt @map("updated_at")
+  id                  String          @id @default(cuid())
+  provider            PaymentProvider
+  txHash              String          @map("tx_hash")
+  txHashNormalized    String          @unique @map("tx_hash_normalized")
+  externalOrderCode   String          @unique @map("external_order_code")
+  amountUsdt          Decimal         @map("amount_usdt") @db.Decimal(30, 8)
+  destination         String
+  tokenAddress        String?         @map("token_address")
+  blockReference      String?         @map("block_reference")
+  confirmations       Int?
+  verificationVersion Int             @default(1) @map("verification_version")
+  transactionAt       DateTime        @map("transaction_at")
+  rawPayloadJson      Json?           @map("raw_payload_json")
+  processedAt         DateTime?       @map("processed_at")
+  createdAt           DateTime        @default(now()) @map("created_at")
+  updatedAt           DateTime        @updatedAt @map("updated_at")
 
   @@unique([provider, txHash])
   @@index([processedAt, createdAt])
   @@map("onchain_payment_receipts")
 }
 
+model OnchainInvoiceReservation {
+  id                String          @id @default(cuid())
+  provider          PaymentProvider
+  destination       String
+  amountKey         String          @map("amount_key")
+  externalOrderCode String          @unique @map("external_order_code")
+  expiresAt         DateTime        @map("expires_at")
+  createdAt         DateTime        @default(now()) @map("created_at")
+
+  @@unique([provider, destination, amountKey])
+  @@index([expiresAt])
+  @@map("onchain_invoice_reservations")
+}
+
 model WalletPromotion {
   id           String   @id @default(cuid())
   shopId       String   @map("shop_id")
+  minAmount    Decimal  @default(0) @map("min_amount") @db.Decimal(18, 2)
   bonusPercent Decimal  @map("bonus_percent") @db.Decimal(5, 2)
+  imageUrl     String?  @map("image_url")
   startAt      DateTime @map("start_at")
   endAt        DateTime @map("end_at")
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
   shop         Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
 
-  @@index([shopId, startAt, endAt])
+  @@index([shopId, startAt, endAt, minAmount])
   @@map("wallet_promotions")
+}
+
+enum TelegramSessionStatus {
+  ACTIVE
+  REAUTH_REQUIRED
+  FLOOD_WAIT
+  DISABLED
+}
+
+enum UserbotCampaignStatus {
+  DRAFT
+  RUNNING
+  PAUSED
+  COMPLETED
+  FAILED
+}
+
+enum UserbotLogStatus {
+  SUCCESS
+  FAILED
+  SKIPPED
+}
+
+enum TelegramUserTemplateType {
+  SPINTAX_TEXT
+  FORWARD_SAVED_MESSAGE
+}
+
+model TelegramUserSession {
+  id                     String                @id @default(cuid())
+  sellerId               String                @map("seller_id")
+  phoneNumber            String                @map("phone_number")
+  apiId                  Int?                  @map("api_id")
+  apiHash                String?               @map("api_hash")
+  sessionStringEncrypted String                @map("session_string_encrypted")
+  telegramUserId         String?               @map("telegram_user_id")
+  telegramUsername       String?               @map("telegram_username")
+  proxyUrl               String?               @map("proxy_url")
+  status                 TelegramSessionStatus @default(ACTIVE)
+  lastSyncAt             DateTime?             @map("last_sync_at")
+  createdAt              DateTime              @default(now()) @map("created_at")
+  updatedAt              DateTime              @updatedAt @map("updated_at")
+
+  seller    Seller                 @relation(fields: [sellerId], references: [id], onDelete: Cascade)
+  groups    TelegramUserGroup[]
+  campaigns TelegramUserCampaign[]
+
+  @@index([sellerId, phoneNumber])
+  @@map("telegram_user_sessions")
+}
+
+model TelegramUserGroup {
+  id              String   @id @default(cuid())
+  sessionId       String   @map("session_id")
+  telegramChatId  BigInt   @map("telegram_chat_id")
+  title           String
+  username        String?
+  memberCount     Int?     @map("member_count")
+  canSendMessages Boolean  @default(true) @map("can_send_messages")
+  isSupergroup    Boolean  @default(true) @map("is_supergroup")
+  syncedAt        DateTime @default(now()) @map("synced_at")
+
+  session TelegramUserSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, telegramChatId])
+  @@map("telegram_user_groups")
+}
+
+model TelegramUserTemplate {
+  id               String                   @id @default(cuid())
+  sellerId         String                   @map("seller_id")
+  name             String
+  type             TelegramUserTemplateType @default(SPINTAX_TEXT)
+  content          String?                  @db.Text
+  mediaUrl         String?                  @map("media_url")
+  savedMessageId   BigInt?                  @map("saved_message_id")
+  savedMessageText String?                  @map("saved_message_text") @db.Text
+  createdAt        DateTime                 @default(now()) @map("created_at")
+  updatedAt        DateTime                 @updatedAt @map("updated_at")
+
+  seller    Seller                 @relation(fields: [sellerId], references: [id], onDelete: Cascade)
+  campaigns TelegramUserCampaign[]
+
+  @@map("telegram_user_templates")
+}
+
+model TelegramUserCampaign {
+  id                  String                @id @default(cuid())
+  sellerId            String                @map("seller_id")
+  sessionId           String                @map("session_id")
+  templateId          String                @map("template_id")
+  name                String
+  targetGroupIds      Json                  @map("target_group_ids")
+  delaySeconds        Int                   @default(60) @map("delay_seconds")
+  scheduleTime        DateTime?             @map("schedule_time")
+  isRecurring         Boolean               @default(false) @map("is_recurring")
+  repeatIntervalHours Int?                  @default(24) @map("repeat_interval_hours")
+  lastRunAt           DateTime?             @map("last_run_at")
+  nextRunAt           DateTime?             @map("next_run_at")
+  status              UserbotCampaignStatus @default(DRAFT)
+  totalTarget         Int                   @default(0) @map("total_target")
+  sentCount           Int                   @default(0) @map("sent_count")
+  failedCount         Int                   @default(0) @map("failed_count")
+  createdAt           DateTime              @default(now()) @map("created_at")
+  updatedAt           DateTime              @updatedAt @map("updated_at")
+
+  seller   Seller                    @relation(fields: [sellerId], references: [id], onDelete: Cascade)
+  session  TelegramUserSession       @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  template TelegramUserTemplate      @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  logs     TelegramUserCampaignLog[]
+
+  @@map("telegram_user_campaigns")
+}
+
+model TelegramUserCampaignLog {
+  id          String           @id @default(cuid())
+  campaignId  String           @map("campaign_id")
+  groupTitle  String           @map("group_title")
+  groupChatId BigInt           @map("group_chat_id")
+  status      UserbotLogStatus
+  errorDetail String?          @map("error_detail")
+  sentAt      DateTime         @default(now()) @map("sent_at")
+
+  campaign TelegramUserCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  @@map("telegram_user_campaign_logs")
+}
+
+enum TelegramUserbotLicenseType {
+  PLUS
+  PRO
+  UNLIMITED
+}
+
+model TelegramUserbotLicenseKey {
+  id                 String                     @id @default(cuid())
+  code               String                     @unique
+  type               TelegramUserbotLicenseType
+  durationDays       Int                        @map("duration_days")
+  isRedeemed         Boolean                    @default(false) @map("is_redeemed")
+  redeemedBySellerId String?                    @map("redeemed_by_seller_id")
+  redeemedAt         DateTime?                  @map("redeemed_at")
+  expiresAt          DateTime?                  @map("expires_at")
+  createdAt          DateTime                   @default(now()) @map("created_at")
+  updatedAt          DateTime                   @updatedAt @map("updated_at")
+
+  redeemedBySeller Seller? @relation("UserbotLicenseKeyRedeemer", fields: [redeemedBySellerId], references: [id])
+
+  @@map("telegram_userbot_license_keys")
 }

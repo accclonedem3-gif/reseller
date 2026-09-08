@@ -2,6 +2,7 @@ import type { AxiosError } from "axios";
 import {
   Bell,
   Cable,
+  ChevronRight,
   RefreshCcw,
   Users,
   X,
@@ -10,6 +11,7 @@ import {
 import { useState } from "react";
 import { createPortal } from "react-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useNavigate } from "react-router-dom";
 
 import { useAuth } from "@/auth/auth-provider";
 import { Badge } from "@/components/ui/badge";
@@ -26,11 +28,14 @@ import { hasSellerCapability } from "@/lib/seller-access";
 const T = {
   vi: {
     gateTitle: "Kết nối nguồn chưa được kích hoạt",
-    gateDesc: "Tài khoản PRO có thể kết nối vào kho ULTRA hoặc tạo kho để PRO kết nối vào. Tài khoản FREE chỉ xem được.",
+    gateDesc:
+      "Tài khoản PRO có thể kết nối vào kho ULTRA hoặc tạo kho để PRO kết nối vào. Tài khoản FREE chỉ xem được.",
     eyebrow: "Mạng lưới nội bộ",
     title: "Kết nối nguồn",
-    descUltra: "Cấp API key cho seller PRO kết nối vào kho của bạn. Theo dõi đại lý, xử lý đơn sỉ và nhận cảnh báo tồn kho.",
-    descPRO: "Kết nối vào kho ULTRA để nhận catalog và giá sỉ tự động. Nạp số dư để đặt hàng.",
+    descUltra:
+      "Cấp API key cho seller PRO kết nối vào kho của bạn. Theo dõi đại lý, xử lý đơn sỉ và nhận cảnh báo tồn kho.",
+    descPRO:
+      "Kết nối vào kho ULTRA để nhận catalog và giá sỉ tự động. Nạp số dư để đặt hàng.",
     statConnections: "Kết nối",
     statApiKeys: "API key",
     statOrders: "Đơn sỉ",
@@ -57,22 +62,29 @@ const T = {
     topupLoading: "Đang nạp...",
     topupBtn: "Nạp ngay",
     connectTitle: "Kết nối vào kho ULTRA",
-    connectDesc: "Dán API key nhận từ tổng sỉ ULTRA để kết nối. Catalog và giá sỉ sẽ tự đồng bộ ngay sau khi kết nối thành công.",
+    connectDesc:
+      "Dán API key nhận từ tổng sỉ ULTRA để kết nối. Catalog và giá sỉ sẽ tự đồng bộ ngay sau khi kết nối thành công.",
     connectPh: "src_••••••••••••••••••••••••••••••••",
     connecting: "Đang kết nối...",
     connectBtn: "Kết nối nguồn",
     onboardKicker: "Tổng sỉ ULTRA",
     onboardTitle: "3 bước để PRO seller kết nối vào kho của bạn",
     onboardStep1Title: "Tạo API key",
-    onboardStep1Desc: "Nhắn /api trong bot PRO. Key chỉ hiện 1 lần — copy ngay và lưu lại.",
+    onboardStep1Desc:
+      "Nhắn /api trong bot PRO. Key chỉ hiện 1 lần — copy ngay và lưu lại.",
     onboardStep2Title: "Gửi key cho PRO seller",
-    onboardStep2Desc: "Chia sẻ chuỗi key (bắt đầu bằng src_) qua Telegram hoặc kênh bảo mật.",
+    onboardStep2Desc:
+      "Chia sẻ chuỗi key (bắt đầu bằng src_) qua Telegram hoặc kênh bảo mật.",
     onboardStep3Title: "PRO dán key vào Source Network",
-    onboardStep3Desc: "PRO vào Kết nối nguồn → dán key → bấm Kết nối. Catalog tự đồng bộ ngay lập tức.",
-    onboardFooter: "Mỗi key có thể thu hồi bất cứ lúc nào. PRO seller sau khi kết nối sẽ thấy kho sản phẩm và đặt hàng tự động.",
+    onboardStep3Desc:
+      "PRO vào Kết nối nguồn → dán key → bấm Kết nối. Catalog tự đồng bộ ngay lập tức.",
+    onboardFooter:
+      "Mỗi key có thể thu hồi bất cứ lúc nào. PRO seller sau khi kết nối sẽ thấy kho sản phẩm và đặt hàng tự động.",
     keysTitle: "API keys đã cấp",
-    keysDesc: (cmd: string) => `Key được tạo tự động qua lệnh ${cmd} trong bot PRO.`,
-    keysEmpty: (cmd: string) => `Chưa có key nào. Nhắn ${cmd} trong bot PRO để tạo key.`,
+    keysDesc: (cmd: string) =>
+      `Key được tạo tự động qua lệnh ${cmd} trong bot PRO.`,
+    keysEmpty: (cmd: string) =>
+      `Chưa có key nào. Nhắn ${cmd} trong bot PRO để tạo key.`,
     keyCount: (n: number) => `${n} keys`,
     keyAgent: "Đại lý",
     keyBalance: "Số dư",
@@ -80,7 +92,8 @@ const T = {
     keyExpires: "Hết hạn",
     revokeBtn: "Thu hồi",
     alertTitle: "Cảnh báo tồn kho",
-    alertDesc: "Nhận cảnh báo qua Telegram khi tồn kho xuống dưới ngưỡng. Cần cài Telegram chat ID trong cài đặt shop.",
+    alertDesc:
+      "Nhận cảnh báo qua Telegram khi tồn kho xuống dưới ngưỡng. Cần cài Telegram chat ID trong cài đặt shop.",
     alertNotTracked: "Không theo dõi tồn kho",
     alertLow: (n: number) => `${n} account còn lại — sắp hết`,
     alertEmpty: (n: number) => `${n} account còn lại — hết hàng`,
@@ -126,11 +139,14 @@ const T = {
   },
   en: {
     gateTitle: "Source connection not activated",
-    gateDesc: "PRO accounts can connect to an ULTRA warehouse or create a warehouse for PRO connections. FREE accounts are read-only.",
+    gateDesc:
+      "PRO accounts can connect to an ULTRA warehouse or create a warehouse for PRO connections. FREE accounts are read-only.",
     eyebrow: "Internal network",
     title: "Source connection",
-    descUltra: "Issue API keys for PRO sellers to connect to your warehouse. Monitor agents, process wholesale orders, and receive stock alerts.",
-    descPRO: "Connect to an ULTRA warehouse to receive catalog and wholesale prices automatically. Top up balance to place orders.",
+    descUltra:
+      "Issue API keys for PRO sellers to connect to your warehouse. Monitor agents, process wholesale orders, and receive stock alerts.",
+    descPRO:
+      "Connect to an ULTRA warehouse to receive catalog and wholesale prices automatically. Top up balance to place orders.",
     statConnections: "Connections",
     statApiKeys: "API keys",
     statOrders: "Wholesale orders",
@@ -152,27 +168,35 @@ const T = {
     infoLastSync: "Last synced",
     infoLastOrder: "Last order",
     topupTitle: "Top up connection balance",
-    topupDesc: "Transfer from seller wallet to connection balance for automatic wholesale ordering.",
+    topupDesc:
+      "Transfer from seller wallet to connection balance for automatic wholesale ordering.",
     topupAmountPh: "Amount...",
     topupLoading: "Topping up...",
     topupBtn: "Top up now",
     connectTitle: "Connect to ULTRA warehouse",
-    connectDesc: "Paste the API key received from the ULTRA wholesaler to connect. Catalog and wholesale prices will sync automatically after a successful connection.",
+    connectDesc:
+      "Paste the API key received from the ULTRA wholesaler to connect. Catalog and wholesale prices will sync automatically after a successful connection.",
     connectPh: "src_••••••••••••••••••••••••••••••••",
     connecting: "Connecting...",
     connectBtn: "Connect source",
     onboardKicker: "ULTRA wholesaler",
     onboardTitle: "3 steps for PRO sellers to connect to your warehouse",
     onboardStep1Title: "Create API key",
-    onboardStep1Desc: "Send /api in the PRO bot. The key only shows once — copy and save it immediately.",
+    onboardStep1Desc:
+      "Send /api in the PRO bot. The key only shows once — copy and save it immediately.",
     onboardStep2Title: "Send key to PRO seller",
-    onboardStep2Desc: "Share the key string (starting with src_) via Telegram or a secure channel.",
+    onboardStep2Desc:
+      "Share the key string (starting with src_) via Telegram or a secure channel.",
     onboardStep3Title: "PRO pastes key into Source Network",
-    onboardStep3Desc: "PRO goes to Source Connection → pastes key → clicks Connect. Catalog syncs immediately.",
-    onboardFooter: "Each key can be revoked at any time. PRO sellers after connecting will see the product warehouse and can order automatically.",
+    onboardStep3Desc:
+      "PRO goes to Source Connection → pastes key → clicks Connect. Catalog syncs immediately.",
+    onboardFooter:
+      "Each key can be revoked at any time. PRO sellers after connecting will see the product warehouse and can order automatically.",
     keysTitle: "Issued API keys",
-    keysDesc: (cmd: string) => `Keys are created automatically via the ${cmd} command in the PRO bot.`,
-    keysEmpty: (cmd: string) => `No keys yet. Send ${cmd} in the PRO bot to create a key.`,
+    keysDesc: (cmd: string) =>
+      `Keys are created automatically via the ${cmd} command in the PRO bot.`,
+    keysEmpty: (cmd: string) =>
+      `No keys yet. Send ${cmd} in the PRO bot to create a key.`,
     keyCount: (n: number) => `${n} keys`,
     keyAgent: "Agent",
     keyBalance: "Balance",
@@ -180,7 +204,8 @@ const T = {
     keyExpires: "Expires",
     revokeBtn: "Revoke",
     alertTitle: "Stock alerts",
-    alertDesc: "Receive Telegram alerts when stock drops below threshold. Requires Telegram chat ID in shop settings.",
+    alertDesc:
+      "Receive Telegram alerts when stock drops below threshold. Requires Telegram chat ID in shop settings.",
     alertNotTracked: "Stock not tracked",
     alertLow: (n: number) => `${n} accounts remaining — running low`,
     alertEmpty: (n: number) => `${n} accounts remaining — out of stock`,
@@ -226,11 +251,14 @@ const T = {
   },
   th: {
     gateTitle: "การเชื่อมต่อแหล่งยังไม่ได้เปิดใช้งาน",
-    gateDesc: "บัญชี PRO สามารถเชื่อมต่อกับคลัง ULTRA หรือสร้างคลังสำหรับการเชื่อมต่อ PRO ได้ บัญชี FREE อ่านได้อย่างเดียว",
+    gateDesc:
+      "บัญชี PRO สามารถเชื่อมต่อกับคลัง ULTRA หรือสร้างคลังสำหรับการเชื่อมต่อ PRO ได้ บัญชี FREE อ่านได้อย่างเดียว",
     eyebrow: "เครือข่ายภายใน",
     title: "การเชื่อมต่อแหล่ง",
-    descUltra: "ออก API key สำหรับผู้ขาย PRO เพื่อเชื่อมต่อกับคลังของคุณ ติดตามตัวแทน ดำเนินการคำสั่งซื้อขายส่ง และรับการแจ้งเตือนสต็อก",
-    descPRO: "เชื่อมต่อกับคลัง ULTRA เพื่อรับแคตาล็อกและราคาขายส่งโดยอัตโนมัติ เติมยอดคงเหลือเพื่อสั่งซื้อ",
+    descUltra:
+      "ออก API key สำหรับผู้ขาย PRO เพื่อเชื่อมต่อกับคลังของคุณ ติดตามตัวแทน ดำเนินการคำสั่งซื้อขายส่ง และรับการแจ้งเตือนสต็อก",
+    descPRO:
+      "เชื่อมต่อกับคลัง ULTRA เพื่อรับแคตาล็อกและราคาขายส่งโดยอัตโนมัติ เติมยอดคงเหลือเพื่อสั่งซื้อ",
     statConnections: "การเชื่อมต่อ",
     statApiKeys: "API key",
     statOrders: "คำสั่งซื้อขายส่ง",
@@ -252,27 +280,35 @@ const T = {
     infoLastSync: "ซิงค์ล่าสุด",
     infoLastOrder: "สั่งล่าสุด",
     topupTitle: "เติมยอดคงเหลือการเชื่อมต่อ",
-    topupDesc: "โอนจากกระเป๋าเงินผู้ขายไปยังยอดคงเหลือการเชื่อมต่อสำหรับการสั่งซื้อขายส่งอัตโนมัติ",
+    topupDesc:
+      "โอนจากกระเป๋าเงินผู้ขายไปยังยอดคงเหลือการเชื่อมต่อสำหรับการสั่งซื้อขายส่งอัตโนมัติ",
     topupAmountPh: "จำนวนเงิน...",
     topupLoading: "กำลังเติม...",
     topupBtn: "เติมเลย",
     connectTitle: "เชื่อมต่อกับคลัง ULTRA",
-    connectDesc: "วาง API key ที่ได้รับจากผู้ขายส่ง ULTRA เพื่อเชื่อมต่อ แคตาล็อกและราคาขายส่งจะซิงค์โดยอัตโนมัติหลังจากเชื่อมต่อสำเร็จ",
+    connectDesc:
+      "วาง API key ที่ได้รับจากผู้ขายส่ง ULTRA เพื่อเชื่อมต่อ แคตาล็อกและราคาขายส่งจะซิงค์โดยอัตโนมัติหลังจากเชื่อมต่อสำเร็จ",
     connectPh: "src_••••••••••••••••••••••••••••••••",
     connecting: "กำลังเชื่อมต่อ...",
     connectBtn: "เชื่อมต่อแหล่ง",
     onboardKicker: "ผู้ขายส่ง ULTRA",
     onboardTitle: "3 ขั้นตอนสำหรับผู้ขาย PRO เพื่อเชื่อมต่อกับคลังของคุณ",
     onboardStep1Title: "สร้าง API key",
-    onboardStep1Desc: "ส่ง /api ในบอท PRO key จะแสดงเพียงครั้งเดียว — คัดลอกและบันทึกทันที",
+    onboardStep1Desc:
+      "ส่ง /api ในบอท PRO key จะแสดงเพียงครั้งเดียว — คัดลอกและบันทึกทันที",
     onboardStep2Title: "ส่ง key ให้ผู้ขาย PRO",
-    onboardStep2Desc: "แชร์สตริง key (เริ่มด้วย src_) ผ่าน Telegram หรือช่องทางที่ปลอดภัย",
+    onboardStep2Desc:
+      "แชร์สตริง key (เริ่มด้วย src_) ผ่าน Telegram หรือช่องทางที่ปลอดภัย",
     onboardStep3Title: "PRO วาง key ใน Source Network",
-    onboardStep3Desc: "PRO ไปที่ Source Connection → วาง key → คลิก Connect แคตาล็อกซิงค์ทันที",
-    onboardFooter: "แต่ละ key สามารถเพิกถอนได้ตลอดเวลา ผู้ขาย PRO หลังจากเชื่อมต่อจะเห็นคลังสินค้าและสามารถสั่งซื้อได้โดยอัตโนมัติ",
+    onboardStep3Desc:
+      "PRO ไปที่ Source Connection → วาง key → คลิก Connect แคตาล็อกซิงค์ทันที",
+    onboardFooter:
+      "แต่ละ key สามารถเพิกถอนได้ตลอดเวลา ผู้ขาย PRO หลังจากเชื่อมต่อจะเห็นคลังสินค้าและสามารถสั่งซื้อได้โดยอัตโนมัติ",
     keysTitle: "API key ที่ออกแล้ว",
-    keysDesc: (cmd: string) => `Key สร้างโดยอัตโนมัติผ่านคำสั่ง ${cmd} ในบอท PRO`,
-    keysEmpty: (cmd: string) => `ยังไม่มี key ส่ง ${cmd} ในบอท PRO เพื่อสร้าง key`,
+    keysDesc: (cmd: string) =>
+      `Key สร้างโดยอัตโนมัติผ่านคำสั่ง ${cmd} ในบอท PRO`,
+    keysEmpty: (cmd: string) =>
+      `ยังไม่มี key ส่ง ${cmd} ในบอท PRO เพื่อสร้าง key`,
     keyCount: (n: number) => `${n} keys`,
     keyAgent: "ตัวแทน",
     keyBalance: "ยอดคงเหลือ",
@@ -280,7 +316,8 @@ const T = {
     keyExpires: "หมดอายุ",
     revokeBtn: "เพิกถอน",
     alertTitle: "การแจ้งเตือนสต็อก",
-    alertDesc: "รับการแจ้งเตือน Telegram เมื่อสต็อกลดลงต่ำกว่าเกณฑ์ ต้องการ Telegram chat ID ในการตั้งค่าร้านค้า",
+    alertDesc:
+      "รับการแจ้งเตือน Telegram เมื่อสต็อกลดลงต่ำกว่าเกณฑ์ ต้องการ Telegram chat ID ในการตั้งค่าร้านค้า",
     alertNotTracked: "ไม่ติดตามสต็อก",
     alertLow: (n: number) => `เหลือ ${n} บัญชี — ใกล้หมด`,
     alertEmpty: (n: number) => `เหลือ ${n} บัญชี — หมดแล้ว`,
@@ -346,14 +383,27 @@ type SourceConnection = {
     lastUsedAt: string | null;
   } | null;
   upstreamSeller: { id: string; displayName: string; tier: string };
-  upstreamShop: { id: string; name: string; slug: string };
-  downstreamSeller: { id: string; displayName: string; telegramUsername: string | null } | null;
+  upstreamShop: {
+    id: string;
+    name: string;
+    slug: string;
+    telegramBotUsername: string | null;
+  };
+  downstreamSeller: {
+    id: string;
+    displayName: string;
+    telegramUsername: string | null;
+  } | null;
   downstreamShop: {
     id: string;
     name: string;
     slug: string;
     telegramBotUsername: string | null;
   } | null;
+  clientName?: string | null;
+  clientBotUsername?: string | null;
+  clientConnectedAt?: string | null;
+  productCount?: number;
 };
 
 type SourceApiKey = {
@@ -374,6 +424,20 @@ type SourceApiKey = {
     balance: number;
     currency: string;
   } | null;
+};
+
+type ProviderSource = {
+  id: string;
+  label: string;
+  providerName: string;
+  baseUrl: string;
+  buyerKeyMasked: string;
+  enabled: boolean;
+  connectionStatus: string;
+  priceMarkupPercent: number | null;
+  lastVerifiedAt: string | null;
+  lastCatalogSyncAt: string | null;
+  productCount: number;
 };
 
 type ProSourceProduct = {
@@ -422,13 +486,37 @@ function getApiErrorMessage(error: unknown, fallback: string) {
 
 function getTone(status: string): "neutral" | "success" | "warning" | "danger" {
   const s = String(status || "").toLowerCase();
-  if (["active", "delivered", "verified", "auto_resolved", "resolved_manual"].includes(s)) return "success";
-  if (["pending", "pending_stock", "pending_manual", "pending_review", "processing"].includes(s)) return "warning";
-  if (["failed", "disabled", "revoked", "rejected", "canceled"].includes(s)) return "danger";
+  if (
+    [
+      "active",
+      "delivered",
+      "verified",
+      "auto_resolved",
+      "resolved_manual",
+    ].includes(s)
+  )
+    return "success";
+  if (
+    [
+      "pending",
+      "pending_stock",
+      "pending_manual",
+      "pending_review",
+      "processing",
+    ].includes(s)
+  )
+    return "warning";
+  if (["failed", "disabled", "revoked", "rejected", "canceled"].includes(s))
+    return "danger";
   return "neutral";
 }
 
-export function SourceNetworkPage() {
+export function SourceNetworkPage({
+  mode = "buyer",
+}: {
+  mode?: "buyer" | "provider";
+}) {
+  const navigate = useNavigate();
   const { lang } = useLang();
   const t = T[lang];
 
@@ -437,48 +525,234 @@ export function SourceNetworkPage() {
   const { showToast } = useToast();
 
   const [connectKey, setConnectKey] = useState("");
+  const [providerForm, setProviderForm] = useState({
+    label: "",
+    providerName: "canboso",
+    baseUrl: "https://canboso.com",
+    buyerKey: "",
+    priceMarkupPercent: "",
+  });
   const disconnectMutation = useMutation({
-    mutationFn: async () => api.delete("/seller/source-connection"),
+    mutationFn: async (connectionId: string) =>
+      api.delete(`/source/connections/${connectionId}`),
     onSuccess: async () => {
       showToast({ tone: "success", message: "Đã ngắt kết nối nguồn." });
-      await queryClient.invalidateQueries({ queryKey: ["source-network", "current-connection"] });
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: ["source-network", "connections"],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ["source-network", "current-connection"],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ["source-products", "catalog"],
+        }),
+      ]);
     },
-    onError: (e: any) => showToast({ tone: "error", message: e?.response?.data?.message || "Lỗi" }),
+    onError: (e: any) =>
+      showToast({
+        tone: "error",
+        message: e?.response?.data?.message || "Lỗi",
+      }),
   });
   const [topupAmount, setTopupAmount] = useState("10000");
-  const [alertInputs, setAlertInputs] = useState<Record<string, { threshold: string; enabled: boolean }>>({});
+  const [alertInputs, setAlertInputs] = useState<
+    Record<string, { threshold: string; enabled: boolean }>
+  >({});
   const [popupConn, setPopupConn] = useState<SourceConnection | null>(null);
   const [popupOrderSearch, setPopupOrderSearch] = useState("");
 
-  const canUseInternalSource    = hasSellerCapability(session, "source_internal_use");
-  const canManageInternalSource = hasSellerCapability(session, "source_internal_manage");
-  const canManageKeys           = hasSellerCapability(session, "source_key_manage");
-  const isUltra                 = session?.user.sellerTier === "ultra";
+  const canUseInternalSource = hasSellerCapability(
+    session,
+    "source_internal_use",
+  );
+  const canManageInternalSource = hasSellerCapability(
+    session,
+    "source_internal_manage",
+  );
+  const canManageKeys = hasSellerCapability(session, "source_key_manage");
+  const canUseExternalSource = hasSellerCapability(
+    session,
+    "source_external_use",
+  );
+  const isProviderView = mode === "provider";
+
+  const providerSourcesQuery = useQuery({
+    queryKey: ["source-network", "provider-sources"],
+    queryFn: async () =>
+      (await api.get<ProviderSource[]>("/provider-sources")).data,
+    enabled: canUseExternalSource && !isProviderView,
+  });
+
+  const createProviderSourceMutation = useMutation({
+    mutationFn: async () =>
+      api.post("/provider-sources", {
+        ...providerForm,
+        priceMarkupPercent: providerForm.priceMarkupPercent
+          ? Number(providerForm.priceMarkupPercent)
+          : null,
+      }),
+    onSuccess: async () => {
+      showToast({
+        tone: "success",
+        message: "Đã thêm và đồng bộ nguồn provider.",
+      });
+      setProviderForm((current) => ({
+        ...current,
+        label: "",
+        buyerKey: "",
+        priceMarkupPercent: "",
+      }));
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: ["source-network", "provider-sources"],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ["source-products", "catalog"],
+        }),
+      ]);
+    },
+    onError: (error) =>
+      showToast({
+        tone: "error",
+        message: getApiErrorMessage(error, t.toastError),
+      }),
+  });
+
+  const syncProviderSourceMutation = useMutation({
+    mutationFn: async (sourceId: string) =>
+      api.post(`/provider-sources/${sourceId}/sync`),
+    onSuccess: async () => {
+      showToast({ tone: "success", message: "Đã đồng bộ nguồn provider." });
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: ["source-network", "provider-sources"],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ["source-products", "catalog"],
+        }),
+      ]);
+    },
+    onError: (error) =>
+      showToast({
+        tone: "error",
+        message: getApiErrorMessage(error, t.toastError),
+      }),
+  });
+
+  const disconnectProviderSourceMutation = useMutation({
+    mutationFn: async (sourceId: string) =>
+      api.delete(`/provider-sources/${sourceId}`),
+    onSuccess: async () => {
+      showToast({ tone: "success", message: "Đã ngắt nguồn provider." });
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: ["source-network", "provider-sources"],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ["source-products", "catalog"],
+        }),
+      ]);
+    },
+    onError: (error) =>
+      showToast({
+        tone: "error",
+        message: getApiErrorMessage(error, t.toastError),
+      }),
+  });
+
+  const reconnectProviderSourceMutation = useMutation({
+    mutationFn: async (sourceId: string) =>
+      api.post(`/provider-sources/${sourceId}/reconnect`),
+    onSuccess: async () => {
+      showToast({
+        tone: "success",
+        message: "Đã kết nối lại và đồng bộ nguồn provider.",
+      });
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: ["source-network", "provider-sources"],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ["source-products", "catalog"],
+        }),
+      ]);
+    },
+    onError: (error) =>
+      showToast({
+        tone: "error",
+        message: getApiErrorMessage(error, t.toastError),
+      }),
+  });
+
+  const removeProviderSourceMutation = useMutation({
+    mutationFn: async (sourceId: string) =>
+      api.delete(`/provider-sources/${sourceId}/permanent`),
+    onSuccess: async () => {
+      showToast({ tone: "success", message: "Đã xóa hẳn nguồn provider." });
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: ["source-network", "provider-sources"],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ["source-products", "catalog"],
+        }),
+        queryClient.invalidateQueries({ queryKey: ["orders"] }),
+      ]);
+    },
+    onError: (error) =>
+      showToast({
+        tone: "error",
+        message: getApiErrorMessage(error, t.toastError),
+      }),
+  });
 
   const currentConnectionQuery = useQuery({
     queryKey: ["source-network", "current-connection"],
-    queryFn: async () => (await api.get<SourceConnection | null>("/source/connections/current")).data,
-    enabled: canUseInternalSource,
+    queryFn: async () =>
+      (await api.get<SourceConnection | null>("/source/connections/current"))
+        .data,
+    enabled: canUseInternalSource && !isProviderView,
+  });
+  const sourceConnectionsQuery = useQuery({
+    queryKey: ["source-network", "connections"],
+    queryFn: async () =>
+      (await api.get<SourceConnection[]>("/source/connections")).data,
+    enabled: canUseInternalSource && !isProviderView,
+  });
+  const purchasedSourceOrdersQuery = useQuery({
+    queryKey: ["source-network", "current-orders"],
+    queryFn: async () =>
+      (
+        await api.get<InternalSourceOrder[]>(
+          "/source/connections/current/orders",
+        )
+      ).data,
+    enabled: canUseInternalSource && !isProviderView,
   });
   const keysQuery = useQuery({
     queryKey: ["source-network", "keys"],
     queryFn: async () => (await api.get<SourceApiKey[]>("/source/keys")).data,
-    enabled: canManageKeys,
+    enabled: canManageKeys && isProviderView,
   });
   const downstreamConnectionsQuery = useQuery({
     queryKey: ["source-network", "downstream-connections"],
-    queryFn: async () => (await api.get<SourceConnection[]>("/source/connections/downstream")).data,
-    enabled: canManageInternalSource,
+    queryFn: async () =>
+      (await api.get<SourceConnection[]>("/source/connections/downstream"))
+        .data,
+    enabled: canManageInternalSource && isProviderView,
   });
   const sourceOrdersQuery = useQuery({
     queryKey: ["source-network", "source-orders"],
-    queryFn: async () => (await api.get<InternalSourceOrder[]>("/source/orders")).data,
-    enabled: canManageInternalSource,
+    queryFn: async () =>
+      (await api.get<InternalSourceOrder[]>("/source/orders")).data,
+    enabled: canManageInternalSource && isProviderView,
   });
   const sourceProductsQuery = useQuery({
     queryKey: ["source-network", "source-products"],
-    queryFn: async () => (await api.get<ProSourceProduct[]>("/pro/source-products")).data,
-    enabled: canManageKeys,
+    queryFn: async () =>
+      (await api.get<ProSourceProduct[]>("/pro/source-products")).data,
+    enabled: canManageKeys && isProviderView,
   });
 
   const refreshSourceMutation = useMutation({
@@ -489,19 +763,32 @@ export function SourceNetworkPage() {
     onSuccess: async () => {
       showToast({ tone: "success", message: t.toastSynced });
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["source-network", "current-connection"] }),
-        queryClient.invalidateQueries({ queryKey: ["source-products", "catalog"] }),
+        queryClient.invalidateQueries({
+          queryKey: ["source-network", "connections"],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ["source-network", "current-connection"],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ["source-products", "catalog"],
+        }),
       ]);
     },
-    onError: (e) => showToast({ tone: "error", message: getApiErrorMessage(e, t.toastError) }),
+    onError: (e) =>
+      showToast({
+        tone: "error",
+        message: getApiErrorMessage(e, t.toastError),
+      }),
   });
 
   const cloneInterfaceMutation = useMutation({
     mutationFn: async () =>
       (
-        await api.post<{ ok: boolean; groupsCloned: number; productsMapped: number }>(
-          "/source/connections/current/clone-interface",
-        )
+        await api.post<{
+          ok: boolean;
+          groupsCloned: number;
+          productsMapped: number;
+        }>("/source/connections/current/clone-interface")
       ).data,
     onSuccess: async (res) => {
       showToast({
@@ -509,27 +796,51 @@ export function SourceNetworkPage() {
         message: `Đã đồng bộ giao diện bot từ nguồn (+${res?.groupsCloned ?? 0} danh mục).`,
       });
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["source-network", "current-connection"] }),
-        queryClient.invalidateQueries({ queryKey: ["source-products", "catalog"] }),
-        queryClient.invalidateQueries({ queryKey: ["source-network", "source-products"] }),
+        queryClient.invalidateQueries({
+          queryKey: ["source-network", "connections"],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ["source-network", "current-connection"],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ["source-products", "catalog"],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ["source-network", "source-products"],
+        }),
       ]);
     },
-    onError: (e) => showToast({ tone: "error", message: getApiErrorMessage(e, t.toastError) }),
+    onError: (e) =>
+      showToast({
+        tone: "error",
+        message: getApiErrorMessage(e, t.toastError),
+      }),
   });
 
   // Inherited-template override editor (rename/reorder/hide categories + reorder products).
   const [editorOpen, setEditorOpen] = useState(false);
-  const [edGroups, setEdGroups] = useState<{ id: string; name: string; position: number }[]>([]);
-  const [edProducts, setEdProducts] = useState<{ id: string; name: string; position: number }[]>([]);
-  const [groupOv, setGroupOv] = useState<Record<string, { name?: string; position?: number; hidden?: boolean }>>({});
-  const [productOv, setProductOv] = useState<Record<string, { position?: number }>>({});
+  const [edGroups, setEdGroups] = useState<
+    { id: string; name: string; position: number }[]
+  >([]);
+  const [edProducts, setEdProducts] = useState<
+    { id: string; name: string; position: number }[]
+  >([]);
+  const [groupOv, setGroupOv] = useState<
+    Record<string, { name?: string; position?: number; hidden?: boolean }>
+  >({});
+  const [productOv, setProductOv] = useState<
+    Record<string, { position?: number }>
+  >({});
 
   const openOverrideEditor = async () => {
     try {
       const { data } = await api.get<{
         groups: { id: string; name: string; position: number }[];
         products: { id: string; name: string; position: number }[];
-        overrides: { groups?: Record<string, any>; products?: Record<string, any> };
+        overrides: {
+          groups?: Record<string, any>;
+          products?: Record<string, any>;
+        };
       }>("/source/connections/current/inherited-structure");
       setEdGroups(data.groups || []);
       setEdProducts(data.products || []);
@@ -537,7 +848,10 @@ export function SourceNetworkPage() {
       setProductOv(data.overrides?.products || {});
       setEditorOpen(true);
     } catch (e) {
-      showToast({ tone: "error", message: getApiErrorMessage(e, t.toastError) });
+      showToast({
+        tone: "error",
+        message: getApiErrorMessage(e, t.toastError),
+      });
     }
   };
 
@@ -549,13 +863,20 @@ export function SourceNetworkPage() {
     onSuccess: async () => {
       showToast({ tone: "success", message: "Đã lưu tùy chỉnh hiển thị." });
       setEditorOpen(false);
-      await queryClient.invalidateQueries({ queryKey: ["source-network", "current-connection"] });
+      await queryClient.invalidateQueries({
+        queryKey: ["source-network", "current-connection"],
+      });
     },
-    onError: (e) => showToast({ tone: "error", message: getApiErrorMessage(e, t.toastError) }),
+    onError: (e) =>
+      showToast({
+        tone: "error",
+        message: getApiErrorMessage(e, t.toastError),
+      }),
   });
 
   const connectMutation = useMutation({
-    mutationFn: async () => api.post("/source/connections/connect", { apiKey: connectKey.trim() }),
+    mutationFn: async () =>
+      api.post("/source/connections/connect", { apiKey: connectKey.trim() }),
     onSuccess: async () => {
       showToast({ tone: "success", message: t.toastConnected });
       setConnectKey("");
@@ -564,21 +885,49 @@ export function SourceNetworkPage() {
         await api.post("/bot-config/sync-products");
       } catch {}
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["source-network", "current-connection"] }),
-        queryClient.invalidateQueries({ queryKey: ["source-products", "catalog"] }),
+        queryClient.invalidateQueries({
+          queryKey: ["source-network", "connections"],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ["source-network", "current-connection"],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ["source-products", "catalog"],
+        }),
       ]);
     },
-    onError: (e) => showToast({ tone: "error", message: getApiErrorMessage(e, t.toastError) }),
+    onError: (e) => {
+      const message = getApiErrorMessage(e, t.toastError);
+      showToast({
+        tone: "error",
+        message: message.includes("does not exist in this environment")
+          ? "Key isk_ không tồn tại trong database local. Hãy tạo key local tại Quản lý đại lý; key production không dùng được với local DB."
+          : message,
+      });
+    },
   });
 
   const topupMutation = useMutation({
-    mutationFn: async () =>
-      api.post("/source/connections/current/topup", { amount: Number(topupAmount || 0) }),
+    mutationFn: async (connectionId: string) =>
+      api.post(`/source/connections/${connectionId}/topup`, {
+        amount: Number(topupAmount || 0),
+      }),
     onSuccess: async () => {
       showToast({ tone: "success", message: t.toastTopup });
-      await queryClient.invalidateQueries({ queryKey: ["source-network", "current-connection"] });
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: ["source-network", "connections"],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ["source-network", "current-connection"],
+        }),
+      ]);
     },
-    onError: (e) => showToast({ tone: "error", message: getApiErrorMessage(e, t.toastError) }),
+    onError: (e) =>
+      showToast({
+        tone: "error",
+        message: getApiErrorMessage(e, t.toastError),
+      }),
   });
 
   const revokeKeyMutation = useMutation({
@@ -587,30 +936,68 @@ export function SourceNetworkPage() {
       showToast({ tone: "success", message: t.toastRevoked });
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["source-network", "keys"] }),
-        queryClient.invalidateQueries({ queryKey: ["source-network", "downstream-connections"] }),
+        queryClient.invalidateQueries({
+          queryKey: ["source-network", "downstream-connections"],
+        }),
       ]);
     },
-    onError: (e) => showToast({ tone: "error", message: getApiErrorMessage(e, t.toastError) }),
+    onError: (e) =>
+      showToast({
+        tone: "error",
+        message: getApiErrorMessage(e, t.toastError),
+      }),
   });
 
   const updateAlertMutation = useMutation({
-    mutationFn: async ({ id, threshold, enabled }: { id: string; threshold: number; enabled: boolean }) =>
-      (await api.put<ProSourceProduct>(`/pro/source-products/${id}/alert-settings`, {
-        stockAlertThreshold: threshold,
-        stockAlertEnabled: enabled,
-      })).data,
+    mutationFn: async ({
+      id,
+      threshold,
+      enabled,
+    }: {
+      id: string;
+      threshold: number;
+      enabled: boolean;
+    }) =>
+      (
+        await api.put<ProSourceProduct>(
+          `/pro/source-products/${id}/alert-settings`,
+          {
+            stockAlertThreshold: threshold,
+            stockAlertEnabled: enabled,
+          },
+        )
+      ).data,
     onSuccess: async (updated) => {
-      await queryClient.invalidateQueries({ queryKey: ["source-network", "source-products"] });
-      setAlertInputs((prev) => { const next = { ...prev }; delete next[updated.id]; return next; });
+      await queryClient.invalidateQueries({
+        queryKey: ["source-network", "source-products"],
+      });
+      setAlertInputs((prev) => {
+        const next = { ...prev };
+        delete next[updated.id];
+        return next;
+      });
       showToast({ tone: "success", message: t.toastAlertSaved });
     },
-    onError: (e) => showToast({ tone: "error", message: getApiErrorMessage(e, t.toastError) }),
+    onError: (e) =>
+      showToast({
+        tone: "error",
+        message: getApiErrorMessage(e, t.toastError),
+      }),
   });
 
-  if (!canUseInternalSource && !canManageInternalSource && !canManageKeys) {
+  const canViewCurrentMode = isProviderView
+    ? canManageInternalSource || canManageKeys
+    : canUseExternalSource || canUseInternalSource;
+
+  if (!canViewCurrentMode) {
     return (
       <Card>
-        <CardHeader icon={Cable} title={t.gateTitle} iconCls="text-orange-400" iconBg="bg-orange-500/10" />
+        <CardHeader
+          icon={Cable}
+          title={t.gateTitle}
+          iconCls="text-orange-400"
+          iconBg="bg-orange-500/10"
+        />
         <p className="text-sm leading-7" style={{ color: "var(--tx-m)" }}>
           {t.gateDesc}
         </p>
@@ -618,50 +1005,329 @@ export function SourceNetworkPage() {
     );
   }
 
-  const currentConnection = currentConnectionQuery.data;
+  const sourceConnections = sourceConnectionsQuery.data || [];
+  const currentConnection =
+    currentConnectionQuery.data || sourceConnections[0] || null;
   const keys = keysQuery.data || [];
   const downstreamConnections = downstreamConnectionsQuery.data || [];
   const sourceOrders = sourceOrdersQuery.data || [];
+  const purchasedSourceOrders = purchasedSourceOrdersQuery.data || [];
   const sourceProducts = sourceProductsQuery.data || [];
+  const providerSources = providerSourcesQuery.data || [];
   const pendingOrders = sourceOrders.filter((o) =>
-    ["pending_manual", "pending_stock", "processing", "pending"].includes(o.status),
+    ["pending_manual", "pending_stock", "processing", "pending"].includes(
+      o.status,
+    ),
   );
-
-  /* suppress unused var warning for connectKey / topupAmount when not rendered */
-  void connectKey;
-  void topupAmount;
-  void connectMutation;
-  void topupMutation;
 
   return (
     <div className="space-y-5">
-      {isUltra ? (
+      {canUseExternalSource && !isProviderView && (
+        <div
+          className="rounded-2xl p-5"
+          style={{
+            background: "var(--surface)",
+            border: "1px solid var(--bd)",
+          }}
+        >
+          <div className="mb-4">
+            <p className="text-[11px] font-black uppercase tracking-wider text-orange-400">
+              Nguồn provider
+            </p>
+            <h2
+              className="mt-1 text-lg font-black"
+              style={{ color: "var(--tx)" }}
+            >
+              Đấu nhiều nguồn cho cùng một shop
+            </h2>
+            <p
+              className="mt-1 text-xs leading-5"
+              style={{ color: "var(--tx-m)" }}
+            >
+              Buyer key của provider như tgb_ được nhập tại đây. Mỗi nguồn có
+              URL và key riêng; sản phẩm và đơn hàng luôn được định tuyến về
+              đúng nguồn.
+            </p>
+          </div>
+
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+            <Input
+              value={providerForm.label}
+              onChange={(event) =>
+                setProviderForm((current) => ({
+                  ...current,
+                  label: event.target.value,
+                }))
+              }
+              placeholder="Tên gợi nhớ, ví dụ Canboso 1"
+            />
+            <select
+              value={providerForm.providerName}
+              onChange={(event) => {
+                const providerName = event.target.value;
+                const defaultUrls: Record<string, string> = {
+                  canboso: "https://canboso.com",
+                  shopmmo: "https://shopmmo.pro",
+                  roboticvn: "https://api.roboticvn.com",
+                  zampto: "http://node12.zampto.net:20291",
+                  huymai: "https://huymai.testflighty.com/api/v1",
+                  gigapower: "http://gigapower.top:5000",
+                };
+                setProviderForm((current) => ({
+                  ...current,
+                  providerName,
+                  baseUrl: defaultUrls[providerName] || current.baseUrl,
+                }));
+              }}
+              className="rounded-xl px-3 py-2.5 text-sm outline-none"
+              style={{
+                background: "var(--inp)",
+                border: "1px solid var(--bd)",
+                color: "var(--tx)",
+              }}
+            >
+              <option value="canboso">Canboso</option>
+              <option value="shopmmo">ShopMMO</option>
+              <option value="roboticvn">RoboticVN</option>
+              <option value="zampto">Zampto</option>
+              <option value="huymai">HuyMai</option>
+              <option value="gigapower">GigaPower</option>
+            </select>
+            <Input
+              value={providerForm.baseUrl}
+              onChange={(event) =>
+                setProviderForm((current) => ({
+                  ...current,
+                  baseUrl: event.target.value,
+                }))
+              }
+              placeholder="https://provider.example"
+            />
+            <Input
+              type="password"
+              value={providerForm.buyerKey}
+              onChange={(event) =>
+                setProviderForm((current) => ({
+                  ...current,
+                  buyerKey: event.target.value,
+                }))
+              }
+              placeholder={
+                providerForm.providerName === "gigapower"
+                  ? "username:password"
+                  : "API / buyer key"
+              }
+            />
+            <div className="flex gap-2">
+              <Input
+                type="number"
+                min="0"
+                max="500"
+                value={providerForm.priceMarkupPercent}
+                onChange={(event) =>
+                  setProviderForm((current) => ({
+                    ...current,
+                    priceMarkupPercent: event.target.value,
+                  }))
+                }
+                placeholder="Lãi %"
+              />
+              <Button
+                disabled={
+                  createProviderSourceMutation.isPending ||
+                  providerForm.label.trim().length < 2 ||
+                  !providerForm.baseUrl.trim() ||
+                  !providerForm.buyerKey.trim()
+                }
+                onClick={() => createProviderSourceMutation.mutate()}
+              >
+                {createProviderSourceMutation.isPending
+                  ? "Đang kết nối..."
+                  : "Kết nối & đồng bộ"}
+              </Button>
+            </div>
+          </div>
+
+          <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+            {providerSources.map((source) => (
+              <div
+                key={source.id}
+                role="link"
+                tabIndex={0}
+                className="group cursor-pointer rounded-xl p-3 transition hover:-translate-y-0.5 hover:border-orange-500/30 hover:shadow-lg hover:shadow-orange-500/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-400/70"
+                style={{
+                  background: "var(--inp)",
+                  border: "1px solid var(--bd)",
+                }}
+                onClick={() =>
+                  navigate(`/source-network/detail-key-api/${source.id}`)
+                }
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    navigate(`/source-network/detail-key-api/${source.id}`);
+                  }
+                }}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p
+                      className="truncate text-sm font-black"
+                      style={{ color: "var(--tx)" }}
+                    >
+                      {source.label}
+                    </p>
+                    <p
+                      className="truncate text-[11px]"
+                      style={{ color: "var(--tx-f)" }}
+                    >
+                      {source.providerName} · {source.buyerKeyMasked}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Badge tone={getTone(source.connectionStatus)}>
+                      {formatStatusLabel(source.connectionStatus)}
+                    </Badge>
+                    <ChevronRight
+                      className="h-4 w-4 transition group-hover:translate-x-0.5"
+                      style={{ color: "var(--tx-f)" }}
+                    />
+                  </div>
+                </div>
+                <div
+                  className="mt-3 text-[11px]"
+                  style={{ color: "var(--tx-m)" }}
+                >
+                  {source.productCount} sản phẩm · Lãi{" "}
+                  {source.priceMarkupPercent ?? 0}%
+                  <br />
+                  Đồng bộ:{" "}
+                  {source.lastCatalogSyncAt
+                    ? formatDate(source.lastCatalogSyncAt)
+                    : "Chưa có"}
+                </div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {source.enabled ? (
+                    <>
+                      <Button
+                        variant="secondary"
+                        disabled={syncProviderSourceMutation.isPending}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          syncProviderSourceMutation.mutate(source.id);
+                        }}
+                      >
+                        Đồng bộ
+                      </Button>
+                      <Button
+                        variant="danger"
+                        disabled={disconnectProviderSourceMutation.isPending}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          if (
+                            confirm(
+                              `Ngắt nguồn ${source.label}? Đơn cũ vẫn được giữ lại.`,
+                            )
+                          ) {
+                            disconnectProviderSourceMutation.mutate(source.id);
+                          }
+                        }}
+                      >
+                        Ngắt
+                      </Button>
+                    </>
+                  ) : (
+                    <>
+                      <Button
+                        variant="secondary"
+                        disabled={reconnectProviderSourceMutation.isPending}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          reconnectProviderSourceMutation.mutate(source.id);
+                        }}
+                      >
+                        Kết nối lại
+                      </Button>
+                      <Button
+                        variant="danger"
+                        disabled={removeProviderSourceMutation.isPending}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          if (
+                            confirm(
+                              `Xóa hẳn nguồn ${source.label}? Credential và cấu hình nguồn sẽ bị xóa. Lịch sử đơn cũ vẫn được giữ lại. Thao tác này không thể hoàn tác.`,
+                            )
+                          ) {
+                            removeProviderSourceMutation.mutate(source.id);
+                          }
+                        }}
+                      >
+                        Xóa hẳn
+                      </Button>
+                    </>
+                  )}
+                </div>
+              </div>
+            ))}
+            {!providerSourcesQuery.isLoading &&
+              providerSources.length === 0 && (
+                <p className="text-sm" style={{ color: "var(--tx-m)" }}>
+                  Chưa có nguồn provider nào. Thêm nguồn đầu tiên ở phía trên.
+                </p>
+              )}
+          </div>
+        </div>
+      )}
+      {isProviderView ? (
         <>
           {/* ULTRA header */}
           <div className="flex items-start justify-between gap-4">
             <div>
-              <p className="text-[11px] font-black uppercase tracking-widest mb-1" style={{ color: "rgb(249,115,22)" }}>
+              <p
+                className="text-[11px] font-black uppercase tracking-widest mb-1"
+                style={{ color: "rgb(249,115,22)" }}
+              >
                 Mạng lưới nội bộ ULTRA · Tổng sỉ
               </p>
-              <h1 className="text-[22px] font-black leading-tight" style={{ color: "rgb(249,115,22)" }}>Kết nối nguồn</h1>
+              <h1
+                className="text-[22px] font-black leading-tight"
+                style={{ color: "rgb(249,115,22)" }}
+              >
+                Kết nối nguồn
+              </h1>
             </div>
             <button
               type="button"
-              onClick={() => queryClient.invalidateQueries({ queryKey: ["source-network"] })}
+              onClick={() => refreshSourceMutation.mutate()}
+              disabled={refreshSourceMutation.isPending}
               className="shrink-0 flex items-center gap-1.5 rounded-xl px-4 py-2 text-[12px] font-black transition hover:opacity-80"
               style={{ background: "rgb(249,115,22)", color: "#fff" }}
             >
               <RefreshCcw className="h-3.5 w-3.5" />
-              Đồng bộ toàn bộ
+              {refreshSourceMutation.isPending
+                ? "Đang đồng bộ..."
+                : "Đồng bộ toàn bộ"}
             </button>
           </div>
 
           {/* 4 stat cards */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             {[
-              { label: "ĐẠI LÝ KẾT NỐI", value: downstreamConnections.length, color: "59,130,246" },
-              { label: "API KEY ĐÃ CẤP", value: keys.length, color: "20,184,166" },
-              { label: "ĐƠN SỈ", value: sourceOrders.length, color: "34,197,94" },
+              {
+                label: "ĐẠI LÝ KẾT NỐI",
+                value: downstreamConnections.length,
+                color: "59,130,246",
+              },
+              {
+                label: "API KEY ĐÃ CẤP",
+                value: keys.length,
+                color: "20,184,166",
+              },
+              {
+                label: "ĐƠN SỈ",
+                value: sourceOrders.length,
+                color: "34,197,94",
+              },
               {
                 label: "CHỜ XỬ LÝ",
                 value: pendingOrders.length,
@@ -677,10 +1343,16 @@ export function SourceNetworkPage() {
                   borderLeft: `3px solid rgb(${stat.color})`,
                 }}
               >
-                <p className="text-[10px] font-black uppercase tracking-widest mb-1.5" style={{ color: "var(--tx-f)" }}>
+                <p
+                  className="text-[10px] font-black uppercase tracking-widest mb-1.5"
+                  style={{ color: "var(--tx-f)" }}
+                >
                   {stat.label}
                 </p>
-                <p className="text-2xl font-black tabular-nums" style={{ color: `rgb(${stat.color})` }}>
+                <p
+                  className="text-2xl font-black tabular-nums"
+                  style={{ color: `rgb(${stat.color})` }}
+                >
                   {stat.value}
                 </p>
               </div>
@@ -688,26 +1360,46 @@ export function SourceNetworkPage() {
           </div>
 
           {/* Agent network table */}
-          <div className="rounded-2xl overflow-hidden" style={{ border: "1px solid var(--bd)" }}>
+          <div
+            className="rounded-2xl overflow-hidden"
+            style={{ border: "1px solid var(--bd)" }}
+          >
             <div
               className="flex items-center justify-between px-5 py-4"
-              style={{ background: "var(--surface)", borderBottom: "1px solid var(--bd)" }}
+              style={{
+                background: "var(--surface)",
+                borderBottom: "1px solid var(--bd)",
+              }}
             >
               <div className="flex items-center gap-2">
                 <Users className="h-4 w-4 text-violet-400" />
-                <span className="text-sm font-black" style={{ color: "var(--tx)" }}>Đại lý đang kết nối</span>
+                <span
+                  className="text-sm font-black"
+                  style={{ color: "var(--tx)" }}
+                >
+                  Đại lý đang kết nối
+                </span>
               </div>
               <span
                 className="rounded-full px-2.5 py-0.5 text-[11px] font-semibold"
-                style={{ background: "var(--inp)", border: "1px solid var(--bd)", color: "var(--tx-m)" }}
+                style={{
+                  background: "var(--inp)",
+                  border: "1px solid var(--bd)",
+                  color: "var(--tx-m)",
+                }}
               >
                 {downstreamConnections.length} shop
               </span>
             </div>
 
             {downstreamConnections.length === 0 ? (
-              <div className="py-10 text-center" style={{ background: "var(--inp)" }}>
-                <p className="text-sm" style={{ color: "var(--tx-f)" }}>Chưa có đại lý nào kết nối.</p>
+              <div
+                className="py-10 text-center"
+                style={{ background: "var(--inp)" }}
+              >
+                <p className="text-sm" style={{ color: "var(--tx-f)" }}>
+                  Chưa có đại lý nào kết nối.
+                </p>
               </div>
             ) : (
               <>
@@ -715,7 +1407,8 @@ export function SourceNetworkPage() {
                 <div
                   className="hidden sm:grid px-5 py-2.5 text-[10px] font-black uppercase tracking-widest"
                   style={{
-                    gridTemplateColumns: "minmax(0,1fr) 230px 165px 185px 175px 100px",
+                    gridTemplateColumns:
+                      "minmax(0,1fr) 230px 165px 185px 175px 100px",
                     background: "var(--inp)",
                     borderBottom: "1px solid var(--bd)",
                     color: "var(--tx-f)",
@@ -730,9 +1423,16 @@ export function SourceNetworkPage() {
                 </div>
 
                 {downstreamConnections.map((conn, idx) => {
-                  const connOrders = sourceOrders.filter((o) => o.connection.id === conn.id);
+                  const connOrders = sourceOrders.filter(
+                    (o) => o.connection.id === conn.id,
+                  );
                   const pendingConnOrders = connOrders.filter((o) =>
-                    ["pending_manual", "pending_stock", "processing", "pending"].includes(o.status),
+                    [
+                      "pending_manual",
+                      "pending_stock",
+                      "processing",
+                      "pending",
+                    ].includes(o.status),
                   );
 
                   return (
@@ -740,33 +1440,53 @@ export function SourceNetworkPage() {
                       key={conn.id}
                       className="sm:grid px-5 py-3.5 cursor-pointer transition-colors hover:bg-orange-500/5"
                       style={{
-                        gridTemplateColumns: "minmax(0,1fr) 230px 165px 185px 175px 100px",
+                        gridTemplateColumns:
+                          "minmax(0,1fr) 230px 165px 185px 175px 100px",
                         alignItems: "center",
                         borderTop: idx === 0 ? "none" : "1px solid var(--bd)",
                       }}
-                      onClick={() => { setPopupConn(conn); setPopupOrderSearch(""); }}
+                      onClick={() => {
+                        setPopupConn(conn);
+                        setPopupOrderSearch("");
+                      }}
                     >
                       <div className="min-w-0 mb-2 sm:mb-0">
-                        <p className="text-sm font-bold" style={{ color: "var(--tx)" }}>
+                        <p
+                          className="text-sm font-bold"
+                          style={{ color: "var(--tx)" }}
+                        >
                           {conn.downstreamSeller?.displayName || "—"}
                           {conn.downstreamSeller?.telegramUsername && (
-                            <span className="ml-1.5 text-xs font-normal" style={{ color: "var(--tx-f)" }}>
+                            <span
+                              className="ml-1.5 text-xs font-normal"
+                              style={{ color: "var(--tx-f)" }}
+                            >
                               @{conn.downstreamSeller.telegramUsername}
                             </span>
                           )}
                         </p>
                         <p className="text-xs" style={{ color: "var(--tx-f)" }}>
-                          {conn.downstreamShop?.name || "—"}
+                          {conn.downstreamShop?.name ||
+                            conn.clientName ||
+                            (conn.downstreamSeller
+                              ? "Kết nối API bên ngoài"
+                              : "—")}
                           {conn.downstreamShop?.telegramBotUsername
                             ? ` · @${conn.downstreamShop.telegramBotUsername}`
-                            : ""}
+                            : conn.clientBotUsername
+                              ? ` · @${conn.clientBotUsername}`
+                              : ""}
                         </p>
                       </div>
 
                       <div className="mb-1 sm:mb-0">
                         <span
                           className="font-mono text-xs px-2 py-0.5 rounded-md"
-                          style={{ background: "var(--inp)", border: "1px solid var(--bd)", color: "var(--tx-f)" }}
+                          style={{
+                            background: "var(--inp)",
+                            border: "1px solid var(--bd)",
+                            color: "var(--tx-f)",
+                          }}
                         >
                           {conn.apiKey?.keyPrefix
                             ? `${conn.apiKey.keyPrefix}•••${conn.apiKey.keySuffix ?? ""}`
@@ -774,23 +1494,35 @@ export function SourceNetworkPage() {
                         </span>
                       </div>
 
-                      <div className="sm:text-right font-black tabular-nums text-sm mb-1 sm:mb-0" style={{ color: "rgb(249,115,22)" }}>
+                      <div
+                        className="sm:text-right font-black tabular-nums text-sm mb-1 sm:mb-0"
+                        style={{ color: "rgb(249,115,22)" }}
+                      >
                         {formatCurrency(conn.balance)}
                         {pendingConnOrders.length > 0 && (
                           <span
                             className="ml-1.5 text-[10px] px-1.5 py-0.5 rounded-full"
-                            style={{ background: "rgba(245,158,11,0.15)", color: "rgb(245,158,11)" }}
+                            style={{
+                              background: "rgba(245,158,11,0.15)",
+                              color: "rgb(245,158,11)",
+                            }}
                           >
                             {pendingConnOrders.length}
                           </span>
                         )}
                       </div>
 
-                      <div className="text-xs sm:text-right mb-1 sm:mb-0" style={{ color: "var(--tx-m)" }}>
+                      <div
+                        className="text-xs sm:text-right mb-1 sm:mb-0"
+                        style={{ color: "var(--tx-m)" }}
+                      >
                         {formatDate(conn.lastCatalogSyncAt) || "—"}
                       </div>
 
-                      <div className="text-xs sm:text-right mb-2 sm:mb-0" style={{ color: "var(--tx-m)" }}>
+                      <div
+                        className="text-xs sm:text-right mb-2 sm:mb-0"
+                        style={{ color: "var(--tx-m)" }}
+                      >
                         {formatDate(conn.apiKey?.lastUsedAt) || "—"}
                       </div>
 
@@ -803,7 +1535,8 @@ export function SourceNetworkPage() {
                             type="button"
                             disabled={revokeKeyMutation.isPending}
                             onClick={() => {
-                              if (confirm("Thu hồi key này?")) revokeKeyMutation.mutate(conn.apiKey!.id);
+                              if (confirm("Thu hồi key này?"))
+                                revokeKeyMutation.mutate(conn.apiKey!.id);
                             }}
                             className="flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-[11px] font-black transition hover:opacity-80 disabled:opacity-40"
                             style={{
@@ -825,144 +1558,242 @@ export function SourceNetworkPage() {
           </div>
 
           {/* Order history popup */}
-          {popupConn && (() => {
-            const connOrders = sourceOrders.filter((o) => o.connection.id === popupConn.id);
-            const q = popupOrderSearch.trim().toLowerCase();
-            const filteredOrders = q
-              ? connOrders.filter((o) =>
-                  (o.orderCode || "").toLowerCase().includes(q) ||
-                  (o.downstreamOrderCode || "").toLowerCase().includes(q) ||
-                  (o.product?.sourceName || "").toLowerCase().includes(q) ||
-                  (o.endCustomer?.telegramUsername || "").toLowerCase().includes(q) ||
-                  [o.endCustomer?.firstName, o.endCustomer?.lastName].filter(Boolean).join(" ").toLowerCase().includes(q))
-              : connOrders;
-            return createPortal(
-              <div
-                className="fixed inset-0 z-[80] flex items-center justify-center p-4"
-                style={{ background: "rgba(0,0,0,0.55)" }}
-                onClick={() => setPopupConn(null)}
-              >
+          {popupConn &&
+            (() => {
+              const connOrders = sourceOrders.filter(
+                (o) => o.connection.id === popupConn.id,
+              );
+              const q = popupOrderSearch.trim().toLowerCase();
+              const filteredOrders = q
+                ? connOrders.filter(
+                    (o) =>
+                      (o.orderCode || "").toLowerCase().includes(q) ||
+                      (o.downstreamOrderCode || "").toLowerCase().includes(q) ||
+                      (o.product?.sourceName || "").toLowerCase().includes(q) ||
+                      (o.endCustomer?.telegramUsername || "")
+                        .toLowerCase()
+                        .includes(q) ||
+                      [o.endCustomer?.firstName, o.endCustomer?.lastName]
+                        .filter(Boolean)
+                        .join(" ")
+                        .toLowerCase()
+                        .includes(q),
+                  )
+                : connOrders;
+              return createPortal(
                 <div
-                  className="w-full max-w-6xl max-h-[88vh] flex flex-col rounded-2xl overflow-hidden"
-                  style={{ background: "var(--surface)", border: "1px solid var(--bd)" }}
-                  onClick={(e) => e.stopPropagation()}
+                  className="fixed inset-0 z-[80] flex items-center justify-center p-4"
+                  style={{ background: "rgba(0,0,0,0.55)" }}
+                  onClick={() => setPopupConn(null)}
                 >
-                  {/* Popup header */}
                   <div
-                    className="flex items-center justify-between px-5 py-4 shrink-0"
-                    style={{ borderBottom: "1px solid var(--bd)" }}
+                    className="w-full max-w-6xl max-h-[88vh] flex flex-col rounded-2xl overflow-hidden"
+                    style={{
+                      background: "var(--surface)",
+                      border: "1px solid var(--bd)",
+                    }}
+                    onClick={(e) => e.stopPropagation()}
                   >
-                    <div>
-                      <p className="text-[11px] font-black uppercase tracking-widest mb-0.5" style={{ color: "rgb(249,115,22)" }}>
-                        Lịch sử đơn sỉ
-                      </p>
-                      <p className="text-sm font-black" style={{ color: "var(--tx)" }}>
-                        {popupConn.downstreamShop?.name || popupConn.downstreamSeller?.displayName || "—"}
-                        {popupConn.downstreamShop?.telegramBotUsername
-                          ? ` · @${popupConn.downstreamShop.telegramBotUsername}`
-                          : ""}
-                      </p>
+                    {/* Popup header */}
+                    <div
+                      className="flex items-center justify-between px-5 py-4 shrink-0"
+                      style={{ borderBottom: "1px solid var(--bd)" }}
+                    >
+                      <div>
+                        <p
+                          className="text-[11px] font-black uppercase tracking-widest mb-0.5"
+                          style={{ color: "rgb(249,115,22)" }}
+                        >
+                          Lịch sử đơn sỉ
+                        </p>
+                        <p
+                          className="text-sm font-black"
+                          style={{ color: "var(--tx)" }}
+                        >
+                          {popupConn.downstreamShop?.name ||
+                            popupConn.downstreamSeller?.displayName ||
+                            "—"}
+                          {!popupConn.downstreamShop &&
+                          popupConn.downstreamSeller
+                            ? " · Khách bot trực tiếp"
+                            : ""}
+                          {popupConn.downstreamShop?.telegramBotUsername
+                            ? ` · @${popupConn.downstreamShop.telegramBotUsername}`
+                            : ""}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <input
+                          value={popupOrderSearch}
+                          onChange={(e) => setPopupOrderSearch(e.target.value)}
+                          placeholder="Tìm mã đơn / sản phẩm / khách"
+                          className="w-56 rounded-[10px] px-3 py-1.5 text-xs focus:outline-none"
+                          style={{
+                            background: "var(--inp)",
+                            border: "1px solid var(--bd)",
+                            color: "var(--tx)",
+                          }}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setPopupConn(null)}
+                          className="flex h-8 w-8 items-center justify-center rounded-xl transition hover:opacity-70"
+                          style={{
+                            background: "var(--inp)",
+                            border: "1px solid var(--bd)",
+                            color: "var(--tx-f)",
+                          }}
+                        >
+                          <X className="h-4 w-4" />
+                        </button>
+                      </div>
                     </div>
-                    <div className="flex items-center gap-2">
-                      <input
-                        value={popupOrderSearch}
-                        onChange={(e) => setPopupOrderSearch(e.target.value)}
-                        placeholder="Tìm mã đơn / sản phẩm / khách"
-                        className="w-56 rounded-[10px] px-3 py-1.5 text-xs focus:outline-none"
-                        style={{ background: "var(--inp)", border: "1px solid var(--bd)", color: "var(--tx)" }}
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setPopupConn(null)}
-                        className="flex h-8 w-8 items-center justify-center rounded-xl transition hover:opacity-70"
-                        style={{ background: "var(--inp)", border: "1px solid var(--bd)", color: "var(--tx-f)" }}
-                      >
-                        <X className="h-4 w-4" />
-                      </button>
-                    </div>
-                  </div>
 
-                  {/* Popup body */}
-                  <div className="overflow-y-auto">
-                    {filteredOrders.length === 0 ? (
-                      <p className="px-5 py-10 text-center text-sm" style={{ color: "var(--tx-f)" }}>
-                        {q ? "Không tìm thấy đơn khớp." : "Chưa có đơn sỉ nào."}
-                      </p>
-                    ) : (
-                      <table className="w-full text-sm">
-                        <thead style={{ background: "var(--inp)", position: "sticky", top: 0, zIndex: 1 }}>
-                          <tr style={{ borderBottom: "1px solid var(--bd)" }}>
-                            {["MÃ ĐƠN", "SẢN PHẨM", "KHÁCH CUỐI", "ACC ĐÃ GIAO", "SỐ TIỀN", "TRẠNG THÁI", "THỜI GIAN"].map((h, i) => (
-                              <th
-                                key={h}
-                                className={`px-4 py-3 text-[10px] font-black uppercase tracking-widest ${i === 4 ? "text-right" : "text-left"}`}
-                                style={{ color: "var(--tx-f)" }}
-                              >
-                                {h}
-                              </th>
-                            ))}
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {filteredOrders.map((order) => {
-                            const ec = order.endCustomer;
-                            const ecLabel = ec
-                              ? ec.telegramUsername
-                                ? `@${ec.telegramUsername}`
-                                : [ec.firstName, ec.lastName].filter(Boolean).join(" ").trim() ||
-                                  (ec.telegramUserId ? `ID ${ec.telegramUserId}` : "—")
-                              : "—";
-                            const acc = order.deliveredAccountText?.trim() || "";
-                            return (
-                              <tr key={order.id} style={{ borderBottom: "1px solid var(--bd)" }}>
-                                <td className="px-4 py-3 font-mono text-xs" style={{ color: "var(--tx-m)" }}>
-                                  <div>{order.orderCode}</div>
-                                  {order.downstreamOrderCode && (
-                                    <div className="text-[10px] mt-0.5" style={{ color: "var(--tx-f)" }}>
-                                      PRO: {order.downstreamOrderCode}
-                                    </div>
-                                  )}
-                                </td>
-                                <td className="px-4 py-3" style={{ color: "var(--tx-m)" }}>
-                                  {order.product.sourceName}
-                                </td>
-                                <td className="px-4 py-3 text-xs" style={{ color: "var(--tx-m)" }}>
-                                  {ecLabel}
-                                </td>
-                                <td
-                                  className="px-4 py-3 font-mono text-[11px]"
-                                  style={{ color: "var(--tx-m)", maxWidth: 280, whiteSpace: "pre-wrap", wordBreak: "break-all" }}
-                                  title={acc}
+                    {/* Popup body */}
+                    <div className="overflow-y-auto">
+                      {filteredOrders.length === 0 ? (
+                        <p
+                          className="px-5 py-10 text-center text-sm"
+                          style={{ color: "var(--tx-f)" }}
+                        >
+                          {q
+                            ? "Không tìm thấy đơn khớp."
+                            : "Chưa có đơn sỉ nào."}
+                        </p>
+                      ) : (
+                        <table className="w-full text-sm">
+                          <thead
+                            style={{
+                              background: "var(--inp)",
+                              position: "sticky",
+                              top: 0,
+                              zIndex: 1,
+                            }}
+                          >
+                            <tr style={{ borderBottom: "1px solid var(--bd)" }}>
+                              {[
+                                "MÃ ĐƠN",
+                                "SẢN PHẨM",
+                                "KHÁCH CUỐI",
+                                "ACC ĐÃ GIAO",
+                                "SỐ TIỀN",
+                                "TRẠNG THÁI",
+                                "THỜI GIAN",
+                              ].map((h, i) => (
+                                <th
+                                  key={h}
+                                  className={`px-4 py-3 text-[10px] font-black uppercase tracking-widest ${i === 4 ? "text-right" : "text-left"}`}
+                                  style={{ color: "var(--tx-f)" }}
                                 >
-                                  {acc ? (acc.length > 120 ? `${acc.slice(0, 120)}…` : acc) : "—"}
-                                </td>
-                                <td className="px-4 py-3 text-right font-semibold text-emerald-400">
-                                  {formatCurrency(order.totalAmount)}
-                                </td>
-                                <td className="px-4 py-3">
-                                  <Badge tone={getTone(order.status)}>{formatStatusLabel(order.status)}</Badge>
-                                </td>
-                                <td className="px-4 py-3 text-xs" style={{ color: "var(--tx-f)" }}>
-                                  {formatDate(order.createdAt)}
-                                </td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                    )}
+                                  {h}
+                                </th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {filteredOrders.map((order) => {
+                              const ec = order.endCustomer;
+                              const ecLabel = ec
+                                ? ec.telegramUsername
+                                  ? `@${ec.telegramUsername}`
+                                  : [ec.firstName, ec.lastName]
+                                      .filter(Boolean)
+                                      .join(" ")
+                                      .trim() ||
+                                    (ec.telegramUserId
+                                      ? `ID ${ec.telegramUserId}`
+                                      : "—")
+                                : "—";
+                              const acc =
+                                order.deliveredAccountText?.trim() || "";
+                              return (
+                                <tr
+                                  key={order.id}
+                                  style={{
+                                    borderBottom: "1px solid var(--bd)",
+                                  }}
+                                >
+                                  <td
+                                    className="px-4 py-3 font-mono text-xs"
+                                    style={{ color: "var(--tx-m)" }}
+                                  >
+                                    <div>{order.orderCode}</div>
+                                    {order.downstreamOrderCode && (
+                                      <div
+                                        className="text-[10px] mt-0.5"
+                                        style={{ color: "var(--tx-f)" }}
+                                      >
+                                        PRO: {order.downstreamOrderCode}
+                                      </div>
+                                    )}
+                                  </td>
+                                  <td
+                                    className="px-4 py-3"
+                                    style={{ color: "var(--tx-m)" }}
+                                  >
+                                    {order.product.sourceName}
+                                  </td>
+                                  <td
+                                    className="px-4 py-3 text-xs"
+                                    style={{ color: "var(--tx-m)" }}
+                                  >
+                                    {ecLabel}
+                                  </td>
+                                  <td
+                                    className="px-4 py-3 font-mono text-[11px]"
+                                    style={{
+                                      color: "var(--tx-m)",
+                                      maxWidth: 280,
+                                      whiteSpace: "pre-wrap",
+                                      wordBreak: "break-all",
+                                    }}
+                                    title={acc}
+                                  >
+                                    {acc
+                                      ? acc.length > 120
+                                        ? `${acc.slice(0, 120)}…`
+                                        : acc
+                                      : "—"}
+                                  </td>
+                                  <td className="px-4 py-3 text-right font-semibold text-emerald-400">
+                                    {formatCurrency(order.totalAmount)}
+                                  </td>
+                                  <td className="px-4 py-3">
+                                    <Badge tone={getTone(order.status)}>
+                                      {formatStatusLabel(order.status)}
+                                    </Badge>
+                                  </td>
+                                  <td
+                                    className="px-4 py-3 text-xs"
+                                    style={{ color: "var(--tx-f)" }}
+                                  >
+                                    {formatDate(order.createdAt)}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      )}
+                    </div>
                   </div>
-                </div>
-              </div>,
-              document.body,
-            );
-          })()}
+                </div>,
+                document.body,
+              );
+            })()}
 
           {/* Stock alerts */}
           {sourceProducts.length > 0 && (
             <Card>
-              <CardHeader icon={Bell} title={t.alertTitle} iconCls="text-amber-400" iconBg="bg-amber-500/10" />
-              <p className="mb-4 text-sm" style={{ color: "var(--tx-m)" }}>{t.alertDesc}</p>
+              <CardHeader
+                icon={Bell}
+                title={t.alertTitle}
+                iconCls="text-amber-400"
+                iconBg="bg-amber-500/10"
+              />
+              <p className="mb-4 text-sm" style={{ color: "var(--tx-m)" }}>
+                {t.alertDesc}
+              </p>
               <div className="space-y-2.5">
                 {sourceProducts.map((product) => {
                   const isEmpty = product.available === 0;
@@ -971,7 +1802,8 @@ export function SourceNetworkPage() {
                     product.available > 0 &&
                     product.available <= product.stockAlertThreshold;
                   const input = alertInputs[product.id];
-                  const threshold = input?.threshold ?? String(product.stockAlertThreshold);
+                  const threshold =
+                    input?.threshold ?? String(product.stockAlertThreshold);
                   const enabled = input?.enabled ?? product.stockAlertEnabled;
                   const isDirty = input !== undefined;
 
@@ -986,16 +1818,29 @@ export function SourceNetworkPage() {
                             ? "rgba(245,158,11,0.06)"
                             : "var(--inp)",
                         border: `1px solid ${
-                          isEmpty ? "rgba(244,63,94,0.25)" : isLow ? "rgba(245,158,11,0.25)" : "var(--bd)"
+                          isEmpty
+                            ? "rgba(244,63,94,0.25)"
+                            : isLow
+                              ? "rgba(245,158,11,0.25)"
+                              : "var(--bd)"
                         }`,
                       }}
                     >
                       <div className="flex flex-wrap items-center justify-between gap-3">
                         <div>
-                          <p className="text-sm font-bold" style={{ color: "var(--tx)" }}>{product.sourceName}</p>
+                          <p
+                            className="text-sm font-bold"
+                            style={{ color: "var(--tx)" }}
+                          >
+                            {product.sourceName}
+                          </p>
                           <p
                             className={`mt-0.5 text-xs ${isEmpty ? "text-rose-400" : isLow ? "text-amber-400" : ""}`}
-                            style={!isEmpty && !isLow ? { color: "var(--tx-f)" } : undefined}
+                            style={
+                              !isEmpty && !isLow
+                                ? { color: "var(--tx-f)" }
+                                : undefined
+                            }
                           >
                             {product.available === null
                               ? t.alertNotTracked
@@ -1008,11 +1853,21 @@ export function SourceNetworkPage() {
                         </div>
                         <div className="flex items-center gap-2">
                           {product.available !== null && (
-                            <Badge tone={isEmpty ? "danger" : isLow ? "warning" : "success"}>
+                            <Badge
+                              tone={
+                                isEmpty
+                                  ? "danger"
+                                  : isLow
+                                    ? "warning"
+                                    : "success"
+                              }
+                            >
                               {product.available}
                             </Badge>
                           )}
-                          <Badge tone="neutral">{t.alertSold(product.soldCount)}</Badge>
+                          <Badge tone="neutral">
+                            {t.alertSold(product.soldCount)}
+                          </Badge>
                         </div>
                       </div>
 
@@ -1028,7 +1883,10 @@ export function SourceNetworkPage() {
                               onChange={(e) =>
                                 setAlertInputs((prev) => ({
                                   ...prev,
-                                  [product.id]: { threshold, enabled: e.target.checked },
+                                  [product.id]: {
+                                    threshold,
+                                    enabled: e.target.checked,
+                                  },
                                 }))
                               }
                               className="h-4 w-4 accent-emerald-400"
@@ -1036,7 +1894,12 @@ export function SourceNetworkPage() {
                             {t.alertEnable}
                           </label>
                           <div className="flex items-center gap-2">
-                            <span className="text-xs" style={{ color: "var(--tx-f)" }}>{t.alertWhenBelow}</span>
+                            <span
+                              className="text-xs"
+                              style={{ color: "var(--tx-f)" }}
+                            >
+                              {t.alertWhenBelow}
+                            </span>
                             <Input
                               type="number"
                               value={threshold}
@@ -1044,12 +1907,20 @@ export function SourceNetworkPage() {
                               onChange={(e) =>
                                 setAlertInputs((prev) => ({
                                   ...prev,
-                                  [product.id]: { threshold: e.target.value, enabled },
+                                  [product.id]: {
+                                    threshold: e.target.value,
+                                    enabled,
+                                  },
                                 }))
                               }
                               className="w-20"
                             />
-                            <span className="text-xs" style={{ color: "var(--tx-f)" }}>{t.alertAccount}</span>
+                            <span
+                              className="text-xs"
+                              style={{ color: "var(--tx-f)" }}
+                            >
+                              {t.alertAccount}
+                            </span>
                           </div>
                           {isDirty && (
                             <Button
@@ -1063,7 +1934,9 @@ export function SourceNetworkPage() {
                               }
                               disabled={updateAlertMutation.isPending}
                             >
-                              {updateAlertMutation.isPending ? t.alertSaving : t.alertSave}
+                              {updateAlertMutation.isPending
+                                ? t.alertSaving
+                                : t.alertSave}
                             </Button>
                           )}
                         </div>
@@ -1085,13 +1958,159 @@ export function SourceNetworkPage() {
             >
               Kết nối nguồn
             </p>
-            <h1 className="text-[22px] font-black leading-tight" style={{ color: "rgb(249,115,22)" }}>
-              {currentConnection ? "Đang kết nối kho ULTRA" : "Chưa kết nối nguồn"}
+            <h1
+              className="text-[22px] font-black leading-tight"
+              style={{ color: "rgb(249,115,22)" }}
+            >
+              {currentConnection
+                ? "Đang kết nối kho ULTRA"
+                : "Chưa kết nối nguồn"}
             </h1>
           </div>
 
+          <div
+            className="rounded-2xl p-5"
+            style={{
+              background: "var(--surface)",
+              border: "1px solid var(--bd)",
+            }}
+          >
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+              <label className="min-w-0 flex-1">
+                <span
+                  className="mb-1.5 block text-[11px] font-black uppercase tracking-wider"
+                  style={{ color: "var(--tx-f)" }}
+                >
+                  Kết nối nguồn nội bộ bằng key isk_
+                </span>
+                <input
+                  value={connectKey}
+                  onChange={(event) => setConnectKey(event.target.value)}
+                  placeholder="isk_..."
+                  className="w-full rounded-xl px-3 py-2.5 text-sm outline-none"
+                  style={{
+                    background: "var(--inp)",
+                    border: "1px solid var(--bd)",
+                    color: "var(--tx)",
+                  }}
+                />
+                {connectKey.trim() && !connectKey.trim().startsWith("isk_") && (
+                  <span className="mt-1.5 block text-[11px] text-amber-400">
+                    Đây không phải key nội bộ isk_. Nếu là buyer key như tgb_,
+                    hãy nhập ở khối Nguồn provider phía trên.
+                  </span>
+                )}
+              </label>
+              <button
+                type="button"
+                disabled={
+                  !connectKey.trim().startsWith("isk_") ||
+                  connectMutation.isPending
+                }
+                onClick={() => connectMutation.mutate()}
+                className="rounded-xl px-4 py-2.5 text-sm font-black disabled:opacity-40"
+                style={{ background: "rgb(249,115,22)", color: "#fff" }}
+              >
+                {connectMutation.isPending ? "Đang kết nối..." : "Thêm nguồn"}
+              </button>
+            </div>
+
+            {sourceConnections.length > 0 && (
+              <div className="mt-4 grid gap-3 lg:grid-cols-2">
+                {sourceConnections.map((connection) => (
+                  <div
+                    key={connection.id}
+                    className="rounded-xl p-4"
+                    style={{
+                      background: "var(--inp)",
+                      border: "1px solid var(--bd)",
+                    }}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p
+                          className="truncate text-sm font-black"
+                          style={{ color: "var(--tx)" }}
+                        >
+                          {connection.upstreamShop.name}
+                        </p>
+                        <p
+                          className="mt-1 text-[11px]"
+                          style={{ color: "var(--tx-f)" }}
+                        >
+                          {connection.upstreamSeller.displayName} ·{" "}
+                          {connection.productCount || 0} sản phẩm
+                        </p>
+                      </div>
+                      <Badge tone="success">Đang hoạt động</Badge>
+                    </div>
+                    <div className="mt-3 flex items-center justify-between gap-3 text-xs">
+                      <span style={{ color: "var(--tx-m)" }}>Số dư nguồn</span>
+                      <strong style={{ color: "rgb(249,115,22)" }}>
+                        {formatCurrency(connection.balance)}
+                      </strong>
+                    </div>
+                    <div className="mt-3 flex flex-wrap items-center gap-2">
+                      <input
+                        type="number"
+                        min={1000}
+                        step={1000}
+                        value={topupAmount}
+                        onChange={(event) => setTopupAmount(event.target.value)}
+                        className="w-32 rounded-lg px-2.5 py-2 text-xs outline-none"
+                        style={{
+                          background: "var(--surface)",
+                          border: "1px solid var(--bd)",
+                          color: "var(--tx)",
+                        }}
+                      />
+                      <button
+                        type="button"
+                        disabled={topupMutation.isPending}
+                        onClick={() => topupMutation.mutate(connection.id)}
+                        className="rounded-lg px-3 py-2 text-xs font-black disabled:opacity-40"
+                        style={{
+                          background: "rgba(249,115,22,0.12)",
+                          color: "rgb(249,115,22)",
+                        }}
+                      >
+                        Nạp nguồn
+                      </button>
+                      <button
+                        type="button"
+                        disabled={disconnectMutation.isPending}
+                        onClick={() => {
+                          if (
+                            confirm(
+                              "Ngắt kết nối nguồn này? Đơn hàng cũ vẫn được giữ lại.",
+                            )
+                          ) {
+                            disconnectMutation.mutate(connection.id);
+                          }
+                        }}
+                        className="rounded-lg px-3 py-2 text-xs font-black disabled:opacity-40"
+                        style={{
+                          background: "rgba(239,68,68,0.1)",
+                          color: "rgb(248,113,113)",
+                        }}
+                      >
+                        Ngắt nguồn
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
           {currentConnection ? (
-            <div className="rounded-2xl p-5" style={{ background: "var(--surface)", border: "1px solid var(--bd)" }}>
+            <div
+              className="rounded-2xl p-5"
+              style={{
+                background: "var(--surface)",
+                border: "1px solid var(--bd)",
+              }}
+            >
               {/* Card header */}
               <div className="flex items-center justify-between mb-4">
                 <div className="flex items-center gap-2">
@@ -1101,7 +2120,10 @@ export function SourceNetworkPage() {
                   >
                     <Cable className="h-4 w-4 text-orange-400" />
                   </div>
-                  <h2 className="text-base font-black" style={{ color: "var(--tx)" }}>
+                  <h2
+                    className="text-base font-black"
+                    style={{ color: "var(--tx)" }}
+                  >
                     {t.currentConnectionTitle}
                   </h2>
                 </div>
@@ -1113,57 +2135,128 @@ export function SourceNetworkPage() {
                     color: "rgb(52,211,153)",
                   }}
                 >
-                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" /> Đang hoạt động
+                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />{" "}
+                  Đang hoạt động
                 </span>
               </div>
 
               {/* Shop info */}
               <div
                 className="flex items-center gap-3 rounded-2xl p-4 mb-4"
-                style={{ background: "var(--inp)", border: "1px solid var(--bd)" }}
+                style={{
+                  background: "var(--inp)",
+                  border: "1px solid var(--bd)",
+                }}
               >
                 <div
                   className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-orange-400"
-                  style={{ background: "rgba(249,115,22,0.12)", border: "1px solid rgba(249,115,22,0.2)" }}
+                  style={{
+                    background: "rgba(249,115,22,0.12)",
+                    border: "1px solid rgba(249,115,22,0.2)",
+                  }}
                 >
                   <Cable className="h-5 w-5" />
                 </div>
                 <div className="min-w-0">
-                  <p className="text-[14px] font-black" style={{ color: "var(--tx)" }}>
+                  <p
+                    className="text-[14px] font-black"
+                    style={{ color: "var(--tx)" }}
+                  >
                     {currentConnection.upstreamShop.name}
                   </p>
                   <p className="text-[12px]" style={{ color: "var(--tx-f)" }}>
-                    Key: {currentConnection.apiKey?.keyPrefix ? `${currentConnection.apiKey.keyPrefix}•••` : "—"}
-                    {currentConnection.upstreamSeller.displayName
-                      ? ` · Bot: @${currentConnection.upstreamSeller.displayName}`
-                      : ""}
+                    Key:{" "}
+                    {currentConnection.apiKey?.keyPrefix
+                      ? `${currentConnection.apiKey.keyPrefix}•••`
+                      : "—"}
+                    {` · Seller: ${currentConnection.upstreamSeller.displayName || "—"}`}
+                  </p>
+                  <p
+                    className="mt-1 text-[12px]"
+                    style={{ color: "var(--tx-m)" }}
+                  >
+                    Bot nguồn:{" "}
+                    {currentConnection.upstreamShop.telegramBotUsername ? (
+                      <a
+                        href={`https://t.me/${currentConnection.upstreamShop.telegramBotUsername.replace(/^@/, "")}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="font-bold text-sky-400 hover:underline"
+                      >
+                        @
+                        {currentConnection.upstreamShop.telegramBotUsername.replace(
+                          /^@/,
+                          "",
+                        )}
+                      </a>
+                    ) : (
+                      <span style={{ color: "var(--tx-f)" }}>
+                        Chưa có thông tin
+                      </span>
+                    )}
                   </p>
                 </div>
               </div>
 
               {/* Stats */}
               <div className="grid grid-cols-3 gap-3 mb-4">
-                <div className="rounded-xl px-4 py-3" style={{ background: "var(--inp)", border: "1px solid var(--bd)" }}>
-                  <p className="text-[10px] font-black uppercase tracking-widest mb-1" style={{ color: "var(--tx-f)" }}>
-                    SỐ DƯ KẾT NỐI
+                <div
+                  className="rounded-xl px-4 py-3"
+                  style={{
+                    background: "var(--inp)",
+                    border: "1px solid var(--bd)",
+                  }}
+                >
+                  <p
+                    className="text-[10px] font-black uppercase tracking-widest mb-1"
+                    style={{ color: "var(--tx-f)" }}
+                  >
+                    SỐ DƯ VÍ BOT NGUỒN
                   </p>
-                  <p className="text-base font-black tabular-nums" style={{ color: "rgb(249,115,22)" }}>
+                  <p
+                    className="text-base font-black tabular-nums"
+                    style={{ color: "rgb(249,115,22)" }}
+                  >
                     {formatCurrency(currentConnection.balance)}
                   </p>
                 </div>
-                <div className="rounded-xl px-4 py-3" style={{ background: "var(--inp)", border: "1px solid var(--bd)" }}>
-                  <p className="text-[10px] font-black uppercase tracking-widest mb-1" style={{ color: "var(--tx-f)" }}>
+                <div
+                  className="rounded-xl px-4 py-3"
+                  style={{
+                    background: "var(--inp)",
+                    border: "1px solid var(--bd)",
+                  }}
+                >
+                  <p
+                    className="text-[10px] font-black uppercase tracking-widest mb-1"
+                    style={{ color: "var(--tx-f)" }}
+                  >
                     ĐỒNG BỘ CUỐI
                   </p>
-                  <p className="text-base font-black" style={{ color: "var(--tx)" }}>
+                  <p
+                    className="text-base font-black"
+                    style={{ color: "var(--tx)" }}
+                  >
                     {formatDate(currentConnection.lastCatalogSyncAt) || "—"}
                   </p>
                 </div>
-                <div className="rounded-xl px-4 py-3" style={{ background: "var(--inp)", border: "1px solid var(--bd)" }}>
-                  <p className="text-[10px] font-black uppercase tracking-widest mb-1" style={{ color: "var(--tx-f)" }}>
+                <div
+                  className="rounded-xl px-4 py-3"
+                  style={{
+                    background: "var(--inp)",
+                    border: "1px solid var(--bd)",
+                  }}
+                >
+                  <p
+                    className="text-[10px] font-black uppercase tracking-widest mb-1"
+                    style={{ color: "var(--tx-f)" }}
+                  >
                     ĐẶT HÀNG CUỐI
                   </p>
-                  <p className="text-base font-black" style={{ color: "var(--tx)" }}>
+                  <p
+                    className="text-base font-black"
+                    style={{ color: "var(--tx)" }}
+                  >
                     {formatDate(currentConnection.lastOrderedAt) || "—"}
                   </p>
                 </div>
@@ -1185,8 +2278,12 @@ export function SourceNetworkPage() {
                   type="button"
                   disabled={disconnectMutation.isPending}
                   onClick={() => {
-                    if (confirm("Ngắt kết nối nguồn? Sản phẩm hiện tại vẫn giữ nguyên."))
-                      disconnectMutation.mutate();
+                    if (
+                      confirm(
+                        "Ngắt kết nối nguồn? Sản phẩm hiện tại vẫn giữ nguyên.",
+                      )
+                    )
+                      disconnectMutation.mutate(currentConnection.id);
                   }}
                   className="flex items-center gap-1.5 rounded-xl px-4 py-2 text-[12px] font-black transition hover:opacity-80 disabled:opacity-40"
                   style={{
@@ -1195,21 +2292,31 @@ export function SourceNetworkPage() {
                     color: "rgb(248,113,113)",
                   }}
                 >
-                  {disconnectMutation.isPending ? "Đang ngắt..." : "Ngắt kết nối"}
+                  {disconnectMutation.isPending
+                    ? "Đang ngắt..."
+                    : "Ngắt kết nối"}
                 </button>
               </div>
 
               {/* Đồng bộ giao diện bot — one-press clone of the source's categories + bot template */}
               <div
                 className="mt-3 flex items-center justify-between gap-3 rounded-xl px-4 py-3"
-                style={{ background: "var(--inp)", border: "1px solid var(--bd)" }}
+                style={{
+                  background: "var(--inp)",
+                  border: "1px solid var(--bd)",
+                }}
               >
                 <div>
-                  <p className="text-[12px] font-black" style={{ color: "var(--tx)" }}>
+                  <p
+                    className="text-[12px] font-black"
+                    style={{ color: "var(--tx)" }}
+                  >
                     Đồng bộ giao diện bot
                   </p>
                   <p className="text-[11px]" style={{ color: "var(--tx-f)" }}>
-                    Copy danh mục + giao diện (welcome, nhãn nút) từ nguồn ULTRA về shop của bạn. Giá vẫn theo giá của bạn. Icon dùng dạng chữ (không cần Telegram Premium).
+                    Copy danh mục + giao diện (welcome, nhãn nút) từ nguồn ULTRA
+                    về shop của bạn. Giá vẫn theo giá của bạn. Icon dùng dạng
+                    chữ (không cần Telegram Premium).
                   </p>
                 </div>
                 <button
@@ -1226,7 +2333,9 @@ export function SourceNetworkPage() {
                   className="shrink-0 rounded-xl px-4 py-2 text-[12px] font-black transition hover:opacity-80 disabled:opacity-40"
                   style={{ background: "rgb(249,115,22)", color: "#fff" }}
                 >
-                  {cloneInterfaceMutation.isPending ? "Đang đồng bộ..." : "Đồng bộ giao diện"}
+                  {cloneInterfaceMutation.isPending
+                    ? "Đang đồng bộ..."
+                    : "Đồng bộ giao diện"}
                 </button>
               </div>
 
@@ -1238,60 +2347,141 @@ export function SourceNetworkPage() {
                       type="button"
                       onClick={openOverrideEditor}
                       className="rounded-xl px-4 py-2 text-[12px] font-black transition hover:opacity-80"
-                      style={{ background: "var(--inp)", border: "1px solid var(--bd)", color: "var(--tx)" }}
+                      style={{
+                        background: "var(--inp)",
+                        border: "1px solid var(--bd)",
+                        color: "var(--tx)",
+                      }}
                     >
                       ✏️ Tùy chỉnh danh mục &amp; thứ tự
                     </button>
                   ) : (
-                    <div className="rounded-xl p-4" style={{ background: "var(--inp)", border: "1px solid var(--bd)" }}>
-                      <p className="text-[12px] font-black mb-2" style={{ color: "var(--tx)" }}>
+                    <div
+                      className="rounded-xl p-4"
+                      style={{
+                        background: "var(--inp)",
+                        border: "1px solid var(--bd)",
+                      }}
+                    >
+                      <p
+                        className="text-[12px] font-black mb-2"
+                        style={{ color: "var(--tx)" }}
+                      >
                         Danh mục — đổi tên / thứ tự (#) / ẩn
                       </p>
                       {edGroups.length === 0 && (
-                        <p className="text-[11px]" style={{ color: "var(--tx-f)" }}>Nguồn chưa có danh mục.</p>
+                        <p
+                          className="text-[11px]"
+                          style={{ color: "var(--tx-f)" }}
+                        >
+                          Nguồn chưa có danh mục.
+                        </p>
                       )}
                       {edGroups.map((g) => (
-                        <div key={g.id} className="flex items-center gap-2 mb-1.5">
+                        <div
+                          key={g.id}
+                          className="flex items-center gap-2 mb-1.5"
+                        >
                           <input
                             value={groupOv[g.id]?.name ?? ""}
                             placeholder={g.name}
-                            onChange={(e) => setGroupOv((s) => ({ ...s, [g.id]: { ...s[g.id], name: e.target.value } }))}
+                            onChange={(e) =>
+                              setGroupOv((s) => ({
+                                ...s,
+                                [g.id]: { ...s[g.id], name: e.target.value },
+                              }))
+                            }
                             className="flex-1 rounded-lg px-2 py-1.5 text-[12px] outline-none"
-                            style={{ background: "var(--surface)", border: "1px solid var(--bd)", color: "var(--tx)" }}
+                            style={{
+                              background: "var(--surface)",
+                              border: "1px solid var(--bd)",
+                              color: "var(--tx)",
+                            }}
                           />
                           <input
                             type="number"
                             placeholder="#"
                             value={groupOv[g.id]?.position ?? ""}
-                            onChange={(e) => setGroupOv((s) => ({ ...s, [g.id]: { ...s[g.id], position: e.target.value === "" ? undefined : Number(e.target.value) } }))}
+                            onChange={(e) =>
+                              setGroupOv((s) => ({
+                                ...s,
+                                [g.id]: {
+                                  ...s[g.id],
+                                  position:
+                                    e.target.value === ""
+                                      ? undefined
+                                      : Number(e.target.value),
+                                },
+                              }))
+                            }
                             className="w-14 rounded-lg px-2 py-1.5 text-[12px] outline-none"
-                            style={{ background: "var(--surface)", border: "1px solid var(--bd)", color: "var(--tx)" }}
+                            style={{
+                              background: "var(--surface)",
+                              border: "1px solid var(--bd)",
+                              color: "var(--tx)",
+                            }}
                           />
-                          <label className="flex items-center gap-1 text-[11px]" style={{ color: "var(--tx-f)" }}>
+                          <label
+                            className="flex items-center gap-1 text-[11px]"
+                            style={{ color: "var(--tx-f)" }}
+                          >
                             <input
                               type="checkbox"
                               checked={!!groupOv[g.id]?.hidden}
-                              onChange={(e) => setGroupOv((s) => ({ ...s, [g.id]: { ...s[g.id], hidden: e.target.checked } }))}
+                              onChange={(e) =>
+                                setGroupOv((s) => ({
+                                  ...s,
+                                  [g.id]: {
+                                    ...s[g.id],
+                                    hidden: e.target.checked,
+                                  },
+                                }))
+                              }
                             />
                             ẩn
                           </label>
                         </div>
                       ))}
 
-                      <p className="text-[12px] font-black mt-4 mb-2" style={{ color: "var(--tx)" }}>
+                      <p
+                        className="text-[12px] font-black mt-4 mb-2"
+                        style={{ color: "var(--tx)" }}
+                      >
                         Sản phẩm — thứ tự (#)
                       </p>
                       <div className="max-h-64 overflow-y-auto">
                         {edProducts.map((p) => (
-                          <div key={p.id} className="flex items-center gap-2 mb-1.5">
-                            <span className="flex-1 truncate text-[12px]" style={{ color: "var(--tx)" }}>{p.name}</span>
+                          <div
+                            key={p.id}
+                            className="flex items-center gap-2 mb-1.5"
+                          >
+                            <span
+                              className="flex-1 truncate text-[12px]"
+                              style={{ color: "var(--tx)" }}
+                            >
+                              {p.name}
+                            </span>
                             <input
                               type="number"
                               placeholder={String(p.position)}
                               value={productOv[p.id]?.position ?? ""}
-                              onChange={(e) => setProductOv((s) => ({ ...s, [p.id]: { position: e.target.value === "" ? undefined : Number(e.target.value) } }))}
+                              onChange={(e) =>
+                                setProductOv((s) => ({
+                                  ...s,
+                                  [p.id]: {
+                                    position:
+                                      e.target.value === ""
+                                        ? undefined
+                                        : Number(e.target.value),
+                                  },
+                                }))
+                              }
                               className="w-14 rounded-lg px-2 py-1.5 text-[12px] outline-none"
-                              style={{ background: "var(--surface)", border: "1px solid var(--bd)", color: "var(--tx)" }}
+                              style={{
+                                background: "var(--surface)",
+                                border: "1px solid var(--bd)",
+                                color: "var(--tx)",
+                              }}
                             />
                           </div>
                         ))}
@@ -1303,38 +2493,201 @@ export function SourceNetworkPage() {
                           disabled={saveOverridesMutation.isPending}
                           onClick={() => saveOverridesMutation.mutate()}
                           className="rounded-xl px-4 py-2 text-[12px] font-black transition hover:opacity-80 disabled:opacity-40"
-                          style={{ background: "rgb(249,115,22)", color: "#fff" }}
+                          style={{
+                            background: "rgb(249,115,22)",
+                            color: "#fff",
+                          }}
                         >
-                          {saveOverridesMutation.isPending ? "Đang lưu..." : "Lưu thay đổi"}
+                          {saveOverridesMutation.isPending
+                            ? "Đang lưu..."
+                            : "Lưu thay đổi"}
                         </button>
                         <button
                           type="button"
                           onClick={() => setEditorOpen(false)}
                           className="rounded-xl px-4 py-2 text-[12px] font-black transition hover:opacity-80"
-                          style={{ background: "var(--surface)", border: "1px solid var(--bd)", color: "var(--tx)" }}
+                          style={{
+                            background: "var(--surface)",
+                            border: "1px solid var(--bd)",
+                            color: "var(--tx)",
+                          }}
                         >
                           Đóng
                         </button>
                       </div>
-                      <p className="text-[10px] mt-2" style={{ color: "var(--tx-f)" }}>
-                        Để trống = giữ theo nguồn ULTRA. Số thứ tự nhỏ hiện trước.
+                      <p
+                        className="text-[10px] mt-2"
+                        style={{ color: "var(--tx-f)" }}
+                      >
+                        Để trống = giữ theo nguồn ULTRA. Số thứ tự nhỏ hiện
+                        trước.
                       </p>
                     </div>
                   )}
                 </div>
               )}
+
+              <div
+                className="mt-5 overflow-hidden rounded-2xl"
+                style={{ border: "1px solid var(--bd)" }}
+              >
+                <div
+                  className="flex items-center justify-between gap-3 px-4 py-3"
+                  style={{
+                    background: "var(--inp)",
+                    borderBottom: "1px solid var(--bd)",
+                  }}
+                >
+                  <div>
+                    <h3
+                      className="text-sm font-black"
+                      style={{ color: "var(--tx)" }}
+                    >
+                      Đơn hàng lấy từ nguồn
+                    </h3>
+                    <p
+                      className="mt-0.5 text-[11px]"
+                      style={{ color: "var(--tx-f)" }}
+                    >
+                      {purchasedSourceOrders.length} đơn · Tổng tiền{" "}
+                      {formatCurrency(
+                        purchasedSourceOrders.reduce(
+                          (sum, order) => sum + order.totalAmount,
+                          0,
+                        ),
+                      )}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => purchasedSourceOrdersQuery.refetch()}
+                    disabled={purchasedSourceOrdersQuery.isFetching}
+                    className="flex items-center gap-1.5 rounded-xl px-3 py-2 text-[11px] font-black transition hover:opacity-80 disabled:opacity-40"
+                    style={{
+                      background: "var(--surface)",
+                      border: "1px solid var(--bd)",
+                      color: "var(--tx-m)",
+                    }}
+                  >
+                    <RefreshCcw
+                      className={`h-3.5 w-3.5 ${purchasedSourceOrdersQuery.isFetching ? "animate-spin" : ""}`}
+                    />
+                    Làm mới
+                  </button>
+                </div>
+
+                {purchasedSourceOrdersQuery.isLoading ? (
+                  <p
+                    className="px-4 py-8 text-center text-xs"
+                    style={{ color: "var(--tx-f)" }}
+                  >
+                    Đang tải đơn hàng...
+                  </p>
+                ) : purchasedSourceOrders.length === 0 ? (
+                  <p
+                    className="px-4 py-8 text-center text-xs"
+                    style={{ color: "var(--tx-f)" }}
+                  >
+                    Chưa có đơn hàng nào lấy từ nguồn này.
+                  </p>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full min-w-[860px] text-left text-xs">
+                      <thead style={{ background: "var(--surface)" }}>
+                        <tr
+                          className="text-[10px] font-black uppercase tracking-wider"
+                          style={{ color: "var(--tx-f)" }}
+                        >
+                          <th className="px-4 py-3">Mã đơn với nguồn</th>
+                          <th className="px-4 py-3">Đơn khách hàng</th>
+                          <th className="px-4 py-3">Sản phẩm</th>
+                          <th className="px-4 py-3 text-center">SL</th>
+                          <th className="px-4 py-3 text-right">Thành tiền</th>
+                          <th className="px-4 py-3">Trạng thái</th>
+                          <th className="px-4 py-3">Ngày giờ</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {purchasedSourceOrders.map((order) => (
+                          <tr
+                            key={order.id}
+                            style={{ borderTop: "1px solid var(--bd)" }}
+                          >
+                            <td
+                              className="px-4 py-3 font-mono text-[11px] font-black"
+                              style={{ color: "rgb(249,115,22)" }}
+                            >
+                              {order.orderCode}
+                            </td>
+                            <td
+                              className="px-4 py-3 font-medium"
+                              style={{ color: "var(--tx-m)" }}
+                            >
+                              {order.downstreamOrderCode || "—"}
+                            </td>
+                            <td className="max-w-[260px] px-4 py-3">
+                              <p
+                                className="truncate font-semibold"
+                                style={{ color: "var(--tx)" }}
+                              >
+                                {order.product.sourceName}
+                              </p>
+                              <p
+                                className="mt-0.5 text-[10px]"
+                                style={{ color: "var(--tx-f)" }}
+                              >
+                                {order.product.providerName}
+                              </p>
+                            </td>
+                            <td
+                              className="px-4 py-3 text-center tabular-nums"
+                              style={{ color: "var(--tx-m)" }}
+                            >
+                              {order.quantity}
+                            </td>
+                            <td
+                              className="px-4 py-3 text-right font-black tabular-nums"
+                              style={{ color: "var(--tx)" }}
+                            >
+                              {formatCurrency(order.totalAmount)}
+                            </td>
+                            <td className="px-4 py-3">
+                              <Badge tone={getTone(order.status)}>
+                                {formatStatusLabel(order.status)}
+                              </Badge>
+                            </td>
+                            <td
+                              className="whitespace-nowrap px-4 py-3"
+                              style={{ color: "var(--tx-m)" }}
+                            >
+                              {formatDate(order.createdAt)}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
             </div>
           ) : (
             <div
               className="rounded-2xl py-12 text-center"
-              style={{ background: "var(--surface)", border: "1px solid var(--bd)" }}
+              style={{
+                background: "var(--surface)",
+                border: "1px solid var(--bd)",
+              }}
             >
               <Cable className="mx-auto h-8 w-8 mb-3 text-orange-400 opacity-40" />
-              <p className="text-sm font-semibold" style={{ color: "var(--tx-m)" }}>
+              <p
+                className="text-sm font-semibold"
+                style={{ color: "var(--tx-m)" }}
+              >
                 Chưa kết nối vào nguồn ULTRA.
               </p>
               <p className="mt-1 text-xs" style={{ color: "var(--tx-f)" }}>
-                Cấu hình kết nối trong tab "Bot &amp; Nguồn" của trang Cài đặt Bot.
+                Cấu hình kết nối trong tab "Bot &amp; Nguồn" của trang Cài đặt
+                Bot.
               </p>
             </div>
           )}

@@ -1,4 +1,17 @@
-import { BadRequestException, Body, Controller, Delete, Get, Inject, Param, Post, Put, UploadedFile, UseGuards, UseInterceptors } from "@nestjs/common";
+import {
+  BadRequestException,
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Inject,
+  Param,
+  Post,
+  Put,
+  UploadedFile,
+  UseGuards,
+  UseInterceptors,
+} from "@nestjs/common";
 import { FileInterceptor } from "@nestjs/platform-express";
 import { memoryStorage } from "multer";
 
@@ -9,6 +22,7 @@ import { SellerCapabilitiesGuard } from "../common/guards/seller-capabilities.gu
 import type { AuthenticatedUser } from "../types";
 
 import {
+  BulkUpdateSourceProductsDto,
   CreateManualProductDto,
   PurgeDeliveredInventoryDto,
   UpdateProductDto,
@@ -28,8 +42,21 @@ export class ProductsController {
     return this.productsService.listProducts(user);
   }
 
+  @Post("source-warehouse/bulk-status")
+  @UseGuards(SellerCapabilitiesGuard)
+  @RequireSellerCapabilities("products_manage")
+  bulkUpdateSourceProductStatus(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() body: BulkUpdateSourceProductsDto,
+  ) {
+    return this.productsService.bulkUpdateSourceProductStatus(user, body);
+  }
+
   @Get(":id/inventory")
-  getProductInventory(@CurrentUser() user: AuthenticatedUser, @Param("id") id: string) {
+  getProductInventory(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param("id") id: string,
+  ) {
     return this.productsService.getProductInventory(user, id);
   }
 
@@ -52,26 +79,79 @@ export class ProductsController {
   @Post(":id/duplicate")
   @UseGuards(SellerCapabilitiesGuard)
   @RequireSellerCapabilities("products_manage")
-  duplicateProduct(@CurrentUser() user: AuthenticatedUser, @Param("id") id: string) {
+  duplicateProduct(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param("id") id: string,
+  ) {
     return this.productsService.duplicateProduct(user, id);
+  }
+
+  @Post(":id/archive")
+  @UseGuards(SellerCapabilitiesGuard)
+  @RequireSellerCapabilities("products_manage")
+  archiveProduct(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param("id") id: string,
+  ) {
+    return this.productsService.setProductArchived(user, id, true);
+  }
+
+  @Post(":id/restore")
+  @UseGuards(SellerCapabilitiesGuard)
+  @RequireSellerCapabilities("products_manage")
+  restoreProduct(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param("id") id: string,
+  ) {
+    return this.productsService.setProductArchived(user, id, false);
+  }
+
+  @Post(":id/hide-everywhere")
+  @UseGuards(SellerCapabilitiesGuard)
+  @RequireSellerCapabilities("products_manage")
+  hideProductEverywhere(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param("id") id: string,
+  ) {
+    return this.productsService.hideProductEverywhere(user, id);
+  }
+
+  @Post(":id/show-everywhere")
+  @UseGuards(SellerCapabilitiesGuard)
+  @RequireSellerCapabilities("products_manage")
+  showProductEverywhere(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param("id") id: string,
+  ) {
+    return this.productsService.showProductEverywhere(user, id);
   }
 
   @Post("upload-image")
   @UseGuards(SellerCapabilitiesGuard)
   @RequireSellerCapabilities("products_manage")
-  @UseInterceptors(FileInterceptor("file", {
-    storage: memoryStorage(),
-    limits: { fileSize: 20 * 1024 * 1024 },
-    fileFilter: (_req, file, cb) => {
-      const isImage = file.mimetype.startsWith("image/");
-      const isVideo = file.mimetype === "video/mp4" || file.mimetype === "video/quicktime" || file.mimetype === "video/webm";
-      if (!isImage && !isVideo) {
-        cb(new BadRequestException("Only image or video files (mp4/mov/webm) are allowed"), false);
-      } else {
-        cb(null, true);
-      }
-    },
-  }))
+  @UseInterceptors(
+    FileInterceptor("file", {
+      storage: memoryStorage(),
+      limits: { fileSize: 20 * 1024 * 1024 },
+      fileFilter: (_req, file, cb) => {
+        const isImage = file.mimetype.startsWith("image/");
+        const isVideo =
+          file.mimetype === "video/mp4" ||
+          file.mimetype === "video/quicktime" ||
+          file.mimetype === "video/webm";
+        if (!isImage && !isVideo) {
+          cb(
+            new BadRequestException(
+              "Only image or video files (mp4/mov/webm) are allowed",
+            ),
+            false,
+          );
+        } else {
+          cb(null, true);
+        }
+      },
+    }),
+  )
   uploadImage(
     @CurrentUser() user: AuthenticatedUser,
     @UploadedFile() file: Express.Multer.File,
@@ -103,7 +183,10 @@ export class ProductsController {
   @Delete(":id")
   @UseGuards(SellerCapabilitiesGuard)
   @RequireSellerCapabilities("products_manage")
-  deleteProduct(@CurrentUser() user: AuthenticatedUser, @Param("id") id: string) {
+  deleteProduct(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param("id") id: string,
+  ) {
     return this.productsService.deleteProduct(user, id);
   }
 

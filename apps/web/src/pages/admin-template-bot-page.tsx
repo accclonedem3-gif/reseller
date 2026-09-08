@@ -29,6 +29,17 @@ type ProductDefault = {
   media?: { type?: string; url?: string; caption?: string } | null;
 };
 
+const ORDER_DETAIL_EMOJI_FIELDS = [
+  { key: "orderDetailTitle", emoji: "\u{1F4CB}", label: "Tiêu đề CHI TIẾT ĐƠN HÀNG" },
+  { key: "orderDetailCode", emoji: "\u{1F9FE}", label: "Mã đơn" },
+  { key: "orderDetailProduct", emoji: "\u{1F4E6}", label: "Sản phẩm" },
+  { key: "orderDetailQuantity", emoji: "\u{1F522}", label: "Số lượng" },
+  { key: "orderDetailAmount", emoji: "\u{1F4B5}", label: "Thành tiền" },
+  { key: "orderDetailStatus", emoji: "\u{1F3AF}", label: "Trạng thái" },
+  { key: "orderDetailTime", emoji: "\u{1F558}", label: "Thời gian" },
+  { key: "orderDetailDelivered", emoji: "\u{1F510}", label: "Tài khoản đã giao" },
+] as const;
+
 const FAMILY_OPTIONS = [
   { value: "CHATGPT", label: "ChatGPT" },
   { value: "CLAUDE", label: "Claude" },
@@ -408,7 +419,35 @@ export function AdminTemplateBotPage() {
     enabled: !!tplQuery.data?.botConfig,
   });
 
-  const [tab, setTab] = useState<"config" | "products" | "invoice" | "restock" | "usage" | "buttons">("config");
+  const [tab, setTab] = useState<"config" | "products" | "invoice" | "restock" | "usage" | "orderDetail" | "buttons">("config");
+  const [orderDetailEmojiIds, setOrderDetailEmojiIds] = useState<Record<string, string>>({});
+  useEffect(() => {
+    const ids = tplQuery.data?.botConfig?.customization?.messageEmojiIds as Record<string, string> | undefined;
+    setOrderDetailEmojiIds(Object.fromEntries(
+      ORDER_DETAIL_EMOJI_FIELDS.map(({ key }) => [key, ids?.[key] ?? ""]),
+    ));
+  }, [tplQuery.data?.botConfig?.customization]);
+
+  const saveOrderDetailEmojiMutation = useMutation({
+    mutationFn: async () => {
+      const customization = tplQuery.data?.botConfig?.customization ?? {};
+      const existingIds = (customization.messageEmojiIds as Record<string, string> | undefined) ?? {};
+      const nextIds = { ...existingIds };
+      for (const { key } of ORDER_DETAIL_EMOJI_FIELDS) {
+        const value = (orderDetailEmojiIds[key] ?? "").trim();
+        if (value) nextIds[key] = value;
+        else delete nextIds[key];
+      }
+      return api.put("/admin-template/customization", {
+        customization: { ...customization, messageEmojiIds: nextIds },
+      });
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["admin-template"] });
+      showToast({ tone: "success", message: "Đã lưu custom ID cho tin chi tiết đơn hàng." });
+    },
+    onError: (err) => showToast({ tone: "error", message: getErrMsg(err, "Không lưu được custom ID.") }),
+  });
   const [buttonsDraft, setButtonsDraft] = useState<ButtonsConfig | null>(null);
   useEffect(() => {
     if (buttonsQuery.data) {
@@ -487,6 +526,7 @@ export function AdminTemplateBotPage() {
           ["invoice", "📄 Hóa đơn"],
           ["restock", "📢 Nhập kho"],
           ["usage", "📖 Hướng dẫn SD"],
+          ["orderDetail", "📋 Chi tiết đơn"],
           ["buttons", "🔘 Nút chức năng"],
         ] as const).map(([k, lbl]) => (
           <button
@@ -846,6 +886,51 @@ export function AdminTemplateBotPage() {
         ) : null}
       </div>
       </>)}
+
+      {tab === "orderDetail" && (
+        <div className="rounded-2xl p-5" style={{ background: "var(--surface)", border: "1px solid var(--bd)" }}>
+          <div className="mb-4 flex items-start justify-between gap-3">
+            <div>
+              <h2 className="text-[16px] font-black" style={{ color: "var(--tx)" }}>📋 Icon tin chi tiết đơn hàng</h2>
+              <p className="text-[12px]" style={{ color: "var(--tx-f)" }}>
+                Nhập Telegram custom emoji document_id cho từng dòng. Để trống sẽ dùng emoji thường đang hiển thị.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => saveOrderDetailEmojiMutation.mutate()}
+              disabled={saveOrderDetailEmojiMutation.isPending}
+              className="flex shrink-0 items-center gap-1.5 rounded-xl px-4 py-2 text-[12px] font-black transition hover:opacity-90 disabled:opacity-40"
+              style={{ background: "rgb(16,185,129)", color: "#fff" }}
+            >
+              <Save className="h-3.5 w-3.5" />
+              {saveOrderDetailEmojiMutation.isPending ? "Đang lưu..." : "Lưu custom ID"}
+            </button>
+          </div>
+
+          <div className="grid gap-3 sm:grid-cols-2">
+            {ORDER_DETAIL_EMOJI_FIELDS.map(({ key, emoji, label }) => (
+              <Field key={key} label={`${emoji} ${label}`}>
+                <input
+                  value={orderDetailEmojiIds[key] ?? ""}
+                  onChange={(event) => setOrderDetailEmojiIds((current) => ({
+                    ...current,
+                    [key]: event.target.value.replace(/\D/g, ""),
+                  }))}
+                  inputMode="numeric"
+                  placeholder="Ví dụ: 5368324170671202286"
+                  className={`${inputCls} font-mono`}
+                  style={inputStyle}
+                />
+              </Field>
+            ))}
+          </div>
+
+          <div className="mt-4 rounded-xl px-3 py-2.5 text-[11px]" style={{ background: "var(--inp)", color: "var(--tx-f)", border: "1px solid var(--bd)" }}>
+            Cấu hình này nằm trong template mặc định và được các bot seller kế thừa. Custom ID không hợp lệ sẽ tự fallback về emoji thường.
+          </div>
+        </div>
+      )}
 
       {tab === "buttons" && (<>
       {/* Function buttons */}

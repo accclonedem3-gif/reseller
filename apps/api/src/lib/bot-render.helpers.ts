@@ -1,6 +1,6 @@
 import { Injectable } from "@nestjs/common";
 
-export type BotLanguage = "vi" | "en" | "th";
+export type BotLanguage = "vi" | "en" | "th" | "zh";
 
 /**
  * Stateless presentation helpers for the Telegram bot: i18n string maps,
@@ -27,6 +27,8 @@ export class BotRenderHelpers {
     const v = String(value || "").toLowerCase();
     if (v === "en") return "en";
     if (v === "th") return "th";
+    if (v === "zh" || v === "zh-cn" || v === "zh-hans" || v === "cn")
+      return "zh";
     return "vi";
   }
 
@@ -67,29 +69,24 @@ export class BotRenderHelpers {
 
   formatStock(available: number | null, language: BotLanguage = "vi") {
     if (available === null) {
-      return language === "en" ? "Unlimited" : language === "th" ? "ไม่จำกัด" : "Không giới hạn";
+      return language === "en"
+        ? "Unlimited"
+        : language === "th"
+          ? "ไม่จำกัด"
+          : "Không giới hạn";
     }
 
     return String(available);
   }
 
-  formatCompactMoney(value: number) {
+  formatCatalogButtonMoney(value: number) {
     const amount = Number(value || 0);
+    const roundedAmount = Number.isFinite(amount) ? Math.round(amount) : 0;
 
-    if (amount >= 1_000_000) {
-      const millions = amount / 1_000_000;
-      const normalized =
-        millions >= 10 || Number.isInteger(millions)
-          ? `${Math.round(millions)}`
-          : millions.toFixed(1).replace(/\.0$/, "");
-      return `${normalized}tr`;
-    }
-
-    if (amount >= 1_000) {
-      return `${Math.round(amount / 1_000)}k`;
-    }
-
-    return `${amount}`;
+    // Never abbreviate prices on product buttons. Values such as 1,500 and
+    // 2,000 become ambiguous when rendered as "2k", and customers need the
+    // exact amount before opening the product detail.
+    return `${roundedAmount.toLocaleString("vi-VN")}đ`;
   }
 
   compactProductName(value: string) {
@@ -114,7 +111,9 @@ export class BotRenderHelpers {
 
   applyProductNameReplacements(
     value: string,
-    replacements: Array<[RegExp, string | ((match: string, ...groups: string[]) => string)]>,
+    replacements: Array<
+      [RegExp, string | ((match: string, ...groups: string[]) => string)]
+    >,
   ) {
     let result = String(value || "");
 
@@ -134,11 +133,14 @@ export class BotRenderHelpers {
       [/\b(\d+)\s*mos?\b/gi, (_match, amount: string) => `${amount} tháng`],
     ]);
 
-    const withShortDurations = this.applyProductNameReplacements(withLongDurations, [
-      [/\b(\d+)\s*y\b/gi, (_match, amount: string) => `${amount} năm`],
-      [/\b(\d+)\s*m\b/gi, (_match, amount: string) => `${amount} tháng`],
-      [/\b(\d+)\s*d\b/gi, (_match, amount: string) => `${amount} ngày`],
-    ]);
+    const withShortDurations = this.applyProductNameReplacements(
+      withLongDurations,
+      [
+        [/\b(\d+)\s*y\b/gi, (_match, amount: string) => `${amount} năm`],
+        [/\b(\d+)\s*m\b/gi, (_match, amount: string) => `${amount} tháng`],
+        [/\b(\d+)\s*d\b/gi, (_match, amount: string) => `${amount} ngày`],
+      ],
+    );
 
     return this.applyProductNameReplacements(withShortDurations, [
       [/\bpersonal account\b/gi, "TK chính chủ"],
@@ -163,15 +165,42 @@ export class BotRenderHelpers {
     const normalized = this.normalizeTranslationSource(value);
 
     const withDurations = this.applyProductNameReplacements(normalized, [
-      [/\b(\d+)\s*năm\b/gi, (_match, amount: string) => this.formatEnglishCount(amount, "year")],
-      [/\b(\d+)\s*nam\b/gi, (_match, amount: string) => this.formatEnglishCount(amount, "year")],
-      [/\b(\d+)\s*tháng\b/gi, (_match, amount: string) => this.formatEnglishCount(amount, "month")],
-      [/\b(\d+)\s*thang\b/gi, (_match, amount: string) => this.formatEnglishCount(amount, "month")],
-      [/\b(\d+)\s*ngày\b/gi, (_match, amount: string) => this.formatEnglishCount(amount, "day")],
-      [/\b(\d+)\s*ngay\b/gi, (_match, amount: string) => this.formatEnglishCount(amount, "day")],
-      [/\b(\d+)\s*t\b/gi, (_match, amount: string) => this.formatEnglishCount(amount, "month")],
-      [/\b(\d+)\s*th\b/gi, (_match, amount: string) => this.formatEnglishCount(amount, "month")],
-      [/\b(\d+)\s*n\b/gi, (_match, amount: string) => this.formatEnglishCount(amount, "year")],
+      [
+        /\b(\d+)\s*năm\b/gi,
+        (_match, amount: string) => this.formatEnglishCount(amount, "year"),
+      ],
+      [
+        /\b(\d+)\s*nam\b/gi,
+        (_match, amount: string) => this.formatEnglishCount(amount, "year"),
+      ],
+      [
+        /\b(\d+)\s*tháng\b/gi,
+        (_match, amount: string) => this.formatEnglishCount(amount, "month"),
+      ],
+      [
+        /\b(\d+)\s*thang\b/gi,
+        (_match, amount: string) => this.formatEnglishCount(amount, "month"),
+      ],
+      [
+        /\b(\d+)\s*ngày\b/gi,
+        (_match, amount: string) => this.formatEnglishCount(amount, "day"),
+      ],
+      [
+        /\b(\d+)\s*ngay\b/gi,
+        (_match, amount: string) => this.formatEnglishCount(amount, "day"),
+      ],
+      [
+        /\b(\d+)\s*t\b/gi,
+        (_match, amount: string) => this.formatEnglishCount(amount, "month"),
+      ],
+      [
+        /\b(\d+)\s*th\b/gi,
+        (_match, amount: string) => this.formatEnglishCount(amount, "month"),
+      ],
+      [
+        /\b(\d+)\s*n\b/gi,
+        (_match, amount: string) => this.formatEnglishCount(amount, "year"),
+      ],
     ]);
 
     const translated = this.applyProductNameReplacements(withDurations, [
@@ -218,7 +247,9 @@ export class BotRenderHelpers {
   }
 
   localizeProductName(value: string, language: BotLanguage = "vi") {
-    const normalized = String(value || "").replace(/\s+/g, " ").trim();
+    const normalized = String(value || "")
+      .replace(/\s+/g, " ")
+      .trim();
 
     if (!normalized) {
       return normalized;
@@ -231,9 +262,14 @@ export class BotRenderHelpers {
   }
 
   isLikelyVietnameseText(value: string) {
-    return /[ăâđêôơưáàảãạấầẩẫậắằẳẵặéèẻẽẹếềểễệíìỉĩịóòỏõọốồổỗộớờởỡợúùủũụứừửữựýỳỷỹỵ]/i.test(
-      value,
-    ) || /\b(khong|không|san pham|sản phẩm|vui long|vui lòng|so du|số dư|nap|nạp|don hang|đơn hàng)\b/i.test(value);
+    return (
+      /[ăâđêôơưáàảãạấầẩẫậắằẳẵặéèẻẽẹếềểễệíìỉĩịóòỏõọốồổỗộớờởỡợúùủũụứừửữựýỳỷỹỵ]/i.test(
+        value,
+      ) ||
+      /\b(khong|không|san pham|sản phẩm|vui long|vui lòng|so du|số dư|nap|nạp|don hang|đơn hàng)\b/i.test(
+        value,
+      )
+    );
   }
 
   localizeBotErrorMessage(
@@ -258,8 +294,11 @@ export class BotRenderHelpers {
       return fallback;
     }
 
-    const normalized = this.normalizeTranslationSource(rawMessage).toLowerCase();
-    const onlyLeftMatch = normalized.match(/only\s+(\d+)\s+item(?:\(s\))?\s+left\s+in\s+stock/);
+    const normalized =
+      this.normalizeTranslationSource(rawMessage).toLowerCase();
+    const onlyLeftMatch = normalized.match(
+      /only\s+(\d+)\s+item(?:\(s\))?\s+left\s+in\s+stock/,
+    );
 
     if (onlyLeftMatch) {
       return language === "en"
@@ -274,11 +313,19 @@ export class BotRenderHelpers {
     }
 
     if (/product not found/.test(normalized)) {
-      return language === "en" ? "Product not found." : language === "th" ? "ไม่พบสินค้า" : "Không tìm thấy sản phẩm.";
+      return language === "en"
+        ? "Product not found."
+        : language === "th"
+          ? "ไม่พบสินค้า"
+          : "Không tìm thấy sản phẩm.";
     }
 
     if (/san pham.*het hang|product is out of stock/.test(normalized)) {
-      return language === "en" ? "This product is out of stock." : language === "th" ? "สินค้าหมดสต็อก" : "Sản phẩm đã hết hàng.";
+      return language === "en"
+        ? "This product is out of stock."
+        : language === "th"
+          ? "สินค้าหมดสต็อก"
+          : "Sản phẩm đã hết hàng.";
     }
 
     if (/khong du ton kho|does not have enough stock/.test(normalized)) {
@@ -287,7 +334,11 @@ export class BotRenderHelpers {
         : "Sản phẩm hiện không đủ tồn kho để tạo đơn.";
     }
 
-    if (/quantity must be a positive integer|so luong.*so nguyen duong/.test(normalized)) {
+    if (
+      /quantity must be a positive integer|so luong.*so nguyen duong/.test(
+        normalized,
+      )
+    ) {
       return language === "en"
         ? "Quantity must be a positive integer."
         : "Số lượng phải là số nguyên dương.";
@@ -306,16 +357,28 @@ export class BotRenderHelpers {
     }
 
     if (/shop not found/.test(normalized)) {
-      return language === "en" ? "Shop not found." : language === "th" ? "ไม่พบร้านค้า" : "Không tìm thấy shop.";
+      return language === "en"
+        ? "Shop not found."
+        : language === "th"
+          ? "ไม่พบร้านค้า"
+          : "Không tìm thấy shop.";
     }
 
-    if (/so tien nap.*1000d|top-up amount must be an integer from 1,000 vnd/.test(normalized)) {
+    if (
+      /so tien nap.*1000d|top-up amount must be an integer from 1,000 vnd/.test(
+        normalized,
+      )
+    ) {
       return language === "en"
         ? "Top-up amount must be an integer from 1,000 VND."
         : "Số tiền nạp phải là số nguyên từ 1.000đ trở lên.";
     }
 
-    if (/shop seller hien khong du so du vi nguon|source wallet.*not have enough balance/.test(normalized)) {
+    if (
+      /shop seller hien khong du so du vi nguon|source wallet.*not have enough balance/.test(
+        normalized,
+      )
+    ) {
       return language === "en"
         ? "The seller's source wallet does not have enough balance to process this order right now. Please contact support."
         : "Shop seller hiện không đủ số dư ví nguồn để xử lý đơn này. Vui lòng liên hệ hỗ trợ.";
@@ -327,7 +390,11 @@ export class BotRenderHelpers {
         : "TX hash chưa đúng định dạng. Vui lòng dán đầy đủ mã giao dịch.";
     }
 
-    if (/could not find a confirmed usdt trc20 transfer|payment transaction not found/.test(normalized)) {
+    if (
+      /could not find a confirmed usdt trc20 transfer|payment transaction not found/.test(
+        normalized,
+      )
+    ) {
       return language === "en"
         ? "We could not find a confirmed USDT TRC20 transfer for this tx hash yet."
         : "Chưa tìm thấy giao dịch USDT TRC20 đã xác nhận cho tx hash này.";
@@ -339,7 +406,9 @@ export class BotRenderHelpers {
         : "TX hash này đã được dùng cho một đơn khác.";
     }
 
-    if (/does not transfer usdt to the configured trc20 address/.test(normalized)) {
+    if (
+      /does not transfer usdt to the configured trc20 address/.test(normalized)
+    ) {
       return language === "en"
         ? "This tx hash does not send USDT to the configured TRC20 address."
         : "TX hash này không chuyển USDT tới đúng địa chỉ TRC20 đã cấu hình.";
@@ -357,7 +426,11 @@ export class BotRenderHelpers {
         : "Giao dịch này chưa đủ xác nhận. Chờ thêm một chút rồi gửi lại nhé.";
     }
 
-    if (/this order has already been confirmed with a different tx hash/.test(normalized)) {
+    if (
+      /this order has already been confirmed with a different tx hash/.test(
+        normalized,
+      )
+    ) {
       return language === "en"
         ? "This order was already confirmed with a different tx hash."
         : "Đơn này đã được xác nhận bằng một tx hash khác.";
@@ -412,11 +485,17 @@ export class BotRenderHelpers {
     return "🛍️";
   }
 
-  resolveCustomEmojiId(displayName: string, sourceName?: string | null): { char: string; id: string } | null {
+  resolveCustomEmojiId(
+    displayName: string,
+    sourceName?: string | null,
+  ): { char: string; id: string } | null {
     const normalized = `${displayName || ""} ${sourceName || ""}`.toLowerCase();
-    if (/capcut|capcat/.test(normalized)) return { char: "📱", id: "5364339557712020484" };
-    if (/\bveo\b/.test(normalized)) return { char: "😭", id: "6178962311072456422" };
-    if (/chatgpt|gpt/.test(normalized)) return { char: "😺", id: "5796185041717433060" };
+    if (/capcut|capcat/.test(normalized))
+      return { char: "📱", id: "5364339557712020484" };
+    if (/\bveo\b/.test(normalized))
+      return { char: "😭", id: "6178962311072456422" };
+    if (/chatgpt|gpt/.test(normalized))
+      return { char: "😺", id: "5796185041717433060" };
     return null;
   }
 
@@ -451,35 +530,166 @@ export class BotRenderHelpers {
       | "txHash",
     language: BotLanguage,
   ) {
-    const labels: Record<string, { vi: string; en: string; th: string }> = {
-      products:     { vi: "🛍️ Xem sản phẩm",                 en: "🛍️ Products",               th: "🛍️ ดูสินค้า" },
-      productsShort:{ vi: "🛍️ Sản phẩm",                     en: "🛍️ Products",               th: "🛍️ สินค้า" },
-      guide:        { vi: "📘 Cách mua",                      en: "📘 How to buy",              th: "📘 วิธีซื้อ" },
-      history:      { vi: "📜 Lịch sử mua",                   en: "📜 Orders",                  th: "📜 ประวัติคำสั่งซื้อ" },
-      wallet:       { vi: "💳 Ví",                            en: "💳 Wallet",                  th: "💳 กระเป๋าเงิน" },
-      support:      { vi: "💬 Liên hệ hỗ trợ",                en: "💬 Support",                 th: "💬 ติดต่อฝ่ายช่วยเหลือ" },
-      supportShort: { vi: "💬 Hỗ trợ",                        en: "💬 Support",                 th: "💬 ช่วยเหลือ" },
-      warranty:     { vi: "🛡️ Bảo hành",                      en: "🛡️ Warranty",                th: "🛡️ การรับประกัน" },
-      language:     { vi: "🌐 Ngôn ngữ",                      en: "🌐 Language",                th: "🌐 ภาษา" },
-      home:         { vi: "🏠 Trang chủ",                     en: "🏠 Home",                    th: "🏠 หน้าหลัก" },
-      affiliate:    { vi: "🤝 Affiliate",                     en: "🤝 Affiliate",               th: "🤝 แนะนำเพื่อน" },
-      apiKey:       { vi: "🔑 API Key",                       en: "🔑 API Key",                 th: "🔑 API Key" },
-      viewAll:      { vi: "⬅️ Xem tất cả",                    en: "⬅️ All products",            th: "⬅️ สินค้าทั้งหมด" },
-      buyOther:     { vi: "⬅️ Chọn sản phẩm khác",            en: "⬅️ Choose another product",  th: "⬅️ เลือกสินค้าอื่น" },
-      payWallet:    { vi: "💰 Thanh toán bằng ví",            en: "💰 Pay with Wallet",         th: "💰 ชำระด้วยกระเป๋าเงิน" },
-      payQR:        { vi: "💳 Thanh toán QR / Chuyển khoản",  en: "💳 Pay with QR / Bank",      th: "💳 ชำระด้วย QR / โอนเงิน" },
-      payBinance:   { vi: "🟡 Thanh toán Binance",            en: "🟡 Pay with Binance",        th: "🟡 ชำระด้วย Binance" },
-      payUsdt:      { vi: "Thanh toán USDT (TRC20)",          en: "Pay with USDT (TRC20)",      th: "ชำระด้วย USDT (TRC20)" },
-      paySol:       { vi: "Thanh toán USDT (Solana)",         en: "Pay with USDT (Solana)",     th: "ชำระด้วย USDT (Solana)" },
-      payTon:       { vi: "Thanh toán USDT (TON)",            en: "Pay with USDT (TON)",        th: "ชำระด้วย USDT (TON)" },
-      payPaypal:    { vi: "🅿️ Thanh toán PayPal",             en: "🅿️ Pay with PayPal",         th: "🅿️ ชำระด้วย PayPal" },
-      paid:         { vi: "✅ Tôi đã thanh toán",             en: "✅ I've paid",               th: "✅ ฉันชำระแล้ว" },
-      buyNow:       { vi: "🛒 Mua ngay",                    en: "🛒 Buy now",                  th: "🛒 ซื้อเลย" },
-      back:         { vi: "⬅️ Quay lại",                     en: "⬅️ Back",                     th: "⬅️ กลับ" },
-      contactAdmin: { vi: "💬 Liên hệ admin",                en: "💬 Contact admin",            th: "💬 ติดต่อแอดมิน" },
-      openCheckout: { vi: "💳 Mở trang thanh toán",          en: "💳 Open payment page",        th: "💳 เปิดหน้าชำระเงิน" },
-      retry:        { vi: "🔄 Thử lại",                      en: "🔄 Retry",                    th: "🔄 ลองใหม่" },
-      txHash:       { vi: "🧾 Gửi TX hash",                  en: "🧾 Send TX hash",             th: "🧾 ส่ง TX hash" },
+    const labels: Record<string, Partial<Record<BotLanguage, string>>> = {
+      products: {
+        vi: "🛍️ Xem sản phẩm",
+        en: "🛍️ Products",
+        th: "🛍️ ดูสินค้า",
+        zh: "🛍️ 查看商品",
+      },
+      productsShort: {
+        vi: "🛍️ Sản phẩm",
+        en: "🛍️ Products",
+        th: "🛍️ สินค้า",
+        zh: "🛍️ 商品",
+      },
+      guide: {
+        vi: "📘 Cách mua",
+        en: "📘 How to buy",
+        th: "📘 วิธีซื้อ",
+        zh: "📘 购买指南",
+      },
+      history: {
+        vi: "📜 Lịch sử mua",
+        en: "📜 Orders",
+        th: "📜 ประวัติคำสั่งซื้อ",
+        zh: "📜 我的订单",
+      },
+      wallet: {
+        vi: "💳 Ví",
+        en: "💳 Wallet",
+        th: "💳 กระเป๋าเงิน",
+        zh: "💳 钱包",
+      },
+      support: {
+        vi: "💬 Liên hệ hỗ trợ",
+        en: "💬 Support",
+        th: "💬 ติดต่อฝ่ายช่วยเหลือ",
+        zh: "💬 联系客服",
+      },
+      supportShort: {
+        vi: "💬 Hỗ trợ",
+        en: "💬 Support",
+        th: "💬 ช่วยเหลือ",
+        zh: "💬 客服",
+      },
+      warranty: {
+        vi: "🛡️ Bảo hành",
+        en: "🛡️ Warranty",
+        th: "🛡️ การรับประกัน",
+        zh: "🛡️ 售后保障",
+      },
+      language: {
+        vi: "🌐 Ngôn ngữ",
+        en: "🌐 Language",
+        th: "🌐 ภาษา",
+        zh: "🌐 语言",
+      },
+      home: {
+        vi: "🏠 Trang chủ",
+        en: "🏠 Home",
+        th: "🏠 หน้าหลัก",
+        zh: "🏠 首页",
+      },
+      affiliate: {
+        vi: "🤝 Affiliate",
+        en: "🤝 Affiliate",
+        th: "🤝 แนะนำเพื่อน",
+        zh: "🤝 推广返佣",
+      },
+      apiKey: {
+        vi: "🔑 API Key",
+        en: "🔑 API Key",
+        th: "🔑 API Key",
+        zh: "🔑 API 密钥",
+      },
+      viewAll: {
+        vi: "⬅️ Xem tất cả",
+        en: "⬅️ All products",
+        th: "⬅️ สินค้าทั้งหมด",
+        zh: "⬅️ 全部商品",
+      },
+      buyOther: {
+        vi: "⬅️ Chọn sản phẩm khác",
+        en: "⬅️ Choose another product",
+        th: "⬅️ เลือกสินค้าอื่น",
+        zh: "⬅️ 选择其他商品",
+      },
+      payWallet: {
+        vi: "💰 Thanh toán bằng ví",
+        en: "💰 Pay with Wallet",
+        th: "💰 ชำระด้วยกระเป๋าเงิน",
+        zh: "💰 钱包支付",
+      },
+      payQR: {
+        vi: "💳 Thanh toán QR / Chuyển khoản",
+        en: "💳 Pay with QR / Bank",
+        th: "💳 ชำระด้วย QR / โอนเงิน",
+        zh: "💳 二维码 / 银行转账",
+      },
+      payBinance: {
+        vi: "🟡 Thanh toán Binance",
+        en: "🟡 Pay with Binance",
+        th: "🟡 ชำระด้วย Binance",
+        zh: "🟡 Binance 支付",
+      },
+      payUsdt: {
+        vi: "Thanh toán USDT (TRC20)",
+        en: "Pay with USDT (TRC20)",
+        th: "ชำระด้วย USDT (TRC20)",
+      },
+      paySol: {
+        vi: "Thanh toán USDT (Solana)",
+        en: "Pay with USDT (Solana)",
+        th: "ชำระด้วย USDT (Solana)",
+      },
+      payTon: {
+        vi: "Thanh toán USDT (TON)",
+        en: "Pay with USDT (TON)",
+        th: "ชำระด้วย USDT (TON)",
+      },
+      payPaypal: {
+        vi: "🅿️ Thanh toán PayPal",
+        en: "🅿️ Pay with PayPal",
+        th: "🅿️ ชำระด้วย PayPal",
+      },
+      paid: {
+        vi: "✅ Tôi đã thanh toán",
+        en: "✅ I've paid",
+        th: "✅ ฉันชำระแล้ว",
+        zh: "✅ 我已付款",
+      },
+      buyNow: {
+        vi: "🛒 Mua ngay",
+        en: "🛒 Buy now",
+        th: "🛒 ซื้อเลย",
+        zh: "🛒 立即购买",
+      },
+      back: { vi: "⬅️ Quay lại", en: "⬅️ Back", th: "⬅️ กลับ", zh: "⬅️ 返回" },
+      contactAdmin: {
+        vi: "💬 Liên hệ admin",
+        en: "💬 Contact admin",
+        th: "💬 ติดต่อแอดมิน",
+        zh: "💬 联系管理员",
+      },
+      openCheckout: {
+        vi: "💳 Mở trang thanh toán",
+        en: "💳 Open payment page",
+        th: "💳 เปิดหน้าชำระเงิน",
+        zh: "💳 打开支付页面",
+      },
+      retry: {
+        vi: "🔄 Thử lại",
+        en: "🔄 Retry",
+        th: "🔄 ลองใหม่",
+        zh: "🔄 重试",
+      },
+      txHash: {
+        vi: "🧾 Gửi TX hash",
+        en: "🧾 Send TX hash",
+        th: "🧾 ส่ง TX hash",
+        zh: "🧾 提交交易哈希",
+      },
     };
 
     return labels[key]?.[language] ?? labels[key]?.["en"] ?? key;
@@ -501,7 +711,9 @@ export class BotRenderHelpers {
         note ? "" : null,
         supportTelegram ? `Telegram: ${supportTelegram}` : null,
         supportZalo ? `Zalo: ${supportZalo}` : null,
-        !supportTelegram && !supportZalo ? "Please reply right here in this chat — the shop will assist you." : null,
+        !supportTelegram && !supportZalo
+          ? "Please reply right here in this chat — the shop will assist you."
+          : null,
         "",
         "When you need help, please include your order code so support can check faster.",
       ]
@@ -517,9 +729,29 @@ export class BotRenderHelpers {
         note ? "" : null,
         supportTelegram ? `Telegram: ${supportTelegram}` : null,
         supportZalo ? `Zalo: ${supportZalo}` : null,
-        !supportTelegram && !supportZalo ? "กรุณาตอบกลับในแชทนี้ ทางร้านจะช่วยเหลือคุณ" : null,
+        !supportTelegram && !supportZalo
+          ? "กรุณาตอบกลับในแชทนี้ ทางร้านจะช่วยเหลือคุณ"
+          : null,
         "",
         "เมื่อต้องการความช่วยเหลือ กรุณาแนบรหัสคำสั่งซื้อเพื่อให้ทีมงานตรวจสอบได้รวดเร็วขึ้น",
+      ]
+        .filter((l) => l !== null)
+        .join("\n");
+    }
+
+    if (language === "zh") {
+      return [
+        `💬 客服 | ${shopName}`,
+        "",
+        note ? note : null,
+        note ? "" : null,
+        supportTelegram ? `Telegram: ${supportTelegram}` : null,
+        supportZalo ? `Zalo: ${supportZalo}` : null,
+        !supportTelegram && !supportZalo
+          ? "请直接在此聊天中回复，商家会为您提供帮助。"
+          : null,
+        "",
+        "需要帮助时，请附上订单号，以便客服更快处理。",
       ]
         .filter((l) => l !== null)
         .join("\n");
@@ -532,7 +764,9 @@ export class BotRenderHelpers {
       note ? "" : null,
       supportTelegram ? `Telegram: ${supportTelegram}` : null,
       supportZalo ? `Zalo: ${supportZalo}` : null,
-      !supportTelegram && !supportZalo ? "Bạn cứ nhắn ngay trong khung chat này — shop sẽ hỗ trợ bạn." : null,
+      !supportTelegram && !supportZalo
+        ? "Bạn cứ nhắn ngay trong khung chat này — shop sẽ hỗ trợ bạn."
+        : null,
       "",
       "Khi cần hỗ trợ, vui lòng gửi kèm mã đơn hàng để được xử lý nhanh hơn.",
     ]
@@ -555,16 +789,33 @@ export class BotRenderHelpers {
     const title = icon ? `${icon} <b>${safeName}</b>` : `<b>${safeName}</b>`;
 
     if (language === "en") {
-      const footer = footerOverride != null ? this.escapeHtml(footerOverride) : "Choose a product below to start ↘️";
+      const footer =
+        footerOverride != null
+          ? this.escapeHtml(footerOverride)
+          : "Choose a product below to start ↘️";
       return [title, safeTagline, ...(footer ? ["", footer] : [])].join("\n");
     }
 
     if (language === "th") {
-      const footer = footerOverride != null ? this.escapeHtml(footerOverride) : "เลือกสินค้าด้านล่างเพื่อเริ่มต้น ↘️";
+      const footer =
+        footerOverride != null
+          ? this.escapeHtml(footerOverride)
+          : "เลือกสินค้าด้านล่างเพื่อเริ่มต้น ↘️";
       return [title, safeTagline, ...(footer ? ["", footer] : [])].join("\n");
     }
 
-    const footer = footerOverride != null ? this.escapeHtml(footerOverride) : "Chọn sản phẩm bên dưới để bắt đầu nhé ↘️";
+    if (language === "zh") {
+      const footer =
+        footerOverride != null
+          ? this.escapeHtml(footerOverride)
+          : "请选择下方商品开始购买 ↘️";
+      return [title, safeTagline, ...(footer ? ["", footer] : [])].join("\n");
+    }
+
+    const footer =
+      footerOverride != null
+        ? this.escapeHtml(footerOverride)
+        : "Chọn sản phẩm bên dưới để bắt đầu nhé ↘️";
     return [title, safeTagline, ...(footer ? ["", footer] : [])].join("\n");
   }
 
@@ -592,6 +843,19 @@ export class BotRenderHelpers {
         "4. เลือกวิธีชำระเงิน",
         "5. สำหรับ USDT TRC20 ให้โอนไปยังที่อยู่ที่แสดงแล้วส่ง tx hash",
         "6. การชำระเงินที่ยืนยันอัตโนมัติจะจัดส่งทันทีหลังยืนยัน",
+      ].join("\n");
+    }
+
+    if (language === "zh") {
+      return [
+        `📘 购买指南 | ${shopName}`,
+        "",
+        "1. 打开商品列表。",
+        "2. 选择所需套餐。",
+        "3. 回复购买数量。",
+        "4. 选择付款方式。",
+        "5. 使用 USDT TRC20 时，请转账到显示的地址并发送交易哈希。",
+        "6. 自动验证付款后，系统会立即发货。",
       ].join("\n");
     }
 

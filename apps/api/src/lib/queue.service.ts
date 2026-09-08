@@ -2,7 +2,7 @@ import { Inject, Injectable, OnModuleDestroy } from "@nestjs/common";
 import { Queue } from "bullmq";
 import IORedis from "ioredis";
 
-import { JOBS, QUEUES } from "@reseller/shared";
+import { JOBS, QUEUES, RESTOCK_NOTI_DEDUP_TTL_MS } from "@reseller/shared";
 
 import { AppConfigService } from "../config/app-config.service";
 import { CacheService } from "./cache.service";
@@ -11,9 +11,12 @@ import { CacheService } from "./cache.service";
 export class QueueService implements OnModuleDestroy {
   private readonly connection: IORedis;
   private readonly syncCatalogQueue: Queue;
+  private readonly restockNotificationQueue: Queue;
   private readonly purchaseQueue: Queue;
   private readonly broadcastQueue: Queue;
   private readonly accountCheckQueue: Queue;
+  private readonly userbotCampaignQueue: Queue;
+  private readonly orderTimeoutQueue: Queue;
 
   constructor(
     @Inject(AppConfigService)
@@ -28,6 +31,9 @@ export class QueueService implements OnModuleDestroy {
     this.syncCatalogQueue = new Queue(QUEUES.syncCatalog, {
       connection: this.connection,
     });
+    this.restockNotificationQueue = new Queue(QUEUES.restockNotification, {
+      connection: this.connection,
+    });
     this.purchaseQueue = new Queue(QUEUES.purchaseUpstream, {
       connection: this.connection,
     });
@@ -35,6 +41,12 @@ export class QueueService implements OnModuleDestroy {
       connection: this.connection,
     });
     this.accountCheckQueue = new Queue(QUEUES.accountCheck, {
+      connection: this.connection,
+    });
+    this.userbotCampaignQueue = new Queue(QUEUES.userbotCampaign, {
+      connection: this.connection,
+    });
+    this.orderTimeoutQueue = new Queue(QUEUES.orderTimeout, {
       connection: this.connection,
     });
   }
@@ -45,10 +57,49 @@ export class QueueService implements OnModuleDestroy {
       { shopId },
       {
         jobId: `sync-${shopId}-${Date.now()}`,
+        // Keep one waiting/active sync per shop. Unlike the old fixed-TTL Redis lock,
+        // this dedup key remains valid for the entire BullMQ job lifetime.
+        deduplication: {
+          id: shopId,
+        },
         removeOnComplete: 100,
         removeOnFail: 100,
       },
     );
+  }
+
+  async addRestockNotificationJobs(
+    shopId: string,
+    notifications: Array<{
+      sourceProductId: string;
+      displayName: string;
+      addedQuantity: number;
+      available: number;
+      price?: number | null;
+    }>,
+  ): Promise<number> {
+    let queued = 0;
+    for (const notification of notifications) {
+      if (!notification.sourceProductId || notification.addedQuantity <= 0) {
+        continue;
+      }
+      const job = await this.restockNotificationQueue.add(
+        JOBS.restockNotification,
+        { shopId, notification },
+        {
+          deduplication: {
+            id: `${shopId}:${notification.sourceProductId}:${notification.available}`,
+            ttl: RESTOCK_NOTI_DEDUP_TTL_MS,
+          },
+          attempts: 3,
+          backoff: { type: "exponential", delay: 2_000 },
+          removeOnComplete: { age: 60 * 60, count: 5_000 },
+          removeOnFail: { age: 24 * 60 * 60, count: 10_000 },
+        },
+      );
+      if (job) queued += 1;
+    }
+    return queued;
   }
 
   async addPurchaseJob(orderId: string) {
@@ -61,6 +112,26 @@ export class QueueService implements OnModuleDestroy {
         removeOnFail: 100,
       },
     );
+  }
+
+  async addOrderTimeoutJob(orderId: string, delayMs: number) {
+    return this.orderTimeoutQueue.add(
+      JOBS.orderTimeout,
+      { orderId },
+      {
+        jobId: `timeout-${orderId}`,
+        delay: delayMs,
+        removeOnComplete: 100,
+        removeOnFail: 100,
+      },
+    );
+  }
+
+  async removeOrderTimeoutJob(orderId: string) {
+    const job = await this.orderTimeoutQueue.getJob(`timeout-${orderId}`);
+    if (job) {
+      await job.remove().catch(() => undefined);
+    }
   }
 
   async addBroadcastJob(broadcastId: string) {
@@ -93,7 +164,9 @@ export class QueueService implements OnModuleDestroy {
     // remove it first; if one is still in flight (waiting/active/delayed), return it as-is
     // instead of enqueuing a duplicate.
     const jobId = `account-check-${payload.claimId}`;
-    const existing = await this.accountCheckQueue.getJob(jobId).catch(() => null);
+    const existing = await this.accountCheckQueue
+      .getJob(jobId)
+      .catch(() => null);
     if (existing) {
       const state = await existing.getState().catch(() => "unknown");
       if (state === "completed" || state === "failed") {
@@ -104,7 +177,8 @@ export class QueueService implements OnModuleDestroy {
         // will persist as autoCheckJobId). Flag it as pre-existing so the caller's hard-cap
         // defender does NOT remove a job it didn't add (which would cancel another caller's
         // legitimate in-flight check).
-        (existing as unknown as { __preExisting?: boolean }).__preExisting = true;
+        (existing as unknown as { __preExisting?: boolean }).__preExisting =
+          true;
         return existing;
       }
     }
@@ -142,7 +216,9 @@ export class QueueService implements OnModuleDestroy {
         waitingIds: waiting.map((j) => String(j.id)),
         activeIds: active.map((j) => String(j.id)),
         total:
-          Number(counts.waiting || 0) + Number(counts.delayed || 0) + Number(counts.active || 0),
+          Number(counts.waiting || 0) +
+          Number(counts.delayed || 0) +
+          Number(counts.active || 0),
       };
     });
     const jobIdStr = String(jobId);
@@ -172,8 +248,16 @@ export class QueueService implements OnModuleDestroy {
     }
   }
 
-  async getAccountCheckLoad(): Promise<{ waiting: number; active: number; delayed: number }> {
-    const counts = await this.accountCheckQueue.getJobCounts("waiting", "delayed", "active");
+  async getAccountCheckLoad(): Promise<{
+    waiting: number;
+    active: number;
+    delayed: number;
+  }> {
+    const counts = await this.accountCheckQueue.getJobCounts(
+      "waiting",
+      "delayed",
+      "active",
+    );
     return {
       waiting: Number(counts.waiting || 0),
       delayed: Number(counts.delayed || 0),
@@ -181,12 +265,29 @@ export class QueueService implements OnModuleDestroy {
     };
   }
 
+  async addUserbotCampaignJob(campaignId: string, delayMs = 0, customJobId?: string, runAt?: string) {
+    const jobId = customJobId || `userbot_campaign_${campaignId}_${Date.now()}`;
+    return this.userbotCampaignQueue.add(
+      JOBS.userbotCampaign,
+      { campaignId, runAt },
+      {
+        jobId,
+        delay: delayMs > 0 ? delayMs : undefined,
+        removeOnComplete: 100,
+        removeOnFail: 100,
+      },
+    );
+  }
+
   async onModuleDestroy() {
     await Promise.all([
       this.syncCatalogQueue.close(),
+      this.restockNotificationQueue.close(),
       this.purchaseQueue.close(),
       this.broadcastQueue.close(),
       this.accountCheckQueue.close(),
+      this.userbotCampaignQueue.close(),
+      this.orderTimeoutQueue.close(),
       this.connection.quit(),
     ]);
   }

@@ -23,6 +23,9 @@ fi
 echo "VITE_API_URL=$VITE_API_URL"
 npm run build
 
+echo '[3.5/4] Apply nginx config (validated with automatic rollback)...'
+bash scripts/apply-nginx-security.sh
+
 echo '[4/4] Restart PM2...'
 if pm2 describe reseller-api > /dev/null 2>&1; then
   pm2 restart ecosystem.config.cjs

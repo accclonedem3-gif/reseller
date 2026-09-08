@@ -1,0 +1,495 @@
+export type GuideCategory =
+  | "start"
+  | "bot"
+  | "products"
+  | "payments"
+  | "orders"
+  | "source"
+  | "growth"
+  | "troubleshooting";
+
+export type GuideVisualKind =
+  | "checklist"
+  | "botfather"
+  | "shop"
+  | "product"
+  | "inventory"
+  | "payment"
+  | "order"
+  | "archive"
+  | "source"
+  | "customer"
+  | "warranty"
+  | "analytics"
+  | "security";
+
+export type GuideArticle = {
+  slug: string;
+  title: string;
+  summary: string;
+  category: GuideCategory;
+  access: "Cơ bản" | "PRO";
+  minutes: number;
+  route?: string;
+  routeLabel?: string;
+  visual: GuideVisualKind;
+  outcome: string;
+  prerequisites: string[];
+  steps: Array<{
+    title: string;
+    description: string;
+    note?: string;
+  }>;
+  checks: string[];
+  errors: Array<{ title: string; solution: string }>;
+};
+
+export const GUIDE_CATEGORIES: Array<{
+  id: GuideCategory;
+  label: string;
+  description: string;
+}> = [
+  { id: "start", label: "Bắt đầu", description: "Thiết lập shop đầu tiên và mở bán" },
+  { id: "bot", label: "Bot & cửa hàng", description: "BotFather, token và giao diện bot" },
+  { id: "products", label: "Sản phẩm & kho", description: "Tạo sản phẩm, nhập kho và giao hàng" },
+  { id: "payments", label: "Thanh toán", description: "Ngân hàng, Binance, OKX và USDT" },
+  { id: "orders", label: "Đơn & khách hàng", description: "Theo dõi, xử lý và bảo hành" },
+  { id: "source", label: "Nguồn hàng PRO", description: "Kết nối nguồn và quản lý đại lý" },
+  { id: "growth", label: "Tăng trưởng", description: "Khuyến mãi, thông báo và báo cáo" },
+  { id: "troubleshooting", label: "Xử lý lỗi", description: "Kiểm tra nhanh các lỗi thường gặp" },
+];
+
+export const GUIDE_ARTICLES: GuideArticle[] = [
+  {
+    slug: "bat-dau-trong-10-phut",
+    title: "Bắt đầu bán hàng trong 10 phút",
+    summary: "Checklist ngắn nhất để tạo shop, kết nối bot, thêm hàng và chạy một đơn thử.",
+    category: "start",
+    access: "Cơ bản",
+    minutes: 10,
+    route: "/bot-config",
+    routeLabel: "Bắt đầu cấu hình bot",
+    visual: "checklist",
+    outcome: "Bot Telegram của bạn có thể hiển thị sản phẩm, nhận thanh toán và giao một đơn thử.",
+    prerequisites: ["Một tài khoản Telegram", "Quyền truy cập @BotFather", "Ít nhất một phương thức nhận tiền"],
+    steps: [
+      { title: "Hoàn thiện hồ sơ shop", description: "Vào Hồ sơ, nhập tên shop, mô tả ngắn và kênh hỗ trợ. Đây là thông tin khách nhìn thấy khi cần liên hệ." },
+      { title: "Tạo bot bằng BotFather", description: "Gửi /newbot cho @BotFather, đặt tên và username kết thúc bằng bot. Sao chép token được cấp.", note: "Không gửi Bot Token cho người khác và không chụp token vào ảnh hỗ trợ." },
+      { title: "Kết nối bot", description: "Mở Cấu hình bot, dán token rồi bấm kiểm tra kết nối. Hệ thống sẽ nhận username và cài webhook tự động." },
+      { title: "Bật một phương thức thanh toán", description: "Chọn ngân hàng hoặc USDT, điền đủ thông tin và dùng nút kiểm tra nếu phương thức có API." },
+      { title: "Tạo sản phẩm và nhập kho", description: "Tạo sản phẩm riêng, đặt giá bán rồi nhập ít nhất một tài khoản mẫu vào kho khả dụng." },
+      { title: "Chạy đơn thử", description: "Mở bot bằng tài khoản Telegram khác, mua sản phẩm và thanh toán số tiền chính xác. Kiểm tra đơn chuyển sang Đã giao." },
+    ],
+    checks: ["Bot trả lời lệnh /start", "Sản phẩm xuất hiện trên bot", "Đơn thử xuất hiện trong Nhật ký đơn hàng", "Nội dung giao đúng và tồn kho giảm"],
+    errors: [
+      { title: "Bot không phản hồi", solution: "Kiểm tra lại token, trạng thái webhook và chắc chắn bot chưa bị một hệ thống khác chiếm webhook." },
+      { title: "Không thấy sản phẩm", solution: "Kiểm tra sản phẩm đang bật, không ẩn, không lưu trữ và còn tồn kho." },
+    ],
+  },
+  {
+    slug: "tai-khoan-va-gia-han-pro",
+    title: "Tài khoản, bảo mật và gia hạn PRO",
+    summary: "Quản lý thông tin đăng nhập, ngày hết hạn và nâng cấp hoặc gia hạn dịch vụ.",
+    category: "start",
+    access: "Cơ bản",
+    minutes: 6,
+    route: "/pricing",
+    routeLabel: "Xem gói dịch vụ",
+    visual: "security",
+    outcome: "Tài khoản có thông tin khôi phục an toàn và gói dịch vụ được gia hạn đúng thời điểm.",
+    prerequisites: ["Đăng nhập đúng tài khoản chủ shop", "Có quyền truy cập email khôi phục"],
+    steps: [
+      { title: "Kiểm tra hồ sơ", description: "Mở Hồ sơ, xác nhận email khôi phục và thông tin chủ shop. Không dùng email tạm cho tài khoản vận hành chính." },
+      { title: "Đổi mật khẩu an toàn", description: "Dùng mật khẩu riêng, không trùng mật khẩu Telegram, email hoặc tài khoản nguồn." },
+      { title: "Kiểm tra gói hiện tại", description: "Xem loại gói, ngày bắt đầu, ngày hết hạn và các quyền đang được mở." },
+      { title: "Nâng cấp hoặc gia hạn", description: "Chọn chu kỳ phù hợp, kiểm tra số tiền rồi thanh toán. Nếu gói còn hạn, thời gian mới được cộng tiếp vào ngày hết hạn hiện tại." },
+      { title: "Xác nhận quyền", description: "Sau khi thanh toán, làm mới phiên và kiểm tra ngày hết hạn mới cùng các chức năng PRO." },
+    ],
+    checks: ["Email khôi phục nhận được thư", "Ngày hết hạn mới chính xác", "Không có hai giao dịch gia hạn trùng nhau"],
+    errors: [{ title: "Đã thanh toán nhưng gói chưa cập nhật", solution: "Kiểm tra trạng thái giao dịch và đúng tài khoản đã mua; gửi mã thanh toán cho hỗ trợ, không mua lại ngay." }],
+  },
+  {
+    slug: "tao-bot-telegram-botfather",
+    title: "Tạo bot Telegram bằng BotFather",
+    summary: "Hướng dẫn lấy Bot Token đúng cách và kết nối bot vào hệ thống.",
+    category: "bot",
+    access: "Cơ bản",
+    minutes: 5,
+    route: "/bot-config",
+    routeLabel: "Mở cấu hình bot",
+    visual: "botfather",
+    outcome: "Bot được hệ thống xác minh, cài webhook và sẵn sàng nhận lệnh /start.",
+    prerequisites: ["Ứng dụng Telegram", "Một username chưa được dùng cho bot"],
+    steps: [
+      { title: "Mở đúng BotFather", description: "Tìm tài khoản @BotFather có dấu xác minh màu xanh và bấm Start." },
+      { title: "Gửi lệnh /newbot", description: "Nhập tên hiển thị trước, sau đó nhập username duy nhất kết thúc bằng bot, ví dụ qkshop_support_bot." },
+      { title: "Sao chép Bot Token", description: "BotFather trả về chuỗi token. Chỉ sao chép token, không lấy đường link t.me làm token.", note: "Nếu token từng bị lộ, dùng /revoke để tạo token mới trước khi kết nối." },
+      { title: "Dán token vào web", description: "Tại Cấu hình bot, dán token và bấm Kết nối. Chờ thông báo xác minh thành công." },
+      { title: "Kiểm tra bot", description: "Bấm nút mở bot hoặc truy cập t.me/username_bot, sau đó gửi /start." },
+    ],
+    checks: ["Web hiển thị đúng username bot", "Trạng thái kết nối là hoạt động", "Lệnh /start trả về menu shop"],
+    errors: [
+      { title: "Token không hợp lệ", solution: "Xóa khoảng trắng ở đầu/cuối và lấy lại token mới trực tiếp từ BotFather." },
+      { title: "Webhook đang được dùng nơi khác", solution: "Ngắt bot khỏi hệ thống cũ rồi bấm kết nối lại để cài webhook mới." },
+    ],
+  },
+  {
+    slug: "cau-hinh-cua-hang-va-giao-dien-bot",
+    title: "Cấu hình cửa hàng và giao diện bot",
+    summary: "Thiết lập tên shop, hỗ trợ, lời chào, ngôn ngữ và menu khách hàng.",
+    category: "bot",
+    access: "Cơ bản",
+    minutes: 8,
+    route: "/bot-config",
+    routeLabel: "Tùy chỉnh bot",
+    visual: "shop",
+    outcome: "Bot hiển thị đúng thương hiệu, ngôn ngữ và thông tin liên hệ của shop.",
+    prerequisites: ["Bot đã kết nối thành công"],
+    steps: [
+      { title: "Nhập nhận diện shop", description: "Cập nhật tên, tagline, Telegram và Zalo hỗ trợ trong Hồ sơ." },
+      { title: "Chọn ngôn ngữ", description: "Bật các ngôn ngữ shop hỗ trợ. Kiểm tra riêng nội dung tiếng Việt, Anh hoặc Thái trước khi bán." },
+      { title: "Sửa lời chào", description: "Viết ngắn gọn shop bán gì, thời gian hỗ trợ và nút khách cần bấm để xem sản phẩm." },
+      { title: "Tùy chỉnh menu", description: "Đặt nhãn nút Sản phẩm, Đơn hàng, Ví và Hỗ trợ theo cách khách dễ hiểu nhất." },
+      { title: "Xem trước rồi lưu", description: "Dùng khu vực xem trước để kiểm tra xuống dòng, emoji và nội dung trước khi áp dụng." },
+    ],
+    checks: ["Tên shop đúng ở lời chào", "Nút menu không quá dài", "Thông tin hỗ trợ mở đúng tài khoản Telegram/Zalo"],
+    errors: [{ title: "Đã lưu nhưng bot vẫn hiện nội dung cũ", solution: "Gửi lại /start hoặc bấm Làm mới menu; Telegram có thể giữ tin nhắn cũ trong lịch sử chat." }],
+  },
+  {
+    slug: "cau-hinh-mini-app",
+    title: "Cấu hình Mini App cho bot",
+    summary: "Thiết lập màn hình mua hàng trong Telegram và kiểm tra trải nghiệm trên điện thoại.",
+    category: "bot",
+    access: "PRO",
+    minutes: 8,
+    route: "/mini-app/settings",
+    routeLabel: "Mở cài đặt Mini App",
+    visual: "shop",
+    outcome: "Khách mở được giao diện cửa hàng ngay trong Telegram với đúng thương hiệu và sản phẩm.",
+    prerequisites: ["Bot đã kết nối", "Có ít nhất một sản phẩm đang bán"],
+    steps: [
+      { title: "Mở cài đặt Mini App", description: "Chọn bố cục, thông tin thương hiệu và các khu vực muốn hiển thị cho khách." },
+      { title: "Thiết lập nút mở", description: "Đặt nhãn ngắn như Mở cửa hàng và gắn Mini App vào menu bot." },
+      { title: "Kiểm tra sản phẩm", description: "Xác nhận ảnh, giá, tồn kho và nút mua hiển thị tốt trên màn hình điện thoại." },
+      { title: "Thử bằng tài khoản khách", description: "Dùng một Telegram khác để kiểm tra đăng nhập, tạo đơn và quay lại bot sau thanh toán." },
+    ],
+    checks: ["Mini App mở trong Telegram", "Không tràn nội dung trên màn hình nhỏ", "Nút mua tạo đúng đơn"],
+    errors: [{ title: "Mini App mở trắng", solution: "Kiểm tra domain HTTPS, menu bot và phiên bản Telegram; đóng hẳn Telegram rồi mở lại sau khi cập nhật." }],
+  },
+  {
+    slug: "tao-san-pham-dau-tien",
+    title: "Tạo sản phẩm đầu tiên",
+    summary: "Chọn đúng kiểu giao hàng, đặt giá và cấu hình sản phẩm xuất hiện trên bot.",
+    category: "products",
+    access: "Cơ bản",
+    minutes: 8,
+    route: "/products",
+    routeLabel: "Mở quản lý sản phẩm",
+    visual: "product",
+    outcome: "Một sản phẩm có tên, giá, cách giao hàng và trạng thái bán hợp lệ.",
+    prerequisites: ["Đã xác định giá vốn và giá bán", "Biết sản phẩm giao tài khoản, thêm email hay xử lý thủ công"],
+    steps: [
+      { title: "Chọn Thêm sản phẩm", description: "Vào Sản phẩm và bấm nút thêm mới. Sản phẩm tự tạo sẽ có nhãn Sản phẩm riêng." },
+      { title: "Nhập tên và mô tả", description: "Tên cần ngắn, có gói và thời hạn. Mô tả ghi rõ hình thức giao, bảo hành và điều kiện sử dụng." },
+      { title: "Chọn kiểu giao", description: "Chọn tự giao từ kho, thêm email ADD_MAIL hoặc xử lý thủ công. Không nhập kho tài khoản cho sản phẩm ADD_MAIL." },
+      { title: "Đặt giá", description: "Nhập giá vốn để tính lợi nhuận và giá bán khách thanh toán. Nếu có CTV, thiết lập giá CTV riêng." },
+      { title: "Chọn danh mục và hình ảnh", description: "Gắn sản phẩm vào danh mục, chọn icon hoặc ảnh để khách dễ nhận diện trên bot." },
+      { title: "Lưu và kiểm tra", description: "Mở bot, vào danh mục tương ứng và kiểm tra tên, giá, mô tả trước khi nhập số lượng lớn." },
+    ],
+    checks: ["Giá bán lớn hơn hoặc bằng giá vốn", "Kiểu giao đúng nghiệp vụ", "Sản phẩm xuất hiện đúng danh mục"],
+    errors: [{ title: "Sản phẩm không hiện", solution: "Kiểm tra trạng thái Đang bán, Ẩn trên bot, Tạm dừng, Lưu trữ và số lượng còn lại." }],
+  },
+  {
+    slug: "san-pham-them-email-add-mail",
+    title: "Sản phẩm thêm email ADD_MAIL",
+    summary: "Thu email khách theo số lượng và xử lý đơn Family/Team mà không giao nhầm tài khoản kho.",
+    category: "products",
+    access: "Cơ bản",
+    minutes: 6,
+    route: "/products",
+    routeLabel: "Tạo sản phẩm ADD_MAIL",
+    visual: "product",
+    outcome: "Mỗi đơn thu đủ email hợp lệ và chuyển tới hàng chờ xử lý thủ công đúng số lượng.",
+    prerequisites: ["Sản phẩm được cấp bằng cách mời email", "Biết số email tối đa mỗi đơn"],
+    steps: [
+      { title: "Chọn kiểu ADD_MAIL", description: "Khi tạo hoặc sửa sản phẩm, chọn hình thức giao Thêm email. Hệ thống sẽ tự đặt loại tài khoản phù hợp." },
+      { title: "Không nhập kho tài khoản", description: "ADD_MAIL không dùng nội dung giao tự động hoặc tài khoản shared; người bán xử lý email khách sau thanh toán." },
+      { title: "Viết hướng dẫn nhập email", description: "Nêu rõ mỗi sản phẩm cần một email duy nhất và email chưa nằm trong Family/Team khác nếu dịch vụ yêu cầu." },
+      { title: "Kiểm tra đơn thử", description: "Mua số lượng hai phải yêu cầu đúng hai email hợp lệ, không trùng nhau." },
+      { title: "Hoàn tất đơn", description: "Sau khi thêm đủ email vào dịch vụ, xác nhận đã giao để khách nhận thông báo hoàn thành." },
+    ],
+    checks: ["Số email bằng số lượng mua", "Không chấp nhận email trùng", "Đơn xuất hiện trong mục Chờ xử lý"],
+    errors: [{ title: "Khách nhập thiếu email", solution: "Đơn không được tạo cho tới khi số email hợp lệ bằng số lượng; hướng dẫn khách nhập mỗi email một dòng." }],
+  },
+  {
+    slug: "nhap-kho-va-giao-tu-dong",
+    title: "Nhập kho và giao hàng tự động",
+    summary: "Chuẩn hóa file tài khoản, quản lý lô và kiểm tra nội dung khách nhận.",
+    category: "products",
+    access: "Cơ bản",
+    minutes: 7,
+    route: "/products",
+    routeLabel: "Mở kho sản phẩm",
+    visual: "inventory",
+    outcome: "Kho có tài khoản hợp lệ và worker có thể cấp đúng một tài khoản cho mỗi đơn.",
+    prerequisites: ["Sản phẩm riêng dùng chế độ tự giao", "File TXT, mỗi tài khoản nằm trên một dòng hoặc một block đúng định dạng"],
+    steps: [
+      { title: "Mở Kho tài khoản", description: "Tại hàng sản phẩm, bấm dấu ba chấm rồi chọn Kho tài khoản." },
+      { title: "Tạo lô hàng", description: "Đặt tên lô, giá vốn và ngày hết hạn nếu có. Lô giúp truy ngược tài khoản được nhập từ đợt nào." },
+      { title: "Dán hoặc tải file", description: "Mỗi đơn vị giao phải tách rõ ràng. Kiểm tra trước rằng file không có dòng trống hoặc tài khoản trùng." },
+      { title: "Xác nhận tồn kho", description: "Sau khi nhập, số Chưa bán phải tăng đúng bằng lượng tài khoản hợp lệ." },
+      { title: "Chạy một đơn thử", description: "Mua một sản phẩm, kiểm tra đúng nội dung được giao và tài khoản đó chuyển sang trạng thái Đã giao." },
+    ],
+    checks: ["Không có tài khoản trùng", "Số lượng lô bằng số dòng hợp lệ", "Một tài khoản không thể cấp cho hai đơn"],
+    errors: [
+      { title: "Nhập kho nhưng số lượng không tăng", solution: "Kiểm tra định dạng, dòng trống và sản phẩm có đúng là sản phẩm riêng tự giao hay không." },
+      { title: "Nội dung bị cắt sai", solution: "Dùng định dạng block thống nhất; chạy đơn thử trước khi nhập toàn bộ kho." },
+    ],
+  },
+  {
+    slug: "tao-khuyen-mai-san-pham",
+    title: "Tạo khuyến mãi cho sản phẩm",
+    summary: "Thiết lập mua tặng, giảm phần trăm hoặc giá theo số lượng mà không bán dưới giá mong muốn.",
+    category: "growth",
+    access: "Cơ bản",
+    minutes: 7,
+    route: "/products",
+    routeLabel: "Mở khuyến mãi sản phẩm",
+    visual: "product",
+    outcome: "Khách nhìn thấy ưu đãi và tổng tiền được tính đúng tại mọi ngưỡng số lượng.",
+    prerequisites: ["Sản phẩm đã có giá bán", "Đã xác định giá tối thiểu có thể bán"],
+    steps: [
+      { title: "Mở Khuyến mãi", description: "Tại menu ba chấm của sản phẩm, chọn Khuyến mãi và chọn đúng loại chương trình." },
+      { title: "Nhập điều kiện", description: "Thiết lập số lượng mua, số lượng tặng, phần trăm giảm hoặc từng mốc giá." },
+      { title: "Đặt thời gian", description: "Chọn giờ bắt đầu và kết thúc; kiểm tra múi giờ hiển thị là giờ vận hành của shop." },
+      { title: "Thử các mốc biên", description: "Tạo thử đơn dưới ngưỡng, đúng ngưỡng và trên ngưỡng để kiểm tra công thức." },
+      { title: "Theo dõi lợi nhuận", description: "So sánh tổng tiền sau giảm với giá vốn của toàn bộ số lượng thực giao, kể cả hàng tặng." },
+    ],
+    checks: ["Giá đúng ở từng ngưỡng", "Số hàng tặng được trừ kho", "Khuyến mãi tự ngừng đúng giờ"],
+    errors: [{ title: "Giá cuối thấp hơn giá vốn", solution: "Tắt chương trình, tính lại vốn trên cả hàng tặng rồi chỉnh ngưỡng hoặc mức giảm trước khi bật lại." }],
+  },
+  {
+    slug: "cau-hinh-thanh-toan",
+    title: "Cấu hình và kiểm tra thanh toán",
+    summary: "Thiết lập ngân hàng, Binance, OKX hoặc USDT và tránh xác nhận nhầm giao dịch.",
+    category: "payments",
+    access: "Cơ bản",
+    minutes: 12,
+    route: "/bot-config",
+    routeLabel: "Mở cấu hình thanh toán",
+    visual: "payment",
+    outcome: "Ít nhất một phương thức thanh toán hoạt động và có thể tự xác nhận đơn thử.",
+    prerequisites: ["Tài khoản hoặc ví nhận tiền thuộc quyền kiểm soát của bạn", "API key chỉ có quyền cần thiết"],
+    steps: [
+      { title: "Chọn phương thức nhận tiền", description: "Dùng QR ngân hàng cho VND; Binance/OKX hoặc đúng mạng TRC20, BEP20, Solana, TON cho USDT." },
+      { title: "Nhập thông tin", description: "Điền UID, địa chỉ ví hoặc API credentials theo đúng nhãn. Không dùng địa chỉ của mạng khác." },
+      { title: "Bật tự động xác nhận", description: "Chỉ bật sau khi kết nối đã được xác minh. Với API, ưu tiên key chỉ đọc lịch sử giao dịch." },
+      { title: "Tạo giao dịch thử", description: "Tạo một đơn giá nhỏ và chuyển đúng số tiền hiển thị. Hệ thống dùng số tiền riêng để ghép giao dịch với đơn." },
+      { title: "Kiểm tra kết quả", description: "Đơn phải chuyển từ Chờ thanh toán sang Đã thanh toán rồi Đã giao mà không cần bấm xác nhận thủ công." },
+    ],
+    checks: ["Đúng tài khoản nhận", "Đúng mạng blockchain", "Đúng số tiền đến phần thập phân", "Đơn tự chuyển trạng thái"],
+    errors: [
+      { title: "Payment amount mismatch", solution: "Khách đã chuyển khác số tiền riêng của đơn. Kiểm tra lịch sử nhận tiền và xử lý theo mã đơn, không xác nhận mù." },
+      { title: "Không thấy giao dịch", solution: "Kiểm tra mạng, địa chỉ nhận, thời gian xác nhận blockchain và trạng thái API key." },
+    ],
+  },
+  {
+    slug: "gui-thong-bao-broadcast",
+    title: "Gửi thông báo broadcast trên bot",
+    summary: "Soạn thông báo có mục tiêu, xem trước và gửi an toàn tới người dùng bot.",
+    category: "growth",
+    access: "Cơ bản",
+    minutes: 5,
+    route: "/broadcasts",
+    routeLabel: "Mở thông báo bot",
+    visual: "shop",
+    outcome: "Thông báo được gửi đúng nội dung, có nút hành động và không làm phiền khách quá mức.",
+    prerequisites: ["Bot đang hoạt động", "Có nội dung và đường dẫn đích rõ ràng"],
+    steps: [
+      { title: "Chọn đối tượng", description: "Xác định gửi toàn bộ hay nhóm khách phù hợp. Không gửi ưu đãi không liên quan cho mọi người dùng." },
+      { title: "Soạn nội dung", description: "Đặt thông tin quan trọng ở hai dòng đầu: sản phẩm, ưu đãi và thời gian kết thúc." },
+      { title: "Thêm nút hành động", description: "Dùng một nút rõ ràng như Mua ngay, Xem sản phẩm hoặc Liên hệ hỗ trợ." },
+      { title: "Gửi thử", description: "Xem trước xuống dòng, emoji, ảnh và đường dẫn bằng tài khoản quản trị trước khi gửi hàng loạt." },
+      { title: "Theo dõi kết quả", description: "Kiểm tra số gửi thành công/thất bại và không bấm gửi lại toàn bộ chỉ vì một số tài khoản đã chặn bot." },
+    ],
+    checks: ["Nút mở đúng trang", "Không lộ thông tin nội bộ", "Nội dung hiển thị tốt trên điện thoại"],
+    errors: [{ title: "Một số khách không nhận được", solution: "Khách có thể đã chặn hoặc chưa từng Start bot; đây không phải lý do gửi lại cho toàn bộ danh sách." }],
+  },
+  {
+    slug: "chuong-trinh-affiliate",
+    title: "Chương trình giới thiệu và hoa hồng",
+    summary: "Lấy link giới thiệu, theo dõi người được mời và hiểu điều kiện ghi nhận hoa hồng.",
+    category: "growth",
+    access: "Cơ bản",
+    minutes: 6,
+    route: "/affiliate",
+    routeLabel: "Mở chương trình Affiliate",
+    visual: "customer",
+    outcome: "Link giới thiệu được chia sẻ đúng và hoa hồng có thể truy ngược tới giao dịch hợp lệ.",
+    prerequisites: ["Tài khoản đang hoạt động", "Đọc chính sách hoa hồng hiện hành"],
+    steps: [
+      { title: "Sao chép link cá nhân", description: "Mở Affiliate và dùng đúng link/mã của tài khoản. Không tự sửa phần mã giới thiệu trong URL." },
+      { title: "Gửi cho người mới", description: "Người được mời phải mở link trước khi đăng ký để hệ thống ghi nhận quan hệ giới thiệu." },
+      { title: "Theo dõi trạng thái", description: "Xem số người đăng ký, giao dịch đủ điều kiện và hoa hồng đang chờ hoặc đã ghi nhận." },
+      { title: "Kiểm tra ví hoa hồng", description: "Đối chiếu từng biến động với người được giới thiệu và giao dịch tương ứng." },
+      { title: "Yêu cầu rút", description: "Chỉ tạo yêu cầu khi đạt số dư tối thiểu và thông tin nhận tiền đã được kiểm tra." },
+    ],
+    checks: ["Mã giới thiệu đúng", "Người mới chưa có tài khoản trước đó", "Hoa hồng vào đúng ví"],
+    errors: [{ title: "Không ghi nhận người được mời", solution: "Kiểm tra người đó có mở đúng link trước khi đăng ký và chưa từng tồn tại tài khoản trên hệ thống." }],
+  },
+  {
+    slug: "theo-doi-va-xu-ly-don-hang",
+    title: "Theo dõi và xử lý đơn hàng",
+    summary: "Hiểu trạng thái đơn, xử lý đơn treo và kiểm tra lịch sử thanh toán/giao hàng.",
+    category: "orders",
+    access: "Cơ bản",
+    minutes: 8,
+    route: "/orders",
+    routeLabel: "Mở nhật ký đơn hàng",
+    visual: "order",
+    outcome: "Bạn xác định được đơn đang kẹt ở thanh toán, mua nguồn hay giao hàng và xử lý đúng bước.",
+    prerequisites: ["Có mã đơn hoặc thông tin khách hàng"],
+    steps: [
+      { title: "Tìm đúng đơn", description: "Tìm theo mã đơn, username, Telegram ID hoặc tên sản phẩm. Không xử lý chỉ dựa trên ảnh chụp của khách." },
+      { title: "Đọc trạng thái", description: "Chờ thanh toán nghĩa là chưa ghi nhận tiền; Đã thanh toán nghĩa là đang chờ xử lý; Đã giao nghĩa là hoàn tất." },
+      { title: "Mở chi tiết", description: "Kiểm tra payment provider, số tiền, transaction ID, lịch sử event và nội dung giao hàng." },
+      { title: "Xử lý đơn lỗi", description: "Xác định còn hàng hay không. Chỉ chạy lại khi thao tác mua nguồn/giao hàng có tính idempotent để tránh giao hai lần." },
+      { title: "Liên hệ khách", description: "Gửi mã đơn, trạng thái hiện tại và hướng xử lý rõ ràng; không gửi token hoặc dữ liệu của khách khác." },
+    ],
+    checks: ["Mã giao dịch chưa được dùng cho đơn khác", "Sản phẩm còn hàng trước khi chạy lại", "Khách nhận đúng số lượng"],
+    errors: [{ title: "Khách đã chuyển nhưng đơn còn chờ", solution: "Đối chiếu đúng provider, số tiền và thời gian; nếu lệch tiền, xử lý theo giao dịch thực tế thay vì bấm xác nhận tùy ý." }],
+  },
+  {
+    slug: "luu-tru-va-khoi-phuc-san-pham",
+    title: "Lưu trữ và khôi phục sản phẩm",
+    summary: "Ẩn sản phẩm khỏi bảng bán và bot nhưng vẫn giữ nguyên lịch sử đơn hàng.",
+    category: "products",
+    access: "Cơ bản",
+    minutes: 3,
+    route: "/products",
+    routeLabel: "Mở danh sách sản phẩm",
+    visual: "archive",
+    outcome: "Sản phẩm ngừng bán và nằm trong mục Đã lưu trữ để có thể khôi phục sau này.",
+    prerequisites: ["Quyền quản lý sản phẩm"],
+    steps: [
+      { title: "Mở menu hành động", description: "Tại hàng sản phẩm, bấm dấu ba chấm ở cột Hành động." },
+      { title: "Chọn Lưu trữ", description: "Bấm dòng Lưu trữ màu đỏ và xác nhận. Sản phẩm sẽ biến khỏi các tab đang bán." },
+      { title: "Kiểm tra trên bot", description: "Sản phẩm lưu trữ không còn hiển thị và nút mua cũ cũng không thể tạo đơn mới." },
+      { title: "Khôi phục khi cần", description: "Mở tab Đã lưu trữ, bấm ba chấm rồi chọn Khôi phục." },
+    ],
+    checks: ["Số lượng ở tab Đã lưu trữ tăng", "Sản phẩm không còn trên bot", "Đơn hàng cũ vẫn xem được"],
+    errors: [{ title: "Không xóa được sản phẩm", solution: "Sản phẩm đã có đơn cần được lưu trữ để bảo toàn hóa đơn và lịch sử bảo hành; không xóa cứng." }],
+  },
+  {
+    slug: "ket-noi-nguon-hang-pro",
+    title: "Kết nối nguồn hàng PRO",
+    summary: "Nhập buyer key, đồng bộ catalog và hiểu cách tồn kho lan truyền giữa các shop.",
+    category: "source",
+    access: "PRO",
+    minutes: 12,
+    route: "/source-network",
+    routeLabel: "Mở mạng lưới nguồn",
+    visual: "source",
+    outcome: "Shop nhận đúng sản phẩm, giá và tồn kho từ nguồn mà không cần nhập hàng thủ công.",
+    prerequisites: ["Tài khoản PRO", "Buyer key hoặc kết nối được nguồn cấp", "Đã thống nhất giá sỉ"],
+    steps: [
+      { title: "Chọn vai trò kết nối", description: "Shop mua nguồn nhập key/kết nối; shop cấp nguồn tạo quyền cho đại lý và thiết lập giá sỉ." },
+      { title: "Xác minh nguồn", description: "Nhập endpoint và buyer key, sau đó kiểm tra kết nối trước khi bật đồng bộ." },
+      { title: "Đồng bộ catalog", description: "Hệ thống lấy tên, giá nguồn và tồn kho. Đặt tỷ lệ markup hoặc sửa giá bán nếu được phép." },
+      { title: "Kiểm tra một sản phẩm", description: "So sánh tồn kho tại nguồn và shop nhận. Chờ chu kỳ đồng bộ nếu nhà cung cấp giới hạn request." },
+      { title: "Chạy đơn thử", description: "Thanh toán một đơn nhỏ, kiểm tra đơn mua nguồn thành công và tồn kho giảm xuyên chuỗi." },
+    ],
+    checks: ["Kết nối ở trạng thái Hoạt động", "Giá bán không thấp hơn giá nguồn ngoài chủ đích", "Tồn kho không âm", "Đơn nguồn có mã đối soát"],
+    errors: [
+      { title: "Tồn kho cập nhật chậm", solution: "Nguồn ngoài có giới hạn request nên hệ thống dùng cache và hàng đợi. Kiểm tra thời điểm đồng bộ gần nhất trước khi ép làm mới liên tục." },
+      { title: "Nguồn hết hàng sau khi khách trả tiền", solution: "Hệ thống sẽ preflight lại tồn kho; kiểm tra đơn lỗi để hoàn tiền hoặc đổi sản phẩm cho khách." },
+    ],
+  },
+  {
+    slug: "quan-ly-khach-hang-va-vi",
+    title: "Quản lý khách hàng, CTV và ví",
+    summary: "Tra cứu khách, đặt chiết khấu và kiểm tra toàn bộ biến động số dư.",
+    category: "orders",
+    access: "Cơ bản",
+    minutes: 7,
+    route: "/wallet",
+    routeLabel: "Mở quản lý người dùng bot",
+    visual: "customer",
+    outcome: "Bạn quản lý đúng quyền CTV, mức giảm giá và số dư mà vẫn giữ được lịch sử kiểm toán.",
+    prerequisites: ["Khách đã từng mở bot hoặc phát sinh giao dịch"],
+    steps: [
+      { title: "Tìm khách", description: "Tìm theo username hoặc Telegram ID. Luôn đối chiếu ID khi có hai người trùng tên." },
+      { title: "Xem lịch sử", description: "Kiểm tra đơn đã mua, tổng chi, số dư ví nạp và ví hoa hồng." },
+      { title: "Cấu hình CTV", description: "Chỉ bật CTV cho đúng khách và đặt phần trăm chiết khấu theo chính sách của shop." },
+      { title: "Điều chỉnh ví có lý do", description: "Mọi cộng/trừ thủ công phải ghi nội dung đối soát để có thể truy ngược sau này." },
+      { title: "Kiểm tra lại", description: "Xác nhận số dư mới và lịch sử biến động xuất hiện đúng một giao dịch." },
+    ],
+    checks: ["Đúng Telegram ID", "Không cộng tiền hai lần", "Có ghi chú cho điều chỉnh thủ công"],
+    errors: [{ title: "Khách nói chưa nhận số dư", solution: "Kiểm tra đúng loại ví, trạng thái giao dịch và Telegram ID; gửi mã biến động thay vì chỉ gửi ảnh tổng số dư." }],
+  },
+  {
+    slug: "xu-ly-bao-hanh",
+    title: "Tiếp nhận và xử lý bảo hành",
+    summary: "Từ mã bảo hành của khách đến kiểm tra, thay thế hoặc từ chối yêu cầu.",
+    category: "orders",
+    access: "PRO",
+    minutes: 8,
+    route: "/warranty",
+    routeLabel: "Mở quản lý bảo hành",
+    visual: "warranty",
+    outcome: "Yêu cầu bảo hành có bằng chứng, trạng thái và kết quả xử lý rõ ràng.",
+    prerequisites: ["Sản phẩm có chính sách bảo hành", "Khách cung cấp mã đơn hoặc mã bảo hành"],
+    steps: [
+      { title: "Tìm yêu cầu", description: "Tra theo mã bảo hành, mã đơn hoặc khách hàng và kiểm tra còn trong thời hạn hay không." },
+      { title: "Đọc bằng chứng", description: "Xem lỗi khách mô tả, thời điểm phát sinh và kết quả auto-check nếu sản phẩm hỗ trợ." },
+      { title: "Chọn hướng xử lý", description: "Thay tài khoản khi lỗi hợp lệ và còn kho; chuyển kiểm tra thủ công khi chưa đủ dữ liệu; từ chối phải ghi lý do." },
+      { title: "Hoàn tất", description: "Gửi kết quả cho khách, cập nhật trạng thái và bảo đảm tài khoản thay thế được gắn đúng yêu cầu." },
+    ],
+    checks: ["Yêu cầu còn hạn", "Tài khoản thay thế chưa từng giao", "Khách nhận thông báo kết quả"],
+    errors: [{ title: "Không còn kho bảo hành", solution: "Chuyển trạng thái chờ kho, thông báo thời gian dự kiến hoặc xử lý hoàn tiền theo chính sách shop." }],
+  },
+  {
+    slug: "khuyen-mai-thong-bao-va-bao-cao",
+    title: "Khuyến mãi, thông báo và báo cáo",
+    summary: "Tạo ưu đãi an toàn, gửi broadcast và đọc doanh thu/lợi nhuận.",
+    category: "growth",
+    access: "Cơ bản",
+    minutes: 10,
+    route: "/reports/revenue",
+    routeLabel: "Mở báo cáo doanh thu",
+    visual: "analytics",
+    outcome: "Chương trình khuyến mãi hiển thị đúng và số liệu được đọc theo cùng một khoảng thời gian.",
+    prerequisites: ["Sản phẩm đang bán", "Đã có ít nhất một đơn hoàn tất để kiểm tra báo cáo"],
+    steps: [
+      { title: "Chọn loại khuyến mãi", description: "Dùng mua tặng, mua nhiều giảm phần trăm hoặc giá theo số lượng. Kiểm tra giá cuối không thấp hơn mức bạn chấp nhận." },
+      { title: "Đặt thời gian", description: "Nhập giờ bắt đầu/kết thúc và kiểm tra múi giờ. Không để khuyến mãi cũ chạy vô thời hạn ngoài chủ đích." },
+      { title: "Xem trước trên bot", description: "Tạo đơn thử với số lượng ở sát ngưỡng để chắc chắn công thức giảm giá đúng." },
+      { title: "Gửi thông báo", description: "Broadcast ngắn gọn, có sản phẩm, thời gian kết thúc và nút mua. Tránh gửi lặp nhiều lần." },
+      { title: "Đọc báo cáo", description: "Chọn cùng khoảng ngày để so sánh doanh thu, vốn, lợi nhuận và số đơn đã giao." },
+    ],
+    checks: ["Giá cuối đúng", "Khuyến mãi tự hết hạn", "Broadcast có nút hành động", "Báo cáo chỉ tính trạng thái phù hợp"],
+    errors: [{ title: "Doanh thu và tiền nhận khác nhau", solution: "Kiểm tra bộ lọc ngày, trạng thái đơn, đơn hoàn tiền và phương thức thanh toán trước khi đối soát." }],
+  },
+  {
+    slug: "kiem-tra-loi-va-bao-mat",
+    title: "Kiểm tra lỗi nhanh và bảo mật",
+    summary: "Quy trình 5 phút để khoanh vùng lỗi mà không làm lộ token hoặc xác nhận nhầm tiền.",
+    category: "troubleshooting",
+    access: "Cơ bản",
+    minutes: 5,
+    route: "/support",
+    routeLabel: "Liên hệ hỗ trợ",
+    visual: "security",
+    outcome: "Bạn thu thập đủ thông tin để tự sửa lỗi hoặc gửi hỗ trợ mà không lộ dữ liệu nhạy cảm.",
+    prerequisites: ["Mã đơn hoặc thời điểm lỗi", "Ảnh chụp đã che thông tin bí mật"],
+    steps: [
+      { title: "Xác định phạm vi", description: "Lỗi xảy ra với một đơn, một sản phẩm, một bot hay toàn bộ shop. Ghi lại thời gian gần nhất lỗi xuất hiện." },
+      { title: "Kiểm tra trạng thái liên quan", description: "Xem bot, sản phẩm, tồn kho, phương thức thanh toán và nguồn hàng theo đúng thứ tự luồng đơn." },
+      { title: "Không thao tác tiền khi chưa rõ", description: "Không xác nhận thủ công chỉ dựa vào ảnh của khách. Luôn đối chiếu tài khoản nhận và transaction ID." },
+      { title: "Che dữ liệu bí mật", description: "Ẩn Bot Token, API secret, private key, mật khẩu, email tài khoản và dữ liệu khách khác trước khi chụp ảnh." },
+      { title: "Gửi hỗ trợ đủ dữ liệu", description: "Gửi mã đơn, shop, thời điểm, thao tác gây lỗi, kết quả mong đợi và ảnh lỗi đã che dữ liệu." },
+    ],
+    checks: ["Không lộ secret", "Có mã đơn/thời điểm", "Có bước tái hiện lỗi", "Không xác nhận thanh toán mơ hồ"],
+    errors: [{ title: "Đã lộ Bot Token hoặc API secret", solution: "Thu hồi và tạo secret mới ngay, cập nhật lại hệ thống rồi kiểm tra lịch sử truy cập/giao dịch." }],
+  },
+];

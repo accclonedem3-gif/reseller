@@ -143,11 +143,12 @@ type RevenuePoint = {
   label: string;
   grossRevenue: number;
   estimatedProfit: number;
+  totalOrders: number;
   deliveredOrders: number;
 };
 type ProfitSummary = { today: number; last7d: number; last30d: number; last90d: number; allTime: number };
 type RevenueResponse = {
-  summary: { grossRevenue: number; estimatedProfit: number; deliveredOrders: number };
+  summary: { grossRevenue: number; estimatedProfit: number; totalOrders: number; deliveredOrders: number };
   series: RevenuePoint[];
   profitSummary: ProfitSummary;
 };
@@ -309,7 +310,7 @@ export function RevenuePagePrime() {
       <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
         {statCard(t.statRevenue, formatCurrency(summary?.grossRevenue || 0), periodLabel, "rgb(52,211,153)", "rgb(52,211,153)")}
         {statCard(t.statProfit, formatCurrency(summary?.estimatedProfit || 0), "Sau khi trừ giá vốn", "rgb(249,115,22)", "rgb(249,115,22)")}
-        {statCard(t.statDelivered, String(summary?.deliveredOrders || 0), "Trong kỳ này", "rgb(56,189,248)", "rgb(56,189,248)")}
+        {statCard("Tổng đơn hàng", String(summary?.totalOrders || 0), `${summary?.deliveredOrders || 0} đơn đã giao trong kỳ`, "rgb(56,189,248)", "rgb(56,189,248)")}
         {statCard(t.statAvg, formatCurrency(averageRevenue), `${chartData.length} ngày có phát sinh`, "rgb(167,139,250)", "rgb(139,92,246)")}
       </div>
 

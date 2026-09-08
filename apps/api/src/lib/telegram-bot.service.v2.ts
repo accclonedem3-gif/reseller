@@ -15,11 +15,19 @@ import {
   renderRestockHtml,
   type PayOSBankInfo,
 } from "@reseller/shared/server";
-import { DownstreamSourceConnectionStatus, PaymentProvider, PaymentStatus, PaymentTransactionStatus, Prisma, SellerTier } from "@prisma/client";
+import {
+  DownstreamSourceConnectionStatus,
+  PaymentProvider,
+  PaymentStatus,
+  PaymentTransactionStatus,
+  Prisma,
+  SellerTier,
+} from "@prisma/client";
 
 import { AppConfigService } from "../config/app-config.service";
 import { PrismaService } from "../db/prisma.service";
 import { CustomerWalletService } from "../customer-wallet/customer-wallet.service";
+import { WalletPromotionService } from "../wallet/wallet-promotion.service";
 import { OrdersService } from "../orders/orders.service";
 import { ShopsService } from "../shops/shops.service";
 import { WarrantyService } from "../warranty/warranty.service";
@@ -51,6 +59,8 @@ import {
   parseCustomerEmailList,
 } from "./customer-email-list";
 import { resolveVisiblePaymentProviders } from "./payment-method-visibility";
+import { isBinanceAmountWithinTolerance } from "./binance-payment-match";
+import { shouldHoldStockForCheckout } from "./preorder";
 import {
   ORDER_HISTORY_PAGE_SIZE,
   buildOwnedOrderWhere,
@@ -93,8 +103,15 @@ const BIN_TO_BANK: Record<string, string> = {
 
 type TelegramUpdate = Record<string, any>;
 
-type CatalogItem = Awaited<ReturnType<ShopsService["getCatalogViewForShop"]>>[number];
-type FeaturedCatalogGroupKey = "chatgpt" | "grok" | "veo3" | "kling" | "youtube";
+type CatalogItem = Awaited<
+  ReturnType<ShopsService["getCatalogViewForShop"]>
+>[number];
+type FeaturedCatalogGroupKey =
+  | "chatgpt"
+  | "grok"
+  | "veo3"
+  | "kling"
+  | "youtube";
 type TelegramPaymentOption = PaymentProvider | "WALLET";
 type HandleIncomingUpdateOptions = {
   simulateOnly?: boolean;
@@ -122,25 +139,29 @@ export class TelegramBotService {
       key: "grok",
       label: "Grok",
       emoji: "⚡",
-      matcher: (product) => /\bgrok\b/i.test(`${product.displayName} ${product.sourceName}`),
+      matcher: (product) =>
+        /\bgrok\b/i.test(`${product.displayName} ${product.sourceName}`),
     },
     {
       key: "veo3",
       label: "Veo3",
       emoji: "🎬",
-      matcher: (product) => /veo\s*3/i.test(`${product.displayName} ${product.sourceName}`),
+      matcher: (product) =>
+        /veo\s*3/i.test(`${product.displayName} ${product.sourceName}`),
     },
     {
       key: "kling",
       label: "Kling",
       emoji: "🎥",
-      matcher: (product) => /\bkling\b/i.test(`${product.displayName} ${product.sourceName}`),
+      matcher: (product) =>
+        /\bkling\b/i.test(`${product.displayName} ${product.sourceName}`),
     },
     {
       key: "youtube",
       label: "YouTube",
       emoji: "▶️",
-      matcher: (product) => /\byoutube\b/i.test(`${product.displayName} ${product.sourceName}`),
+      matcher: (product) =>
+        /\byoutube\b/i.test(`${product.displayName} ${product.sourceName}`),
     },
   ];
 
@@ -149,56 +170,101 @@ export class TelegramBotService {
   // function-button customization (label/emoji/cusid) everywhere WITHOUT threading custData
   // through every message-builder. Each update is its own async context, so no cross-shop leak;
   // when unset (calls outside an update, e.g. broadcasts) the helpers fall back to defaults.
-  private readonly btnCtx = new AsyncLocalStorage<{ cust: Record<string, unknown>; canBling: boolean }>();
+  private readonly btnCtx = new AsyncLocalStorage<{
+    cust: Record<string, unknown>;
+    canBling: boolean;
+  }>();
 
   // Reply keyboard button labels (must match exactly in handleIncomingUpdate)
   private readonly replyKeyboardLabels = {
-    products:  { vi: "🛍️ Sản phẩm", en: "🛍️ Products", th: "🛍️ สินค้า" },
-    orders:    { vi: "📦 Đơn hàng", en: "📦 Orders", th: "📦 คำสั่งซื้อ" },
-    wallet:    { vi: "💳 Ví", en: "💳 Wallet", th: "💳 กระเป๋าเงิน" },
-    support:   { vi: "💬 Hỗ trợ", en: "💬 Support", th: "💬 ช่วยเหลือ" },
-    warranty:  { vi: "🛡️ Bảo hành", en: "🛡️ Warranty", th: "🛡️ การรับประกัน" },
-    language:  { vi: "🌐 Ngôn ngữ", en: "🌐 Language", th: "🌐 ภาษา" },
-    home:      { vi: "🏠 Trang chủ", en: "🏠 Home", th: "🏠 หน้าหลัก" },
-    affiliate: { vi: "🤝 Affiliate", en: "🤝 Affiliate", th: "🤝 แนะนำเพื่อน" },
+    products: {
+      vi: "🛍️ Sản phẩm",
+      en: "🛍️ Products",
+      th: "🛍️ สินค้า",
+      zh: "🛍️ 商品",
+    },
+    orders: {
+      vi: "📦 Đơn hàng",
+      en: "📦 Orders",
+      th: "📦 คำสั่งซื้อ",
+      zh: "📦 订单",
+    },
+    wallet: {
+      vi: "💳 Ví",
+      en: "💳 Wallet",
+      th: "💳 กระเป๋าเงิน",
+      zh: "💳 钱包",
+    },
+    support: {
+      vi: "💬 Hỗ trợ",
+      en: "💬 Support",
+      th: "💬 ช่วยเหลือ",
+      zh: "💬 客服",
+    },
+    warranty: {
+      vi: "🛡️ Bảo hành",
+      en: "🛡️ Warranty",
+      th: "🛡️ การรับประกัน",
+      zh: "🛡️ 售后",
+    },
+    language: {
+      vi: "🌐 Ngôn ngữ",
+      en: "🌐 Language",
+      th: "🌐 ภาษา",
+      zh: "🌐 语言",
+    },
+    home: {
+      vi: "🏠 Trang chủ",
+      en: "🏠 Home",
+      th: "🏠 หน้าหลัก",
+      zh: "🏠 首页",
+    },
+    affiliate: {
+      vi: "🤝 Affiliate",
+      en: "🤝 Affiliate",
+      th: "🤝 แนะนำเพื่อน",
+      zh: "🤝 推广返佣",
+    },
   } as const;
 
-  private buildReplyKeyboard(language: BotLanguage, isPro = false, customization?: Record<string, unknown> | null) {
+  private buildReplyKeyboard(
+    language: BotLanguage,
+    isPro = false,
+    customization?: Record<string, unknown> | null,
+  ) {
     const l = this.replyKeyboardLabels;
-    const emojis = (customization?.buttonEmojis && typeof customization.buttonEmojis === "object")
-      ? customization.buttonEmojis as Record<string, string>
-      : {};
-    const labels = (customization?.buttonLabels && typeof customization.buttonLabels === "object")
-      ? customization.buttonLabels as Record<string, Record<string, string>>
-      : {};
+    const emojis =
+      customization?.buttonEmojis &&
+      typeof customization.buttonEmojis === "object"
+        ? (customization.buttonEmojis as Record<string, string>)
+        : {};
+    const labels =
+      customization?.buttonLabels &&
+      typeof customization.buttonLabels === "object"
+        ? (customization.buttonLabels as Record<string, Record<string, string>>)
+        : {};
 
     const btn = (key: keyof typeof l): string => {
       // `|| ` (not `?? `): an inherited/cloned ULTRA template sets buttonEmojis="" (it uses cusid
       // instead), and `?? ` would keep that empty string → blank button. Fall back to the default
       // text emoji so a non-premium reply-keyboard button always shows an icon.
       const emoji = emojis[key]?.trim() || l[key][language].split(" ")[0];
-      const label = labels[key]?.[language] ?? l[key][language].split(" ").slice(1).join(" ");
+      const label =
+        labels[key]?.[language] ??
+        l[key][language].split(" ").slice(1).join(" ");
       return `${emoji} ${label}`;
     };
 
     return {
       keyboard: [
-        [
-          { text: btn("products") },
-          { text: btn("orders") },
-        ],
-        [
-          { text: btn("wallet") },
-          { text: btn("support") },
-        ],
+        [{ text: btn("products") }, { text: btn("orders") }],
+        [{ text: btn("wallet") }, { text: btn("support") }],
         [
           { text: btn("home") },
           ...(isPro ? [{ text: btn("warranty") }] : []),
           { text: btn("language") },
         ],
-        [
-          { text: btn("affiliate") },
-        ],
+        [{ text: btn("affiliate") }],
       ],
       resize_keyboard: true,
       persistent: true,
@@ -212,18 +278,33 @@ export class TelegramBotService {
    * matches when tapped (fixes the inherit-template label-drift no-op).
    */
   private replyButtonLabelVariants(
-    key: "products" | "orders" | "wallet" | "support" | "warranty" | "language" | "home" | "affiliate",
+    key:
+      | "products"
+      | "orders"
+      | "wallet"
+      | "support"
+      | "warranty"
+      | "language"
+      | "home"
+      | "affiliate",
     customization?: Record<string, unknown> | null,
   ): string[] {
     const l = this.replyKeyboardLabels;
     const variants = new Set<string>(Object.values(l[key]));
-    const emojis = (customization?.buttonEmojis && typeof customization.buttonEmojis === "object")
-      ? (customization.buttonEmojis as Record<string, string>) : {};
-    const labels = (customization?.buttonLabels && typeof customization.buttonLabels === "object")
-      ? (customization.buttonLabels as Record<string, Record<string, string>>) : {};
+    const emojis =
+      customization?.buttonEmojis &&
+      typeof customization.buttonEmojis === "object"
+        ? (customization.buttonEmojis as Record<string, string>)
+        : {};
+    const labels =
+      customization?.buttonLabels &&
+      typeof customization.buttonLabels === "object"
+        ? (customization.buttonLabels as Record<string, Record<string, string>>)
+        : {};
     for (const lang of ["vi", "en", "th"] as const) {
       const emoji = emojis[key]?.trim() || l[key][lang].split(" ")[0];
-      const label = labels[key]?.[lang] ?? l[key][lang].split(" ").slice(1).join(" ");
+      const label =
+        labels[key]?.[lang] ?? l[key][lang].split(" ").slice(1).join(" ");
       variants.add(`${emoji} ${label}`);
     }
     return [...variants];
@@ -236,6 +317,8 @@ export class TelegramBotService {
     private readonly shopsService: ShopsService,
     @Inject(CustomerWalletService)
     private readonly customerWalletService: CustomerWalletService,
+    @Inject(WalletPromotionService)
+    private readonly walletPromotionService: WalletPromotionService,
     @Inject(OrdersService)
     private readonly ordersService: OrdersService,
     @Inject(PaymentService)
@@ -300,10 +383,19 @@ export class TelegramBotService {
     return "ok";
   }
 
-  private _globalDefaultCust: { data: Record<string, unknown> | null; ts: number } | null = null;
+  private _globalDefaultCust: {
+    data: Record<string, unknown> | null;
+    ts: number;
+  } | null = null;
 
-  private async getGlobalDefaultCustomization(): Promise<Record<string, unknown> | null> {
-    if (this._globalDefaultCust && Date.now() - this._globalDefaultCust.ts < 60_000) {
+  private async getGlobalDefaultCustomization(): Promise<Record<
+    string,
+    unknown
+  > | null> {
+    if (
+      this._globalDefaultCust &&
+      Date.now() - this._globalDefaultCust.ts < 60_000
+    ) {
       return this._globalDefaultCust.data;
     }
     try {
@@ -311,7 +403,8 @@ export class TelegramBotService {
         where: { isGlobalDefault: true },
         select: { customizationJson: true },
       });
-      const data = (cfg?.customizationJson as Record<string, unknown> | null) ?? null;
+      const data =
+        (cfg?.customizationJson as Record<string, unknown> | null) ?? null;
       this._globalDefaultCust = { data, ts: Date.now() };
       return data;
     } catch {
@@ -328,7 +421,8 @@ export class TelegramBotService {
     shopId: string,
     ownCust: Record<string, unknown> | null,
   ): Promise<Record<string, unknown>> {
-    const inherited = await this.shopsService.getInheritedCustomizationJson(shopId);
+    const inherited =
+      await this.shopsService.getInheritedCustomizationJson(shopId);
     // Not inheriting → the shop's own customization.
     if (!inherited) return this.resolveCustomization(ownCust);
     // Inheriting → ULTRA source is the base (over globalDefault), PRO's own fields override on top
@@ -343,11 +437,34 @@ export class TelegramBotService {
     over: Record<string, unknown> | null,
   ): Record<string, unknown> {
     if (!over) return base;
-    const DEEP_KEYS = ["labelEmojiIds", "labelEmojis", "buttonEmojiIds", "messageEmojiIds", "buttonLabels", "buttonEmojis", "welcomeMessage", "footerBill", "productNote", "catalogText", "homeFooter", "walletNote"];
+    const DEEP_KEYS = [
+      "labelEmojiIds",
+      "labelEmojis",
+      "buttonEmojiIds",
+      "messageEmojiIds",
+      "buttonLabels",
+      "buttonEmojis",
+      "welcomeMessage",
+      "footerBill",
+      "productNote",
+      "catalogText",
+      "homeFooter",
+      "walletNote",
+    ];
     const merged: Record<string, unknown> = { ...base };
     for (const [k, v] of Object.entries(over)) {
-      if (DEEP_KEYS.includes(k) && v && typeof v === "object" && !Array.isArray(v) && merged[k] && typeof merged[k] === "object") {
-        merged[k] = { ...(merged[k] as Record<string, unknown>), ...(v as Record<string, unknown>) };
+      if (
+        DEEP_KEYS.includes(k) &&
+        v &&
+        typeof v === "object" &&
+        !Array.isArray(v) &&
+        merged[k] &&
+        typeof merged[k] === "object"
+      ) {
+        merged[k] = {
+          ...(merged[k] as Record<string, unknown>),
+          ...(v as Record<string, unknown>),
+        };
       } else {
         merged[k] = v;
       }
@@ -384,6 +501,16 @@ export class TelegramBotService {
       : token;
 
     const actions: unknown[] = [];
+    const updateId = String(update?.update_id ?? "").trim();
+    if (updateId) {
+      const isFirstDelivery = await this.cache.claimOnce(
+        `telegram:update:${shopId}:${updateId}`,
+        10 * 60 * 1000,
+      );
+      if (!isFirstDelivery) {
+        return { ok: true, actions };
+      }
+    }
     const callbackQuery = update.callback_query;
     const message = update.message;
 
@@ -421,10 +548,14 @@ export class TelegramBotService {
         actions,
         botUsername
           ? {
-              inline_keyboard: [[{
-                text: "🔐 Mở chat riêng",
-                url: `https://t.me/${botUsername}`,
-              }]],
+              inline_keyboard: [
+                [
+                  {
+                    text: "🔐 Mở chat riêng",
+                    url: `https://t.me/${botUsername}`,
+                  },
+                ],
+              ],
             }
           : undefined,
       );
@@ -437,7 +568,9 @@ export class TelegramBotService {
     // throttled per (shop, user) on Redis windows. Sustained spam auto-blacklists them; the
     // blacklist check below then drops every further update cheaply. Runs before the heavy render
     // work so floods cost almost nothing.
-    const floodUserId = String(message?.from?.id || callbackQuery?.from?.id || "");
+    const floodUserId = String(
+      message?.from?.id || callbackQuery?.from?.id || "",
+    );
     if (floodUserId) {
       const verdict = await this.enforceFloodControl(shopId, floodUserId);
       if (verdict === "banned") {
@@ -476,24 +609,38 @@ export class TelegramBotService {
     // owner can pick custom emoji, so that IS the premium signal — UNLESS this bot self-learned it
     // can't actually emit them (cusidEmitOk === false → force text icons). Read from the already-
     // loaded botConfig (no extra query) and threaded into every render below.
-    const canBling = shop.botConfig?.cusidEmitOk !== false;
+    // Custom button icons require the configured bot owner to be Premium. If
+    // Premium cannot be confirmed, retain the Unicode emoji in button text.
+    const canBling = await this.resolveCanBling(shopId);
 
     // Make the resolved customization + bling capability available to buttonLabel()/navBtn() for
     // the rest of this update, so EVERY nav/footer/confirmation button reflects the admin's
     // function-button customization (label/emoji/cusid) — not just the catalog/buy/pay buttons.
     this.btnCtx.enterWith({
-      cust: await this.resolveCustomization((shop.botConfig?.customizationJson as Record<string, unknown> | null) ?? null),
+      cust: await this.resolveCustomization(
+        (shop.botConfig?.customizationJson as Record<string, unknown> | null) ??
+          null,
+      ),
       canBling,
     });
 
     // Auto-issue source key for every user of an ULTRA bot (1 key per chatId, forever)
-    if (shop.seller.tier === SellerTier.ULTRA) {
+    if (
+      shop.seller.tier === SellerTier.PRO ||
+      shop.seller.tier === SellerTier.ULTRA
+    ) {
       const autoChatId = message?.chat?.id ?? callbackQuery?.message?.chat?.id;
       if (autoChatId) {
         const chatIdStr = String(autoChatId);
-        const existing = await this.apiKeyService.getActiveKeyForTelegramChatId(shop.id, chatIdStr);
+        const existing = await this.apiKeyService.getActiveKeyForTelegramChatId(
+          shop.id,
+          chatIdStr,
+        );
         if (!existing) {
-          await this.apiKeyService.revokeAllBotKeysForChatId(shop.id, chatIdStr);
+          await this.apiKeyService.revokeAllBotKeysForChatId(
+            shop.id,
+            chatIdStr,
+          );
           await this.apiKeyService.issueKey(shop.sellerId, shop.id, {
             label: `Bot - ${chatIdStr}`,
             telegramChatId: chatIdStr,
@@ -502,10 +649,17 @@ export class TelegramBotService {
       }
     }
 
-    const visitorTelegramUserId = String(message?.from?.id || callbackQuery?.from?.id || "");
+    const visitorTelegramUserId = String(
+      message?.from?.id || callbackQuery?.from?.id || "",
+    );
     if (visitorTelegramUserId) {
       const customerRecord = await this.prisma.customer.findUnique({
-        where: { shopId_telegramUserId: { shopId, telegramUserId: visitorTelegramUserId } },
+        where: {
+          shopId_telegramUserId: {
+            shopId,
+            telegramUserId: visitorTelegramUserId,
+          },
+        },
         select: { blacklisted: true },
       });
       if (customerRecord?.blacklisted) {
@@ -525,40 +679,117 @@ export class TelegramBotService {
       // inherited ULTRA template) so a relabeled reply-keyboard button still routes on tap.
       const replyCust = await this.resolveEffectiveCustomization(
         shopId,
-        (shop.botConfig?.customizationJson as Record<string, unknown> | null) ?? null,
+        (shop.botConfig?.customizationJson as Record<string, unknown> | null) ??
+          null,
       );
-      const allProductLabels = this.replyButtonLabelVariants("products", replyCust);
+      const allProductLabels = this.replyButtonLabelVariants(
+        "products",
+        replyCust,
+      );
       const allOrderLabels = this.replyButtonLabelVariants("orders", replyCust);
-      const allWalletLabels = this.replyButtonLabelVariants("wallet", replyCust);
-      const allSupportLabels = this.replyButtonLabelVariants("support", replyCust);
-      const allWarrantyLabels = this.replyButtonLabelVariants("warranty", replyCust);
+      const allWalletLabels = this.replyButtonLabelVariants(
+        "wallet",
+        replyCust,
+      );
+      const allSupportLabels = this.replyButtonLabelVariants(
+        "support",
+        replyCust,
+      );
+      const allWarrantyLabels = this.replyButtonLabelVariants(
+        "warranty",
+        replyCust,
+      );
       const allHomeLabels = this.replyButtonLabelVariants("home", replyCust);
-      const allLanguageLabels = this.replyButtonLabelVariants("language", replyCust);
-      const allAffiliateLabels = this.replyButtonLabelVariants("affiliate", replyCust);
+      const allLanguageLabels = this.replyButtonLabelVariants(
+        "language",
+        replyCust,
+      );
+      const allAffiliateLabels = this.replyButtonLabelVariants(
+        "affiliate",
+        replyCust,
+      );
 
       if (allProductLabels.includes(msgText as any)) {
-        await this.clearPendingQuantitySelection(shopId, String(message.from?.id || ""));
-        await this.clearPendingWalletTopup(shopId, String(message.from?.id || ""));
-        await this.clearPendingPaymentSelection(shopId, String(message.from?.id || ""));
-        await this.clearPendingTxHashSubmission(shopId, String(message.from?.id || ""));
-        await this.renderCatalog(shopId, outboundToken, message.chat.id, undefined, 0, actions, messageLanguage, canBling);
+        await this.clearPendingQuantitySelection(
+          shopId,
+          String(message.from?.id || ""),
+        );
+        await this.clearPendingWalletTopup(
+          shopId,
+          String(message.from?.id || ""),
+        );
+        await this.clearPendingPaymentSelection(
+          shopId,
+          String(message.from?.id || ""),
+        );
+        await this.clearPendingTxHashSubmission(
+          shopId,
+          String(message.from?.id || ""),
+        );
+        await this.renderCatalog(
+          shopId,
+          outboundToken,
+          message.chat.id,
+          undefined,
+          0,
+          actions,
+          messageLanguage,
+          canBling,
+        );
         return { ok: true, actions };
       }
 
       if (allOrderLabels.includes(msgText as any)) {
-        await this.clearPendingQuantitySelection(shopId, String(message.from?.id || ""));
-        await this.clearPendingWalletTopup(shopId, String(message.from?.id || ""));
-        await this.clearPendingPaymentSelection(shopId, String(message.from?.id || ""));
-        await this.clearPendingTxHashSubmission(shopId, String(message.from?.id || ""));
-        await this.renderOrderHistory(shopId, outboundToken, message.chat.id, undefined, String(message.from.id), actions, messageLanguage);
+        await this.clearPendingQuantitySelection(
+          shopId,
+          String(message.from?.id || ""),
+        );
+        await this.clearPendingWalletTopup(
+          shopId,
+          String(message.from?.id || ""),
+        );
+        await this.clearPendingPaymentSelection(
+          shopId,
+          String(message.from?.id || ""),
+        );
+        await this.clearPendingTxHashSubmission(
+          shopId,
+          String(message.from?.id || ""),
+        );
+        await this.renderOrderHistory(
+          shopId,
+          outboundToken,
+          message.chat.id,
+          undefined,
+          String(message.from.id),
+          actions,
+          messageLanguage,
+        );
         return { ok: true, actions };
       }
 
       if (allWalletLabels.includes(msgText as any)) {
-        await this.clearPendingQuantitySelection(shopId, String(message.from?.id || ""));
-        await this.clearPendingPaymentSelection(shopId, String(message.from?.id || ""));
-        await this.clearPendingTxHashSubmission(shopId, String(message.from?.id || ""));
-        await this.renderWalletPanel(shopId, outboundToken, message.chat.id, undefined, String(message.from.id), actions, messageLanguage);
+        await this.clearPendingQuantitySelection(
+          shopId,
+          String(message.from?.id || ""),
+        );
+        await this.clearPendingPaymentSelection(
+          shopId,
+          String(message.from?.id || ""),
+        );
+        await this.clearPendingTxHashSubmission(
+          shopId,
+          String(message.from?.id || ""),
+        );
+        await this.renderWalletPanel(
+          shopId,
+          outboundToken,
+          message.chat.id,
+          undefined,
+          String(message.from.id),
+          actions,
+          messageLanguage,
+        );
         return { ok: true, actions };
       }
 
@@ -566,7 +797,13 @@ export class TelegramBotService {
         await this.sendText(
           outboundToken,
           message.chat.id,
-          this.buildSupportText(shop.name, shop.supportTelegram, shop.supportZalo, messageLanguage, shop.supportNote),
+          this.buildSupportText(
+            shop.name,
+            shop.supportTelegram,
+            shop.supportZalo,
+            messageLanguage,
+            shop.supportNote,
+          ),
           actions,
           {
             inline_keyboard: [
@@ -582,16 +819,36 @@ export class TelegramBotService {
         // hasWarrantyFeature). Gating on ULTRA-only made the persistent "Bảo hành" reply button a
         // silent no-op for PRO shops with an internal source — eligibility is then enforced per-order.
         const hasWarrantyFeature =
-          shop.seller.tier === SellerTier.ULTRA || shop.providerConfig?.providerKind === "INTERNAL";
+          shop.seller.tier === SellerTier.PRO ||
+          shop.seller.tier === SellerTier.ULTRA ||
+          shop.providerConfig?.providerKind === "INTERNAL";
         if (!hasWarrantyFeature) {
           return { ok: true, actions };
         }
-        await this.clearPendingQuantitySelection(shopId, String(message.from?.id || ""));
-        await this.clearPendingWalletTopup(shopId, String(message.from?.id || ""));
-        await this.clearPendingPaymentSelection(shopId, String(message.from?.id || ""));
-        await this.clearPendingTxHashSubmission(shopId, String(message.from?.id || ""));
-        await this.clearPendingWarrantyIssueDescription(shopId, String(message.from?.id || ""));
-        await this.clearPendingWarrantyAccountSelection(shopId, String(message.from?.id || ""));
+        await this.clearPendingQuantitySelection(
+          shopId,
+          String(message.from?.id || ""),
+        );
+        await this.clearPendingWalletTopup(
+          shopId,
+          String(message.from?.id || ""),
+        );
+        await this.clearPendingPaymentSelection(
+          shopId,
+          String(message.from?.id || ""),
+        );
+        await this.clearPendingTxHashSubmission(
+          shopId,
+          String(message.from?.id || ""),
+        );
+        await this.clearPendingWarrantyIssueDescription(
+          shopId,
+          String(message.from?.id || ""),
+        );
+        await this.clearPendingWarrantyAccountSelection(
+          shopId,
+          String(message.from?.id || ""),
+        );
         await this.promptWarrantyClaimOrderCode(
           outboundToken,
           message.chat.id,
@@ -605,16 +862,42 @@ export class TelegramBotService {
       }
 
       if (allHomeLabels.includes(msgText as any)) {
-        await this.clearPendingQuantitySelection(shopId, String(message.from?.id || ""));
-        await this.clearPendingWalletTopup(shopId, String(message.from?.id || ""));
-        await this.clearPendingPaymentSelection(shopId, String(message.from?.id || ""));
-        await this.clearPendingTxHashSubmission(shopId, String(message.from?.id || ""));
-        await this.renderHome(shopId, outboundToken, message.chat.id, undefined, actions, messageLanguage, canBling);
+        await this.clearPendingQuantitySelection(
+          shopId,
+          String(message.from?.id || ""),
+        );
+        await this.clearPendingWalletTopup(
+          shopId,
+          String(message.from?.id || ""),
+        );
+        await this.clearPendingPaymentSelection(
+          shopId,
+          String(message.from?.id || ""),
+        );
+        await this.clearPendingTxHashSubmission(
+          shopId,
+          String(message.from?.id || ""),
+        );
+        await this.renderHome(
+          shopId,
+          outboundToken,
+          message.chat.id,
+          undefined,
+          actions,
+          messageLanguage,
+          canBling,
+        );
         return { ok: true, actions };
       }
 
       if (allLanguageLabels.includes(msgText as any)) {
-        await this.renderLanguageMenu(outboundToken, message.chat.id, undefined, messageLanguage, actions);
+        await this.renderLanguageMenu(
+          outboundToken,
+          message.chat.id,
+          undefined,
+          messageLanguage,
+          actions,
+        );
         return { ok: true, actions };
       }
 
@@ -642,12 +925,13 @@ export class TelegramBotService {
         return { ok: true, actions };
       }
 
-      const handledPendingWalletTopup = await this.handlePendingWalletTopupMessage(
-        shopId,
-        outboundToken,
-        message,
-        actions,
-      );
+      const handledPendingWalletTopup =
+        await this.handlePendingWalletTopupMessage(
+          shopId,
+          outboundToken,
+          message,
+          actions,
+        );
 
       if (handledPendingWalletTopup) {
         return { ok: true, actions };
@@ -664,46 +948,50 @@ export class TelegramBotService {
         return { ok: true, actions };
       }
 
-      const handledConnectionTopup = await this.handlePendingConnectionTopupAmountMessage(
-        shop,
-        outboundToken,
-        message,
-        actions,
-      );
+      const handledConnectionTopup =
+        await this.handlePendingConnectionTopupAmountMessage(
+          shop,
+          outboundToken,
+          message,
+          actions,
+        );
 
       if (handledConnectionTopup) {
         return { ok: true, actions };
       }
 
-      const handledWarrantyAccountSelection = await this.handlePendingWarrantyAccountSelectionMessage(
-        shopId,
-        outboundToken,
-        message,
-        actions,
-      );
+      const handledWarrantyAccountSelection =
+        await this.handlePendingWarrantyAccountSelectionMessage(
+          shopId,
+          outboundToken,
+          message,
+          actions,
+        );
 
       if (handledWarrantyAccountSelection) {
         return { ok: true, actions };
       }
 
-      const handledPendingWarrantyClaim = await this.handlePendingWarrantyClaimMessage(
-        shopId,
-        outboundToken,
-        message,
-        actions,
-      );
+      const handledPendingWarrantyClaim =
+        await this.handlePendingWarrantyClaimMessage(
+          shopId,
+          outboundToken,
+          message,
+          actions,
+        );
 
       if (handledPendingWarrantyClaim) {
         return { ok: true, actions };
       }
 
-      const handledBinanceOrderId = await this.handlePendingBinanceOrderIdMessage(
-        shopId,
-        outboundToken,
-        message,
-        actions,
-        messageLanguage,
-      );
+      const handledBinanceOrderId =
+        await this.handlePendingBinanceOrderIdMessage(
+          shopId,
+          outboundToken,
+          message,
+          actions,
+          messageLanguage,
+        );
 
       if (handledBinanceOrderId) {
         return { ok: true, actions };
@@ -723,21 +1011,37 @@ export class TelegramBotService {
     }
 
     if (message?.text?.startsWith("/start")) {
-      await this.clearPendingQuantitySelection(shopId, String(message.from?.id || ""));
-      await this.clearPendingWalletTopup(shopId, String(message.from?.id || ""));
-      await this.clearPendingPaymentSelection(shopId, String(message.from?.id || ""));
-      await this.clearPendingTxHashSubmission(shopId, String(message.from?.id || ""));
+      await this.clearPendingQuantitySelection(
+        shopId,
+        String(message.from?.id || ""),
+      );
+      await this.clearPendingWalletTopup(
+        shopId,
+        String(message.from?.id || ""),
+      );
+      await this.clearPendingPaymentSelection(
+        shopId,
+        String(message.from?.id || ""),
+      );
+      await this.clearPendingTxHashSubmission(
+        shopId,
+        String(message.from?.id || ""),
+      );
 
       const startParam = message.text.slice("/start".length).trim();
       if (startParam.startsWith("ref_") && message.from?.id) {
         const referrerId = startParam.slice("ref_".length);
-        await this.applyAffiliateRef(shopId, {
-          telegramUserId: String(message.from.id),
-          telegramChatId: String(message.chat.id),
-          telegramUsername: message.from.username || null,
-          firstName: message.from.first_name || null,
-          lastName: message.from.last_name || null,
-        }, referrerId);
+        await this.applyAffiliateRef(
+          shopId,
+          {
+            telegramUserId: String(message.from.id),
+            telegramChatId: String(message.chat.id),
+            telegramUsername: message.from.username || null,
+            firstName: message.from.first_name || null,
+            lastName: message.from.last_name || null,
+          },
+          referrerId,
+        );
       }
 
       await this.renderLanguageMenu(
@@ -752,32 +1056,138 @@ export class TelegramBotService {
     }
 
     if (message?.text?.startsWith("/products")) {
-      await this.clearPendingQuantitySelection(shopId, String(message.from?.id || ""));
-      await this.clearPendingWalletTopup(shopId, String(message.from?.id || ""));
-      await this.clearPendingPaymentSelection(shopId, String(message.from?.id || ""));
-      await this.clearPendingTxHashSubmission(shopId, String(message.from?.id || ""));
-      await this.renderCatalog(shopId, outboundToken, message.chat.id, undefined, 0, actions, messageLanguage, canBling);
+      await this.clearPendingQuantitySelection(
+        shopId,
+        String(message.from?.id || ""),
+      );
+      await this.clearPendingWalletTopup(
+        shopId,
+        String(message.from?.id || ""),
+      );
+      await this.clearPendingPaymentSelection(
+        shopId,
+        String(message.from?.id || ""),
+      );
+      await this.clearPendingTxHashSubmission(
+        shopId,
+        String(message.from?.id || ""),
+      );
+      await this.renderCatalog(
+        shopId,
+        outboundToken,
+        message.chat.id,
+        undefined,
+        0,
+        actions,
+        messageLanguage,
+        canBling,
+      );
       return { ok: true, actions };
     }
 
+    if (message?.text?.startsWith("/orders")) {
+      await this.clearPendingQuantitySelection(
+        shopId,
+        String(message.from?.id || ""),
+      );
+      await this.clearPendingWalletTopup(
+        shopId,
+        String(message.from?.id || ""),
+      );
+      await this.clearPendingPaymentSelection(
+        shopId,
+        String(message.from?.id || ""),
+      );
+      await this.clearPendingTxHashSubmission(
+        shopId,
+        String(message.from?.id || ""),
+      );
+      await this.renderOrderHistory(
+        shopId,
+        outboundToken,
+        message.chat.id,
+        undefined,
+        String(message.from?.id || ""),
+        actions,
+        messageLanguage,
+      );
+      return { ok: true, actions };
+    }
+
+    if (message?.text?.startsWith("/wallet")) {
+      await this.clearPendingQuantitySelection(
+        shopId,
+        String(message.from?.id || ""),
+      );
+      await this.clearPendingWalletTopup(
+        shopId,
+        String(message.from?.id || ""),
+      );
+      await this.clearPendingPaymentSelection(
+        shopId,
+        String(message.from?.id || ""),
+      );
+      await this.clearPendingTxHashSubmission(
+        shopId,
+        String(message.from?.id || ""),
+      );
+      await this.renderWalletPanel(
+        shopId,
+        outboundToken,
+        message.chat.id,
+        undefined,
+        String(message.from?.id || ""),
+        actions,
+        messageLanguage,
+      );
+      return { ok: true, actions };
+    }
     if (message?.text?.startsWith("/home")) {
-      await this.clearPendingQuantitySelection(shopId, String(message.from?.id || ""));
-      await this.clearPendingWalletTopup(shopId, String(message.from?.id || ""));
-      await this.clearPendingPaymentSelection(shopId, String(message.from?.id || ""));
-      await this.clearPendingTxHashSubmission(shopId, String(message.from?.id || ""));
-      await this.renderHome(shopId, outboundToken, message.chat.id, undefined, actions, messageLanguage, canBling);
+      await this.clearPendingQuantitySelection(
+        shopId,
+        String(message.from?.id || ""),
+      );
+      await this.clearPendingWalletTopup(
+        shopId,
+        String(message.from?.id || ""),
+      );
+      await this.clearPendingPaymentSelection(
+        shopId,
+        String(message.from?.id || ""),
+      );
+      await this.clearPendingTxHashSubmission(
+        shopId,
+        String(message.from?.id || ""),
+      );
+      await this.renderHome(
+        shopId,
+        outboundToken,
+        message.chat.id,
+        undefined,
+        actions,
+        messageLanguage,
+        canBling,
+      );
       return { ok: true, actions };
     }
 
     if (message?.text?.startsWith("/language")) {
-      await this.renderLanguageMenu(outboundToken, message.chat.id, undefined, messageLanguage, actions);
+      await this.renderLanguageMenu(
+        outboundToken,
+        message.chat.id,
+        undefined,
+        messageLanguage,
+        actions,
+      );
       return { ok: true, actions };
     }
 
     if (message?.text?.startsWith("/settings")) {
       const ownerUserId = shop.botConfig?.ownerTelegramUserId;
       const fromUserId = String(message.from?.id || "");
-      console.log(`[settings] fromUserId=${fromUserId} ownerUserId=${ownerUserId}`);
+      console.log(
+        `[settings] fromUserId=${fromUserId} ownerUserId=${ownerUserId}`,
+      );
       if (ownerUserId && fromUserId === ownerUserId) {
         const miniAppUrl = `${this.config.webPublicUrl}/mini-app/settings`;
         await this.sendText(
@@ -786,10 +1196,14 @@ export class TelegramBotService {
           "⚙️ Nhấn nút bên dưới để mở cài đặt bot:",
           actions,
           {
-            inline_keyboard: [[{
-              text: "⚙️ Cài đặt bot",
-              web_app: { url: miniAppUrl },
-            }]],
+            inline_keyboard: [
+              [
+                {
+                  text: "⚙️ Cài đặt bot",
+                  web_app: { url: miniAppUrl },
+                },
+              ],
+            ],
           },
         );
       }
@@ -797,12 +1211,20 @@ export class TelegramBotService {
     }
 
     if (message?.text?.startsWith("/help")) {
-      await this.sendText(outboundToken, message.chat.id, this.buildGuideText(shop.name, messageLanguage), actions);
+      await this.sendText(
+        outboundToken,
+        message.chat.id,
+        this.buildGuideText(shop.name, messageLanguage),
+        actions,
+      );
       return { ok: true, actions };
     }
 
     if (message?.text?.startsWith("/warranty")) {
-      if (shop.seller.tier !== SellerTier.ULTRA) {
+      if (
+        shop.seller.tier !== SellerTier.PRO &&
+        shop.seller.tier !== SellerTier.ULTRA
+      ) {
         return { ok: true, actions };
       }
       await this.promptWarrantyClaimOrderCode(
@@ -846,7 +1268,12 @@ export class TelegramBotService {
       await this.sendText(
         outboundToken,
         message.chat.id,
-        this.buildSupportText(shop.name, shop.supportTelegram, shop.supportZalo, messageLanguage),
+        this.buildSupportText(
+          shop.name,
+          shop.supportTelegram,
+          shop.supportZalo,
+          messageLanguage,
+        ),
         actions,
       );
       return { ok: true, actions };
@@ -857,26 +1284,55 @@ export class TelegramBotService {
       const chatId = callbackQuery.message?.chat?.id;
       const messageId = callbackQuery.message?.message_id;
       const telegramUserId = String(callbackQuery.from?.id || "");
-      const callbackLanguage = await this.getCustomerLanguage(shopId, telegramUserId);
+      const callbackLanguage = await this.getCustomerLanguage(
+        shopId,
+        telegramUserId,
+      );
 
       if (data === "home:menu") {
         await this.clearPendingQuantitySelection(shopId, telegramUserId);
         await this.clearPendingWalletTopup(shopId, telegramUserId);
         await this.clearPendingPaymentSelection(shopId, telegramUserId);
         await this.clearPendingTxHashSubmission(shopId, telegramUserId);
-        await this.renderHome(shopId, outboundToken, chatId, messageId, actions, callbackLanguage, canBling);
+        await this.renderHome(
+          shopId,
+          outboundToken,
+          chatId,
+          messageId,
+          actions,
+          callbackLanguage,
+          canBling,
+          Boolean(callbackQuery.message?.photo),
+        );
       } else if (data === "home:products") {
         await this.clearPendingQuantitySelection(shopId, telegramUserId);
         await this.clearPendingWalletTopup(shopId, telegramUserId);
         await this.clearPendingPaymentSelection(shopId, telegramUserId);
         await this.clearPendingTxHashSubmission(shopId, telegramUserId);
-        await this.renderCatalog(shopId, outboundToken, chatId, messageId, 0, actions, callbackLanguage, canBling);
+        await this.renderCatalog(
+          shopId,
+          outboundToken,
+          chatId,
+          messageId,
+          0,
+          actions,
+          callbackLanguage,
+          canBling,
+        );
       } else if (data === "home:history") {
         await this.clearPendingQuantitySelection(shopId, telegramUserId);
         await this.clearPendingWalletTopup(shopId, telegramUserId);
         await this.clearPendingPaymentSelection(shopId, telegramUserId);
         await this.clearPendingTxHashSubmission(shopId, telegramUserId);
-        await this.renderOrderHistory(shopId, outboundToken, chatId, messageId, telegramUserId, actions, callbackLanguage);
+        await this.renderOrderHistory(
+          shopId,
+          outboundToken,
+          chatId,
+          messageId,
+          telegramUserId,
+          actions,
+          callbackLanguage,
+        );
       } else if (/^history:page:\d+$/.test(data)) {
         await this.clearPendingQuantitySelection(shopId, telegramUserId);
         await this.clearPendingWalletTopup(shopId, telegramUserId);
@@ -894,8 +1350,159 @@ export class TelegramBotService {
           "all",
           requestedPage,
         );
+      } else if (data.startsWith("preorder:cancel:prompt:")) {
+        const orderId = data.slice("preorder:cancel:prompt:".length);
+        await this.editOrSend(
+          outboundToken,
+          chatId,
+          messageId,
+          callbackLanguage === "en"
+            ? "⚠️ Send a cancellation request to the seller?\n\nIf approved, the item amount is refunded to your bot wallet. The pre-order fee is non-refundable."
+            : callbackLanguage === "th"
+              ? "⚠️ ส่งคำขอยกเลิกให้ผู้ขายหรือไม่?\n\nหากอนุมัติ ค่าสินค้าจะคืนเข้ากระเป๋าบอท แต่ค่าจองจะไม่คืน"
+              : "⚠️ Gửi yêu cầu hủy cho seller?\n\nNếu được duyệt, tiền hàng sẽ hoàn vào ví bot. Phí đặt trước không được hoàn.",
+          {
+            inline_keyboard: [
+              [
+                {
+                  text:
+                    callbackLanguage === "en"
+                      ? "✅ Confirm request"
+                      : callbackLanguage === "th"
+                        ? "✅ ยืนยันคำขอ"
+                        : "✅ Xác nhận yêu cầu",
+                  callback_data: `preorder:cancel:confirm:${orderId}`,
+                },
+              ],
+              [
+                {
+                  text:
+                    callbackLanguage === "en"
+                      ? "⬅️ Back"
+                      : callbackLanguage === "th"
+                        ? "⬅️ กลับ"
+                        : "⬅️ Quay lại",
+                  callback_data: `history:order:${orderId}:0:-1`,
+                },
+              ],
+            ],
+          },
+          actions,
+        );
+      } else if (data.startsWith("restock:sub:")) {
+        const sourceProductId = data.slice("restock:sub:".length);
+        const customerRecord = await this.prisma.customer.findUnique({
+          where: { shopId_telegramUserId: { shopId, telegramUserId } },
+        });
+        if (customerRecord) {
+          await this.prisma.restockSubscription.upsert({
+            where: {
+              customerId_sourceProductId: {
+                customerId: customerRecord.id,
+                sourceProductId,
+              },
+            },
+            create: {
+              shopId,
+              customerId: customerRecord.id,
+              sourceProductId,
+            },
+            update: {},
+          });
+        }
+        await this.editOrSend(
+          outboundToken,
+          chatId,
+          messageId,
+          callbackLanguage === "en"
+            ? "🔔 You will be notified when this product is back in stock."
+            : callbackLanguage === "th"
+              ? "🔔 คุณจะได้รับการแจ้งเตือนเมื่อสินค้านี้มีในสต็อก"
+              : "🔔 Bạn sẽ nhận được thông báo ngay khi sản phẩm này có hàng lại.",
+          {
+            inline_keyboard: [
+              [this.navBtn("back", callbackLanguage, "home:products")],
+            ],
+          },
+          actions,
+        );
+      } else if (data.startsWith("order:cancel:")) {
+        const orderId = data.slice("order:cancel:".length);
+        const canceled = await this.ordersService.cancelPendingOrder(
+          shopId,
+          telegramUserId,
+          orderId
+        );
+        if (canceled) {
+          await this.editOrSend(
+            outboundToken,
+            chatId,
+            messageId,
+            callbackLanguage === "en"
+              ? "✅ Order canceled successfully. Stock has been released."
+              : callbackLanguage === "th"
+                ? "✅ ยกเลิกคำสั่งซื้อเรียบร้อยแล้ว"
+                : "✅ Đã hủy đơn hàng thành công. Kho hàng đã được nhả.",
+            {
+              inline_keyboard: [
+                [this.navBtn("back", callbackLanguage, "home:products")],
+              ],
+            },
+            actions,
+          );
+        } else {
+          await this.editOrSend(
+            outboundToken,
+            chatId,
+            messageId,
+            callbackLanguage === "en"
+              ? "⚠️ Cannot cancel this order (it might be already paid or expired)."
+              : callbackLanguage === "th"
+                ? "⚠️ ไม่สามารถยกเลิกคำสั่งซื้อนี้ได้ (อาจชำระเงินแล้วหรือหมดอายุ)"
+                : "⚠️ Không thể hủy đơn này (có thể đã thanh toán hoặc đã hết hạn).",
+            {
+              inline_keyboard: [
+                [this.navBtn("back", callbackLanguage, "home:products")],
+              ],
+            },
+            actions,
+          );
+        }
+      } else if (data.startsWith("preorder:cancel:confirm:")) {
+        const orderId = data.slice("preorder:cancel:confirm:".length);
+        await this.ordersService.requestPreorderCancellationFromTelegram(
+          shopId,
+          telegramUserId,
+          orderId,
+        );
+        await this.editOrSend(
+          outboundToken,
+          chatId,
+          messageId,
+          callbackLanguage === "en"
+            ? "✅ Cancellation request sent. The order is temporarily locked from delivery while waiting for seller review."
+            : callbackLanguage === "th"
+              ? "✅ ส่งคำขอยกเลิกแล้ว ระบบระงับการจัดส่งชั่วคราวระหว่างรอผู้ขายตรวจสอบ"
+              : "✅ Đã gửi yêu cầu hủy. Đơn được tạm khóa giao hàng trong lúc chờ seller duyệt.",
+          {
+            inline_keyboard: [
+              [
+                {
+                  text:
+                    callbackLanguage === "en"
+                      ? "📋 View orders"
+                      : callbackLanguage === "th"
+                        ? "📋 ดูคำสั่งซื้อ"
+                        : "📋 Xem đơn hàng",
+                  callback_data: "home:history",
+                },
+              ],
+            ],
+          },
+          actions,
+        );
       } else if (data.startsWith("history:order:")) {
-        const [orderId, deliveryPageRaw, historyPageRaw] = data
+        const [orderId, deliveryPageRaw, historyPageRaw, presentationRaw] = data
           .slice("history:order:".length)
           .split(":");
         if (orderId) {
@@ -910,6 +1517,7 @@ export class TelegramBotService {
             Number(historyPageRaw ?? -1),
             actions,
             callbackLanguage,
+            presentationRaw === "new",
           );
         }
       } else if (data === "home:wallet") {
@@ -917,9 +1525,38 @@ export class TelegramBotService {
         await this.clearPendingWalletTopup(shopId, telegramUserId);
         await this.clearPendingPaymentSelection(shopId, telegramUserId);
         await this.clearPendingTxHashSubmission(shopId, telegramUserId);
-        await this.renderWalletPanel(shopId, outboundToken, chatId, messageId, telegramUserId, actions, callbackLanguage);
+        await this.renderWalletPanel(
+          shopId,
+          outboundToken,
+          chatId,
+          messageId,
+          telegramUserId,
+          actions,
+          callbackLanguage,
+        );
       } else if (data === "wallet:ledger") {
-        await this.renderWalletLedger(shopId, outboundToken, chatId, messageId, telegramUserId, actions, callbackLanguage);
+        await this.renderWalletLedger(
+          shopId,
+          outboundToken,
+          chatId,
+          messageId,
+          telegramUserId,
+          actions,
+          callbackLanguage,
+          0,
+        );
+      } else if (data.startsWith("wallet:ledger:page:")) {
+        const requestedPage = Number(data.slice("wallet:ledger:page:".length));
+        await this.renderWalletLedger(
+          shopId,
+          outboundToken,
+          chatId,
+          messageId,
+          telegramUserId,
+          actions,
+          callbackLanguage,
+          requestedPage,
+        );
       } else if (data === "home:warranty" || data === "warranty:start") {
         await this.clearPendingQuantitySelection(shopId, telegramUserId);
         await this.clearPendingWalletTopup(shopId, telegramUserId);
@@ -943,12 +1580,13 @@ export class TelegramBotService {
         await this.clearPendingPaymentSelection(shopId, telegramUserId);
         await this.clearPendingTxHashSubmission(shopId, telegramUserId);
         await this.clearPendingWarrantyClaimSubmission(shopId, telegramUserId);
-        const check = await this.warrantyService.checkTelegramWarrantyEligibility({
-          shopId,
-          telegramUserId,
-          orderCode,
-          language: callbackLanguage,
-        });
+        const check =
+          await this.warrantyService.checkTelegramWarrantyEligibility({
+            shopId,
+            telegramUserId,
+            orderCode,
+            language: callbackLanguage === "zh" ? "en" : callbackLanguage,
+          });
         if (!check.eligible) {
           await this.editOrSend(
             outboundToken,
@@ -979,7 +1617,14 @@ export class TelegramBotService {
         }
       } else if (data.startsWith("prokey:reissue:")) {
         const downstreamSellerId = data.slice("prokey:reissue:".length);
-        await this.handleProKeyReissue(shop, outboundToken, chatId, messageId, downstreamSellerId, actions);
+        await this.handleProKeyReissue(
+          shop,
+          outboundToken,
+          chatId,
+          messageId,
+          downstreamSellerId,
+          actions,
+        );
       } else if (data === "prokey:cancel") {
         await this.editOrSend(
           outboundToken,
@@ -990,43 +1635,143 @@ export class TelegramBotService {
           actions,
         );
       } else if (data === "prokey:topup") {
-        await this.handleProKeyTopupPrompt(shop, outboundToken, chatId, messageId, telegramUserId, actions);
+        await this.handleProKeyTopupPrompt(
+          shop,
+          outboundToken,
+          chatId,
+          messageId,
+          telegramUserId,
+          actions,
+        );
       } else if (data === "wallet:topup") {
         await this.clearPendingQuantitySelection(shopId, telegramUserId);
         await this.clearPendingPaymentSelection(shopId, telegramUserId);
         await this.clearPendingTxHashSubmission(shopId, telegramUserId);
         await this.clearPendingWalletTopup(shopId, telegramUserId);
-        await this.promptWalletTopupCurrency(shopId, outboundToken, chatId, messageId, telegramUserId, actions, callbackLanguage);
+        await this.promptWalletTopupCurrency(
+          shopId,
+          outboundToken,
+          chatId,
+          messageId,
+          telegramUserId,
+          actions,
+          callbackLanguage,
+        );
       } else if (data === "wallet:topup:vnd") {
         await this.clearPendingWalletTopup(shopId, telegramUserId);
-        await this.sessions.setPendingSession('pendingWalletTopups', this.sessions.getPendingQuantityKey(shopId, telegramUserId), {
-          currency: "VND",
-          expiresAt: Date.now() + this.sessions.pendingQuantityTtlMs,
-        }, this.sessions.pendingQuantityTtlMs);
-        await this.promptWalletTopupAmount(shopId, outboundToken, chatId, telegramUserId, actions, "VND", undefined, callbackLanguage);
+        await this.sessions.setPendingSession(
+          "pendingWalletTopups",
+          this.sessions.getPendingQuantityKey(shopId, telegramUserId),
+          {
+            currency: "VND",
+            expiresAt: Date.now() + this.sessions.pendingQuantityTtlMs,
+          },
+          this.sessions.pendingQuantityTtlMs,
+        );
+        await this.promptWalletTopupAmount(
+          shopId,
+          outboundToken,
+          chatId,
+          telegramUserId,
+          actions,
+          "VND",
+          undefined,
+          callbackLanguage,
+        );
       } else if (data === "wallet:topup:usd") {
         await this.clearPendingWalletTopup(shopId, telegramUserId);
-        await this.sessions.setPendingSession('pendingWalletTopups', this.sessions.getPendingQuantityKey(shopId, telegramUserId), {
-          currency: "USDT",
-          provider: "USDT_TRC20",
-          expiresAt: Date.now() + this.sessions.pendingQuantityTtlMs,
-        }, this.sessions.pendingQuantityTtlMs);
-        await this.promptWalletTopupAmount(shopId, outboundToken, chatId, telegramUserId, actions, "USDT", undefined, callbackLanguage);
-      } else if (data === "wallet:topup:sol" || data === "wallet:topup:ton") {
-        const provider = data.endsWith(":ton") ? "USDT_TON" : "USDT_SOL";
+        await this.sessions.setPendingSession(
+          "pendingWalletTopups",
+          this.sessions.getPendingQuantityKey(shopId, telegramUserId),
+          {
+            currency: "USDT",
+            provider: "USDT_TRC20",
+            expiresAt: Date.now() + this.sessions.pendingQuantityTtlMs,
+          },
+          this.sessions.pendingQuantityTtlMs,
+        );
+        await this.promptWalletTopupAmount(
+          shopId,
+          outboundToken,
+          chatId,
+          telegramUserId,
+          actions,
+          "USDT",
+          undefined,
+          callbackLanguage,
+        );
+      } else if (
+        data === "wallet:topup:sol" ||
+        data === "wallet:topup:ton" ||
+        data === "wallet:topup:bep20"
+      ) {
+        const provider = data.endsWith(":ton")
+          ? "USDT_TON"
+          : data.endsWith(":bep20")
+            ? "USDT_BEP20"
+            : "USDT_SOL";
         await this.clearPendingWalletTopup(shopId, telegramUserId);
-        await this.sessions.setPendingSession('pendingWalletTopups', this.sessions.getPendingQuantityKey(shopId, telegramUserId), {
-          currency: "USDT",
+        await this.sessions.setPendingSession(
+          "pendingWalletTopups",
+          this.sessions.getPendingQuantityKey(shopId, telegramUserId),
+          {
+            currency: "USDT",
+            provider,
+            expiresAt: Date.now() + this.sessions.pendingQuantityTtlMs,
+          },
+          this.sessions.pendingQuantityTtlMs,
+        );
+        await this.promptWalletTopupAmount(
+          shopId,
+          outboundToken,
+          chatId,
+          telegramUserId,
+          actions,
+          "USDT",
+          undefined,
+          callbackLanguage,
           provider,
-          expiresAt: Date.now() + this.sessions.pendingQuantityTtlMs,
-        }, this.sessions.pendingQuantityTtlMs);
-        await this.promptWalletTopupAmount(shopId, outboundToken, chatId, telegramUserId, actions, "USDT", undefined, callbackLanguage, provider);
+        );
       } else if (data === "home:language") {
-        await this.renderLanguageMenu(outboundToken, chatId, messageId, callbackLanguage, actions);
+        await this.renderLanguageMenu(
+          outboundToken,
+          chatId,
+          messageId,
+          callbackLanguage,
+          actions,
+        );
       } else if (data.startsWith("lang:set:")) {
-        const nextLanguage = data.endsWith(":en") ? "en" : data.endsWith(":th") ? "th" : "vi";
+        const nextLanguage = data.endsWith(":en")
+          ? "en"
+          : data.endsWith(":th")
+            ? "th"
+            : data.endsWith(":zh")
+              ? "zh"
+              : "vi";
         await this.setCustomerLanguage(shopId, telegramUserId, nextLanguage);
-        await this.renderHome(shopId, outboundToken, chatId, messageId, actions, nextLanguage, canBling);
+        try {
+          await this.sendWalletPromotionAnnouncement(
+            shopId,
+            outboundToken,
+            chatId,
+            actions,
+            nextLanguage,
+          );
+        } catch (error) {
+          this.logger.warn(
+            `Could not send wallet promotion announcement for shop ${shopId}: ${String(error)}`,
+          );
+        }
+        // Send the home as a new message so the promotion is visibly placed before it.
+        await this.renderHome(
+          shopId,
+          outboundToken,
+          chatId,
+          undefined,
+          actions,
+          nextLanguage,
+          canBling,
+        );
       } else if (data === "home:guide") {
         await this.editOrSend(
           outboundToken,
@@ -1052,7 +1797,13 @@ export class TelegramBotService {
           outboundToken,
           chatId,
           messageId,
-          this.buildSupportText(shop.name, shop.supportTelegram, shop.supportZalo, callbackLanguage, shop.supportNote),
+          this.buildSupportText(
+            shop.name,
+            shop.supportTelegram,
+            shop.supportZalo,
+            callbackLanguage,
+            shop.supportNote,
+          ),
           {
             inline_keyboard: [
               [
@@ -1068,14 +1819,40 @@ export class TelegramBotService {
           actions,
         );
       } else if (data === "home:api") {
-        await this.handleProKeyMenu(shop, outboundToken, chatId, messageId, telegramUserId, actions);
+        await this.handleProKeyMenu(
+          shop,
+          outboundToken,
+          chatId,
+          messageId,
+          telegramUserId,
+          actions,
+        );
       } else if (data === "home:affiliate") {
-        await this.renderAffiliatePanel(shop, outboundToken, chatId, messageId, telegramUserId, actions, callbackLanguage);
+        await this.renderAffiliatePanel(
+          shop,
+          outboundToken,
+          chatId,
+          messageId,
+          telegramUserId,
+          actions,
+          callbackLanguage,
+        );
       } else if (data.startsWith("catalog:custom:")) {
         const parts = data.split(":");
         const customGroupId = parts[2] ?? "";
         const page = Number(parts[3] || "0");
-        await this.renderCustomCatalogGroup(shopId, outboundToken, chatId, messageId, customGroupId, page, actions, callbackLanguage, callbackQuery.id, canBling);
+        await this.renderCustomCatalogGroup(
+          shopId,
+          outboundToken,
+          chatId,
+          messageId,
+          customGroupId,
+          page,
+          actions,
+          callbackLanguage,
+          callbackQuery.id,
+          canBling,
+        );
       } else if (data.startsWith("catalog:group:")) {
         const [, , rawGroupKey, rawPage] = data.split(":");
         const page = Number(rawPage || "0");
@@ -1092,7 +1869,16 @@ export class TelegramBotService {
         );
       } else if (data.startsWith("catalog:page:")) {
         const page = Number(data.split(":").pop() || "0");
-        await this.renderCatalog(shopId, outboundToken, chatId, messageId, page, actions, callbackLanguage, canBling);
+        await this.renderCatalog(
+          shopId,
+          outboundToken,
+          chatId,
+          messageId,
+          page,
+          actions,
+          callbackLanguage,
+          canBling,
+        );
       } else if (data.startsWith("pay:")) {
         await this.handlePaymentMethodSelection(
           shopId,
@@ -1209,7 +1995,9 @@ export class TelegramBotService {
               ].join("\n"),
               actions,
               {
-                inline_keyboard: [[this.navBtn("back", callbackLanguage, "home:products")]],
+                inline_keyboard: [
+                  [this.navBtn("back", callbackLanguage, "home:products")],
+                ],
               },
             ).catch(() => undefined);
           }
@@ -1239,45 +2027,74 @@ export class TelegramBotService {
       return;
     }
 
-    const custData = await this.resolveCustomization(shop.botConfig?.customizationJson as Record<string, unknown> | null ?? null);
-    const footerMap = (custData?.footerBill && typeof custData.footerBill === "object")
-      ? custData.footerBill as Record<string, string> : {};
-    const msgEmojiIdsDelivery = (custData?.messageEmojiIds && typeof custData.messageEmojiIds === "object")
-      ? custData.messageEmojiIds as Record<string, string> : {};
+    const custData = await this.resolveCustomization(
+      (shop.botConfig?.customizationJson as Record<string, unknown> | null) ??
+        null,
+    );
+    const footerMap =
+      custData?.footerBill && typeof custData.footerBill === "object"
+        ? (custData.footerBill as Record<string, string>)
+        : {};
+    const msgEmojiIdsDelivery =
+      custData?.messageEmojiIds && typeof custData.messageEmojiIds === "object"
+        ? (custData.messageEmojiIds as Record<string, string>)
+        : {};
     const footerBillEmojiId = msgEmojiIdsDelivery["footerBill"]?.trim() || "";
-    const footerRaw = footerMap[language]?.trim() || footerMap["vi"]?.trim() || (
-      language === "en"
+    const footerRaw =
+      footerMap[language]?.trim() ||
+      footerMap["vi"]?.trim() ||
+      (language === "en"
         ? "Please change the password right after logging in for safety."
         : language === "th"
           ? "กรุณาเปลี่ยนรหัสผ่านทันทีหลังจากเข้าสู่ระบบเพื่อความปลอดภัย"
-          : "Vui lòng đổi mật khẩu ngay sau khi đăng nhập để bảo đảm an toàn."
-    );
+          : "Vui lòng đổi mật khẩu ngay sau khi đăng nhập để bảo đảm an toàn.");
     const footerText = footerBillEmojiId
       ? `<tg-emoji emoji-id="${footerBillEmojiId}">🧾</tg-emoji> ${footerRaw}`
       : footerRaw;
 
-    const hasWarrantyFeature = shop.seller.tier === SellerTier.ULTRA
-      || shop.providerConfig?.providerKind === "INTERNAL";
-    const warrantyButton = hasWarrantyFeature && orderCode
-      ? {
-          inline_keyboard: [
-            [{ text: language === "en" ? "🛡️ Warranty" : language === "th" ? "🛡️ การรับประกัน" : "🛡️ Bảo hành", callback_data: `warranty_claim:${orderCode}` }],
-          ],
-        }
-      : undefined;
+    const hasWarrantyFeature =
+      shop.seller.tier === SellerTier.PRO ||
+      shop.seller.tier === SellerTier.ULTRA ||
+      shop.providerConfig?.providerKind === "INTERNAL";
+    const warrantyButton =
+      hasWarrantyFeature && orderCode
+        ? {
+            inline_keyboard: [
+              [
+                {
+                  text:
+                    language === "en"
+                      ? "🛡️ Warranty"
+                      : language === "th"
+                        ? "🛡️ การรับประกัน"
+                        : "🛡️ Bảo hành",
+                  callback_data: `warranty_claim:${orderCode}`,
+                },
+              ],
+            ],
+          }
+        : undefined;
 
     await this.sendText(
       token,
       chatId,
       [
-        language === "en" ? "✅ Payment successful" : language === "th" ? "✅ ชำระเงินสำเร็จ" : "✅ Thanh toán thành công",
+        language === "en"
+          ? "✅ Payment successful"
+          : language === "th"
+            ? "✅ ชำระเงินสำเร็จ"
+            : "✅ Thanh toán thành công",
         language === "en"
           ? `Product: ${this.localizeProductName(productName, language)}`
           : language === "th"
             ? `สินค้า: ${this.localizeProductName(productName, language)}`
             : `Sản phẩm: ${this.localizeProductName(productName, language)}`,
         "",
-        language === "en" ? "🔐 Your account:" : language === "th" ? "🔐 บัญชีของคุณ:" : "🔐 Tài khoản của bạn:",
+        language === "en"
+          ? "🔐 Your account:"
+          : language === "th"
+            ? "🔐 บัญชีของคุณ:"
+            : "🔐 Tài khoản của bạn:",
         ...(formatHint ? [`Format: ${formatHint}`, ""] : []),
         deliveredAccountText,
         "",
@@ -1289,6 +2106,55 @@ export class TelegramBotService {
     );
   }
 
+  private async sendWalletPromotionAnnouncement(
+    shopId: string,
+    token: string,
+    chatId: number,
+    actions: unknown[],
+    language: BotLanguage,
+  ) {
+    const promotions =
+      await this.walletPromotionService.listActivePromotions(shopId);
+    if (promotions.length === 0) return;
+    const title =
+      language === "en"
+        ? "🎁 WALLET TOP-UP PROMOTION"
+        : language === "th"
+          ? "🎁 โปรโมชั่นเติมเงินเข้ากระเป๋า"
+          : "🎁 KHUYẾN MÃI NẠP VÍ";
+    const rows = promotions.map((promo) => {
+      const threshold = Number(promo.minAmount).toLocaleString(
+        language === "en" ? "en-US" : "vi-VN",
+      );
+      return language === "en"
+        ? `• Top up from ${threshold} VND: bonus +${promo.bonusPercent}%`
+        : language === "th"
+          ? `• เติมตั้งแต่ ${threshold} VND: รับเพิ่ม +${promo.bonusPercent}%`
+          : `• Nạp từ ${threshold}đ: tặng thêm +${promo.bonusPercent}%`;
+    });
+    const footer =
+      language === "en"
+        ? "The highest eligible tier is applied automatically."
+        : language === "th"
+          ? "ระบบจะใช้ระดับสูงสุดที่ยอดเติมถึงโดยอัตโนมัติ"
+          : "Hệ thống tự động áp dụng mốc cao nhất bạn đạt được.";
+    const text = [title, "", ...rows, "", footer].join("\n");
+    const imageUrl = [...promotions]
+      .reverse()
+      .find((promo) => promo.imageUrl)?.imageUrl;
+    if (imageUrl) {
+      try {
+        await this.sendPhoto(token, chatId, imageUrl, text, actions);
+        return;
+      } catch (error) {
+        this.logger.warn(
+          `Promotion image failed, falling back to text: ${String(error)}`,
+        );
+      }
+    }
+    await this.sendText(token, chatId, text, actions);
+  }
+
   private async renderHome(
     shopId: string,
     token: string,
@@ -1297,20 +2163,46 @@ export class TelegramBotService {
     actions: unknown[],
     language: BotLanguage = "vi",
     isPremium = false,
+    messageHasPhoto = false,
   ) {
     const shop = await this.shopsService.getSellerShopByShopId(shopId);
-    const products = await this.shopsService.getCatalogViewForShop(shopId, false, false, true);
-    const activeProducts = products.filter((item) => item.enabled && !item.hidden);
-    const available = activeProducts.filter((item) => item.available === null || item.available > 0);
+    const products = await this.shopsService.getCatalogViewForShop(
+      shopId,
+      false,
+      false,
+      true,
+    );
+    const activeProducts = products.filter(
+      (item) => item.enabled && !item.hidden,
+    );
+    const available = activeProducts.filter(
+      (item) =>
+        item.available === null || item.available > 0 || item.preorderEnabled,
+    );
 
-    const isPro = shop.seller.tier === SellerTier.ULTRA;
-    const hasWarranty = isPro || shop.providerConfig?.providerKind === "INTERNAL";
+    const isPro =
+      shop.seller.tier === SellerTier.PRO ||
+      shop.seller.tier === SellerTier.ULTRA;
+    const hasWarranty =
+      isPro || shop.providerConfig?.providerKind === "INTERNAL";
 
-    const customization = await this.resolveEffectiveCustomization(shopId, shop.botConfig?.customizationJson as Record<string, unknown> | null ?? null);
-    const custHomeFooter = (customization?.homeFooter && typeof customization.homeFooter === "object")
-      ? customization.homeFooter as Record<string, string> : {};
-    const homeFooterText = custHomeFooter[language]?.trim() ?? custHomeFooter["vi"]?.trim() ?? undefined;
-    const homeIconText = typeof customization?.homeIcon === "string" ? customization.homeIcon : undefined;
+    const customization = await this.resolveEffectiveCustomization(
+      shopId,
+      (shop.botConfig?.customizationJson as Record<string, unknown> | null) ??
+        null,
+    );
+    const custHomeFooter =
+      customization?.homeFooter && typeof customization.homeFooter === "object"
+        ? (customization.homeFooter as Record<string, string>)
+        : {};
+    const homeFooterText =
+      custHomeFooter[language]?.trim() ??
+      custHomeFooter["vi"]?.trim() ??
+      undefined;
+    const homeIconText =
+      typeof customization?.homeIcon === "string"
+        ? customization.homeIcon
+        : undefined;
 
     const homeText = this.buildHomeText(
       shop.name,
@@ -1326,26 +2218,48 @@ export class TelegramBotService {
       homeFooterText,
       homeIconText,
     );
-    const custEmojis = (customization?.buttonEmojis && typeof customization.buttonEmojis === "object")
-      ? customization.buttonEmojis as Record<string, string> : {};
-    const custLabels = (customization?.buttonLabels && typeof customization.buttonLabels === "object")
-      ? customization.buttonLabels as Record<string, Record<string, string>> : {};
-    const custEmojiIds = (customization?.buttonEmojiIds && typeof customization.buttonEmojiIds === "object")
-      ? customization.buttonEmojiIds as Record<string, string> : {};
-    const custWelcome = (customization?.welcomeMessage && typeof customization.welcomeMessage === "object")
-      ? customization.welcomeMessage as Record<string, string> : {};
-    const custMsgEmojiIds = (customization?.messageEmojiIds && typeof customization.messageEmojiIds === "object")
-      ? customization.messageEmojiIds as Record<string, string> : {};
-    const welcomeExtra = custWelcome[language]?.trim() || custWelcome["vi"]?.trim() || "";
+    const custEmojis =
+      customization?.buttonEmojis &&
+      typeof customization.buttonEmojis === "object"
+        ? (customization.buttonEmojis as Record<string, string>)
+        : {};
+    const custLabels =
+      customization?.buttonLabels &&
+      typeof customization.buttonLabels === "object"
+        ? (customization.buttonLabels as Record<string, Record<string, string>>)
+        : {};
+    const custEmojiIds =
+      customization?.buttonEmojiIds &&
+      typeof customization.buttonEmojiIds === "object"
+        ? (customization.buttonEmojiIds as Record<string, string>)
+        : {};
+    const custWelcome =
+      customization?.welcomeMessage &&
+      typeof customization.welcomeMessage === "object"
+        ? (customization.welcomeMessage as Record<string, string>)
+        : {};
+    const custMsgEmojiIds =
+      customization?.messageEmojiIds &&
+      typeof customization.messageEmojiIds === "object"
+        ? (customization.messageEmojiIds as Record<string, string>)
+        : {};
+    const welcomeExtra =
+      custWelcome[language]?.trim() || custWelcome["vi"]?.trim() || "";
     const welcomeEmojiId = custMsgEmojiIds["welcomeMessage"]?.trim() || "";
     const welcomeFormatted = welcomeExtra
-      ? (welcomeEmojiId
-          ? `<tg-emoji emoji-id="${welcomeEmojiId}">👋</tg-emoji> ${this.escapeHtml(welcomeExtra)}`
-          : this.escapeHtml(welcomeExtra))
+      ? welcomeEmojiId
+        ? `<tg-emoji emoji-id="${welcomeEmojiId}">👋</tg-emoji> ${this.escapeHtml(welcomeExtra)}`
+        : this.escapeHtml(welcomeExtra)
       : "";
-    const fullHomeText = welcomeFormatted ? `${homeText}\n\n${welcomeFormatted}` : homeText;
+    const fullHomeText = welcomeFormatted
+      ? `${homeText}\n\n${welcomeFormatted}`
+      : homeText;
+    const bannerUrl = String(shop.logoUrl || "").trim();
 
-    const custParts = (custKey: string, fallback: Parameters<typeof this.buttonLabel>[0]) => {
+    const custParts = (
+      custKey: string,
+      fallback: Parameters<typeof this.buttonLabel>[0],
+    ) => {
       const full = this.buttonLabel(fallback, language);
       const defEmoji = full.split(" ")[0];
       const defLabel = full.split(" ").slice(1).join(" ");
@@ -1360,11 +2274,19 @@ export class TelegramBotService {
     // Bot API 9.4: icon_custom_emoji_id on inline keyboard buttons. A premium viewer with a cusid gets
     // the cusid icon only (text emoji stripped so it doesn't render twice); everyone else gets the
     // default text emoji — so a non-premium viewer never sees a blank button.
-    const iconBtn = (key: string, fallback: Parameters<typeof this.buttonLabel>[0], cbData: string) => {
+    const iconBtn = (
+      key: string,
+      fallback: Parameters<typeof this.buttonLabel>[0],
+      cbData: string,
+    ) => {
       const useCustom = isPremium && Boolean(custEmojiIds[key]);
       const { emoji, label } = custParts(key, fallback);
-      const btn: Record<string, string> = { text: useCustom ? label : `${emoji} ${label}`, callback_data: cbData };
-      if (useCustom && custEmojiIds[key]) btn.icon_custom_emoji_id = custEmojiIds[key];
+      const btn: Record<string, string> = {
+        text: useCustom ? label : `${emoji} ${label}`,
+        callback_data: cbData,
+      };
+      if (useCustom && custEmojiIds[key])
+        btn.icon_custom_emoji_id = custEmojiIds[key];
       return btn;
     };
 
@@ -1379,10 +2301,12 @@ export class TelegramBotService {
           iconBtn("wallet", "wallet", "home:wallet"),
         ],
         ...(hasWarranty
-          ? [[
-              iconBtn("warranty", "warranty", "home:warranty"),
-              iconBtn("support", "support", "home:support"),
-            ]]
+          ? [
+              [
+                iconBtn("warranty", "warranty", "home:warranty"),
+                iconBtn("support", "support", "home:support"),
+              ],
+            ]
           : [[iconBtn("support", "support", "home:support")]]),
         ...(isPro ? [[iconBtn("apiKey", "apiKey", "home:api")]] : []),
         [iconBtn("affiliate", "affiliate", "home:affiliate")],
@@ -1393,16 +2317,57 @@ export class TelegramBotService {
       ],
     };
 
-    if (messageId) {
-      await this.editText(token, chatId, messageId, fullHomeText, inlineKeyboard, actions, "HTML", () => this.markCusidEmitFailed(shopId));
+    if (messageId && messageHasPhoto) {
+      await this.editCaption(
+        token,
+        chatId,
+        messageId,
+        fullHomeText,
+        inlineKeyboard,
+        actions,
+        "HTML",
+        () => this.markCusidEmitFailed(shopId),
+      );
+    } else if (messageId && bannerUrl) {
+      await this.sendPhoto(
+        token,
+        chatId,
+        bannerUrl,
+        fullHomeText,
+        actions,
+        inlineKeyboard,
+        "HTML",
+      );
+    } else if (messageId) {
+      await this.editText(
+        token,
+        chatId,
+        messageId,
+        fullHomeText,
+        inlineKeyboard,
+        actions,
+        "HTML",
+        () => this.markCusidEmitFailed(shopId),
+      );
+    } else if (bannerUrl) {
+      await this.sendPhoto(
+        token,
+        chatId,
+        bannerUrl,
+        fullHomeText,
+        actions,
+        inlineKeyboard,
+        "HTML",
+      );
     } else {
-      const sent = await this.sendText(token, chatId, fullHomeText, actions, this.buildReplyKeyboard(language, hasWarranty, customization), "HTML");
-      const sentMessageId = sent && typeof sent === "object" && "message_id" in sent
-        ? (sent as { message_id: number }).message_id
-        : undefined;
-      if (sentMessageId) {
-        await this.editText(token, chatId, sentMessageId, fullHomeText, inlineKeyboard, actions, "HTML", () => this.markCusidEmitFailed(shopId));
-      }
+      await this.sendText(
+        token,
+        chatId,
+        fullHomeText,
+        actions,
+        inlineKeyboard,
+        "HTML",
+      );
     }
   }
 
@@ -1417,12 +2382,38 @@ export class TelegramBotService {
     isPremium = false,
   ) {
     try {
-      return await this._renderCatalogInner(shopId, token, chatId, messageId, page, actions, language, isPremium);
-    } catch (err) {
-      await this.sendText(token, chatId,
-        language === "en" ? "⚠️ Could not load products. Please try again." : "⚠️ Không tải được sản phẩm. Vui lòng thử lại.",
+      return await this._renderCatalogInner(
+        shopId,
+        token,
+        chatId,
+        messageId,
+        page,
         actions,
-        { inline_keyboard: [[{ text: this.buttonLabel("retry", language), callback_data: "home:products" }, { text: language === "en" ? "🏠 Home" : "🏠 Trang chủ", callback_data: "home:menu" }]] },
+        language,
+        isPremium,
+      );
+    } catch (err) {
+      await this.sendText(
+        token,
+        chatId,
+        language === "en"
+          ? "⚠️ Could not load products. Please try again."
+          : "⚠️ Không tải được sản phẩm. Vui lòng thử lại.",
+        actions,
+        {
+          inline_keyboard: [
+            [
+              {
+                text: this.buttonLabel("retry", language),
+                callback_data: "home:products",
+              },
+              {
+                text: language === "en" ? "🏠 Home" : "🏠 Trang chủ",
+                callback_data: "home:menu",
+              },
+            ],
+          ],
+        },
       ).catch(() => undefined);
       throw err;
     }
@@ -1438,14 +2429,19 @@ export class TelegramBotService {
    * catalog / quantity-prompt renderers.
    */
   private buildCtvPricing(
-    customerRecord: { isCtv?: boolean | null; discountPercent?: Prisma.Decimal | number | null } | null,
+    customerRecord: {
+      isCtv?: boolean | null;
+      discountPercent?: Prisma.Decimal | number | null;
+    } | null,
     ctvApiKey: { id: string } | null,
     downstreamConn: { id: string } | null,
   ) {
     const blocked = customerRecord?.isCtv === false;
     const isCtv =
       !blocked &&
-      ((customerRecord?.isCtv ?? false) || ctvApiKey != null || downstreamConn != null);
+      ((customerRecord?.isCtv ?? false) ||
+        ctvApiKey != null ||
+        downstreamConn != null);
     const discountPercent = Number(customerRecord?.discountPercent ?? 0);
     const getEffectivePrice = (item: {
       salePrice: number;
@@ -1457,7 +2453,9 @@ export class TelegramBotService {
         item.internalSourceEnabled && item.internalSourcePrice != null
           ? item.internalSourcePrice
           : item.salePrice;
-      return discountPercent > 0 ? Math.round(base * (1 - discountPercent / 100)) : base;
+      return discountPercent > 0
+        ? Math.round(base * (1 - discountPercent / 100))
+        : base;
     };
     return { isCtv, discountPercent, getEffectivePrice };
   }
@@ -1472,37 +2470,68 @@ export class TelegramBotService {
     language: BotLanguage = "vi",
     isPremium = false,
   ) {
-    const [allCatalog, shopData, customerRecord, downstreamConn, ctvApiKey] = await Promise.all([
-      this.shopsService.getCatalogViewForShop(shopId, false, true, true),
-      this.shopsService.getSellerShopByShopId(shopId),
-      this.prisma.customer.findFirst({
-        where: { shopId, telegramChatId: String(chatId) },
-        select: { isCtv: true, discountPercent: true },
-      }),
-      this.prisma.downstreamSourceConnection.findFirst({
-        where: { upstreamShopId: shopId, downstreamTelegramChatId: String(chatId), status: "ACTIVE" },
-        select: { id: true },
-      }),
-      this.prisma.internalSourceApiKey.findFirst({
-        where: { shopId, telegramChatId: String(chatId), status: "ACTIVE" },
-        select: { id: true },
-      }),
-    ]);
-    const shopCust = await this.resolveEffectiveCustomization(shopId, shopData.botConfig?.customizationJson as Record<string, unknown> | null ?? null);
-    const globalOosEmojiId = typeof shopCust?.outOfStockEmojiId === "string" ? shopCust.outOfStockEmojiId.trim() : "";
+    const [allCatalog, shopData, customerRecord, downstreamConn, ctvApiKey] =
+      await Promise.all([
+        this.shopsService.getCatalogViewForShop(shopId, false, true, true),
+        this.shopsService.getSellerShopByShopId(shopId),
+        this.prisma.customer.findFirst({
+          where: { shopId, telegramChatId: String(chatId) },
+          select: { isCtv: true, discountPercent: true },
+        }),
+        this.prisma.downstreamSourceConnection.findFirst({
+          where: {
+            upstreamShopId: shopId,
+            downstreamTelegramChatId: String(chatId),
+            status: "ACTIVE",
+          },
+          select: { id: true },
+        }),
+        this.prisma.internalSourceApiKey.findFirst({
+          where: { shopId, telegramChatId: String(chatId), status: "ACTIVE" },
+          select: { id: true },
+        }),
+      ]);
+    const shopCust = await this.resolveEffectiveCustomization(
+      shopId,
+      (shopData.botConfig?.customizationJson as Record<
+        string,
+        unknown
+      > | null) ?? null,
+    );
+    const globalOosEmojiId =
+      typeof shopCust?.outOfStockEmojiId === "string"
+        ? shopCust.outOfStockEmojiId.trim()
+        : "";
     const showOutOfStock = shopCust?.showOutOfStock === true;
     const custData = {
-      custEmojis: (shopCust?.buttonEmojis && typeof shopCust.buttonEmojis === "object") ? shopCust.buttonEmojis as Record<string, string> : {},
-      custLabels: (shopCust?.buttonLabels && typeof shopCust.buttonLabels === "object") ? shopCust.buttonLabels as Record<string, Record<string, string>> : {},
-      custEmojiIds: (shopCust?.buttonEmojiIds && typeof shopCust.buttonEmojiIds === "object") ? shopCust.buttonEmojiIds as Record<string, string> : {},
+      custEmojis:
+        shopCust?.buttonEmojis && typeof shopCust.buttonEmojis === "object"
+          ? (shopCust.buttonEmojis as Record<string, string>)
+          : {},
+      custLabels:
+        shopCust?.buttonLabels && typeof shopCust.buttonLabels === "object"
+          ? (shopCust.buttonLabels as Record<string, Record<string, string>>)
+          : {},
+      custEmojiIds:
+        shopCust?.buttonEmojiIds && typeof shopCust.buttonEmojiIds === "object"
+          ? (shopCust.buttonEmojiIds as Record<string, string>)
+          : {},
     };
     const custEmojiIds = custData.custEmojiIds;
-    const custMsgEmojiIdsCatalog = (shopCust?.messageEmojiIds && typeof shopCust.messageEmojiIds === "object")
-      ? shopCust.messageEmojiIds as Record<string, string> : {};
+    const custMsgEmojiIdsCatalog =
+      shopCust?.messageEmojiIds && typeof shopCust.messageEmojiIds === "object"
+        ? (shopCust.messageEmojiIds as Record<string, string>)
+        : {};
     const mkMsgIcon = (key: string, fallback: string) =>
-      custMsgEmojiIdsCatalog[key] ? `<tg-emoji emoji-id="${custMsgEmojiIdsCatalog[key]}">${fallback}</tg-emoji>` : fallback;
+      custMsgEmojiIdsCatalog[key]
+        ? `<tg-emoji emoji-id="${custMsgEmojiIdsCatalog[key]}">${fallback}</tg-emoji>`
+        : fallback;
 
-    const { getEffectivePrice } = this.buildCtvPricing(customerRecord, ctvApiKey, downstreamConn);
+    const { getEffectivePrice } = this.buildCtvPricing(
+      customerRecord,
+      ctvApiKey,
+      downstreamConn,
+    );
 
     const visibleBase = allCatalog.filter(
       (item) =>
@@ -1511,9 +2540,17 @@ export class TelegramBotService {
         (language !== "vi" || !item.hiddenVi) &&
         (language !== "en" || !item.hiddenEn),
     );
-    const products = visibleBase.filter((item) => item.available === null || item.available > 0);
+    const products = visibleBase.filter(
+      (item) =>
+        item.available === null || item.available > 0 || item.preorderEnabled,
+    );
     const outOfStockShown = showOutOfStock
-      ? visibleBase.filter((item) => item.available !== null && item.available <= 0)
+      ? visibleBase.filter(
+          (item) =>
+            item.available !== null &&
+            item.available <= 0 &&
+            !item.preorderEnabled,
+        )
       : [];
     const usdtVndRate = await this.getShopUsdtVndRate(shopId);
 
@@ -1525,7 +2562,12 @@ export class TelegramBotService {
       const useCustom = isPremium && Boolean(emojiId);
       const effectivePrice = getEffectivePrice(item);
       const btn: Record<string, string> = {
-        text: this.buildProductButtonLabel({ ...item, salePrice: effectivePrice }, language, usdtVndRate, useCustom),
+        text: this.buildProductButtonLabel(
+          { ...item, salePrice: effectivePrice },
+          language,
+          usdtVndRate,
+          useCustom,
+        ),
         callback_data: `buy:${item.id}`,
       };
       if (useCustom && emojiId) btn.icon_custom_emoji_id = emojiId;
@@ -1537,10 +2579,16 @@ export class TelegramBotService {
         chatId,
         messageId,
         language === "en"
-          ? ["🛒 Products", "", "There are no active products right now."].join("\n")
+          ? ["🛒 Products", "", "There are no active products right now."].join(
+              "\n",
+            )
           : language === "th"
             ? ["🛒 สินค้า", "", "ขณะนี้ยังไม่มีสินค้าที่เปิดขาย"].join("\n")
-            : ["🛒 Danh sách sản phẩm", "", "Hiện chưa có sản phẩm nào đang mở bán."].join("\n"),
+            : [
+                "🛒 Danh sách sản phẩm",
+                "",
+                "Hiện chưa có sản phẩm nào đang mở bán.",
+              ].join("\n"),
         {
           inline_keyboard: [
             [
@@ -1554,7 +2602,10 @@ export class TelegramBotService {
       return;
     }
 
-    const customGroups = await this.shopsService.getCatalogGroupsForShop(shopId, true);
+    const customGroups = await this.shopsService.getCatalogGroupsForShop(
+      shopId,
+      true,
+    );
 
     if (customGroups.length > 0) {
       // Custom group mode: show group buttons + ungrouped products
@@ -1563,10 +2614,18 @@ export class TelegramBotService {
       );
       const ungrouped = products.filter((p) => !p.groupId);
 
-      const catalogTextCustom = (shopCust as Record<string, unknown> | null)?.catalogText as Record<string, string> | undefined;
-      const catalogTextVal = catalogTextCustom?.[language] || catalogTextCustom?.["vi"] || "";
+      const catalogTextCustom = (shopCust as Record<string, unknown> | null)
+        ?.catalogText as Record<string, string> | undefined;
+      const catalogTextVal =
+        catalogTextCustom?.[language] || catalogTextCustom?.["vi"] || "";
 
-      const lines: string[] = [language === "en" ? `${mkMsgIcon("catalog", "🛒")} Products` : language === "th" ? `${mkMsgIcon("catalog", "🛒")} สินค้า` : `${mkMsgIcon("catalog", "🛒")} Danh sách sản phẩm`];
+      const lines: string[] = [
+        language === "en"
+          ? `${mkMsgIcon("catalog", "🛒")} Products`
+          : language === "th"
+            ? `${mkMsgIcon("catalog", "🛒")} สินค้า`
+            : `${mkMsgIcon("catalog", "🛒")} Danh sách sản phẩm`,
+      ];
 
       if (catalogTextVal.trim()) {
         lines.push("");
@@ -1602,19 +2661,42 @@ export class TelegramBotService {
           }
         }
         lines.push("");
-        lines.push(language === "en" ? "🎉 <b>Active promotions:</b>" : language === "th" ? "🎉 <b>โปรโมชั่นที่กำลังใช้งาน:</b>" : "🎉 <b>Khuyến mãi đang diễn ra:</b>");
+        lines.push(
+          language === "en"
+            ? "🎉 <b>Active promotions:</b>"
+            : language === "th"
+              ? "🎉 <b>โปรโมชั่นที่กำลังใช้งาน:</b>"
+              : "🎉 <b>Khuyến mãi đang diễn ra:</b>",
+        );
         for (const ap of activePromos) {
-          lines.push(`• <b>${ap.name}</b> — ${ap.banner}`);
+          lines.push(`\n▫️ <b>${this.escapeHtml(ap.name)}</b>`);
+          lines.push(
+            this.escapeHtml(ap.banner!)
+              .split("\n")
+              .map((line) => `   ${line}`)
+              .join("\n"),
+          );
         }
       }
 
-      const categoryCols = Math.min(3, Math.max(1, Number((shopCust as Record<string, unknown> | null)?.categoryGridCols) || 3));
+      const categoryCols = Math.min(
+        3,
+        Math.max(
+          1,
+          Number(
+            (shopCust as Record<string, unknown> | null)?.categoryGridCols,
+          ) || 3,
+        ),
+      );
       const groupCounts = new Map<string, number>();
       for (const p of products) {
-        if (p.groupId) groupCounts.set(p.groupId, (groupCounts.get(p.groupId) || 0) + 1);
+        if (p.groupId)
+          groupCounts.set(p.groupId, (groupCounts.get(p.groupId) || 0) + 1);
       }
       const visibleCustomGroups = shopData.providerConfig?.ownProductsOnly
-        ? customGroups.filter((group) => visibleBase.some((product) => product.groupId === group.id))
+        ? customGroups.filter((group) =>
+            visibleBase.some((product) => product.groupId === group.id),
+          )
         : customGroups;
       const groupRows = this.chunkButtons(
         visibleCustomGroups.map((g) => {
@@ -1622,7 +2704,9 @@ export class TelegramBotService {
           // "📁 <name>"), so a non-premium viewer always sees the folder — never blank. A premium
           // viewer with a custom-emoji id on the category gets the cusid bling instead (text stripped
           // to avoid a double icon). Never renders the stored text `icon` (leftover word/label).
-          const groupAny = g as typeof g & { iconCustomEmojiId?: string | null };
+          const groupAny = g as typeof g & {
+            iconCustomEmojiId?: string | null;
+          };
           const useCustom = isPremium && Boolean(groupAny.iconCustomEmojiId);
           const count = groupCounts.get(g.id) || 0;
           const textIcon = "📁";
@@ -1630,7 +2714,8 @@ export class TelegramBotService {
             text: `${useCustom ? "" : `${textIcon} `}${g.name} (${count})`,
             callback_data: `catalog:custom:${g.id}:0`,
           };
-          if (useCustom && groupAny.iconCustomEmojiId) btn.icon_custom_emoji_id = groupAny.iconCustomEmojiId;
+          if (useCustom && groupAny.iconCustomEmojiId)
+            btn.icon_custom_emoji_id = groupAny.iconCustomEmojiId;
           return btn;
         }),
         categoryCols,
@@ -1640,13 +2725,26 @@ export class TelegramBotService {
       // limit (category buttons + nav are shown on every page; ungrouped products fill the rest).
       const ungroupedRows = [
         ...ungrouped.map((item) => [productBtn(item)]),
-        ...outOfStockShown.filter((item) => !item.groupId).map((item) => [productBtn(item)]),
+        ...outOfStockShown
+          .filter((item) => !item.groupId)
+          .map((item) => [productBtn(item)]),
       ];
-      const cgRefreshRow = [this.buildRefreshBtn(custData, language, "home:products", isPremium)];
-      const cgNavRows = this.buildCatalogNavButtons(custData, language, isPremium);
+      const cgRefreshRow = [
+        this.buildRefreshBtn(custData, language, "home:products", isPremium),
+      ];
+      const cgNavRows = this.buildCatalogNavButtons(
+        custData,
+        language,
+        isPremium,
+      );
       const cgFixedBytes =
         [...groupRows, cgRefreshRow, ...cgNavRows].reduce(
-          (s, r) => s + r.reduce((x, b) => x + this.inlineBtnBytes(b as Record<string, unknown>), 0),
+          (s, r) =>
+            s +
+            r.reduce(
+              (x, b) => x + this.inlineBtnBytes(b as Record<string, unknown>),
+              0,
+            ),
           0,
         ) + 220; // reserve for the page-nav row
       const cgPages = this.paginateProductRows(ungroupedRows, cgFixedBytes);
@@ -1674,10 +2772,18 @@ export class TelegramBotService {
     // No custom groups — show all products directly
     const allPageItems = [...products, ...outOfStockShown];
 
-    const catalogTextLegacy = (shopCust as Record<string, unknown> | null)?.catalogText as Record<string, string> | undefined;
-    const catalogTextLegacyVal = catalogTextLegacy?.[language] || catalogTextLegacy?.["vi"] || "";
+    const catalogTextLegacy = (shopCust as Record<string, unknown> | null)
+      ?.catalogText as Record<string, string> | undefined;
+    const catalogTextLegacyVal =
+      catalogTextLegacy?.[language] || catalogTextLegacy?.["vi"] || "";
 
-    const lines: string[] = [language === "en" ? `${mkMsgIcon("catalog", "🛒")} Products` : language === "th" ? `${mkMsgIcon("catalog", "🛒")} สินค้า` : `${mkMsgIcon("catalog", "🛒")} Danh sách sản phẩm`];
+    const lines: string[] = [
+      language === "en"
+        ? `${mkMsgIcon("catalog", "🛒")} Products`
+        : language === "th"
+          ? `${mkMsgIcon("catalog", "🛒")} สินค้า`
+          : `${mkMsgIcon("catalog", "🛒")} Danh sách sản phẩm`,
+    ];
 
     if (catalogTextLegacyVal.trim()) {
       lines.push("");
@@ -1705,17 +2811,40 @@ export class TelegramBotService {
         }
       }
       lines.push("");
-      lines.push(language === "en" ? "🎉 <b>Active promotions:</b>" : language === "th" ? "🎉 <b>โปรโมชั่นที่กำลังใช้งาน:</b>" : "🎉 <b>Khuyến mãi đang diễn ra:</b>");
+      lines.push(
+        language === "en"
+          ? "🎉 <b>Active promotions:</b>"
+          : language === "th"
+            ? "🎉 <b>โปรโมชั่นที่กำลังใช้งาน:</b>"
+            : "🎉 <b>Khuyến mãi đang diễn ra:</b>",
+      );
       for (const ap of activePromosFlat) {
-        lines.push(`• <b>${ap.name}</b> — ${ap.banner}`);
+        lines.push(`\n▫️ <b>${this.escapeHtml(ap.name)}</b>`);
+        lines.push(
+          this.escapeHtml(ap.banner!)
+            .split("\n")
+            .map((line) => `   ${line}`)
+            .join("\n"),
+        );
       }
     }
 
-    const flatRefreshRow = [this.buildRefreshBtn(custData, language, "home:products", isPremium)];
-    const flatNavRows = this.buildCatalogNavButtons(custData, language, isPremium);
+    const flatRefreshRow = [
+      this.buildRefreshBtn(custData, language, "home:products", isPremium),
+    ];
+    const flatNavRows = this.buildCatalogNavButtons(
+      custData,
+      language,
+      isPremium,
+    );
     const flatFixedBytes =
       [flatRefreshRow, ...flatNavRows].reduce(
-        (s, r) => s + r.reduce((x, b) => x + this.inlineBtnBytes(b as Record<string, unknown>), 0),
+        (s, r) =>
+          s +
+          r.reduce(
+            (x, b) => x + this.inlineBtnBytes(b as Record<string, unknown>),
+            0,
+          ),
         0,
       ) + 220; // reserve for the page-nav row
     const flatPages = this.paginateProductRows(
@@ -1753,7 +2882,14 @@ export class TelegramBotService {
     callbackQueryId?: string,
     isPremium = false,
   ) {
-    const [allProducts, groups, custDataCustom, customerRecordGrp, downstreamConnGrp, ctvApiKeyGrp] = await Promise.all([
+    const [
+      allProducts,
+      groups,
+      custDataCustom,
+      customerRecordGrp,
+      downstreamConnGrp,
+      ctvApiKeyGrp,
+    ] = await Promise.all([
       this.shopsService.getCatalogViewForShop(shopId, false, true, true),
       this.shopsService.getCatalogGroupsForShop(shopId, true),
       this.loadCustData(shopId),
@@ -1762,7 +2898,11 @@ export class TelegramBotService {
         select: { isCtv: true, discountPercent: true },
       }),
       this.prisma.downstreamSourceConnection.findFirst({
-        where: { upstreamShopId: shopId, downstreamTelegramChatId: String(chatId), status: "ACTIVE" },
+        where: {
+          upstreamShopId: shopId,
+          downstreamTelegramChatId: String(chatId),
+          status: "ACTIVE",
+        },
         select: { id: true },
       }),
       this.prisma.internalSourceApiKey.findFirst({
@@ -1774,13 +2914,28 @@ export class TelegramBotService {
     const group = groups.find((g) => g.id === groupId);
     if (!group) {
       if (callbackQueryId) {
-        await telegramAnswerCallbackQuery(token, callbackQueryId).catch(() => undefined);
+        await telegramAnswerCallbackQuery(token, callbackQueryId).catch(
+          () => undefined,
+        );
       }
-      await this.renderCatalog(shopId, token, chatId, messageId, 0, actions, language, isPremium);
+      await this.renderCatalog(
+        shopId,
+        token,
+        chatId,
+        messageId,
+        0,
+        actions,
+        language,
+        isPremium,
+      );
       return;
     }
 
-    const { getEffectivePrice: getEffectivePriceGrp } = this.buildCtvPricing(customerRecordGrp, ctvApiKeyGrp, downstreamConnGrp);
+    const { getEffectivePrice: getEffectivePriceGrp } = this.buildCtvPricing(
+      customerRecordGrp,
+      ctvApiKeyGrp,
+      downstreamConnGrp,
+    );
 
     const products = allProducts.filter(
       (item) =>
@@ -1789,17 +2944,23 @@ export class TelegramBotService {
         !item.hidden &&
         (language !== "vi" || !item.hiddenVi) &&
         (language !== "en" || !item.hiddenEn) &&
-        (item.available === null || item.available > 0),
+        (item.available === null || item.available > 0 || item.preorderEnabled),
     );
 
     const usdtVndRate = await this.getShopUsdtVndRate(shopId);
     const productBtn = (item: (typeof allProducts)[number]) => {
       const useCustom = isPremium && Boolean(item.iconCustomEmojiId);
       const btn: Record<string, string> = {
-        text: this.buildProductButtonLabel({ ...item, salePrice: getEffectivePriceGrp(item) }, language, usdtVndRate, useCustom),
+        text: this.buildProductButtonLabel(
+          { ...item, salePrice: getEffectivePriceGrp(item) },
+          language,
+          usdtVndRate,
+          useCustom,
+        ),
         callback_data: `buy:${item.id}`,
       };
-      if (useCustom && item.iconCustomEmojiId) btn.icon_custom_emoji_id = item.iconCustomEmojiId;
+      if (useCustom && item.iconCustomEmojiId)
+        btn.icon_custom_emoji_id = item.iconCustomEmojiId;
       return btn;
     };
 
@@ -1811,24 +2972,35 @@ export class TelegramBotService {
             ? "สินค้าที่คุณเลือกหมดสต็อก กรุณากลับมาดูใหม่ภายหลังนะ"
             : "Sản phẩm bạn đang chọn hết hàng, bạn quay lại mua sau nhé.";
       if (callbackQueryId) {
-        await telegramAnswerCallbackQuery(token, callbackQueryId, outOfStockMsg, { showAlert: true }).catch(() => undefined);
+        await telegramAnswerCallbackQuery(
+          token,
+          callbackQueryId,
+          outOfStockMsg,
+          { showAlert: true },
+        ).catch(() => undefined);
       }
       return;
     }
 
     if (callbackQueryId) {
-      await telegramAnswerCallbackQuery(token, callbackQueryId).catch(() => undefined);
+      await telegramAnswerCallbackQuery(token, callbackQueryId).catch(
+        () => undefined,
+      );
     }
 
-    const lines = [
-      `📁 ${group.name}`,
+    const lines = [`📁 ${group.name}`];
+    const groupDescription = group.description?.trim();
+    if (groupDescription) {
+      lines.push("", groupDescription);
+    }
+    lines.push(
       "",
       language === "en"
         ? "Choose a product to view details."
         : language === "th"
           ? "เลือกสินค้าเพื่อดูรายละเอียด"
           : "Chọn sản phẩm để xem chi tiết.",
-    ];
+    );
 
     await this.editOrSend(
       token,
@@ -1838,8 +3010,24 @@ export class TelegramBotService {
       {
         inline_keyboard: [
           ...products.map((item) => [productBtn(item)]),
-          [this.buildRefreshBtn(custDataCustom, language, `catalog:custom:${groupId}:0`, isPremium)],
-          [this.buildNavTextBtn(custDataCustom, "viewAll", "viewAll", "home:products", language, isPremium)],
+          [
+            this.buildRefreshBtn(
+              custDataCustom,
+              language,
+              `catalog:custom:${groupId}:0`,
+              isPremium,
+            ),
+          ],
+          [
+            this.buildNavTextBtn(
+              custDataCustom,
+              "viewAll",
+              "viewAll",
+              "home:products",
+              language,
+              isPremium,
+            ),
+          ],
           ...this.buildCatalogNavButtons(custDataCustom, language, isPremium),
         ],
       },
@@ -1858,7 +3046,13 @@ export class TelegramBotService {
     language: BotLanguage = "vi",
     isPremium = false,
   ) {
-    const [allProducts, custDataFeatured, customerRecordFt, downstreamConnFt, ctvApiKeyFt] = await Promise.all([
+    const [
+      allProducts,
+      custDataFeatured,
+      customerRecordFt,
+      downstreamConnFt,
+      ctvApiKeyFt,
+    ] = await Promise.all([
       this.shopsService.getCatalogViewForShop(shopId, false, true, true),
       this.loadCustData(shopId),
       this.prisma.customer.findFirst({
@@ -1866,7 +3060,11 @@ export class TelegramBotService {
         select: { isCtv: true, discountPercent: true },
       }),
       this.prisma.downstreamSourceConnection.findFirst({
-        where: { upstreamShopId: shopId, downstreamTelegramChatId: String(chatId), status: "ACTIVE" },
+        where: {
+          upstreamShopId: shopId,
+          downstreamTelegramChatId: String(chatId),
+          status: "ACTIVE",
+        },
         select: { id: true },
       }),
       this.prisma.internalSourceApiKey.findFirst({
@@ -1874,35 +3072,58 @@ export class TelegramBotService {
         select: { id: true },
       }),
     ]);
-    const { getEffectivePrice: getEffectivePriceFt } = this.buildCtvPricing(customerRecordFt, ctvApiKeyFt, downstreamConnFt);
+    const { getEffectivePrice: getEffectivePriceFt } = this.buildCtvPricing(
+      customerRecordFt,
+      ctvApiKeyFt,
+      downstreamConnFt,
+    );
     const products = allProducts.filter(
       (item) =>
         item.enabled &&
         !item.hidden &&
         (language !== "vi" || !item.hiddenVi) &&
         (language !== "en" || !item.hiddenEn) &&
-        (item.available === null || item.available > 0),
+        (item.available === null || item.available > 0 || item.preorderEnabled),
     );
     const usdtVndRate = await this.getShopUsdtVndRate(shopId);
     const productBtn = (item: (typeof products)[number]) => {
       const useCustom = isPremium && Boolean(item.iconCustomEmojiId);
       const btn: Record<string, string> = {
-        text: this.buildProductButtonLabel({ ...item, salePrice: getEffectivePriceFt(item) }, language, usdtVndRate, useCustom),
+        text: this.buildProductButtonLabel(
+          { ...item, salePrice: getEffectivePriceFt(item) },
+          language,
+          usdtVndRate,
+          useCustom,
+        ),
         callback_data: `buy:${item.id}`,
       };
-      if (useCustom && item.iconCustomEmojiId) btn.icon_custom_emoji_id = item.iconCustomEmojiId;
+      if (useCustom && item.iconCustomEmojiId)
+        btn.icon_custom_emoji_id = item.iconCustomEmojiId;
       return btn;
     };
     const { featuredGroups } = this.splitCatalogProducts(products);
     const group = featuredGroups.find((item) => item.key === groupKey);
 
     if (!group || group.items.length === 0) {
-      await this.renderCatalog(shopId, token, chatId, messageId, 0, actions, language, isPremium);
+      await this.renderCatalog(
+        shopId,
+        token,
+        chatId,
+        messageId,
+        0,
+        actions,
+        language,
+        isPremium,
+      );
       return;
     }
 
     const lines = [
-      language === "en" ? `${group.emoji} ${group.label}` : language === "th" ? `${group.emoji} ${group.label}` : `${group.emoji} Nhóm ${group.label}`,
+      language === "en"
+        ? `${group.emoji} ${group.label}`
+        : language === "th"
+          ? `${group.emoji} ${group.label}`
+          : `${group.emoji} Nhóm ${group.label}`,
       "",
       language === "en"
         ? "Choose a product in this group to continue."
@@ -1919,8 +3140,24 @@ export class TelegramBotService {
       {
         inline_keyboard: [
           ...group.items.map((item) => [productBtn(item)]),
-          [this.buildRefreshBtn(custDataFeatured, language, `catalog:group:${group.key}:0`, isPremium)],
-          [this.buildNavTextBtn(custDataFeatured, "viewAll", "viewAll", "home:products", language, isPremium)],
+          [
+            this.buildRefreshBtn(
+              custDataFeatured,
+              language,
+              `catalog:group:${group.key}:0`,
+              isPremium,
+            ),
+          ],
+          [
+            this.buildNavTextBtn(
+              custDataFeatured,
+              "viewAll",
+              "viewAll",
+              "home:products",
+              language,
+              isPremium,
+            ),
+          ],
           ...this.buildCatalogNavButtons(custDataFeatured, language, isPremium),
         ],
       },
@@ -1948,14 +3185,15 @@ export class TelegramBotService {
         select: { id: true },
       }),
     ]);
-    const isPro = shop.seller.tier === SellerTier.ULTRA;
+    const isPro =
+      shop.seller.tier === SellerTier.PRO ||
+      shop.seller.tier === SellerTier.ULTRA;
     const orderWhere = {
       shopId,
       customerId: customer?.id || "__missing_customer__",
     };
-    const totalOrders = view === "all"
-      ? await this.prisma.order.count({ where: orderWhere })
-      : 0;
+    const totalOrders =
+      view === "all" ? await this.prisma.order.count({ where: orderWhere }) : 0;
     const pagination = resolveOrderHistoryPage(
       view === "all" ? requestedPage : 0,
       view === "all" ? totalOrders : 0,
@@ -1982,47 +3220,56 @@ export class TelegramBotService {
           },
         },
       },
-      orderBy: [
-        { createdAt: "desc" },
-        { id: "desc" },
-      ],
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
       skip: view === "all" ? pagination.skip : undefined,
       take: pagination.take,
     });
 
-    const paginationButtons: Array<{ text: string; callback_data: string }> = [];
+    const paginationButtons: Array<{ text: string; callback_data: string }> =
+      [];
     if (view === "all" && page > 0) {
       paginationButtons.push({
-        text: language === "en" ? "⬅️ Previous" : language === "th" ? "⬅️ ก่อนหน้า" : "⬅️ Trang trước",
+        text:
+          language === "en"
+            ? "⬅️ Previous"
+            : language === "th"
+              ? "⬅️ ก่อนหน้า"
+              : "⬅️ Trang trước",
         callback_data: `history:page:${page - 1}`,
       });
     }
     if (view === "all" && page + 1 < totalPages) {
       paginationButtons.push({
-        text: language === "en" ? "Next ➡️" : language === "th" ? "ถัดไป ➡️" : "Trang sau ➡️",
+        text:
+          language === "en"
+            ? "Next ➡️"
+            : language === "th"
+              ? "ถัดไป ➡️"
+              : "Trang sau ➡️",
         callback_data: `history:page:${page + 1}`,
       });
     }
 
-    const historyModeButton = view === "recent"
-      ? {
-          text:
-            language === "en"
-              ? "📜 View all purchase history"
-              : language === "th"
-                ? "📜 ดูประวัติการซื้อทั้งหมด"
-                : "📜 Xem toàn bộ lịch sử mua hàng",
-          callback_data: "history:page:0",
-        }
-      : {
-          text:
-            language === "en"
-              ? "🕘 Recent orders"
-              : language === "th"
-                ? "🕘 คำสั่งซื้อล่าสุด"
-                : "🕘 Đơn hàng gần đây",
-          callback_data: "home:history",
-        };
+    const historyModeButton =
+      view === "recent"
+        ? {
+            text:
+              language === "en"
+                ? "📜 View all purchase history"
+                : language === "th"
+                  ? "📜 ดูประวัติการซื้อทั้งหมด"
+                  : "📜 Xem toàn bộ lịch sử mua hàng",
+            callback_data: "history:page:0",
+          }
+        : {
+            text:
+              language === "en"
+                ? "🕘 Recent orders"
+                : language === "th"
+                  ? "🕘 คำสั่งซื้อล่าสุด"
+                  : "🕘 Đơn hàng gần đây",
+            callback_data: "home:history",
+          };
 
     await this.editOrSend(
       token,
@@ -2040,41 +3287,86 @@ export class TelegramBotService {
           ...orders
             .filter(
               (order) =>
-                order.paymentTransaction?.provider === PaymentProvider.USDT_TRC20 &&
+                order.paymentTransaction?.provider ===
+                  PaymentProvider.USDT_TRC20 &&
                 order.paymentTransaction?.status === "PENDING",
             )
             .slice(0, 3)
-            .map((order) => [{
-              text:
-                language === "en"
-                  ? `🧾 Send TX ${this.shortOrderCode(order.orderCode)}`
-                  : language === "th"
-                    ? `🧾 ส่ง TX ${this.shortOrderCode(order.orderCode)}`
-                    : `🧾 Gửi TX ${this.shortOrderCode(order.orderCode)}`,
-              callback_data: `txhash:submit:${order.paymentTransaction?.externalOrderCode}`,
-            }]),
-          ...orders.map((order) => [{
-            text:
-              language === "en"
-                ? `🔍 Details ${this.shortOrderCode(order.orderCode)}`
-                : language === "th"
-                  ? `🔍 รายละเอียด ${this.shortOrderCode(order.orderCode)}`
-                  : `🔍 Chi tiết ${this.shortOrderCode(order.orderCode)}`,
-            callback_data: `history:order:${order.id}:0:${view === "all" ? page : -1}`,
-          }]),
+            .map((order) => [
+              {
+                text:
+                  language === "en"
+                    ? `🧾 Send TX ${this.shortOrderCode(order.orderCode)}`
+                    : language === "th"
+                      ? `🧾 ส่ง TX ${this.shortOrderCode(order.orderCode)}`
+                      : `🧾 Gửi TX ${this.shortOrderCode(order.orderCode)}`,
+                callback_data: `txhash:submit:${order.paymentTransaction?.externalOrderCode}`,
+              },
+            ]),
+          ...orders.map((order) => [
+            {
+              text: this.truncateLabel(
+                `📦 ${order.orderCode} - ${this.localizeProductName(order.productNameSnapshot, language)} - ${this.formatBotMoney(decimalToNumber(order.totalSaleAmount), language, usdtVndRate)}`,
+                62,
+              ),
+              callback_data: `history:order:${order.id}:0:${view === "all" ? page : -1}:new`,
+            },
+          ]),
           ...(paginationButtons.length > 0 ? [paginationButtons] : []),
           [
-            this.buildNavTextBtn(custDataHistory, "wallet", "wallet", "home:wallet", language),
-            this.buildNavTextBtn(custDataHistory, "products", "productsShort", "home:products", language),
+            this.buildNavTextBtn(
+              custDataHistory,
+              "wallet",
+              "wallet",
+              "home:wallet",
+              language,
+            ),
+            this.buildNavTextBtn(
+              custDataHistory,
+              "products",
+              "productsShort",
+              "home:products",
+              language,
+            ),
           ],
           ...(isPro
-            ? [[
-                this.buildNavTextBtn(custDataHistory, "warranty", "warranty", "home:warranty", language),
-                this.buildNavTextBtn(custDataHistory, "home", "home", "home:menu", language),
-              ]]
-            : [[this.buildNavTextBtn(custDataHistory, "home", "home", "home:menu", language)]]),
+            ? [
+                [
+                  this.buildNavTextBtn(
+                    custDataHistory,
+                    "warranty",
+                    "warranty",
+                    "home:warranty",
+                    language,
+                  ),
+                  this.buildNavTextBtn(
+                    custDataHistory,
+                    "home",
+                    "home",
+                    "home:menu",
+                    language,
+                  ),
+                ],
+              ]
+            : [
+                [
+                  this.buildNavTextBtn(
+                    custDataHistory,
+                    "home",
+                    "home",
+                    "home:menu",
+                    language,
+                  ),
+                ],
+              ]),
           [
-            this.buildNavTextBtn(custDataHistory, "support", "supportShort", "home:support", language),
+            this.buildNavTextBtn(
+              custDataHistory,
+              "support",
+              "supportShort",
+              "home:support",
+              language,
+            ),
             historyModeButton,
           ],
         ],
@@ -2094,8 +3386,9 @@ export class TelegramBotService {
     historyPage: number,
     actions: unknown[],
     language: BotLanguage = "vi",
+    sendAsNewMessage = false,
   ) {
-    const [usdtVndRate, order] = await Promise.all([
+    const [usdtVndRate, order, botConfig] = await Promise.all([
       this.getShopUsdtVndRate(shopId),
       this.prisma.order.findFirst({
         where: buildOwnedOrderWhere(shopId, telegramUserId, orderId),
@@ -2109,15 +3402,23 @@ export class TelegramBotService {
           paymentStatus: true,
           createdAt: true,
           deliveredAccountText: true,
+          isPreorder: true,
+          preorderFeeAmount: true,
+          preorderCancellationStatus: true,
+          preorderCancelRequestedAt: true,
         },
       }),
+      this.prisma.botConfig.findFirst({
+        where: { shopId },
+        select: { customizationJson: true },
+      }),
     ]);
-    const safeHistoryPage = Number.isFinite(historyPage) && historyPage >= 0
-      ? Math.floor(historyPage)
-      : -1;
-    const backCallback = safeHistoryPage >= 0
-      ? `history:page:${safeHistoryPage}`
-      : "home:history";
+    const safeHistoryPage =
+      Number.isFinite(historyPage) && historyPage >= 0
+        ? Math.floor(historyPage)
+        : -1;
+    const backCallback =
+      safeHistoryPage >= 0 ? `history:page:${safeHistoryPage}` : "home:history";
 
     if (!order) {
       await this.editOrSend(
@@ -2130,15 +3431,56 @@ export class TelegramBotService {
             ? "⚠️ ไม่พบคำสั่งซื้อหรือคำสั่งซื้อนี้ไม่ใช่ของบัญชี Telegram ของคุณ"
             : "⚠️ Không tìm thấy đơn hoặc đơn này không thuộc tài khoản Telegram của bạn.",
         {
-          inline_keyboard: [[{
-            text: language === "en" ? "⬅️ Back to history" : language === "th" ? "⬅️ กลับไปที่ประวัติ" : "⬅️ Về lịch sử",
-            callback_data: backCallback,
-          }]],
+          inline_keyboard: [
+            [
+              {
+                text:
+                  language === "en"
+                    ? "⬅️ Back to history"
+                    : language === "th"
+                      ? "⬅️ กลับไปที่ประวัติ"
+                      : "⬅️ Về lịch sử",
+                callback_data: backCallback,
+              },
+            ],
+          ],
         },
         actions,
       );
       return;
     }
+
+    const customization = await this.resolveEffectiveCustomization(
+      shopId,
+      (botConfig?.customizationJson as Record<string, unknown> | null) ?? null,
+    );
+    const messageEmojiIds =
+      customization.messageEmojiIds &&
+      typeof customization.messageEmojiIds === "object"
+        ? (customization.messageEmojiIds as Record<string, unknown>)
+        : {};
+    const orderDetailIcons: Array<[string, string]> = [
+      ["orderDetailTitle", "\u{1F4CB}"],
+      ["orderDetailCode", "\u{1F9FE}"],
+      ["orderDetailProduct", "\u{1F4E6}"],
+      ["orderDetailQuantity", "\u{1F522}"],
+      ["orderDetailAmount", "\u{1F4B5}"],
+      ["orderDetailStatus", "\u{1F3AF}"],
+      ["orderDetailTime", "\u{1F558}"],
+      ["orderDetailDelivered", "\u{1F510}"],
+    ];
+    const applyOrderDetailCustomEmojis = (html: string) => {
+      let rendered = html;
+      for (const [key, fallback] of orderDetailIcons) {
+        const emojiId = String(messageEmojiIds[key] ?? "").trim();
+        if (/^\d+$/.test(emojiId)) {
+          rendered = rendered
+            .split(fallback)
+            .join(`<tg-emoji emoji-id="${emojiId}">${fallback}</tg-emoji>`);
+        }
+      }
+      return rendered;
+    };
 
     const deliveryChunks = splitTelegramText(order.deliveredAccountText);
     const deliveryPagination = resolveOrderHistoryPage(
@@ -2148,71 +3490,153 @@ export class TelegramBotService {
     );
     const deliveryText = deliveryChunks[deliveryPagination.page] || null;
     const detailLines = [
-      language === "en" ? "🧾 Order details" : language === "th" ? "🧾 รายละเอียดคำสั่งซื้อ" : "🧾 Chi tiết đơn hàng",
+      language === "en"
+        ? "📋 <b>ORDER DETAILS</b>"
+        : language === "th"
+          ? "📋 <b>รายละเอียดคำสั่งซื้อ</b>"
+          : "📋 <b>CHI TIẾT ĐƠN HÀNG</b>",
       "",
-      language === "en" ? `Order: ${order.orderCode}` : language === "th" ? `คำสั่งซื้อ: ${order.orderCode}` : `Mã đơn: ${order.orderCode}`,
       language === "en"
-        ? `Product: ${this.truncateLabel(this.localizeProductName(order.productNameSnapshot, language), 120)}`
+        ? `🧾 Order: <code>${this.escapeHtml(order.orderCode)}</code>`
         : language === "th"
-          ? `สินค้า: ${this.truncateLabel(this.localizeProductName(order.productNameSnapshot, language), 120)}`
-          : `Sản phẩm: ${this.truncateLabel(this.localizeProductName(order.productNameSnapshot, language), 120)}`,
-      language === "en" ? `Quantity: ${order.quantity}` : language === "th" ? `จำนวน: ${order.quantity}` : `Số lượng: ${order.quantity}`,
+          ? `🧾 คำสั่งซื้อ: <code>${this.escapeHtml(order.orderCode)}</code>`
+          : `🧾 Mã đơn: <code>${this.escapeHtml(order.orderCode)}</code>`,
       language === "en"
-        ? `Amount: ${this.formatBotMoney(decimalToNumber(order.totalSaleAmount), language, usdtVndRate)}`
+        ? `📦 Product: ${this.escapeHtml(this.truncateLabel(this.localizeProductName(order.productNameSnapshot, language), 120))}`
         : language === "th"
-          ? `ยอดเงิน: ${this.formatBotMoney(decimalToNumber(order.totalSaleAmount), language, usdtVndRate)}`
-          : `Thành tiền: ${this.formatBotMoney(decimalToNumber(order.totalSaleAmount), language, usdtVndRate)}`,
+          ? `📦 สินค้า: ${this.escapeHtml(this.truncateLabel(this.localizeProductName(order.productNameSnapshot, language), 120))}`
+          : `📦 Sản phẩm: ${this.escapeHtml(this.truncateLabel(this.localizeProductName(order.productNameSnapshot, language), 120))}`,
       language === "en"
-        ? `Status: ${this.formatCustomerOrderStatus(order.status, order.paymentStatus, language)}`
+        ? `🔢 Quantity: ${order.quantity}`
         : language === "th"
-          ? `สถานะ: ${this.formatCustomerOrderStatus(order.status, order.paymentStatus, language)}`
-          : `Trạng thái: ${this.formatCustomerOrderStatus(order.status, order.paymentStatus, language)}`,
-      language === "en" ? `Time: ${this.formatDateTime(order.createdAt)}` : language === "th" ? `เวลา: ${this.formatDateTime(order.createdAt)}` : `Thời gian: ${this.formatDateTime(order.createdAt)}`,
+          ? `🔢 จำนวน: ${order.quantity}`
+          : `🔢 Số lượng: ${order.quantity}`,
+      language === "en"
+        ? `💵 Amount: ${this.formatBotMoney(decimalToNumber(order.totalSaleAmount), language, usdtVndRate)}`
+        : language === "th"
+          ? `💵 ยอดเงิน: ${this.formatBotMoney(decimalToNumber(order.totalSaleAmount), language, usdtVndRate)}`
+          : `💵 Thành tiền: ${this.formatBotMoney(decimalToNumber(order.totalSaleAmount), language, usdtVndRate)}`,
+      language === "en"
+        ? `🎯 Status: ${this.escapeHtml(this.formatCustomerOrderStatus(order.status, order.paymentStatus, language))}`
+        : language === "th"
+          ? `🎯 สถานะ: ${this.escapeHtml(this.formatCustomerOrderStatus(order.status, order.paymentStatus, language))}`
+          : `🎯 Trạng thái: ${this.escapeHtml(this.formatCustomerOrderStatus(order.status, order.paymentStatus, language))}`,
+      ...(order.preorderCancellationStatus === "REQUESTED"
+        ? [
+            language === "en"
+              ? "⏳ Cancellation request: waiting for seller review"
+              : language === "th"
+                ? "⏳ คำขอยกเลิก: รอผู้ขายตรวจสอบ"
+                : "⏳ Yêu cầu hủy: đang chờ seller duyệt",
+          ]
+        : []),
+      language === "en"
+        ? `🕘 Time: ${this.formatDateTime(order.createdAt)}`
+        : language === "th"
+          ? `🕘 เวลา: ${this.formatDateTime(order.createdAt)}`
+          : `🕘 Thời gian: ${this.formatDateTime(order.createdAt)}`,
       "",
       deliveryText
         ? language === "en"
-          ? `🔐 Delivered account (${deliveryPagination.page + 1}/${deliveryPagination.totalPages}):`
+          ? `🔐 <b>Delivered account (${deliveryPagination.page + 1}/${deliveryPagination.totalPages}):</b>`
           : language === "th"
-            ? `🔐 บัญชีที่จัดส่ง (${deliveryPagination.page + 1}/${deliveryPagination.totalPages}):`
-            : `🔐 Tài khoản đã giao (${deliveryPagination.page + 1}/${deliveryPagination.totalPages}):`
+            ? `🔐 <b>บัญชีที่จัดส่ง (${deliveryPagination.page + 1}/${deliveryPagination.totalPages}):</b>`
+            : `🔐 <b>Tài khoản đã giao (${deliveryPagination.page + 1}/${deliveryPagination.totalPages}):</b>`
         : language === "en"
           ? "🔐 No account has been delivered for this order yet."
           : language === "th"
             ? "🔐 ยังไม่มีบัญชีที่จัดส่งสำหรับคำสั่งซื้อนี้"
             : "🔐 Đơn này chưa có tài khoản được giao.",
-      ...(deliveryText ? [deliveryText] : []),
+      ...(deliveryText ? [`<pre>${this.escapeHtml(deliveryText)}</pre>`] : []),
     ];
-    const detailPaginationButtons: Array<{ text: string; callback_data: string }> = [];
+    const detailPaginationButtons: Array<{
+      text: string;
+      callback_data: string;
+    }> = [];
     if (deliveryText && deliveryPagination.page > 0) {
       detailPaginationButtons.push({
-        text: language === "en" ? "⬅️ Previous account page" : language === "th" ? "⬅️ หน้าบัญชีก่อนหน้า" : "⬅️ Tài khoản trước",
+        text:
+          language === "en"
+            ? "⬅️ Previous account page"
+            : language === "th"
+              ? "⬅️ หน้าบัญชีก่อนหน้า"
+              : "⬅️ Tài khoản trước",
         callback_data: `history:order:${order.id}:${deliveryPagination.page - 1}:${safeHistoryPage}`,
       });
     }
-    if (deliveryText && deliveryPagination.page + 1 < deliveryPagination.totalPages) {
+    if (
+      deliveryText &&
+      deliveryPagination.page + 1 < deliveryPagination.totalPages
+    ) {
       detailPaginationButtons.push({
-        text: language === "en" ? "Next account page ➡️" : language === "th" ? "หน้าบัญชีถัดไป ➡️" : "Tài khoản sau ➡️",
+        text:
+          language === "en"
+            ? "Next account page ➡️"
+            : language === "th"
+              ? "หน้าบัญชีถัดไป ➡️"
+              : "Tài khoản sau ➡️",
         callback_data: `history:order:${order.id}:${deliveryPagination.page + 1}:${safeHistoryPage}`,
       });
     }
 
-    await this.editOrSend(
-      token,
-      chatId,
-      messageId,
-      detailLines.join("\n"),
-      {
-        inline_keyboard: [
-          ...(detailPaginationButtons.length > 0 ? [detailPaginationButtons] : []),
-          [{
-            text: language === "en" ? "⬅️ Back to history" : language === "th" ? "⬅️ กลับไปที่ประวัติ" : "⬅️ Về lịch sử",
+    const detailMarkup = {
+      inline_keyboard: [
+        ...(order.isPreorder &&
+        order.status === "PAID_WAITING_STOCK" &&
+        order.paymentStatus === "PAID" &&
+        order.preorderCancellationStatus !== "REQUESTED"
+          ? [
+              [
+                {
+                  text:
+                    language === "en"
+                      ? "❌ Request cancellation"
+                      : language === "th"
+                        ? "❌ ขอยกเลิก"
+                        : "❌ Yêu cầu hủy",
+                  callback_data: `preorder:cancel:prompt:${order.id}`,
+                },
+              ],
+            ]
+          : []),
+        ...(detailPaginationButtons.length > 0
+          ? [detailPaginationButtons]
+          : []),
+        [
+          {
+            text:
+              language === "en"
+                ? "⬅️ Back to history"
+                : language === "th"
+                  ? "⬅️ กลับไปที่ประวัติ"
+                  : "⬅️ Về lịch sử",
             callback_data: backCallback,
-          }],
-          [this.navBtn("home", language, "home:menu")],
+          },
         ],
-      },
-      actions,
-    );
+        [this.navBtn("home", language, "home:menu")],
+      ],
+    };
+    const detailHtml = applyOrderDetailCustomEmojis(detailLines.join("\n"));
+    if (sendAsNewMessage) {
+      await this.sendText(
+        token,
+        chatId,
+        detailHtml,
+        actions,
+        detailMarkup,
+        "HTML",
+      );
+    } else {
+      await this.editOrSend(
+        token,
+        chatId,
+        messageId,
+        detailHtml,
+        detailMarkup,
+        actions,
+        "HTML",
+      );
+    }
   }
 
   private async renderWalletPanel(
@@ -2226,7 +3650,10 @@ export class TelegramBotService {
   ) {
     const [usdtVndRate, summary, custDataWallet] = await Promise.all([
       this.getShopUsdtVndRate(shopId),
-      this.customerWalletService.getWalletSummaryForTelegram(shopId, telegramUserId),
+      this.customerWalletService.getWalletSummaryForTelegram(
+        shopId,
+        telegramUserId,
+      ),
       this.loadCustData(shopId),
     ]);
 
@@ -2252,16 +3679,60 @@ export class TelegramBotService {
       this.buildWalletText(summary, language, usdtVndRate),
       {
         inline_keyboard: [
-          [{ text: language === "en" ? "🏦 Top up wallet" : language === "th" ? "🏦 เติมเงินกระเป๋า" : "🏦 Nạp vào ví", callback_data: "wallet:topup" }],
-          [{ text: language === "en" ? "📋 Balance history" : language === "th" ? "📋 ประวัติยอดเงิน" : "📋 Lịch sử biến động", callback_data: "wallet:ledger" }],
-          ...paymentRows,
           [
-            this.buildNavTextBtn(custDataWallet, "orders", "history", "home:history", language),
-            this.buildNavTextBtn(custDataWallet, "products", "productsShort", "home:products", language),
+            {
+              text:
+                language === "en"
+                  ? "🏦 Top up wallet"
+                  : language === "th"
+                    ? "🏦 เติมเงินกระเป๋า"
+                    : "🏦 Nạp vào ví",
+              callback_data: "wallet:topup",
+            },
           ],
           [
-            this.buildNavTextBtn(custDataWallet, "home", "home", "home:menu", language),
-            this.buildNavTextBtn(custDataWallet, "support", "supportShort", "home:support", language),
+            {
+              text:
+                language === "en"
+                  ? "📋 Balance history"
+                  : language === "th"
+                    ? "📋 ประวัติยอดเงิน"
+                    : "📋 Lịch sử biến động",
+              callback_data: "wallet:ledger",
+            },
+          ],
+          ...paymentRows,
+          [
+            this.buildNavTextBtn(
+              custDataWallet,
+              "orders",
+              "history",
+              "home:history",
+              language,
+            ),
+            this.buildNavTextBtn(
+              custDataWallet,
+              "products",
+              "productsShort",
+              "home:products",
+              language,
+            ),
+          ],
+          [
+            this.buildNavTextBtn(
+              custDataWallet,
+              "home",
+              "home",
+              "home:menu",
+              language,
+            ),
+            this.buildNavTextBtn(
+              custDataWallet,
+              "support",
+              "supportShort",
+              "home:support",
+              language,
+            ),
           ],
         ],
       },
@@ -2269,18 +3740,47 @@ export class TelegramBotService {
     );
   }
 
-  private walletLedgerLabel(type: string, language: BotLanguage): { icon: string; label: string } {
-    const map: Record<string, { icon: string; vi: string; en: string; th: string }> = {
+  private walletLedgerLabel(
+    type: string,
+    language: BotLanguage,
+  ): { icon: string; label: string } {
+    const map: Record<
+      string,
+      { icon: string; vi: string; en: string; th: string }
+    > = {
       TOPUP: { icon: "🟢", vi: "Nạp ví", en: "Top-up", th: "เติมเงิน" },
-      TOPUP_BONUS: { icon: "🎁", vi: "Thưởng nạp", en: "Top-up bonus", th: "โบนัสเติมเงิน" },
-      SPEND_ORDER: { icon: "🛒", vi: "Mua hàng", en: "Purchase", th: "ซื้อสินค้า" },
-      REFUND_ORDER: { icon: "↩️", vi: "Hoàn tiền", en: "Refund", th: "คืนเงิน" },
-      AFFILIATE_COMMISSION: { icon: "💸", vi: "Hoa hồng", en: "Commission", th: "ค่าคอมมิชชั่น" },
+      TOPUP_BONUS: {
+        icon: "🎁",
+        vi: "Thưởng nạp",
+        en: "Top-up bonus",
+        th: "โบนัสเติมเงิน",
+      },
+      SPEND_ORDER: {
+        icon: "🛒",
+        vi: "Mua hàng",
+        en: "Purchase",
+        th: "ซื้อสินค้า",
+      },
+      REFUND_ORDER: {
+        icon: "↩️",
+        vi: "Hoàn tiền",
+        en: "Refund",
+        th: "คืนเงิน",
+      },
+      AFFILIATE_COMMISSION: {
+        icon: "💸",
+        vi: "Hoa hồng",
+        en: "Commission",
+        th: "ค่าคอมมิชชั่น",
+      },
       ADJUST: { icon: "⚙️", vi: "Điều chỉnh", en: "Adjustment", th: "ปรับยอด" },
     };
     const m = map[type];
     if (!m) return { icon: "•", label: type };
-    return { icon: m.icon, label: language === "en" ? m.en : language === "th" ? m.th : m.vi };
+    return {
+      icon: m.icon,
+      label: language === "en" ? m.en : language === "th" ? m.th : m.vi,
+    };
   }
 
   private async renderWalletLedger(
@@ -2291,11 +3791,22 @@ export class TelegramBotService {
     telegramUserId: string,
     actions: unknown[],
     language: BotLanguage = "vi",
+    requestedPage = 0,
   ) {
+    const pageSize = 15;
+    const page =
+      Number.isInteger(requestedPage) && requestedPage >= 0 ? requestedPage : 0;
     const [usdtVndRate, entries] = await Promise.all([
       this.getShopUsdtVndRate(shopId),
-      this.customerWalletService.getWalletLedgerForTelegram(shopId, telegramUserId, 15),
+      this.customerWalletService.getWalletLedgerForTelegram(
+        shopId,
+        telegramUserId,
+        pageSize + 1,
+        page * pageSize,
+      ),
     ]);
+    const hasNextPage = entries.length > pageSize;
+    const visibleEntries = entries.slice(0, pageSize);
 
     const title =
       language === "en"
@@ -2305,7 +3816,7 @@ export class TelegramBotService {
           : "📋 Lịch sử biến động ví";
     const lines: string[] = [title];
 
-    if (entries.length === 0) {
+    if (visibleEntries.length === 0) {
       lines.push(
         "",
         language === "en"
@@ -2316,7 +3827,7 @@ export class TelegramBotService {
       );
     } else {
       // Pre-format amounts to find the column width (right-aligned in a monospace block).
-      const rows = entries.map((e) => {
+      const rows = visibleEntries.map((e) => {
         const { icon, label } = this.walletLedgerLabel(e.type, language);
         const sign = e.amount >= 0 ? "+" : "−";
         const amtStr = `${sign}${this.formatBotMoney(Math.abs(e.amount), language, usdtVndRate)}`;
@@ -2324,7 +3835,8 @@ export class TelegramBotService {
       });
       const maxW = rows.reduce((m, r) => Math.max(m, r.amtStr.length), 0);
       const now = new Date();
-      const dayKey = (d: Date) => `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+      const dayKey = (d: Date) =>
+        `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
       const todayKey = dayKey(now);
       const yesterdayKey = dayKey(new Date(now.getTime() - 86400000));
 
@@ -2337,14 +3849,59 @@ export class TelegramBotService {
           const ddmm = `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}`;
           const dayLabel =
             k === todayKey
-              ? (language === "en" ? `Today ${ddmm}` : language === "th" ? `วันนี้ ${ddmm}` : `Hôm nay ${ddmm}`)
+              ? language === "en"
+                ? `Today ${ddmm}`
+                : language === "th"
+                  ? `วันนี้ ${ddmm}`
+                  : `Hôm nay ${ddmm}`
               : k === yesterdayKey
-                ? (language === "en" ? `Yesterday ${ddmm}` : language === "th" ? `เมื่อวาน ${ddmm}` : `Hôm qua ${ddmm}`)
+                ? language === "en"
+                  ? `Yesterday ${ddmm}`
+                  : language === "th"
+                    ? `เมื่อวาน ${ddmm}`
+                    : `Hôm qua ${ddmm}`
                 : ddmm;
           lines.push("", `── ${dayLabel} ──`);
         }
-        lines.push(`<code>${this.escapeHtml(r.amtStr.padStart(maxW, " "))}</code>  ${r.icon} ${r.label}`);
+        lines.push(
+          `<code>${this.escapeHtml(r.amtStr.padStart(maxW, " "))}</code>  ${r.icon} ${r.label}`,
+        );
       }
+    }
+
+    if (page > 0 || hasNextPage) {
+      lines.push(
+        "",
+        language === "en"
+          ? `Page ${page + 1}`
+          : language === "th"
+            ? `หน้า ${page + 1}`
+            : `Trang ${page + 1}`,
+      );
+    }
+
+    const paginationRow: Array<{ text: string; callback_data: string }> = [];
+    if (page > 0) {
+      paginationRow.push({
+        text:
+          language === "en"
+            ? "⬅️ Previous"
+            : language === "th"
+              ? "⬅️ ก่อนหน้า"
+              : "⬅️ Trang trước",
+        callback_data: `wallet:ledger:page:${page - 1}`,
+      });
+    }
+    if (hasNextPage) {
+      paginationRow.push({
+        text:
+          language === "en"
+            ? "Next ➡️"
+            : language === "th"
+              ? "ถัดไป ➡️"
+              : "Trang sau ➡️",
+        callback_data: `wallet:ledger:page:${page + 1}`,
+      });
     }
 
     await this.editOrSend(
@@ -2354,7 +3911,13 @@ export class TelegramBotService {
       lines.join("\n"),
       {
         inline_keyboard: [
-          [{ text: this.buttonLabel("back", language), callback_data: "home:wallet" }],
+          ...(paginationRow.length > 0 ? [paginationRow] : []),
+          [
+            {
+              text: this.buttonLabel("back", language),
+              callback_data: "home:wallet",
+            },
+          ],
         ],
       },
       actions,
@@ -2372,17 +3935,20 @@ export class TelegramBotService {
     language: BotLanguage = "vi",
   ) {
     const providers = await this.getAvailablePaymentProviders(shopId);
-    const cryptoProviders = providers.filter((provider) =>
-      provider === PaymentProvider.USDT_TRC20 ||
-      provider === PaymentProvider.USDT_SOL ||
-      provider === PaymentProvider.USDT_TON,
+    const cryptoProviders = providers.filter(
+      (provider) =>
+        provider === PaymentProvider.USDT_TRC20 ||
+        provider === PaymentProvider.USDT_BEP20 ||
+        provider === PaymentProvider.USDT_SOL ||
+        provider === PaymentProvider.USDT_TON,
     );
     const hasUsdt = cryptoProviders.length > 0;
-    const hasVnd = providers.some((p) =>
-      p === PaymentProvider.PAYOS ||
-      p === PaymentProvider.PAY2S ||
-      p === PaymentProvider.WEB2M ||
-      p === PaymentProvider.MOCK,
+    const hasVnd = providers.some(
+      (p) =>
+        p === PaymentProvider.PAYOS ||
+        p === PaymentProvider.PAY2S ||
+        p === PaymentProvider.WEB2M ||
+        p === PaymentProvider.MOCK,
     );
 
     if (!hasVnd && !hasUsdt) {
@@ -2406,28 +3972,69 @@ export class TelegramBotService {
 
     // If only one option, skip selection and go straight to amount
     if (cryptoProviders.length === 1 && !hasVnd) {
-      const provider = cryptoProviders[0] as "USDT_TRC20" | "USDT_SOL" | "USDT_TON";
-      await this.sessions.setPendingSession('pendingWalletTopups', this.sessions.getPendingQuantityKey(shopId, telegramUserId), {
-        currency: "USDT",
+      const provider = cryptoProviders[0] as
+        | "USDT_TRC20"
+        | "USDT_BEP20"
+        | "USDT_SOL"
+        | "USDT_TON";
+      await this.sessions.setPendingSession(
+        "pendingWalletTopups",
+        this.sessions.getPendingQuantityKey(shopId, telegramUserId),
+        {
+          currency: "USDT",
+          provider,
+          expiresAt: Date.now() + this.sessions.pendingQuantityTtlMs,
+        },
+        this.sessions.pendingQuantityTtlMs,
+      );
+      return this.promptWalletTopupAmount(
+        shopId,
+        token,
+        chatId,
+        telegramUserId,
+        actions,
+        "USDT",
+        undefined,
+        language,
         provider,
-        expiresAt: Date.now() + this.sessions.pendingQuantityTtlMs,
-      }, this.sessions.pendingQuantityTtlMs);
-      return this.promptWalletTopupAmount(shopId, token, chatId, telegramUserId, actions, "USDT", undefined, language, provider);
+      );
     }
     if (!hasUsdt) {
-      await this.sessions.setPendingSession('pendingWalletTopups', this.sessions.getPendingQuantityKey(shopId, telegramUserId), {
-        currency: "VND",
-        expiresAt: Date.now() + this.sessions.pendingQuantityTtlMs,
-      }, this.sessions.pendingQuantityTtlMs);
-      return this.promptWalletTopupAmount(shopId, token, chatId, telegramUserId, actions, "VND", undefined, language);
+      await this.sessions.setPendingSession(
+        "pendingWalletTopups",
+        this.sessions.getPendingQuantityKey(shopId, telegramUserId),
+        {
+          currency: "VND",
+          expiresAt: Date.now() + this.sessions.pendingQuantityTtlMs,
+        },
+        this.sessions.pendingQuantityTtlMs,
+      );
+      return this.promptWalletTopupAmount(
+        shopId,
+        token,
+        chatId,
+        telegramUserId,
+        actions,
+        "VND",
+        undefined,
+        language,
+      );
     }
 
     const shopDataTopup = await this.shopsService.getSellerShopByShopId(shopId);
     const shopCustTopup = await this.resolveCustomization(
-      shopDataTopup.botConfig?.customizationJson as Record<string, unknown> | null ?? null,
+      (shopDataTopup.botConfig?.customizationJson as Record<
+        string,
+        unknown
+      > | null) ?? null,
     );
-    const walletNoteMapTopup = (shopCustTopup as Record<string, unknown> | null)?.walletNote as Record<string, string> | undefined;
-    const walletNoteTopup = (walletNoteMapTopup?.[language] || walletNoteMapTopup?.["vi"] || "").trim();
+    const walletNoteMapTopup = (shopCustTopup as Record<string, unknown> | null)
+      ?.walletNote as Record<string, string> | undefined;
+    const walletNoteTopup = (
+      walletNoteMapTopup?.[language] ||
+      walletNoteMapTopup?.["vi"] ||
+      ""
+    ).trim();
 
     const promptLine =
       language === "en"
@@ -2435,17 +4042,34 @@ export class TelegramBotService {
         : language === "th"
           ? "💳 เลือกสกุลเงินที่ต้องการเติม:"
           : "💳 Chọn loại tiền muốn nạp:";
-    const text = walletNoteTopup ? `${walletNoteTopup}\n\n${promptLine}` : promptLine;
-    const paymentRows: Array<Array<{ text: string; callback_data: string }>> = [];
-    if (hasVnd) paymentRows.push([{ text: "🏦 VND (chuyển khoản)", callback_data: "wallet:topup:vnd" }]);
+    const text = walletNoteTopup
+      ? `${walletNoteTopup}\n\n${promptLine}`
+      : promptLine;
+    const paymentRows: Array<Array<{ text: string; callback_data: string }>> =
+      [];
+    if (hasVnd)
+      paymentRows.push([
+        { text: "🏦 VND (chuyển khoản)", callback_data: "wallet:topup:vnd" },
+      ]);
     if (providers.includes(PaymentProvider.USDT_TRC20)) {
-      paymentRows.push([{ text: "💲 USDT (TRC20)", callback_data: "wallet:topup:usd" }]);
+      paymentRows.push([
+        { text: "💲 USDT (TRC20)", callback_data: "wallet:topup:usd" },
+      ]);
+    }
+    if (providers.includes(PaymentProvider.USDT_BEP20)) {
+      paymentRows.push([
+        { text: "💛 USDT (BEP20)", callback_data: "wallet:topup:bep20" },
+      ]);
     }
     if (providers.includes(PaymentProvider.USDT_SOL)) {
-      paymentRows.push([{ text: "💎 USDT (Solana)", callback_data: "wallet:topup:sol" }]);
+      paymentRows.push([
+        { text: "💎 USDT (Solana)", callback_data: "wallet:topup:sol" },
+      ]);
     }
     if (providers.includes(PaymentProvider.USDT_TON)) {
-      paymentRows.push([{ text: "💎 USDT (TON)", callback_data: "wallet:topup:ton" }]);
+      paymentRows.push([
+        { text: "💎 USDT (TON)", callback_data: "wallet:topup:ton" },
+      ]);
     }
 
     await this.editOrSend(
@@ -2456,7 +4080,12 @@ export class TelegramBotService {
       {
         inline_keyboard: [
           ...paymentRows,
-          [{ text: this.buttonLabel("back", language), callback_data: "home:wallet" }],
+          [
+            {
+              text: this.buttonLabel("back", language),
+              callback_data: "home:wallet",
+            },
+          ],
         ],
       },
       actions,
@@ -2472,33 +4101,73 @@ export class TelegramBotService {
     currency: "VND" | "USDT" = "VND",
     leadLine?: string,
     language: BotLanguage = "vi",
-    provider: "USDT_TRC20" | "USDT_SOL" | "USDT_TON" = "USDT_TRC20",
+    provider:
+      | "USDT_TRC20"
+      | "USDT_BEP20"
+      | "USDT_SOL"
+      | "USDT_TON" = "USDT_TRC20",
   ) {
     const isUsdt = currency === "USDT";
-    const networkName = provider === "USDT_TON" ? "TON" : provider === "USDT_SOL" ? "Solana" : "TRC20";
+    const networkName =
+      provider === "USDT_TON"
+        ? "TON"
+        : provider === "USDT_SOL"
+          ? "Solana"
+          : provider === "USDT_BEP20"
+            ? "BEP20 (BSC)"
+            : "TRC20";
     const promptText = isUsdt
-      ? (language === "en"
-          ? [leadLine || "💲 Enter USDT amount to top up", "Example: 10 or 5.5", "", `The bot will show the ${networkName} wallet address to send to.`].join("\n")
-          : language === "th"
-            ? [leadLine || "💲 ระบุจำนวน USDT ที่ต้องการเติม", "ตัวอย่าง: 10 หรือ 5.5", "", "บอทจะสร้างที่อยู่กระเป๋า TRC20 ให้โอนไป"].join("\n")
-            : [leadLine || "💲 Nhập số USDT muốn nạp vào ví", "Ví dụ: 10 hoặc 5.5", "", `Bot sẽ hiển thị địa chỉ ví ${networkName} để bạn chuyển tới.`].join("\n"))
-      : (language === "en"
-          ? [leadLine || "🏦 Enter the wallet top-up amount (VND)", "Example: 100000", "", "The bot will create a payment QR/link valid for 5 minutes."].join("\n")
-          : language === "th"
-            ? [leadLine || "🏦 ระบุจำนวนเงินที่ต้องการเติม (VND)", "ตัวอย่าง: 100000", "", "บอทจะสร้าง QR และลิงก์ชำระเงินที่ใช้ได้ภายใน 5 นาที"].join("\n")
-            : [leadLine || "🏦 Nhập số tiền muốn nạp vào ví (VND)", "Ví dụ: 100000", "", "Bot sẽ tạo mã QR và link thanh toán trong 5 phút."].join("\n"));
+      ? language === "en"
+        ? [
+            leadLine || "💲 Enter USDT amount to top up",
+            "Example: 10 or 5.5",
+            "",
+            `The bot will show the ${networkName} wallet address to send to.`,
+          ].join("\n")
+        : language === "th"
+          ? [
+              leadLine || "💲 ระบุจำนวน USDT ที่ต้องการเติม",
+              "ตัวอย่าง: 10 หรือ 5.5",
+              "",
+              "บอทจะสร้างที่อยู่กระเป๋า TRC20 ให้โอนไป",
+            ].join("\n")
+          : [
+              leadLine || "💲 Nhập số USDT muốn nạp vào ví",
+              "Ví dụ: 10 hoặc 5.5",
+              "",
+              `Bot sẽ hiển thị địa chỉ ví ${networkName} để bạn chuyển tới.`,
+            ].join("\n")
+      : language === "en"
+        ? [
+            leadLine || "🏦 Enter the wallet top-up amount (VND)",
+            "Example: 100000",
+            "",
+            "The bot will create a payment QR/link valid for 5 minutes.",
+          ].join("\n")
+        : language === "th"
+          ? [
+              leadLine || "🏦 ระบุจำนวนเงินที่ต้องการเติม (VND)",
+              "ตัวอย่าง: 100000",
+              "",
+              "บอทจะสร้าง QR และลิงก์ชำระเงินที่ใช้ได้ภายใน 5 นาที",
+            ].join("\n")
+          : [
+              leadLine || "🏦 Nhập số tiền muốn nạp vào ví (VND)",
+              "Ví dụ: 100000",
+              "",
+              "Bot sẽ tạo mã QR và link thanh toán trong 5 phút.",
+            ].join("\n");
 
-    await this.sendText(
-      token,
-      chatId,
-      promptText,
-      actions,
-      {
-        inline_keyboard: [
-          [{ text: this.buttonLabel("back", language), callback_data: "wallet:topup" }],
+    await this.sendText(token, chatId, promptText, actions, {
+      inline_keyboard: [
+        [
+          {
+            text: this.buttonLabel("back", language),
+            callback_data: "wallet:topup",
+          },
         ],
-      },
-    );
+      ],
+    });
   }
 
   private async promptQuantitySelection(
@@ -2516,23 +4185,80 @@ export class TelegramBotService {
     language: BotLanguage = "vi",
   ) {
     await this.clearPendingTxHashSubmission(shopId, customer.telegramUserId);
-    const product = await this.getCatalogItemForTelegram(shopId, sourceProductId, language);
+    const product = await this.getCatalogItemForTelegram(
+      shopId,
+      sourceProductId,
+      language,
+    );
+
+    const pendingOrder = await this.prisma.order.findFirst({
+      where: {
+        shopId,
+        customer: { telegramUserId: customer.telegramUserId },
+        status: "AWAITING_PAYMENT",
+      },
+      select: { id: true, orderCode: true },
+    });
+
+    if (pendingOrder) {
+      const msg =
+        language === "en"
+          ? `⚠️ You have an unpaid order (<code>${pendingOrder.orderCode}</code>).\nPlease pay or cancel it before creating a new one.`
+          : language === "th"
+            ? `⚠️ คุณมีคำสั่งซื้อที่ยังไม่ได้ชำระเงิน (<code>${pendingOrder.orderCode}</code>)\nกรุณาชำระเงินหรือยกเลิกก่อนสร้างคำสั่งซื้อใหม่`
+            : `⚠️ Bạn đang có 1 đơn hàng chờ thanh toán (<code>${pendingOrder.orderCode}</code>).\nVui lòng thanh toán hoặc Hủy đơn cũ trước khi tạo đơn mới.`;
+      
+      await this.sendText(token, customer.telegramChatId, msg, actions, {
+        inline_keyboard: [
+          [{ text: "❌ Hủy đơn cũ", callback_data: `order:cancel:${pendingOrder.id}` }]
+        ],
+      });
+      return;
+    }
+
     const usdtVndRate = await this.getShopUsdtVndRate(shopId);
-    const maxQuantity = this.getMaxQuantity(product.available);
+    // Use physical stock minus held stock
+    const holdKey = `stock:hold:${shopId}:${sourceProductId}`;
+    const holdCount = Number(await this.cache.get(holdKey)) || 0;
+    const availableForNewOrder = product.available !== null ? Math.max(0, product.available - holdCount) : null;
+    const isPreorderOnly =
+      product.preorderEnabled &&
+      availableForNewOrder !== null &&
+      availableForNewOrder <= 0;
+    const maxQuantity = isPreorderOnly
+      ? 100
+      : this.getMaxQuantity(availableForNewOrder);
 
     if (maxQuantity !== null && maxQuantity < 1) {
-      throw new Error(
+      const msg =
         language === "en"
-          ? "This product does not have enough stock to create an order."
+          ? "⚠️ This product is out of stock."
           : language === "th"
-            ? "สินค้านี้มีสต็อกไม่เพียงพอสำหรับการสั่งซื้อ"
-            : "Sản phẩm hiện không đủ tồn kho để tạo đơn.",
-      );
+            ? "⚠️ สินค้านี้หมดชั่วคราว"
+            : "⚠️ Sản phẩm hiện đã hết hàng.";
+
+      await this.sendText(token, customer.telegramChatId, msg, actions, {
+        inline_keyboard: [
+          [
+            {
+              text: "🔔 Nhận thông báo Restock",
+              callback_data: `restock:sub:${sourceProductId}`,
+            },
+          ],
+          [this.navBtn("back", language, "home:products")],
+        ],
+      });
+      return;
     }
 
     const [customerRecord, ctvApiKey, downstreamConn] = await Promise.all([
       this.prisma.customer.findUnique({
-        where: { shopId_telegramUserId: { shopId, telegramUserId: customer.telegramUserId } },
+        where: {
+          shopId_telegramUserId: {
+            shopId,
+            telegramUserId: customer.telegramUserId,
+          },
+        },
         select: { isCtv: true, discountPercent: true },
       }),
       this.prisma.internalSourceApiKey.findFirst({
@@ -2552,7 +4278,11 @@ export class TelegramBotService {
         select: { id: true },
       }),
     ]);
-    const { isCtv, getEffectivePrice } = this.buildCtvPricing(customerRecord, ctvApiKey, downstreamConn);
+    const { isCtv, getEffectivePrice } = this.buildCtvPricing(
+      customerRecord,
+      ctvApiKey,
+      downstreamConn,
+    );
     const ctvPrice = isCtv ? getEffectivePrice(product) : null;
 
     await this.sendQuantityReplyPrompt(
@@ -2566,15 +4296,30 @@ export class TelegramBotService {
         sourceName: product.sourceName ?? null,
         salePrice: ctvPrice ?? product.salePrice,
         salePriceUsd: ctvPrice != null ? null : (product.salePriceUsd ?? null),
-        available: product.available,
+        available: availableForNewOrder,
         maxQuantity,
         imageUrl: product.imageUrl ?? null,
         description: product.description ?? null,
+        providerDescription: product.providerDescription ?? null,
+        sourceDescriptionLocked: product.sourceDescriptionLocked,
         soldCount: product.soldCount ?? null,
         deliveryFormatHint: product.deliveryFormatHint ?? null,
         iconCustomEmojiId: product.iconCustomEmojiId ?? null,
         promoBanner: this.getActivePromoBanner(product, language),
+        promoMessage: product.promoText?.trim() || null,
+        promoType: product.promoType ?? null,
+        promoBuyN: product.promoBuyN ?? null,
+        promoGetM: product.promoGetM ?? null,
+        promoPriceTiers:
+          ctvPrice == null ? (product.promoPriceTiers ?? []) : [],
+        promoBulkMinQty: product.promoBulkMinQty ?? null,
+        promoBulkDiscountPct: product.promoBulkDiscountPct ?? null,
+        promoStartAt: product.promoStartAt ?? null,
+        promoEndAt: product.promoEndAt ?? null,
         requiresCustomerEmail: product.requiresCustomerEmail,
+        preorderEnabled: product.preorderEnabled,
+        preorderFeePercent: product.preorderFeePercent,
+        isPreorderOnly,
       },
       actions,
       undefined,
@@ -2624,13 +4369,52 @@ export class TelegramBotService {
     paymentProvider?: PaymentProvider,
     language: BotLanguage = "vi",
   ) {
-    if (await this.blockIfFreeTier(shopId, token, customer.telegramChatId, language, actions)) return;
+    if (
+      await this.blockIfFreeTier(
+        shopId,
+        token,
+        customer.telegramChatId,
+        language,
+        actions,
+      )
+    )
+      return;
 
     await this.clearPendingQuantitySelection(shopId, customer.telegramUserId);
     await this.clearPendingPaymentSelection(shopId, customer.telegramUserId);
     await this.clearPendingTxHashSubmission(shopId, customer.telegramUserId);
 
-    const created = await this.ordersService.createTelegramOrder({
+    const product = await this.prisma.sourceProduct.findUnique({
+      where: { id: sourceProductId },
+      select: { available: true, preorderEnabled: true },
+    });
+    const maxAvailable = product?.available ?? null;
+    let stockHeld = false;
+    const holdKey = `stock:hold:${shopId}:${sourceProductId}`;
+
+    if (
+      shouldHoldStockForCheckout({
+        available: maxAvailable,
+        requestedQuantity: quantity,
+        preorderEnabled: product?.preorderEnabled === true,
+      })
+    ) {
+      stockHeld = await this.cache.holdStockAtomic(holdKey, maxAvailable ?? 0, quantity);
+      if (!stockHeld) {
+        const msg =
+          language === "en"
+            ? "⚠️ Out of stock. Someone else just bought it."
+            : language === "th"
+              ? "⚠️ สินค้าหมด มีคนอื่นซื้อไปแล้ว"
+              : "⚠️ Hết hàng. Vừa có người khác nhanh tay mua trước.";
+        await this.sendText(token, customer.telegramChatId, msg, actions);
+        return;
+      }
+    }
+
+    let created;
+    try {
+      created = await this.ordersService.createTelegramOrder({
       shopId,
       sourceProductId,
       quantity,
@@ -2642,35 +4426,86 @@ export class TelegramBotService {
       customerEmail: customer.customerEmail,
       paymentProvider,
     });
+    } catch (error) {
+      if (stockHeld) {
+        await this.cache.releaseStockAtomic(holdKey, quantity);
+      }
+      throw error;
+    }
 
     const usdtVndRate = await this.getShopUsdtVndRate(shopId);
     const shop = await this.shopsService.getSellerShopByShopId(shopId);
-    const shopCustBuy = await this.resolveCustomization(shop.botConfig?.customizationJson as Record<string, unknown> | null ?? null);
-    const custEmojiIdsBuy = (shopCustBuy?.buttonEmojiIds && typeof shopCustBuy.buttonEmojiIds === "object")
-      ? shopCustBuy.buttonEmojiIds as Record<string, string> : {};
+    const shopCustBuy = await this.resolveCustomization(
+      (shop.botConfig?.customizationJson as Record<string, unknown> | null) ??
+        null,
+    );
+    const custEmojiIdsBuy =
+      shopCustBuy?.buttonEmojiIds &&
+      typeof shopCustBuy.buttonEmojiIds === "object"
+        ? (shopCustBuy.buttonEmojiIds as Record<string, string>)
+        : {};
     const custDataBuy = {
-      custEmojis: (shopCustBuy?.buttonEmojis && typeof shopCustBuy.buttonEmojis === "object") ? shopCustBuy.buttonEmojis as Record<string, string> : {},
-      custLabels: (shopCustBuy?.buttonLabels && typeof shopCustBuy.buttonLabels === "object") ? shopCustBuy.buttonLabels as Record<string, Record<string, string>> : {},
+      custEmojis:
+        shopCustBuy?.buttonEmojis &&
+        typeof shopCustBuy.buttonEmojis === "object"
+          ? (shopCustBuy.buttonEmojis as Record<string, string>)
+          : {},
+      custLabels:
+        shopCustBuy?.buttonLabels &&
+        typeof shopCustBuy.buttonLabels === "object"
+          ? (shopCustBuy.buttonLabels as Record<string, Record<string, string>>)
+          : {},
       custEmojiIds: custEmojiIdsBuy,
     };
-    const msgEmojiIdsBuy = (shopCustBuy?.messageEmojiIds && typeof shopCustBuy.messageEmojiIds === "object")
-      ? shopCustBuy.messageEmojiIds as Record<string, string> : {};
+    const msgEmojiIdsBuy =
+      shopCustBuy?.messageEmojiIds &&
+      typeof shopCustBuy.messageEmojiIds === "object"
+        ? (shopCustBuy.messageEmojiIds as Record<string, string>)
+        : {};
     const isPublicCheckoutUrl = this.isPublicCheckoutUrl(created.checkoutUrl);
     // Prefer the branded VietQR (img.vietqr.io — same look as PayOS); fall back to a
     // provider-supplied ready base64 QR (PAY2S), then to a generic QR image URL.
     let qrBuffer = created.bankInfo
-      ? await this.downloadVietQrAsBuffer(created.bankInfo, created.order.totalSaleAmount)
+      ? await this.downloadVietQrAsBuffer(
+          created.bankInfo,
+          created.order.totalSaleAmount,
+        )
       : null;
     if (!qrBuffer) qrBuffer = this.decodeDataUriToBuffer(created.qrCode);
-    const qrFallbackUrl = qrBuffer ? null : this.buildQrImageUrl(created.qrCode);
+    const qrFallbackUrl = qrBuffer
+      ? null
+      : this.buildQrImageUrl(created.qrCode);
     const hasQr = qrBuffer !== null || qrFallbackUrl !== null;
-    const paymentLines = this.buildOrderPaymentLines(created, language, usdtVndRate, created.isManualNoDelivery, shop.supportTelegram, shop.supportZalo, msgEmojiIdsBuy);
+    const paymentLines = this.buildOrderPaymentLines(
+      created,
+      language,
+      usdtVndRate,
+      created.isManualNoDelivery && !created.isAddMail,
+      shop.supportTelegram,
+      shop.supportZalo,
+      msgEmojiIdsBuy,
+    );
     // When QR is shown, hide the checkout URL button — customer should scan directly
     const isPremiumBuy = await this.resolveCanBling(shopId);
-    const baseInlineKeyboard = this.buildPostPaymentInlineKeyboard(created, language, hasQr ? false : isPublicCheckoutUrl, custDataBuy, isPremiumBuy);
-    const inlineKeyboard = created.isManualNoDelivery && shop.supportTelegram
-      ? [[{ text: this.buttonLabel("contactAdmin", language), url: `https://t.me/${shop.supportTelegram.replace(/^@/, "")}` }], ...baseInlineKeyboard]
-      : baseInlineKeyboard;
+    const baseInlineKeyboard = this.buildPostPaymentInlineKeyboard(
+      created,
+      language,
+      hasQr ? false : isPublicCheckoutUrl,
+      custDataBuy,
+      isPremiumBuy,
+    );
+    const inlineKeyboard =
+      created.isManualNoDelivery && !created.isAddMail && shop.supportTelegram
+        ? [
+            [
+              {
+                text: this.buttonLabel("contactAdmin", language),
+                url: `https://t.me/${shop.supportTelegram.replace(/^@/, "")}`,
+              },
+            ],
+            ...baseInlineKeyboard,
+          ]
+        : baseInlineKeyboard;
 
     if (qrBuffer || qrFallbackUrl) {
       const sentMsgId = await this.sendPhoto(
@@ -2680,25 +4515,45 @@ export class TelegramBotService {
         paymentLines.join("\n"),
         actions,
         { inline_keyboard: inlineKeyboard },
-        "HTML"
+        "HTML",
       );
       if (sentMsgId && created.order.paymentTransaction?.externalOrderCode) {
-        await this.prisma.paymentTransaction.update({
-          where: { externalOrderCode: created.order.paymentTransaction.externalOrderCode },
-          data: { qrTelegramMessageId: sentMsgId },
-        }).catch(() => undefined);
+        await this.prisma.paymentTransaction
+          .update({
+            where: {
+              externalOrderCode:
+                created.order.paymentTransaction.externalOrderCode,
+            },
+            data: { qrTelegramMessageId: sentMsgId },
+          })
+          .catch(() => undefined);
       }
       return;
     }
 
-    const sentResult = await this.sendText(token, customer.telegramChatId, paymentLines.join("\n"), actions, {
-      inline_keyboard: inlineKeyboard,
-    }, "HTML") as { message_id?: number } | undefined;
-    if (sentResult?.message_id && created.order.paymentTransaction?.externalOrderCode) {
-      await this.prisma.paymentTransaction.update({
-        where: { externalOrderCode: created.order.paymentTransaction.externalOrderCode },
-        data: { qrTelegramMessageId: sentResult.message_id },
-      }).catch(() => undefined);
+    const sentResult = (await this.sendText(
+      token,
+      customer.telegramChatId,
+      paymentLines.join("\n"),
+      actions,
+      {
+        inline_keyboard: inlineKeyboard,
+      },
+      "HTML",
+    )) as { message_id?: number } | undefined;
+    if (
+      sentResult?.message_id &&
+      created.order.paymentTransaction?.externalOrderCode
+    ) {
+      await this.prisma.paymentTransaction
+        .update({
+          where: {
+            externalOrderCode:
+              created.order.paymentTransaction.externalOrderCode,
+          },
+          data: { qrTelegramMessageId: sentResult.message_id },
+        })
+        .catch(() => undefined);
     }
   }
 
@@ -2718,13 +4573,52 @@ export class TelegramBotService {
     actions: unknown[],
     language: BotLanguage = "vi",
   ) {
-    if (await this.blockIfFreeTier(shopId, token, customer.telegramChatId, language, actions)) return;
+    if (
+      await this.blockIfFreeTier(
+        shopId,
+        token,
+        customer.telegramChatId,
+        language,
+        actions,
+      )
+    )
+      return;
 
     await this.clearPendingQuantitySelection(shopId, customer.telegramUserId);
     await this.clearPendingPaymentSelection(shopId, customer.telegramUserId);
     await this.clearPendingTxHashSubmission(shopId, customer.telegramUserId);
 
-    const created = await this.ordersService.createTelegramOrderWithWallet({
+    const product = await this.prisma.sourceProduct.findUnique({
+      where: { id: sourceProductId },
+      select: { available: true, preorderEnabled: true },
+    });
+    const maxAvailable = product?.available ?? null;
+    let stockHeld = false;
+    const holdKey = `stock:hold:${shopId}:${sourceProductId}`;
+
+    if (
+      shouldHoldStockForCheckout({
+        available: maxAvailable,
+        requestedQuantity: quantity,
+        preorderEnabled: product?.preorderEnabled === true,
+      })
+    ) {
+      stockHeld = await this.cache.holdStockAtomic(holdKey, maxAvailable ?? 0, quantity);
+      if (!stockHeld) {
+        const msg =
+          language === "en"
+            ? "⚠️ Out of stock. Someone else just bought it."
+            : language === "th"
+              ? "⚠️ สินค้าหมด มีคนอื่นซื้อไปแล้ว"
+              : "⚠️ Hết hàng. Vừa có người khác nhanh tay mua trước.";
+        await this.sendText(token, customer.telegramChatId, msg, actions);
+        return;
+      }
+    }
+
+    let created;
+    try {
+      created = await this.ordersService.createTelegramOrderWithWallet({
       shopId,
       sourceProductId,
       quantity,
@@ -2732,9 +4626,14 @@ export class TelegramBotService {
       telegramChatId: customer.telegramChatId,
       telegramUsername: customer.telegramUsername,
       firstName: customer.firstName,
-      lastName: customer.lastName,
       customerEmail: customer.customerEmail,
     });
+    } catch (error) {
+      if (stockHeld) {
+        await this.cache.releaseStockAtomic(holdKey, quantity);
+      }
+      throw error;
+    }
 
     const [usdtVndRate, shop, custDataWalletBuy] = await Promise.all([
       this.getShopUsdtVndRate(shopId),
@@ -2744,24 +4643,53 @@ export class TelegramBotService {
     const supportTelegram = shop.supportTelegram || null;
     const supportZalo = shop.supportZalo || null;
 
-    const manualContactLines: string[] = created.isManualNoDelivery
+    const manualContactLines: string[] = created.isAddMail
       ? [
           "",
-          language === "en" ? "✅ Payment received. Please send your email to admin to upgrade your account:" : language === "th" ? "✅ ได้รับการชำระเงินแล้ว กรุณาส่งอีเมลให้แอดมินเพื่ออัปเกรดบัญชี:" : "✅ Đã nhận thanh toán. Gửi email của bạn cho admin để được nâng cấp chính chủ:",
-          ...(supportTelegram ? [`Telegram: ${supportTelegram}`] : []),
-          ...(supportZalo ? [`Zalo: ${supportZalo}`] : []),
-          ...(!supportTelegram && !supportZalo ? [language === "en" ? "Please contact the shop admin." : language === "th" ? "กรุณาติดต่อแอดมินร้าน" : "Vui lòng liên hệ admin shop."] : []),
+          language === "en"
+            ? "⏳ Your order is being activated manually. The submitted email has been recorded."
+            : language === "th"
+              ? "⏳ ระบบได้รับอีเมลแล้ว และผู้ขายกำลังดำเนินการเปิดใช้งานบัญชี"
+              : "⏳ Đơn hàng đang được seller xử lý kích hoạt thủ công. Email bạn đã nhập đã được ghi nhận.",
         ]
-      : [
-          "",
-          language === "en" ? "The system is processing your order now." : language === "th" ? "ระบบกำลังดำเนินการคำสั่งซื้อของคุณ" : "Hệ thống đang xử lý đơn hàng của bạn.",
-        ];
+      : created.isManualNoDelivery
+        ? [
+            "",
+            language === "en"
+              ? "✅ Payment received. Please send your email to admin to upgrade your account:"
+              : language === "th"
+                ? "✅ ได้รับการชำระเงินแล้ว กรุณาส่งอีเมลให้แอดมินเพื่ออัปเกรดบัญชี:"
+                : "✅ Đã nhận thanh toán. Gửi email của bạn cho admin để được nâng cấp chính chủ:",
+            ...(supportTelegram ? [`Telegram: ${supportTelegram}`] : []),
+            ...(supportZalo ? [`Zalo: ${supportZalo}`] : []),
+            ...(!supportTelegram && !supportZalo
+              ? [
+                  language === "en"
+                    ? "Please contact the shop admin."
+                    : language === "th"
+                      ? "กรุณาติดต่อแอดมินร้าน"
+                      : "Vui lòng liên hệ admin shop.",
+                ]
+              : []),
+          ]
+        : [
+            "",
+            language === "en"
+              ? "The system is processing your order now."
+              : language === "th"
+                ? "ระบบกำลังดำเนินการคำสั่งซื้อของคุณ"
+                : "Hệ thống đang xử lý đơn hàng của bạn.",
+          ];
 
     await this.sendText(
       token,
       customer.telegramChatId,
       [
-        language === "en" ? "✅ Wallet payment successful" : language === "th" ? "✅ ชำระเงินด้วยกระเป๋าเงินสำเร็จ" : "✅ Thanh toán bằng ví thành công",
+        language === "en"
+          ? "✅ Wallet payment successful"
+          : language === "th"
+            ? "✅ ชำระเงินด้วยกระเป๋าเงินสำเร็จ"
+            : "✅ Thanh toán bằng ví thành công",
         language === "en"
           ? `Order code: ${created.order.orderCode}`
           : language === "th"
@@ -2792,16 +4720,49 @@ export class TelegramBotService {
       actions,
       {
         inline_keyboard: [
-          ...(created.isManualNoDelivery && supportTelegram
-            ? [[{ text: this.buttonLabel("contactAdmin", language), url: `https://t.me/${supportTelegram.replace(/^@/, "")}` }]]
+          ...(created.isManualNoDelivery &&
+          !created.isAddMail &&
+          supportTelegram
+            ? [
+                [
+                  {
+                    text: this.buttonLabel("contactAdmin", language),
+                    url: `https://t.me/${supportTelegram.replace(/^@/, "")}`,
+                  },
+                ],
+              ]
             : []),
           [
-            this.buildNavTextBtn(custDataWalletBuy, "orders", "history", "home:history", language),
-            this.buildNavTextBtn(custDataWalletBuy, "wallet", "wallet", "home:wallet", language),
+            this.buildNavTextBtn(
+              custDataWalletBuy,
+              "orders",
+              "history",
+              "home:history",
+              language,
+            ),
+            this.buildNavTextBtn(
+              custDataWalletBuy,
+              "wallet",
+              "wallet",
+              "home:wallet",
+              language,
+            ),
           ],
           [
-            this.buildNavTextBtn(custDataWalletBuy, "products", "productsShort", "home:products", language),
-            this.buildNavTextBtn(custDataWalletBuy, "home", "home", "home:menu", language),
+            this.buildNavTextBtn(
+              custDataWalletBuy,
+              "products",
+              "productsShort",
+              "home:products",
+              language,
+            ),
+            this.buildNavTextBtn(
+              custDataWalletBuy,
+              "home",
+              "home",
+              "home:menu",
+              language,
+            ),
           ],
         ],
       },
@@ -2811,6 +4772,7 @@ export class TelegramBotService {
   private buildPostPaymentInlineKeyboard(
     created: {
       order: {
+        id: string;
         orderCode: string;
         paymentTransaction?: {
           externalOrderCode?: string | null;
@@ -2822,20 +4784,34 @@ export class TelegramBotService {
       providerAmount?: number;
       providerCurrency?: string;
       manualCrypto?: {
-        provider: "BINANCE" | "OKX" | "USDT_TRC20" | "USDT_SOL" | "USDT_TON";
+        provider:
+          | "BINANCE"
+          | "OKX"
+          | "USDT_TRC20"
+          | "USDT_BEP20"
+          | "USDT_SOL"
+          | "USDT_TON";
         note: string;
         hasPersonalApi?: boolean;
       };
     },
     language: BotLanguage,
     isPublicCheckoutUrl: boolean,
-    custData: { custEmojis: Record<string, string>; custLabels: Record<string, Record<string, string>>; custEmojiIds: Record<string, string> } = { custEmojis: {}, custLabels: {}, custEmojiIds: {} },
+    custData: {
+      custEmojis: Record<string, string>;
+      custLabels: Record<string, Record<string, string>>;
+      custEmojiIds: Record<string, string>;
+    } = { custEmojis: {}, custLabels: {}, custEmojiIds: {} },
     isPremium = false,
   ) {
     const custEmojiIds = custData.custEmojiIds;
     const inlineKeyboard: Array<Array<Record<string, string>>> = [];
-    const paymentProvider = String(created.order.paymentTransaction?.provider || "").toLowerCase();
-    const externalOrderCode = String(created.order.paymentTransaction?.externalOrderCode || "").trim();
+    const paymentProvider = String(
+      created.order.paymentTransaction?.provider || "",
+    ).toLowerCase();
+    const externalOrderCode = String(
+      created.order.paymentTransaction?.externalOrderCode || "",
+    ).trim();
     const canInstantVerify =
       Boolean(externalOrderCode) &&
       (paymentProvider === PaymentProvider.PAYOS.toLowerCase() ||
@@ -2847,53 +4823,223 @@ export class TelegramBotService {
     const paidBtn = (text: string, extra: Record<string, string>) => {
       const sp = text.split(" ");
       return this.buildViewerBtn(
-        { textEmoji: sp[0] ?? "", label: sp.slice(1).join(" "), cusid: custEmojiIds["paid"], isPremium },
+        {
+          textEmoji: sp[0] ?? "",
+          label: sp.slice(1).join(" "),
+          cusid: custEmojiIds["paid"],
+          isPremium,
+        },
         extra,
       );
     };
 
     if (isPublicCheckoutUrl) {
-      inlineKeyboard.push([{
-        text: this.buttonLabel("openCheckout", language),
-        url: created.checkoutUrl,
-      }]);
+      inlineKeyboard.push([
+        {
+          text: this.buttonLabel("openCheckout", language),
+          url: created.checkoutUrl,
+        },
+      ]);
     }
 
     if (canInstantVerify) {
-      inlineKeyboard.push([paidBtn(this.buttonLabel("paid", language), { callback_data: `payment:verify:${externalOrderCode}` })]);
+      inlineKeyboard.push([
+        paidBtn(this.buttonLabel("paid", language), {
+          callback_data: `payment:verify:${externalOrderCode}`,
+        }),
+      ]);
     }
 
     if (created.manualCrypto?.provider === "USDT_TRC20") {
-      inlineKeyboard.push([{
-        text: this.buttonLabel("txHash", language),
-        callback_data: `txhash:submit:${created.manualCrypto.note}`,
-      }]);
+      inlineKeyboard.push([
+        {
+          text: this.buttonLabel("txHash", language),
+          callback_data: `txhash:submit:${created.manualCrypto.note}`,
+        },
+      ]);
     }
 
-    if (created.manualCrypto?.provider === "BINANCE" && created.manualCrypto?.hasPersonalApi) {
-      const text = language === "en" ? "✅ I've paid — Send Order ID" : language === "th" ? "✅ ชำระแล้ว — ส่ง ID คำสั่ง" : "✅ Đã chuyển — Gửi ID lệnh";
-      inlineKeyboard.push([paidBtn(text, { callback_data: `binance:orderid:prompt:${created.manualCrypto.note}` })]);
+    if (
+      created.manualCrypto?.provider === "BINANCE" &&
+      created.manualCrypto?.hasPersonalApi
+    ) {
+      const text =
+        language === "en"
+          ? "✅ I've paid — Send Order ID"
+          : language === "th"
+            ? "✅ ชำระแล้ว — ส่ง ID คำสั่ง"
+            : "✅ Đã chuyển — Gửi ID lệnh";
+      inlineKeyboard.push([
+        paidBtn(text, {
+          callback_data: `binance:orderid:prompt:${created.manualCrypto.note}`,
+        }),
+      ]);
     }
 
-    if (created.manualCrypto?.provider === "OKX" && created.manualCrypto?.hasPersonalApi) {
-      const text = language === "en"
-        ? "✅ I've paid — Send TX hash"
-        : language === "th"
-          ? "✅ ชำระแล้ว — ส่ง TX hash"
-          : "✅ Đã chuyển — Gửi TX hash";
-      inlineKeyboard.push([paidBtn(text, { callback_data: `okx:tx:prompt:${created.manualCrypto.note}` })]);
+    if (
+      created.manualCrypto?.provider === "OKX" &&
+      created.manualCrypto?.hasPersonalApi
+    ) {
+      const text =
+        language === "en"
+          ? "✅ I've paid — Send TX hash"
+          : language === "th"
+            ? "✅ ชำระแล้ว — ส่ง TX hash"
+            : "✅ Đã chuyển — Gửi TX hash";
+      inlineKeyboard.push([
+        paidBtn(text, {
+          callback_data: `okx:tx:prompt:${created.manualCrypto.note}`,
+        }),
+      ]);
     }
 
     inlineKeyboard.push([
-      this.buildNavTextBtn(custData, "orders", "history", "home:history", language, isPremium),
-      this.buildNavTextBtn(custData, "wallet", "wallet", "home:wallet", language, isPremium),
+      {
+        text: language === "en" ? "❌ Cancel Order" : "❌ Hủy đơn ngay",
+        callback_data: `order:cancel:${created.order.id}`,
+      },
+    ]);
+
+    inlineKeyboard.push([
+      this.buildNavTextBtn(
+        custData,
+        "orders",
+        "history",
+        "home:history",
+        language,
+        isPremium,
+      ),
+      this.buildNavTextBtn(
+        custData,
+        "wallet",
+        "wallet",
+        "home:wallet",
+        language,
+        isPremium,
+      ),
     ]);
     inlineKeyboard.push([
-      this.buildNavTextBtn(custData, "products", "productsShort", "home:products", language, isPremium),
-      this.buildNavTextBtn(custData, "home", "home", "home:menu", language, isPremium),
+      this.buildNavTextBtn(
+        custData,
+        "products",
+        "productsShort",
+        "home:products",
+        language,
+        isPremium,
+      ),
+      this.buildNavTextBtn(
+        custData,
+        "home",
+        "home",
+        "home:menu",
+        language,
+        isPremium,
+      ),
     ]);
 
     return inlineKeyboard;
+  }
+
+  private getPromotionalTotal(
+    selection: PendingQuantitySelection,
+    quantity: number,
+    unitPrice: number,
+    floorDiscount = true,
+  ): number {
+    const now = new Date();
+    const startAt = selection.promoStartAt
+      ? new Date(selection.promoStartAt)
+      : null;
+    const endAt = selection.promoEndAt ? new Date(selection.promoEndAt) : null;
+    const active = (!startAt || now >= startAt) && (!endAt || now <= endAt);
+    const minQty = Number(selection.promoBulkMinQty || 0);
+    const discountPct = Number(selection.promoBulkDiscountPct || 0);
+    const buyQty = Number(selection.promoBuyN || 0);
+    const payQty = Number(selection.promoGetM || 0);
+    const subtotal = unitPrice * quantity;
+
+    if (active && selection.promoType === "TIER_PRICE") {
+      const tier = (selection.promoPriceTiers || [])
+        .filter((item) => Number(item.minQty) <= quantity)
+        .sort((a, b) => Number(b.minQty) - Number(a.minQty))[0];
+      if (tier && Number.isFinite(Number(tier.price)))
+        return Math.max(0, Number(tier.price) * quantity);
+    }
+
+    if (
+      active &&
+      selection.promoType === "BUY_N_PAY_M" &&
+      buyQty > 0 &&
+      payQty >= 0 &&
+      payQty < buyQty &&
+      quantity >= buyQty
+    ) {
+      const discountedUnits = Math.floor(quantity / buyQty) * (buyQty - payQty);
+      return Math.max(0, unitPrice * (quantity - discountedUnits));
+    }
+
+    if (
+      active &&
+      selection.promoType === "PERCENT_DISCOUNT" &&
+      discountPct > 0
+    ) {
+      const discount = (subtotal * Math.min(100, discountPct)) / 100;
+      return Math.max(
+        0,
+        subtotal - (floorDiscount ? Math.floor(discount) : discount),
+      );
+    }
+
+    if (
+      active &&
+      selection.promoType === "BULK_DISCOUNT" &&
+      minQty > 0 &&
+      quantity >= minQty &&
+      discountPct > 0
+    ) {
+      const discount = (subtotal * discountPct) / 100;
+      return Math.max(
+        0,
+        subtotal - (floorDiscount ? Math.floor(discount) : discount),
+      );
+    }
+
+    return subtotal;
+  }
+
+  private getPreorderPreviewAmounts(
+    selection: PendingQuantitySelection,
+    merchandiseAmount: number,
+    merchandiseAmountUsd: number | null = null,
+  ) {
+    const isPreorder = selection.isPreorderOnly === true;
+    const feePercent = isPreorder
+      ? Math.min(100, Math.max(0, Number(selection.preorderFeePercent || 0)))
+      : 0;
+    const feeAmount = isPreorder
+      ? Math.round((Math.max(0, merchandiseAmount) * feePercent) / 100)
+      : 0;
+    const feeAmountUsd =
+      merchandiseAmountUsd == null
+        ? null
+        : Number(
+            ((Math.max(0, merchandiseAmountUsd) * feePercent) / 100).toFixed(2),
+          );
+    return {
+      isPreorder,
+      feePercent,
+      feeAmount,
+      feeAmountUsd,
+      totalAmount: Math.max(0, merchandiseAmount) + feeAmount,
+      totalAmountUsd:
+        merchandiseAmountUsd == null
+          ? null
+          : Number(
+              (Math.max(0, merchandiseAmountUsd) + (feeAmountUsd || 0)).toFixed(
+                2,
+              ),
+            ),
+    };
   }
 
   private async renderPaymentMethodPrompt(
@@ -2906,23 +5052,76 @@ export class TelegramBotService {
     actions: unknown[],
     language: BotLanguage,
   ) {
-    const totalAmount = selection.salePrice * quantity;
-    const totalUsd = selection.salePriceUsd != null ? selection.salePriceUsd * quantity : null;
+    const merchandiseAmount = this.getPromotionalTotal(
+      selection,
+      quantity,
+      selection.salePrice,
+    );
+    const merchandiseAmountUsd =
+      selection.salePriceUsd != null && selection.promoType !== "TIER_PRICE"
+        ? this.getPromotionalTotal(
+            selection,
+            quantity,
+            selection.salePriceUsd,
+            false,
+          )
+        : null;
+    const preorderPreview = this.getPreorderPreviewAmounts(
+      selection,
+      merchandiseAmount,
+      merchandiseAmountUsd,
+    );
+    const totalAmount = preorderPreview.totalAmount;
+    const totalUsd = preorderPreview.totalAmountUsd;
     const [usdtVndRate, shopData] = await Promise.all([
       this.getShopUsdtVndRate(shopId),
       this.shopsService.getSellerShopByShopId(shopId).catch(() => null),
     ]);
+    const subtotal = selection.salePrice * quantity;
+    const appliedDiscountPct =
+      merchandiseAmount < subtotal
+        ? Number(selection.promoBulkDiscountPct || 0)
+        : 0;
+    const totalDisplay =
+      appliedDiscountPct > 0
+        ? `${this.formatBotMoneyWithUsdOverride(selection.salePrice, selection.salePriceUsd, language, usdtVndRate)} × ${quantity} − ${appliedDiscountPct}% = ${this.formatBotMoneyWithUsdOverride(merchandiseAmount, merchandiseAmountUsd, language, usdtVndRate)}`
+        : this.formatBotMoneyWithUsdOverride(
+            totalAmount,
+            totalUsd,
+            language,
+            usdtVndRate,
+          );
     const rawCustPay = shopData?.botConfig?.customizationJson;
-    const custJsonPay = (rawCustPay && typeof rawCustPay === "object" && !Array.isArray(rawCustPay)) ? rawCustPay as Record<string, unknown> : {};
-    const custEmojis = (custJsonPay["buttonEmojis"] && typeof custJsonPay["buttonEmojis"] === "object") ? custJsonPay["buttonEmojis"] as Record<string, string> : {};
-    const custLabels = (custJsonPay["buttonLabels"] && typeof custJsonPay["buttonLabels"] === "object") ? custJsonPay["buttonLabels"] as Record<string, Record<string, string>> : {};
-    const custEmojiIds = (custJsonPay["buttonEmojiIds"] && typeof custJsonPay["buttonEmojiIds"] === "object") ? custJsonPay["buttonEmojiIds"] as Record<string, string> : {};
+    const custJsonPay =
+      rawCustPay && typeof rawCustPay === "object" && !Array.isArray(rawCustPay)
+        ? (rawCustPay as Record<string, unknown>)
+        : {};
+    const custEmojis =
+      custJsonPay["buttonEmojis"] &&
+      typeof custJsonPay["buttonEmojis"] === "object"
+        ? (custJsonPay["buttonEmojis"] as Record<string, string>)
+        : {};
+    const custLabels =
+      custJsonPay["buttonLabels"] &&
+      typeof custJsonPay["buttonLabels"] === "object"
+        ? (custJsonPay["buttonLabels"] as Record<
+            string,
+            Record<string, string>
+          >)
+        : {};
+    const custEmojiIds =
+      custJsonPay["buttonEmojiIds"] &&
+      typeof custJsonPay["buttonEmojiIds"] === "object"
+        ? (custJsonPay["buttonEmojiIds"] as Record<string, string>)
+        : {};
 
     const providerToKey = (p: TelegramPaymentOption): string => {
       if (p === "WALLET") return "payWallet";
-      if (p === PaymentProvider.BINANCE_PAY || p === PaymentProvider.BINANCE) return "payBinance";
+      if (p === PaymentProvider.BINANCE_PAY || p === PaymentProvider.BINANCE)
+        return "payBinance";
       if (p === PaymentProvider.OKX) return "payOkx";
       if (p === PaymentProvider.USDT_TRC20) return "payUsdt";
+      if (p === PaymentProvider.USDT_BEP20) return "payBep20";
       if (p === PaymentProvider.USDT_SOL) return "paySol";
       if (p === PaymentProvider.USDT_TON) return "payTon";
       if (p === PaymentProvider.PAYPAL) return "payPaypal";
@@ -2938,9 +5137,12 @@ export class TelegramBotService {
       // Default emoji + label parsed from the built-in payment label (a custom label without a custom
       // emoji still shows the default icon). Per-viewer: premium + cusid → cusid only, else text emoji.
       const parts = defaultText.split(" ");
-      const hasLeadingEmoji = parts.length > 1 && !!parts[0] && /\p{Emoji}/u.test(parts[0]);
+      const hasLeadingEmoji =
+        parts.length > 1 && !!parts[0] && /\p{Emoji}/u.test(parts[0]);
       const defPayEmoji = hasLeadingEmoji ? (parts[0] ?? "") : "";
-      const defPayLabel = hasLeadingEmoji ? parts.slice(1).join(" ") : defaultText;
+      const defPayLabel = hasLeadingEmoji
+        ? parts.slice(1).join(" ")
+        : defaultText;
       return this.buildViewerBtn(
         {
           textEmoji: custEmoji?.trim() || defPayEmoji,
@@ -2956,7 +5158,11 @@ export class TelegramBotService {
       token,
       chatId,
       [
-        language === "en" ? "Choose payment method:" : language === "th" ? "เลือกวิธีชำระเงิน:" : "Chọn phương thức thanh toán:",
+        language === "en"
+          ? "Choose payment method:"
+          : language === "th"
+            ? "เลือกวิธีชำระเงิน:"
+            : "Chọn phương thức thanh toán:",
         "",
         ...(selection.requiresCustomerEmail
           ? [
@@ -2972,11 +5178,41 @@ export class TelegramBotService {
                   : `Đơn giá/email: ${this.formatBotMoneyWithUsdOverride(selection.salePrice, selection.salePriceUsd, language, usdtVndRate)}`,
             ]
           : []),
-        language === "en"
-          ? `Total: ${this.formatBotMoneyWithUsdOverride(totalAmount, totalUsd, language, usdtVndRate)}`
-          : language === "th"
-            ? `ยอดรวม: ${this.formatBotMoneyWithUsdOverride(totalAmount, totalUsd, language, usdtVndRate)}`
-            : `Tổng: ${this.formatBotMoneyWithUsdOverride(totalAmount, totalUsd, language, usdtVndRate)}`,
+        ...(preorderPreview.isPreorder
+          ? [
+              language === "en"
+                ? `Items: ${this.formatBotMoneyWithUsdOverride(merchandiseAmount, merchandiseAmountUsd, language, usdtVndRate)}`
+                : language === "th"
+                  ? `ค่าสินค้า: ${this.formatBotMoneyWithUsdOverride(merchandiseAmount, merchandiseAmountUsd, language, usdtVndRate)}`
+                  : `Tiền hàng: ${this.formatBotMoneyWithUsdOverride(merchandiseAmount, merchandiseAmountUsd, language, usdtVndRate)}`,
+              language === "en"
+                ? `Pre-order fee (${preorderPreview.feePercent}%): ${this.formatBotMoneyWithUsdOverride(preorderPreview.feeAmount, preorderPreview.feeAmountUsd, language, usdtVndRate)}`
+                : language === "th"
+                  ? `ค่าจอง (${preorderPreview.feePercent}%): ${this.formatBotMoneyWithUsdOverride(preorderPreview.feeAmount, preorderPreview.feeAmountUsd, language, usdtVndRate)}`
+                  : `Phí đặt trước (${preorderPreview.feePercent}%): ${this.formatBotMoneyWithUsdOverride(preorderPreview.feeAmount, preorderPreview.feeAmountUsd, language, usdtVndRate)}`,
+              language === "en"
+                ? `Total: ${this.formatBotMoneyWithUsdOverride(totalAmount, totalUsd, language, usdtVndRate)}`
+                : language === "th"
+                  ? `ยอดรวม: ${this.formatBotMoneyWithUsdOverride(totalAmount, totalUsd, language, usdtVndRate)}`
+                  : `Tổng thanh toán: ${this.formatBotMoneyWithUsdOverride(totalAmount, totalUsd, language, usdtVndRate)}`,
+            ]
+          : [
+              language === "en"
+                ? `Total: ${totalDisplay}`
+                : language === "th"
+                  ? `ยอดรวม: ${totalDisplay}`
+                  : `Tổng: ${totalDisplay}`,
+            ]),
+        ...(selection.promoBanner || selection.promoMessage
+          ? [
+              `🎉 ${selection.promoMessage || selection.promoBanner}`,
+              ...(selection.promoMessage &&
+              selection.promoBanner &&
+              selection.promoMessage !== selection.promoBanner
+                ? [`🔥 ${selection.promoBanner}`]
+                : []),
+            ]
+          : []),
         language === "en"
           ? "This payment selection will expire in 5 minutes."
           : language === "th"
@@ -2987,7 +5223,12 @@ export class TelegramBotService {
       {
         inline_keyboard: [
           ...options.map((provider) => [buildPayBtn(provider)]),
-          [{ text: this.buttonLabel("back", language), callback_data: "home:products" }],
+          [
+            {
+              text: this.buttonLabel("back", language),
+              callback_data: "home:products",
+            },
+          ],
         ],
       },
     );
@@ -3007,7 +5248,10 @@ export class TelegramBotService {
       return;
     }
 
-    const selection = await this.getPendingPaymentSelection(shopId, telegramUserId);
+    const selection = await this.getPendingPaymentSelection(
+      shopId,
+      telegramUserId,
+    );
     const provider = this.normalizePaymentOption(rawProvider);
 
     if (!selection || !provider) {
@@ -3021,7 +5265,19 @@ export class TelegramBotService {
             ? "⌛ การเลือกชำระเงินหมดอายุแล้ว กรุณาเลือกสินค้าใหม่"
             : "⌛ Lựa chọn thanh toán đã hết hạn. Vui lòng chọn lại sản phẩm.",
         {
-          inline_keyboard: [[{ text: language === "en" ? "🛍️ Products" : language === "th" ? "🛍️ สินค้า" : "🛍️ Sản phẩm", callback_data: "home:products" }]],
+          inline_keyboard: [
+            [
+              {
+                text:
+                  language === "en"
+                    ? "🛍️ Products"
+                    : language === "th"
+                      ? "🛍️ สินค้า"
+                      : "🛍️ Sản phẩm",
+                callback_data: "home:products",
+              },
+            ],
+          ],
         },
         actions,
       );
@@ -3029,8 +5285,9 @@ export class TelegramBotService {
     }
 
     try {
-      const isPaymentMethodAvailable = provider === "WALLET"
-        || (await this.getAvailablePaymentProviders(shopId)).includes(provider);
+      const isPaymentMethodAvailable =
+        provider === "WALLET" ||
+        (await this.getAvailablePaymentProviders(shopId)).includes(provider);
 
       if (!isPaymentMethodAvailable) {
         await this.clearPendingPaymentSelection(shopId, telegramUserId);
@@ -3044,10 +5301,19 @@ export class TelegramBotService {
               ? "วิธีชำระเงินนี้ถูกปิดใช้งานแล้ว กรุณาเลือกสินค้าอีกครั้ง"
               : "Phương thức thanh toán này vừa được tắt. Vui lòng chọn lại sản phẩm.",
           {
-            inline_keyboard: [[{
-              text: language === "en" ? "Products" : language === "th" ? "สินค้า" : "Sản phẩm",
-              callback_data: "home:products",
-            }]],
+            inline_keyboard: [
+              [
+                {
+                  text:
+                    language === "en"
+                      ? "Products"
+                      : language === "th"
+                        ? "สินค้า"
+                        : "Sản phẩm",
+                  callback_data: "home:products",
+                },
+              ],
+            ],
           },
           actions,
         );
@@ -3104,7 +5370,14 @@ export class TelegramBotService {
         ].join("\n"),
         actions,
         {
-          inline_keyboard: [[{ text: this.buttonLabel("back", language), callback_data: "home:products" }]],
+          inline_keyboard: [
+            [
+              {
+                text: this.buttonLabel("back", language),
+                callback_data: "home:products",
+              },
+            ],
+          ],
         },
       ).catch(() => undefined);
     }
@@ -3131,6 +5404,8 @@ export class TelegramBotService {
         okxEnabled: true,
         usdtTrc20Address: true,
         usdtTrc20Enabled: true,
+        usdtBep20Address: true,
+        usdtBep20Enabled: true,
         usdtSolanaAddress: true,
         usdtSolanaEnabled: true,
         usdtTonAddress: true,
@@ -3144,7 +5419,9 @@ export class TelegramBotService {
     });
     return resolveVisiblePaymentProviders(
       paymentConfig,
-      this.config.paymentMode === "payos" ? PaymentProvider.PAYOS : PaymentProvider.MOCK,
+      this.config.paymentMode === "payos"
+        ? PaymentProvider.PAYOS
+        : PaymentProvider.MOCK,
     );
   }
 
@@ -3157,12 +5434,15 @@ export class TelegramBotService {
     const options: TelegramPaymentOption[] = [...providers];
 
     if (telegramUserId) {
-      const walletSummary = await this.customerWalletService.getWalletSummaryForTelegram(
-        shopId,
-        telegramUserId,
-      );
+      const walletSummary =
+        await this.customerWalletService.getWalletSummaryForTelegram(
+          shopId,
+          telegramUserId,
+        );
 
-      if (walletSummary.balance >= totalAmount && totalAmount > 0) {
+      const spendableBalance =
+        walletSummary.balance + walletSummary.commissionBalance;
+      if (spendableBalance >= totalAmount && totalAmount > 0) {
         options.unshift("WALLET");
       }
     }
@@ -3182,6 +5462,7 @@ export class TelegramBotService {
     if (normalized === "BINANCE_PAY") return PaymentProvider.BINANCE_PAY;
     if (normalized === "OKX") return PaymentProvider.OKX;
     if (normalized === "USDT_TRC20") return PaymentProvider.USDT_TRC20;
+    if (normalized === "USDT_BEP20") return PaymentProvider.USDT_BEP20;
     if (normalized === "USDT_SOL") return PaymentProvider.USDT_SOL;
     if (normalized === "USDT_TON") return PaymentProvider.USDT_TON;
     if (normalized === "PAYPAL") return PaymentProvider.PAYPAL;
@@ -3189,36 +5470,86 @@ export class TelegramBotService {
     return null;
   }
 
-  private paymentOptionButtonLabel(provider: TelegramPaymentOption, language: BotLanguage) {
+  private paymentOptionButtonLabel(
+    provider: TelegramPaymentOption,
+    language: BotLanguage,
+  ) {
     if (provider === "WALLET") {
-      return language === "en" ? "💰 Pay with Wallet" : language === "th" ? "💰 ชำระด้วยกระเป๋าเงิน" : "💰 Thanh toán bằng ví";
+      return language === "en"
+        ? "💰 Pay with Wallet"
+        : language === "th"
+          ? "💰 ชำระด้วยกระเป๋าเงิน"
+          : "💰 Thanh toán bằng ví";
     }
     if (provider === PaymentProvider.BINANCE_PAY) {
-      return language === "en" ? "🟡 Pay with Binance Pay (Auto)" : language === "th" ? "🟡 Binance Pay (อัตโนมัติ)" : "🟡 Binance Pay (Tự động)";
+      return language === "en"
+        ? "🟡 Pay with Binance Pay (Auto)"
+        : language === "th"
+          ? "🟡 Binance Pay (อัตโนมัติ)"
+          : "🟡 Binance Pay (Tự động)";
     }
     if (provider === PaymentProvider.BINANCE) {
-      return language === "en" ? "🟡 Pay with Binance" : language === "th" ? "🟡 ชำระด้วย Binance" : "🟡 Thanh toán Binance";
+      return language === "en"
+        ? "🟡 Pay with Binance"
+        : language === "th"
+          ? "🟡 ชำระด้วย Binance"
+          : "🟡 Thanh toán Binance";
     }
     if (provider === PaymentProvider.OKX) {
-      return language === "en" ? "⚫ Pay with OKX" : language === "th" ? "⚫ ชำระด้วย OKX" : "⚫ Thanh toán OKX";
+      return language === "en"
+        ? "⚫ Pay with OKX"
+        : language === "th"
+          ? "⚫ ชำระด้วย OKX"
+          : "⚫ Thanh toán OKX";
     }
     if (provider === PaymentProvider.USDT_TRC20) {
-      return language === "en" ? "Pay with USDT (TRC20)" : language === "th" ? "ชำระด้วย USDT (TRC20)" : "Thanh toán USDT (TRC20)";
+      return language === "en"
+        ? "Pay with USDT (TRC20)"
+        : language === "th"
+          ? "ชำระด้วย USDT (TRC20)"
+          : "Thanh toán USDT (TRC20)";
+    }
+    if (provider === PaymentProvider.USDT_BEP20) {
+      return language === "en"
+        ? "💛 Pay with USDT (BEP20)"
+        : language === "th"
+          ? "💛 ชำระด้วย USDT (BEP20)"
+          : "💛 Thanh toán USDT (BEP20)";
     }
     if (provider === PaymentProvider.USDT_SOL) {
-      return language === "en" ? "Pay with USDT (Solana)" : language === "th" ? "ชำระด้วย USDT (Solana)" : "Thanh toán USDT (Solana)";
+      return language === "en"
+        ? "Pay with USDT (Solana)"
+        : language === "th"
+          ? "ชำระด้วย USDT (Solana)"
+          : "Thanh toán USDT (Solana)";
     }
     if (provider === PaymentProvider.USDT_TON) {
-      return language === "en" ? "Pay with USDT (TON)" : language === "th" ? "ชำระด้วย USDT (TON)" : "Thanh toán USDT (TON)";
+      return language === "en"
+        ? "Pay with USDT (TON)"
+        : language === "th"
+          ? "ชำระด้วย USDT (TON)"
+          : "Thanh toán USDT (TON)";
     }
     if (provider === PaymentProvider.PAYPAL) {
-      return language === "en" ? "🅿️ Pay with PayPal" : language === "th" ? "🅿️ ชำระด้วย PayPal" : "🅿️ Thanh toán PayPal";
+      return language === "en"
+        ? "🅿️ Pay with PayPal"
+        : language === "th"
+          ? "🅿️ ชำระด้วย PayPal"
+          : "🅿️ Thanh toán PayPal";
     }
     if (provider === PaymentProvider.MOCK) {
-      return language === "en" ? "💳 Pay with QR / Bank" : language === "th" ? "💳 ชำระด้วย QR / โอนเงิน" : "💳 Thanh toán QR / Chuyển khoản";
+      return language === "en"
+        ? "💳 Pay with QR / Bank"
+        : language === "th"
+          ? "💳 ชำระด้วย QR / โอนเงิน"
+          : "💳 Thanh toán QR / Chuyển khoản";
     }
 
-    return language === "en" ? "💳 Pay with QR / Bank" : language === "th" ? "💳 ชำระด้วย QR / โอนเงิน" : "💳 Thanh toán QR / Chuyển khoản";
+    return language === "en"
+      ? "💳 Pay with QR / Bank"
+      : language === "th"
+        ? "💳 ชำระด้วย QR / โอนเงิน"
+        : "💳 Thanh toán QR / Chuyển khoản";
   }
 
   private buildOrderPaymentLines(
@@ -3229,16 +5560,25 @@ export class TelegramBotService {
         customerEmail?: string | null;
         quantity: number;
         totalSaleAmount: number;
+        isPreorder?: boolean;
+        preorderFeePercent?: number;
+        preorderFeeAmount?: number;
       };
       checkoutUrl: string;
       paymentProvider?: PaymentProvider | string;
       providerAmount?: number;
       providerCurrency?: string;
       manualCrypto?: {
-        provider: "BINANCE" | "OKX" | "USDT_TRC20" | "USDT_SOL" | "USDT_TON";
+        provider:
+          | "BINANCE"
+          | "OKX"
+          | "USDT_TRC20"
+          | "USDT_BEP20"
+          | "USDT_SOL"
+          | "USDT_TON";
         uid?: string | null;
         address?: string | null;
-        network?: "TRC20" | "SOLANA" | "TON" | null;
+        network?: "TRC20" | "BEP20" | "SOLANA" | "TON" | null;
         usdtAmount: number;
         usdtVndRate: number;
         note: string;
@@ -3265,7 +5605,39 @@ export class TelegramBotService {
     const bankInfoIcon = msgEmojiIds["bankInfo"]
       ? `<tg-emoji emoji-id="${msgEmojiIds["bankInfo"]}">🏦</tg-emoji>`
       : "🏦";
-    const productName = this.escapeHtml(this.localizeProductName(created.order.productName, language));
+    const productName = this.escapeHtml(
+      this.localizeProductName(created.order.productName, language),
+    );
+    const preorderFeeAmount = Math.max(
+      0,
+      Number(created.order.preorderFeeAmount || 0),
+    );
+    const merchandiseAmount = Math.max(
+      0,
+      Number(created.order.totalSaleAmount || 0) - preorderFeeAmount,
+    );
+    const preorderBreakdown = created.order.isPreorder
+      ? language === "en"
+        ? [
+            `🕒 Pre-order`,
+            `Items: ${this.formatBotMoney(merchandiseAmount, language, usdtVndRate)}`,
+            `Pre-order fee (${Number(created.order.preorderFeePercent || 0)}%): ${this.formatBotMoney(preorderFeeAmount, language, usdtVndRate)}`,
+            `After payment, the order joins the FIFO queue and will be delivered automatically when stock arrives.`,
+          ]
+        : language === "th"
+          ? [
+              `🕒 คำสั่งจองล่วงหน้า`,
+              `ค่าสินค้า: ${this.formatBotMoney(merchandiseAmount, language, usdtVndRate)}`,
+              `ค่าจองล่วงหน้า (${Number(created.order.preorderFeePercent || 0)}%): ${this.formatBotMoney(preorderFeeAmount, language, usdtVndRate)}`,
+              `หลังชำระเงิน คำสั่งซื้อจะเข้าคิว FIFO และบอทจะส่งสินค้าอัตโนมัติเมื่อมีสินค้า`,
+            ]
+          : [
+              `🕒 Đơn đặt trước`,
+              `Tiền hàng: ${this.formatBotMoney(merchandiseAmount, language, usdtVndRate)}`,
+              `Phí đặt trước (${Number(created.order.preorderFeePercent || 0)}%): ${this.formatBotMoney(preorderFeeAmount, language, usdtVndRate)}`,
+              `Thanh toán xong, đơn vào hàng chờ FIFO và bot sẽ tự giao khi có hàng.`,
+            ]
+      : [];
     const baseLines =
       language === "en"
         ? [
@@ -3275,6 +5647,7 @@ export class TelegramBotService {
             created.order.customerEmail
               ? `Email count: ${created.order.quantity}`
               : `Quantity: ${created.order.quantity}`,
+            ...preorderBreakdown,
             `Total: ${this.formatBotMoney(created.order.totalSaleAmount, language, usdtVndRate)}`,
           ]
         : language === "th"
@@ -3285,6 +5658,7 @@ export class TelegramBotService {
               created.order.customerEmail
                 ? `จำนวนอีเมล: ${created.order.quantity}`
                 : `จำนวน: ${created.order.quantity}`,
+              ...preorderBreakdown,
               `ยอดรวม: ${this.formatBotMoney(created.order.totalSaleAmount, language, usdtVndRate)}`,
             ]
           : [
@@ -3294,13 +5668,14 @@ export class TelegramBotService {
               created.order.customerEmail
                 ? `Số email: ${created.order.quantity}`
                 : `Số lượng: ${created.order.quantity}`,
+              ...preorderBreakdown,
               `Tổng thanh toán: ${this.formatBotMoney(created.order.totalSaleAmount, language, usdtVndRate)}`,
             ];
 
     if (
-      created.paymentProvider === PaymentProvider.PAYPAL
-      && created.providerCurrency === "USD"
-      && Number(created.providerAmount || 0) > 0
+      created.paymentProvider === PaymentProvider.PAYPAL &&
+      created.providerCurrency === "USD" &&
+      Number(created.providerAmount || 0) > 0
     ) {
       const paypalAmount = Number(created.providerAmount).toFixed(2);
       return [
@@ -3355,9 +5730,10 @@ export class TelegramBotService {
     // ── Binance/OKX manual ────────────────────────────────────────────────────
     if (created.manualCrypto) {
       const isTrc20 = created.manualCrypto.provider === "USDT_TRC20";
+      const isBep20 = created.manualCrypto.provider === "USDT_BEP20";
       const isSol = created.manualCrypto.provider === "USDT_SOL";
       const isTon = created.manualCrypto.provider === "USDT_TON";
-      const isOnchain = isTrc20 || isSol || isTon;
+      const isOnchain = isTrc20 || isBep20 || isSol || isTon;
       const providerName =
         created.manualCrypto.provider === "BINANCE"
           ? "Binance"
@@ -3367,7 +5743,9 @@ export class TelegramBotService {
               ? "USDT (Solana)"
               : isTon
                 ? "USDT (TON)"
-                : "USDT (TRC20)";
+                : isBep20
+                  ? "USDT (BEP20)"
+                  : "USDT (TRC20)";
       const receiverLine =
         created.manualCrypto.provider === "BINANCE"
           ? language === "en"
@@ -3386,61 +5764,79 @@ export class TelegramBotService {
           : language === "th"
             ? `ที่อยู่ USDT TRC20 (แตะเพื่อคัดลอก):\n<code>${created.manualCrypto.address}</code>`
             : `Địa chỉ USDT TRC20 (chạm để copy):\n<code>${created.manualCrypto.address}</code>`
-        : isSol
+        : isBep20
           ? language === "en"
-            ? `USDT Solana address (tap to copy):\n<code>${created.manualCrypto.address}</code>`
+            ? `USDT BEP20 address (tap to copy):\n<code>${created.manualCrypto.address}</code>`
             : language === "th"
-              ? `ที่อยู่ USDT Solana (แตะเพื่อคัดลอก):\n<code>${created.manualCrypto.address}</code>`
-              : `Địa chỉ USDT Solana (chạm để copy):\n<code>${created.manualCrypto.address}</code>`
-          : isTon
+              ? `ที่อยู่ USDT BEP20 (แตะเพื่อคัดลอก):\n<code>${created.manualCrypto.address}</code>`
+              : `Địa chỉ USDT BEP20 (chạm để copy):\n<code>${created.manualCrypto.address}</code>`
+          : isSol
             ? language === "en"
-              ? `USDT TON address (tap to copy):\n<code>${created.manualCrypto.address}</code>`
+              ? `USDT Solana address (tap to copy):\n<code>${created.manualCrypto.address}</code>`
               : language === "th"
-                ? `ที่อยู่ USDT TON (แตะเพื่อคัดลอก):\n<code>${created.manualCrypto.address}</code>`
-                : `Địa chỉ USDT TON (chạm để copy):\n<code>${created.manualCrypto.address}</code>`
-            : receiverLine;
+                ? `ที่อยู่ USDT Solana (แตะเพื่อคัดลอก):\n<code>${created.manualCrypto.address}</code>`
+                : `Địa chỉ USDT Solana (chạm để copy):\n<code>${created.manualCrypto.address}</code>`
+            : isTon
+              ? language === "en"
+                ? `USDT TON address (tap to copy):\n<code>${created.manualCrypto.address}</code>`
+                : language === "th"
+                  ? `ที่อยู่ USDT TON (แตะเพื่อคัดลอก):\n<code>${created.manualCrypto.address}</code>`
+                  : `Địa chỉ USDT TON (chạm để copy):\n<code>${created.manualCrypto.address}</code>`
+              : receiverLine;
       const networkLine = isTrc20
         ? language === "en"
           ? "Network: TRC20 (Tron)"
           : language === "th"
             ? "เครือข่าย: TRC20 (Tron)"
             : "Mạng: TRC20 (Tron)"
-        : isSol
+        : isBep20
           ? language === "en"
-            ? "Network: Solana (SPL Token)"
+            ? "Network: BEP20 (BSC)"
             : language === "th"
-              ? "เครือข่าย: Solana (SPL Token)"
-              : "Mạng: Solana (SPL Token)"
-          : isTon
+              ? "เครือข่าย: BEP20 (BSC)"
+              : "Mạng: BEP20 (BSC)"
+          : isSol
             ? language === "en"
-              ? "Network: TON (Jetton)"
+              ? "Network: Solana (SPL Token)"
               : language === "th"
-                ? "เครือข่าย: TON (Jetton)"
-                : "Mạng: TON (Jetton)"
-            : null;
+                ? "เครือข่าย: Solana (SPL Token)"
+                : "Mạng: Solana (SPL Token)"
+            : isTon
+              ? language === "en"
+                ? "Network: TON (Jetton)"
+                : language === "th"
+                  ? "เครือข่าย: TON (Jetton)"
+                  : "Mạng: TON (Jetton)"
+              : null;
       const safetyLine = isTrc20
         ? language === "en"
           ? "Only send USDT on the TRC20 network to this address."
           : language === "th"
             ? "ส่ง USDT ผ่านเครือข่าย TRC20 ไปยังที่อยู่นี้เท่านั้น"
             : "Chỉ gửi USDT đúng mạng TRC20 về địa chỉ này."
-        : isSol
+        : isBep20
           ? language === "en"
-            ? "Only send USDT on the Solana network (SPL token) to this address."
+            ? "Only send USDT on the BEP20 (BSC) network to this address."
             : language === "th"
-              ? "ส่ง USDT ผ่านเครือข่าย Solana (SPL token) ไปยังที่อยู่นี้เท่านั้น"
-              : "Chỉ gửi USDT đúng mạng Solana (SPL token) về địa chỉ này."
-          : isTon
+              ? "ส่ง USDT ผ่านเครือข่าย BEP20 (BSC) ไปยังที่อยู่นี้เท่านั้น"
+              : "Chỉ gửi USDT đúng mạng BEP20 (BSC) về địa chỉ này."
+          : isSol
             ? language === "en"
-              ? "Only send the official USDT Jetton on TON to this address."
+              ? "Only send USDT on the Solana network (SPL token) to this address."
               : language === "th"
-                ? "ส่งเฉพาะ USDT Jetton อย่างเป็นทางการบน TON ไปยังที่อยู่นี้"
-                : "Chỉ gửi USDT Jetton chính thức trên mạng TON về địa chỉ này."
-            : language === "en"
-              ? "Please send the order ID or off-chain transaction reference after payment for verification."
-              : language === "th"
-                ? "หลังชำระเงินกรุณาส่ง ID คำสั่งหรือรหัสอ้างอิงธุรกรรมเพื่อยืนยัน"
-                : "Sau khi thanh toán, vui lòng gửi mã đơn hoặc mã giao dịch để xác minh.";
+                ? "ส่ง USDT ผ่านเครือข่าย Solana (SPL token) ไปยังที่อยู่นี้เท่านั้น"
+                : "Chỉ gửi USDT đúng mạng Solana (SPL token) về địa chỉ này."
+            : isTon
+              ? language === "en"
+                ? "Only send the official USDT Jetton on TON to this address."
+                : language === "th"
+                  ? "ส่งเฉพาะ USDT Jetton อย่างเป็นทางการบน TON ไปยังที่อยู่นี้"
+                  : "Chỉ gửi USDT Jetton chính thức trên mạng TON về địa chỉ này."
+              : language === "en"
+                ? "Please send the order ID or off-chain transaction reference after payment for verification."
+                : language === "th"
+                  ? "หลังชำระเงินกรุณาส่ง ID คำสั่งหรือรหัสอ้างอิงธุรกรรมเพื่อยืนยัน"
+                  : "Sau khi thanh toán, vui lòng gửi mã đơn hoặc mã giao dịch để xác minh.";
       const expiryLine = isOnchain
         ? language === "en"
           ? "⚠️ This payment order will expire in 30 minutes."
@@ -3464,7 +5860,8 @@ export class TelegramBotService {
               : "Sau khi chuyển, bot tự dò trong 30-60s. (Tuỳ chọn: dán tx hash vào đây để xác nhận nhanh hơn.)"
         : null;
       const binanceAutoLine =
-        created.manualCrypto.provider === "BINANCE" && created.manualCrypto.hasPersonalApi
+        created.manualCrypto.provider === "BINANCE" &&
+        created.manualCrypto.hasPersonalApi
           ? language === "en"
             ? "This order uses a unique USDT amount. After transferring, tap 'I've paid' so the bot can check your Binance Pay history automatically."
             : language === "th"
@@ -3478,7 +5875,8 @@ export class TelegramBotService {
                 : "Quét QR để lấy địa chỉ ví, sau đó chọn USDT mạng TON và nhập đúng số tiền."
             : null;
       const okxAutoLine =
-        created.manualCrypto.provider === "OKX" && created.manualCrypto.hasPersonalApi
+        created.manualCrypto.provider === "OKX" &&
+        created.manualCrypto.hasPersonalApi
           ? language === "en"
             ? "Send the exact USDT amount shown — the bot auto-verifies your OKX deposit within 30-60s. You can also tap 'I've paid' below and paste the tx hash for instant verify."
             : language === "th"
@@ -3486,10 +5884,12 @@ export class TelegramBotService {
               : "Chuyển đúng số USDT bên dưới — bot tự dò OKX trong 30-60s. Hoặc bấm 'Đã chuyển' rồi paste tx hash để xác nhận ngay."
           : null;
       const binanceExactAmountLine =
-        ((created.manualCrypto.provider === "BINANCE" && created.manualCrypto.hasPersonalApi)
-          || (created.manualCrypto.provider === "OKX" && created.manualCrypto.hasPersonalApi)
-          || isSol
-          || isTon)
+        (created.manualCrypto.provider === "BINANCE" &&
+          created.manualCrypto.hasPersonalApi) ||
+        (created.manualCrypto.provider === "OKX" &&
+          created.manualCrypto.hasPersonalApi) ||
+        isSol ||
+        isTon
           ? language === "en"
             ? "Send the exact amount shown below so the system can match your payment safely."
             : language === "th"
@@ -3528,13 +5928,14 @@ export class TelegramBotService {
               ? "การโอน Solana ต้องมี SOL เล็กน้อยในกระเป๋าผู้ส่งสำหรับค่าธรรมเนียม (~0.001 SOL)"
               : "Lệnh chuyển Solana cũng cần một ít SOL trong ví gửi để trả phí mạng (~0.001 SOL)."
           : null;
-      const toleranceLine = isOnchain && !isTon
-        ? language === "en"
-          ? `Allowed transfer difference: ${this.formatUsdt(this.config.usdtPaymentTolerance)} USDT`
-          : language === "th"
-            ? `ความคลาดเคลื่อนที่อนุญาต: ${this.formatUsdt(this.config.usdtPaymentTolerance)} USDT`
-            : `Sai số chuyển cho phép: ${this.formatUsdt(this.config.usdtPaymentTolerance)} USDT`
-        : null;
+      const toleranceLine =
+        isOnchain && !isTon
+          ? language === "en"
+            ? `Allowed transfer difference: ${this.formatUsdt(this.config.usdtPaymentTolerance)} USDT`
+            : language === "th"
+              ? `ความคลาดเคลื่อนที่อนุญาต: ${this.formatUsdt(this.config.usdtPaymentTolerance)} USDT`
+              : `Sai số chuyển cho phép: ${this.formatUsdt(this.config.usdtPaymentTolerance)} USDT`
+          : null;
 
       return [
         ...baseLines,
@@ -3557,13 +5958,21 @@ export class TelegramBotService {
             ? `รหัสอ้างอิงคำสั่งซื้อ: <code>${created.manualCrypto.note}</code>`
             : `Mã tham chiếu đơn: <code>${created.manualCrypto.note}</code>`,
         "",
-        safetyLine,
+        ...(isOnchain
+          ? this.buildUsdtTransferWarningLines(
+              created.manualCrypto.provider as
+                | "USDT_TRC20"
+                | "USDT_BEP20"
+                | "USDT_SOL"
+                | "USDT_TON",
+              created.manualCrypto.usdtAmount,
+              language,
+            )
+          : [safetyLine]),
         ...(binanceAutoLine ? [binanceAutoLine] : []),
         ...(okxAutoLine ? [okxAutoLine] : []),
         ...(binanceExactAmountLine ? [binanceExactAmountLine] : []),
         ...(helperLine ? [helperLine] : []),
-        ...(feeLine ? [feeLine] : []),
-        ...(toleranceLine ? [toleranceLine] : []),
         ...(followupLine ? [followupLine] : []),
         "",
         expiryLine,
@@ -3571,17 +5980,18 @@ export class TelegramBotService {
     }
 
     // ── PayOS / default ───────────────────────────────────────────────────────
-    const manualNoDeliveryLines: string[] = (isManualNoDelivery && (supportTelegram || supportZalo))
-      ? [
-          language === "en"
-            ? "✅ Please contact admin if you need support:"
-            : language === "th"
-              ? "✅ กรุณาติดต่อแอดมินหากต้องการความช่วยเหลือ:"
-              : "✅ Vui lòng liên hệ admin nếu cần hỗ trợ:",
-          ...(supportTelegram ? [`Telegram: ${supportTelegram}`] : []),
-          ...(supportZalo ? [`Zalo: ${supportZalo}`] : []),
-        ]
-      : [];
+    const manualNoDeliveryLines: string[] =
+      isManualNoDelivery && (supportTelegram || supportZalo)
+        ? [
+            language === "en"
+              ? "✅ Please contact admin if you need support:"
+              : language === "th"
+                ? "✅ กรุณาติดต่อแอดมินหากต้องการความช่วยเหลือ:"
+                : "✅ Vui lòng liên hệ admin nếu cần hỗ trợ:",
+            ...(supportTelegram ? [`Telegram: ${supportTelegram}`] : []),
+            ...(supportZalo ? [`Zalo: ${supportZalo}`] : []),
+          ]
+        : [];
 
     const bankLines = created.bankInfo
       ? this.buildBankInfoLines(
@@ -3624,7 +6034,8 @@ export class TelegramBotService {
     msgEmojiIds: Record<string, string> = {},
   ): string[] {
     const bankName = BIN_TO_BANK[bankInfo.bin] || bankInfo.bin;
-    const amountFormatted = Number(amount).toLocaleString("vi-VN");
+    // VND gateways receive and encode integer amounts. Display that same value.
+    const amountFormatted = Math.round(Number(amount)).toLocaleString("vi-VN");
     const bankIcon = msgEmojiIds["bankInfo"]
       ? `<tg-emoji emoji-id="${msgEmojiIds["bankInfo"]}">🏦</tg-emoji>`
       : "🏦";
@@ -3667,6 +6078,71 @@ export class TelegramBotService {
     ];
   }
 
+  private buildUsdtTransferWarningLines(
+    provider: "USDT_TRC20" | "USDT_BEP20" | "USDT_SOL" | "USDT_TON",
+    expectedAmount: number,
+    language: BotLanguage,
+  ) {
+    const tolerance = Math.max(
+      0,
+      Number(this.config.usdtPaymentTolerance || 0),
+    );
+    const minimumReceived = Math.max(
+      0,
+      Number(expectedAmount || 0) - tolerance,
+    );
+    const network =
+      provider === "USDT_TRC20"
+        ? "TRC20 (Tron)"
+        : provider === "USDT_BEP20"
+          ? "BEP20 (BSC)"
+          : provider === "USDT_SOL"
+            ? "Solana (SPL)"
+            : "TON (Jetton)";
+    const feeToken =
+      provider === "USDT_TRC20"
+        ? "TRX"
+        : provider === "USDT_BEP20"
+          ? "BNB"
+          : provider === "USDT_SOL"
+            ? "SOL"
+            : "TON";
+    const amountText = this.formatUsdt(expectedAmount);
+    const toleranceText = this.formatUsdt(tolerance);
+    const minimumText = this.formatUsdt(minimumReceived);
+
+    if (language === "en") {
+      return [
+        "",
+        "⚠️ Important transfer notes:",
+        `• For automatic detection, send exactly <code>${amountText}</code> USDT.`,
+        `• The displayed amount is what the bot must receive and does not include fees. Maximum allowed difference: <code>${toleranceText}</code> USDT; minimum received: <code>${minimumText}</code> USDT.`,
+        `• Calculate and cover the fee yourself according to the network/sender. An on-chain wallet normally pays gas in ${feeToken}; an exchange may deduct the fee in USDT.`,
+        `• Only send official USDT using the ${network} network to this address. A wrong network may cause permanent loss.`,
+      ];
+    }
+
+    if (language === "th") {
+      return [
+        "",
+        "⚠️ หมายเหตุสำคัญในการโอน:",
+        `• เพื่อให้ระบบตรวจจับอัตโนมัติ กรุณาส่งตรงจำนวน <code>${amountText}</code> USDT`,
+        `• จำนวนที่แสดงคือยอดที่บอทต้องได้รับจริงและยังไม่รวมค่าธรรมเนียม อนุญาตให้คลาดเคลื่อนได้สูงสุด <code>${toleranceText}</code> USDT โดยต้องได้รับอย่างน้อย <code>${minimumText}</code> USDT`,
+        `• โปรดคำนวณและชดเชยค่าธรรมเนียมเองตามเครือข่าย/ช่องทางที่ส่ง กระเป๋า on-chain มักจ่าย gas ด้วย ${feeToken} ส่วนเว็บเทรดอาจหักค่าธรรมเนียมเป็น USDT`,
+        `• ส่งเฉพาะ USDT ทางเครือข่าย ${network} มายังที่อยู่นี้เท่านั้น การเลือกเครือข่ายผิดอาจทำให้เงินสูญหายถาวร`,
+      ];
+    }
+
+    return [
+      "",
+      "⚠️ Lưu ý quan trọng khi chuyển:",
+      `• Để bot tự nhận, hãy chuyển đúng <code>${amountText}</code> USDT.`,
+      `• Số tiền hiển thị là số USDT bot cần thực nhận, chưa bao gồm phí. Cho phép sai số tối đa <code>${toleranceText}</code> USDT; bot phải nhận ít nhất <code>${minimumText}</code> USDT.`,
+      `• Khách hàng tự tính và bù phí theo mạng/nơi gửi. Ví on-chain thường trả gas bằng ${feeToken}; sàn có thể trừ phí trực tiếp bằng USDT.`,
+      `• Chỉ gửi USDT chính thức đúng mạng ${network} vào địa chỉ này. Chọn sai mạng có thể mất tiền vĩnh viễn.`,
+    ];
+  }
+
   private formatUsdt(value: number) {
     return Number(value || 0).toLocaleString("en-US", {
       minimumFractionDigits: 2,
@@ -3682,7 +6158,6 @@ export class TelegramBotService {
       if (!["http:", "https:"].includes(parsed.protocol)) {
         return false;
       }
-
 
       if (
         hostname === "localhost" ||
@@ -3774,7 +6249,10 @@ export class TelegramBotService {
       return;
     }
 
-    if (payment.provider !== PaymentProvider.USDT_TRC20) {
+    if (
+      payment.provider !== PaymentProvider.USDT_TRC20 &&
+      payment.provider !== PaymentProvider.USDT_BEP20
+    ) {
       await this.editOrSend(
         token,
         chatId,
@@ -3813,12 +6291,18 @@ export class TelegramBotService {
     await this.clearPendingQuantitySelection(shopId, telegramUserId);
     await this.clearPendingWalletTopup(shopId, telegramUserId);
     await this.clearPendingPaymentSelection(shopId, telegramUserId);
-    await this.sessions.setPendingSession('pendingTxHashSubmissions', this.sessions.getPendingQuantityKey(shopId, telegramUserId), {
-      externalOrderCode,
-      orderCode: payment.order.orderCode,
-      allowMockHash: this.isSimulationToken(token),
-      expiresAt: Date.now() + this.sessions.pendingTxHashTtlMs,
-    }, this.sessions.pendingTxHashTtlMs);
+    await this.sessions.setPendingSession(
+      "pendingTxHashSubmissions",
+      this.sessions.getPendingQuantityKey(shopId, telegramUserId),
+      {
+        externalOrderCode,
+        orderCode: payment.order.orderCode,
+        provider: payment.provider,
+        allowMockHash: this.isSimulationToken(token),
+        expiresAt: Date.now() + this.sessions.pendingTxHashTtlMs,
+      },
+      this.sessions.pendingTxHashTtlMs,
+    );
 
     await this.editOrSend(
       token,
@@ -3884,7 +6368,11 @@ export class TelegramBotService {
         token,
         chatId,
         messageId,
-        language === "en" ? "⚠️ Wallet topup not found." : language === "th" ? "⚠️ ไม่พบรายการเติมเงิน" : "⚠️ Không tìm thấy lệnh nạp ví này.",
+        language === "en"
+          ? "⚠️ Wallet topup not found."
+          : language === "th"
+            ? "⚠️ ไม่พบรายการเติมเงิน"
+            : "⚠️ Không tìm thấy lệnh nạp ví này.",
         { inline_keyboard: [[this.navBtn("home", language, "home:wallet")]] },
         actions,
       );
@@ -3896,7 +6384,11 @@ export class TelegramBotService {
         token,
         chatId,
         messageId,
-        language === "en" ? "⚠️ This topup does not belong to your account." : language === "th" ? "⚠️ รายการนี้ไม่ใช่ของบัญชีคุณ" : "⚠️ Lệnh nạp này không thuộc tài khoản của bạn.",
+        language === "en"
+          ? "⚠️ This topup does not belong to your account."
+          : language === "th"
+            ? "⚠️ รายการนี้ไม่ใช่ของบัญชีคุณ"
+            : "⚠️ Lệnh nạp này không thuộc tài khoản của bạn.",
         { inline_keyboard: [[this.navBtn("home", language, "home:wallet")]] },
         actions,
       );
@@ -3908,7 +6400,11 @@ export class TelegramBotService {
         token,
         chatId,
         messageId,
-        language === "en" ? "✅ This topup has already been confirmed." : language === "th" ? "✅ รายการเติมเงินนี้ได้รับการยืนยันแล้ว" : "✅ Lệnh nạp này đã được xác nhận rồi.",
+        language === "en"
+          ? "✅ This topup has already been confirmed."
+          : language === "th"
+            ? "✅ รายการเติมเงินนี้ได้รับการยืนยันแล้ว"
+            : "✅ Lệnh nạp này đã được xác nhận rồi.",
         { inline_keyboard: [[this.navBtn("home", language, "home:wallet")]] },
         actions,
       );
@@ -3918,24 +6414,50 @@ export class TelegramBotService {
     await this.clearPendingQuantitySelection(shopId, telegramUserId);
     await this.clearPendingWalletTopup(shopId, telegramUserId);
     await this.clearPendingPaymentSelection(shopId, telegramUserId);
-    await this.sessions.setPendingSession('pendingTxHashSubmissions', this.sessions.getPendingQuantityKey(shopId, telegramUserId), {
-      externalOrderCode,
-      orderCode: externalOrderCode,
-      allowMockHash: this.isSimulationToken(token),
-      expiresAt: Date.now() + this.sessions.pendingTxHashTtlMs,
-      isTopup: true,
-    }, this.sessions.pendingTxHashTtlMs);
+    await this.sessions.setPendingSession(
+      "pendingTxHashSubmissions",
+      this.sessions.getPendingQuantityKey(shopId, telegramUserId),
+      {
+        externalOrderCode,
+        orderCode: externalOrderCode,
+        allowMockHash: this.isSimulationToken(token),
+        expiresAt: Date.now() + this.sessions.pendingTxHashTtlMs,
+        isTopup: true,
+      },
+      this.sessions.pendingTxHashTtlMs,
+    );
 
     await this.editOrSend(
       token,
       chatId,
       messageId,
       [
-        language === "en" ? "🧾 Send TX hash for wallet topup" : language === "th" ? "🧾 ส่ง TX hash สำหรับการเติมเงินกระเป๋า" : "🧾 Gửi TX hash để xác nhận nạp ví",
+        language === "en"
+          ? "🧾 Send TX hash for wallet topup"
+          : language === "th"
+            ? "🧾 ส่ง TX hash สำหรับการเติมเงินกระเป๋า"
+            : "🧾 Gửi TX hash để xác nhận nạp ví",
         "",
-        language === "en" ? "Reply with the TRC20 transaction hash in the next message." : language === "th" ? "ตอบกลับด้วย TX hash ของธุรกรรม TRC20 ในข้อความถัดไป" : "Hãy trả lời bằng tx hash giao dịch TRC20 ở tin nhắn tiếp theo.",
-        language === "en" ? "We will verify the receiver address, amount, and confirmation automatically." : language === "th" ? "ระบบจะตรวจสอบที่อยู่ผู้รับ จำนวนเงิน และสถานะการยืนยันอัตโนมัติ" : "Hệ thống sẽ tự kiểm tra địa chỉ nhận, số tiền và trạng thái xác nhận.",
-        ...(this.isSimulationToken(token) ? ["", language === "en" ? "Local test tip: you can send a mock hash like `mock:test-001`." : language === "th" ? "เคล็ดลับทดสอบ: คุณสามารถส่ง hash จำลองเช่น `mock:test-001`" : "Mẹo test local: bạn có thể gửi hash giả như `mock:test-001`."] : []),
+        language === "en"
+          ? `Reply with the ${topup.provider === PaymentProvider.USDT_BEP20 ? "BEP20" : "TRC20"} transaction hash in the next message.`
+          : language === "th"
+            ? `ตอบกลับด้วย TX hash ของธุรกรรม ${topup.provider === PaymentProvider.USDT_BEP20 ? "BEP20" : "TRC20"} ในข้อความถัดไป`
+            : `Hãy trả lời bằng tx hash giao dịch ${topup.provider === PaymentProvider.USDT_BEP20 ? "BEP20" : "TRC20"} ở tin nhắn tiếp theo.`,
+        language === "en"
+          ? "We will verify the receiver address, amount, and confirmation automatically."
+          : language === "th"
+            ? "ระบบจะตรวจสอบที่อยู่ผู้รับ จำนวนเงิน และสถานะการยืนยันอัตโนมัติ"
+            : "Hệ thống sẽ tự kiểm tra địa chỉ nhận, số tiền và trạng thái xác nhận.",
+        ...(this.isSimulationToken(token)
+          ? [
+              "",
+              language === "en"
+                ? "Local test tip: you can send a mock hash like `mock:test-001`."
+                : language === "th"
+                  ? "เคล็ดลับทดสอบ: คุณสามารถส่ง hash จำลองเช่น `mock:test-001`"
+                  : "Mẹo test local: bạn có thể gửi hash giả như `mock:test-001`.",
+            ]
+          : []),
       ].join("\n"),
       {
         inline_keyboard: [
@@ -4003,7 +6525,10 @@ export class TelegramBotService {
   ) {
     const telegramUserId = String(message.from?.id || "");
     const language = await this.getCustomerLanguage(shopId, telegramUserId);
-    const pending = await this.getPendingWarrantyClaimSubmission(shopId, telegramUserId);
+    const pending = await this.getPendingWarrantyClaimSubmission(
+      shopId,
+      telegramUserId,
+    );
 
     if (!pending) {
       return false;
@@ -4030,23 +6555,17 @@ export class TelegramBotService {
       shopId,
       telegramUserId,
       orderCode,
-      language,
+      language: language === "zh" ? "en" : language,
     });
 
     if (!check.eligible) {
-      await this.sendText(
-        token,
-        message.chat.id,
-        check.message,
-        actions,
-        {
-          inline_keyboard: [
-            [this.navBtn("history", language, "home:history")],
-            [this.navBtn("warranty", language, "warranty:start")],
-            [this.navBtn("home", language, "home:menu")],
-          ],
-        },
-      );
+      await this.sendText(token, message.chat.id, check.message, actions, {
+        inline_keyboard: [
+          [this.navBtn("history", language, "home:history")],
+          [this.navBtn("warranty", language, "warranty:start")],
+          [this.navBtn("home", language, "home:menu")],
+        ],
+      });
       return true;
     }
 
@@ -4072,9 +6591,14 @@ export class TelegramBotService {
    * localized (contain non-ASCII vi/th text) are surfaced as-is; raw English/internal errors fall
    * back to a generic localized retry line so we don't leak internals.
    */
-  private warrantySubmitErrorText(error: unknown, language: BotLanguage): string {
+  private warrantySubmitErrorText(
+    error: unknown,
+    language: BotLanguage,
+  ): string {
     const raw = String(
-      (error as any)?.response?.message ?? (error instanceof Error ? error.message : "") ?? "",
+      (error as any)?.response?.message ??
+        (error instanceof Error ? error.message : "") ??
+        "",
     ).trim();
     const localized = raw && /[^\x00-\x7F]/.test(raw); // has vi/th diacritics → already user-facing
     if (localized) return `⚠️ ${raw}`;
@@ -4098,14 +6622,16 @@ export class TelegramBotService {
     issuedReplacements: string[] = [],
   ) {
     if (accounts.length <= 1) {
-      let claim: Awaited<ReturnType<WarrantyService["submitTelegramWarrantyClaim"]>>;
+      let claim: Awaited<
+        ReturnType<WarrantyService["submitTelegramWarrantyClaim"]>
+      >;
       try {
         claim = await this.warrantyService.submitTelegramWarrantyClaim({
           shopId,
           telegramUserId,
           telegramChatId: String(chatId),
           orderCode,
-          language,
+          language: language === "zh" ? "en" : language,
         });
       } catch (error) {
         await this.editOrSend(
@@ -4118,7 +6644,14 @@ export class TelegramBotService {
         );
         return;
       }
-      await this.sendWarrantyClaimResult(token, chatId, claim, actions, language, shopId);
+      await this.sendWarrantyClaimResult(
+        token,
+        chatId,
+        claim,
+        actions,
+        language,
+        shopId,
+      );
     } else {
       await this.promptWarrantyAccountSelection(
         token,
@@ -4150,7 +6683,11 @@ export class TelegramBotService {
     await this.sessions.setPendingSession(
       "pendingWarrantyAccountSelections",
       this.sessions.getPendingQuantityKey(shopId, telegramUserId),
-      { orderCode, accounts, expiresAt: Date.now() + this.sessions.pendingQuantityTtlMs },
+      {
+        orderCode,
+        accounts,
+        expiresAt: Date.now() + this.sessions.pendingQuantityTtlMs,
+      },
       this.sessions.pendingQuantityTtlMs,
     );
 
@@ -4158,14 +6695,16 @@ export class TelegramBotService {
     const accountList = usernames.map((u, i) => `${i + 1}. ${u}`).join("\n");
     // Show accounts already replaced in a prior warranty (the new account is in the list above) so
     // the customer knows what was done and only re-warranties the one(s) still failing.
-    const replacedUsernames = issuedReplacements.map((a) => (a.split("|")[0] || a).trim()).filter(Boolean);
+    const replacedUsernames = issuedReplacements
+      .map((a) => (a.split("|")[0] || a).trim())
+      .filter(Boolean);
     const issuedNote =
       replacedUsernames.length > 0
-        ? (language === "en"
-            ? `✅ Already warrantied — new account(s) issued: ${replacedUsernames.join(", ")}`
-            : language === "th"
-              ? `✅ รับประกันแล้ว — บัญชีใหม่ที่ออกให้: ${replacedUsernames.join(", ")}`
-              : `✅ Đã bảo hành trước đó — TK mới đã cấp: ${replacedUsernames.join(", ")}`)
+        ? language === "en"
+          ? `✅ Already warrantied — new account(s) issued: ${replacedUsernames.join(", ")}`
+          : language === "th"
+            ? `✅ รับประกันแล้ว — บัญชีใหม่ที่ออกให้: ${replacedUsernames.join(", ")}`
+            : `✅ Đã bảo hành trước đó — TK mới đã cấp: ${replacedUsernames.join(", ")}`
         : "";
 
     await this.editOrSend(
@@ -4204,9 +6743,7 @@ export class TelegramBotService {
             : `Ví dụ: ${usernames[0]}${usernames[1] ? `;${usernames[1]}` : ""}`,
       ].join("\n"),
       {
-        inline_keyboard: [
-          [this.navBtn("home", language, "home:menu")],
-        ],
+        inline_keyboard: [[this.navBtn("home", language, "home:menu")]],
       },
       actions,
     );
@@ -4220,7 +6757,10 @@ export class TelegramBotService {
   ) {
     const telegramUserId = String(message.from?.id || "");
     const language = await this.getCustomerLanguage(shopId, telegramUserId);
-    const pending = await this.getPendingWarrantyAccountSelection(shopId, telegramUserId);
+    const pending = await this.getPendingWarrantyAccountSelection(
+      shopId,
+      telegramUserId,
+    );
 
     if (!pending) {
       return false;
@@ -4239,9 +6779,7 @@ export class TelegramBotService {
             ? "กรุณากรอก username คั่นด้วยเครื่องหมายอัฒภาค (;)"
             : "Vui lòng nhập username cần bảo hành, cách nhau bởi dấu (;).",
         {
-          inline_keyboard: [
-            [this.navBtn("home", language, "home:menu")],
-          ],
+          inline_keyboard: [[this.navBtn("home", language, "home:menu")]],
         },
         actions,
       );
@@ -4250,9 +6788,14 @@ export class TelegramBotService {
 
     await this.clearPendingWarrantyAccountSelection(shopId, telegramUserId);
 
-    const targetUsernames = input.split(";").map((s) => s.trim()).filter(Boolean);
+    const targetUsernames = input
+      .split(";")
+      .map((s) => s.trim())
+      .filter(Boolean);
 
-    let claim: Awaited<ReturnType<WarrantyService["submitTelegramWarrantyClaim"]>>;
+    let claim: Awaited<
+      ReturnType<WarrantyService["submitTelegramWarrantyClaim"]>
+    >;
     try {
       claim = await this.warrantyService.submitTelegramWarrantyClaim({
         shopId,
@@ -4260,7 +6803,7 @@ export class TelegramBotService {
         telegramChatId: String(message.chat?.id || telegramUserId),
         orderCode: pending.orderCode,
         targetUsernames,
-        language,
+        language: language === "zh" ? "en" : language,
       });
     } catch (error) {
       await this.editOrSend(
@@ -4274,7 +6817,14 @@ export class TelegramBotService {
       return true;
     }
 
-    await this.sendWarrantyClaimResult(token, message.chat.id, claim, actions, language, shopId);
+    await this.sendWarrantyClaimResult(
+      token,
+      message.chat.id,
+      claim,
+      actions,
+      language,
+      shopId,
+    );
     return true;
   }
 
@@ -4306,7 +6856,8 @@ export class TelegramBotService {
             ? "📋 บันทึกคำขอรับประกันแล้ว กรุณาติดต่อร้านเพื่อขอความช่วยเหลือ:"
             : "📋 Yêu cầu bảo hành đã được ghi nhận. Vui lòng liên hệ shop để được hỗ trợ:",
       ];
-      if (claim.supportTelegram) lines.push(`Telegram: ${claim.supportTelegram}`);
+      if (claim.supportTelegram)
+        lines.push(`Telegram: ${claim.supportTelegram}`);
       if (claim.supportZalo) lines.push(`Zalo: ${claim.supportZalo}`);
       // No contact configured → don't leave a dead-end "contact the shop" with nobody to contact.
       if (!claim.supportTelegram && !claim.supportZalo) {
@@ -4333,36 +6884,37 @@ export class TelegramBotService {
     } else {
       replyText =
         claim.message ??
-        (language === "en" ? "An error occurred." : language === "th" ? "เกิดข้อผิดพลาด" : "Đã xảy ra lỗi.");
+        (language === "en"
+          ? "An error occurred."
+          : language === "th"
+            ? "เกิดข้อผิดพลาด"
+            : "Đã xảy ra lỗi.");
     }
 
-    const sent = await this.sendText(
-      token,
-      chatId,
-      replyText,
-      actions,
-      {
-        inline_keyboard: [
-          [this.navBtn("history", language, "home:history")],
-          [this.navBtn("warranty", language, "warranty:start")],
-          [this.navBtn("home", language, "home:menu")],
-        ],
-      },
-    );
+    const sent = await this.sendText(token, chatId, replyText, actions, {
+      inline_keyboard: [
+        [this.navBtn("history", language, "home:history")],
+        [this.navBtn("warranty", language, "warranty:start")],
+        [this.navBtn("home", language, "home:menu")],
+      ],
+    });
 
     // Edit-in-place: for the async auto-check path the worker later EDITS this "đang kiểm tra…"
     // message into the verdict/replacement (instead of sending a disconnected 2nd message). Anchor
     // its (chatId, messageId) onto the claim so deliverBotMessage can find + edit it.
     const claimId = (claim as { claimId?: string }).claimId;
     const messageId = Number((sent as { message_id?: number })?.message_id);
-    const isMockToken = this.isSimulationToken(token) || (this.config.mockTelegramEnabled && isMockBotToken(token));
+    const isMockToken =
+      this.isSimulationToken(token) ||
+      (this.config.mockTelegramEnabled && isMockBotToken(token));
     if (
       !isMockToken && // mock/sim sendText returns a fake message_id — don't persist a junk anchor
       shopId &&
       claimId &&
       Number.isFinite(messageId) &&
       messageId > 0 &&
-      (claim.status === "auto_check_pending" || claim.status === "auto_resolved_pending")
+      (claim.status === "auto_check_pending" ||
+        claim.status === "auto_resolved_pending")
     ) {
       await this.warrantyService
         .updateBotProgressContext(claimId, { shopId, chatId, messageId })
@@ -4384,7 +6936,8 @@ export class TelegramBotService {
       // Fallback: detect tx hash format and try to match a recent pending USDT order
       const rawText = String(message.text || "").trim();
       const isTrc20Like = /^(0x)?[a-f0-9]{64}$/i.test(rawText);
-      const isSolanaLike = /^[1-9A-HJ-NP-Za-km-z]{80,90}$/.test(rawText) && !isTrc20Like;
+      const isSolanaLike =
+        /^[1-9A-HJ-NP-Za-km-z]{80,90}$/.test(rawText) && !isTrc20Like;
       if (!isTrc20Like && !isSolanaLike) {
         return false;
       }
@@ -4395,7 +6948,9 @@ export class TelegramBotService {
       if (!customer) {
         return false;
       }
-      const targetProvider = isSolanaLike ? PaymentProvider.USDT_SOL : PaymentProvider.USDT_TRC20;
+      const targetProvider = isSolanaLike
+        ? PaymentProvider.USDT_SOL
+        : PaymentProvider.USDT_TRC20;
       const recentPayment = await this.prisma.paymentTransaction.findFirst({
         where: {
           provider: targetProvider,
@@ -4404,7 +6959,10 @@ export class TelegramBotService {
           order: { customerId: customer.id, shopId },
         },
         orderBy: { createdAt: "desc" },
-        select: { externalOrderCode: true, order: { select: { orderCode: true } } },
+        select: {
+          externalOrderCode: true,
+          order: { select: { orderCode: true } },
+        },
       });
       const recentTopup = recentPayment
         ? null
@@ -4423,14 +6981,23 @@ export class TelegramBotService {
         return false;
       }
       pending = {
-        externalOrderCode: (recentPayment?.externalOrderCode || recentTopup?.externalOrderCode) as string,
-        orderCode: recentPayment?.order?.orderCode || recentTopup?.externalOrderCode || "",
+        externalOrderCode: (recentPayment?.externalOrderCode ||
+          recentTopup?.externalOrderCode) as string,
+        orderCode:
+          recentPayment?.order?.orderCode ||
+          recentTopup?.externalOrderCode ||
+          "",
         isTopup: !recentPayment && !!recentTopup,
         allowMockHash: false,
         expiresAt: Date.now() + this.sessions.pendingTxHashTtlMs,
         provider: isSolanaLike ? "USDT_SOL" : "USDT_TRC20",
       };
-      await this.sessions.setPendingSession('pendingTxHashSubmissions', this.sessions.getPendingQuantityKey(shopId, telegramUserId), pending, this.sessions.pendingTxHashTtlMs);
+      await this.sessions.setPendingSession(
+        "pendingTxHashSubmissions",
+        this.sessions.getPendingQuantityKey(shopId, telegramUserId),
+        pending,
+        this.sessions.pendingTxHashTtlMs,
+      );
     }
 
     try {
@@ -4444,11 +7011,18 @@ export class TelegramBotService {
                   where: { externalOrderCode: pending.externalOrderCode },
                   data: { cryptoTxHash: rawTxHash },
                 });
-                await this.customerWalletService.markTopupPaid(pending.externalOrderCode, {
-                  source: "simulate_mock_trc20_tx_hash",
+                await this.customerWalletService.markTopupPaid(
+                  pending.externalOrderCode,
+                  {
+                    source: "simulate_mock_trc20_tx_hash",
+                    txHash: rawTxHash,
+                  },
+                );
+                return {
+                  alreadyPaid: false,
                   txHash: rawTxHash,
-                });
-                return { alreadyPaid: false, txHash: rawTxHash, verification: { amountUsdt: 0 } };
+                  verification: { amountUsdt: 0 },
+                };
               })()
             : pending.provider === "USDT_SOL"
               ? await this.solanaPaymentService.submitTelegramSolTopupTxHash({
@@ -4458,11 +7032,11 @@ export class TelegramBotService {
                   signature: rawTxHash,
                 })
               : await this.onchainPaymentService.submitTelegramTopupTxHash({
-                shopId,
-                telegramUserId,
-                externalOrderCode: pending.externalOrderCode,
-                txHash: rawTxHash,
-              });
+                  shopId,
+                  telegramUserId,
+                  externalOrderCode: pending.externalOrderCode,
+                  txHash: rawTxHash,
+                });
 
         await this.clearPendingTxHashSubmission(shopId, telegramUserId);
 
@@ -4470,18 +7044,42 @@ export class TelegramBotService {
           token,
           message.chat.id,
           topupResult.alreadyPaid
-            ? (language === "en" ? "✅ This topup has already been confirmed." : language === "th" ? "✅ รายการเติมเงินนี้ได้รับการยืนยันแล้ว" : "✅ Lệnh nạp ví này đã được xác nhận rồi.")
+            ? language === "en"
+              ? "✅ This topup has already been confirmed."
+              : language === "th"
+                ? "✅ รายการเติมเงินนี้ได้รับการยืนยันแล้ว"
+                : "✅ Lệnh nạp ví này đã được xác nhận rồi."
             : [
-                language === "en" ? "✅ TX hash verified — wallet topped up!" : language === "th" ? "✅ ยืนยัน TX hash สำเร็จ — เติมเงินกระเป๋าแล้ว!" : "✅ Đã xác minh TX hash — ví đã được nạp tiền!",
+                language === "en"
+                  ? "✅ TX hash verified — wallet topped up!"
+                  : language === "th"
+                    ? "✅ ยืนยัน TX hash สำเร็จ — เติมเงินกระเป๋าแล้ว!"
+                    : "✅ Đã xác minh TX hash — ví đã được nạp tiền!",
                 `TX hash: ${topupResult.txHash}`,
                 ...((topupResult.verification?.amountUsdt || 0) > 0
-                  ? [language === "en" ? `Confirmed: ${this.formatUsdt(topupResult.verification?.amountUsdt || 0)} USDT` : language === "th" ? `ยืนยันแล้ว: ${this.formatUsdt(topupResult.verification?.amountUsdt || 0)} USDT` : `Số tiền xác nhận: ${this.formatUsdt(topupResult.verification?.amountUsdt || 0)} USDT`]
+                  ? [
+                      language === "en"
+                        ? `Confirmed: ${this.formatUsdt(topupResult.verification?.amountUsdt || 0)} USDT`
+                        : language === "th"
+                          ? `ยืนยันแล้ว: ${this.formatUsdt(topupResult.verification?.amountUsdt || 0)} USDT`
+                          : `Số tiền xác nhận: ${this.formatUsdt(topupResult.verification?.amountUsdt || 0)} USDT`,
+                    ]
                   : []),
               ].join("\n"),
           actions,
           {
             inline_keyboard: [
-              [{ text: language === "en" ? "💳 View wallet" : language === "th" ? "💳 ดูกระเป๋าเงิน" : "💳 Xem ví", callback_data: "home:wallet" }],
+              [
+                {
+                  text:
+                    language === "en"
+                      ? "💳 View wallet"
+                      : language === "th"
+                        ? "💳 ดูกระเป๋าเงิน"
+                        : "💳 Xem ví",
+                  callback_data: "home:wallet",
+                },
+              ],
               [this.navBtn("home", language, "home:menu")],
             ],
           },
@@ -4517,11 +7115,11 @@ export class TelegramBotService {
                 signature: rawTxHash,
               })
             : await this.onchainPaymentService.submitTelegramTxHash({
-              shopId,
-              telegramUserId,
-              externalOrderCode: pending.externalOrderCode,
-              txHash: rawTxHash,
-            });
+                shopId,
+                telegramUserId,
+                externalOrderCode: pending.externalOrderCode,
+                txHash: rawTxHash,
+              });
 
       await this.clearPendingTxHashSubmission(shopId, telegramUserId);
 
@@ -4596,11 +7194,26 @@ export class TelegramBotService {
         actions,
         {
           inline_keyboard: [
-            [{
-              text: this.buttonLabel("txHash", language),
-              callback_data: pending.isTopup ? `txhash:topup:${pending.externalOrderCode}` : `txhash:submit:${pending.externalOrderCode}`,
-            }],
-            [{ text: pending.isTopup ? (language === "en" ? "💳 View wallet" : language === "th" ? "💳 ดูกระเป๋าเงิน" : "💳 Xem ví") : this.buttonLabel("history", language), callback_data: pending.isTopup ? "home:wallet" : "home:history" }],
+            [
+              {
+                text: this.buttonLabel("txHash", language),
+                callback_data: pending.isTopup
+                  ? `txhash:topup:${pending.externalOrderCode}`
+                  : `txhash:submit:${pending.externalOrderCode}`,
+              },
+            ],
+            [
+              {
+                text: pending.isTopup
+                  ? language === "en"
+                    ? "💳 View wallet"
+                    : language === "th"
+                      ? "💳 ดูกระเป๋าเงิน"
+                      : "💳 Xem ví"
+                  : this.buttonLabel("history", language),
+                callback_data: pending.isTopup ? "home:wallet" : "home:history",
+              },
+            ],
           ],
         },
       ).catch(() => undefined);
@@ -4617,7 +7230,10 @@ export class TelegramBotService {
   ) {
     const telegramUserId = String(message.from?.id || "");
     const language = await this.getCustomerLanguage(shopId, telegramUserId);
-    const selection = await this.getPendingQuantitySelection(shopId, telegramUserId);
+    const selection = await this.getPendingQuantitySelection(
+      shopId,
+      telegramUserId,
+    );
 
     if (!selection) {
       return false;
@@ -4629,41 +7245,50 @@ export class TelegramBotService {
     if (selection.requiresCustomerEmail) {
       const parsed = parseCustomerEmailList(message.text);
       const exceedsStock =
-        selection.maxQuantity !== null && parsed.nonEmptyLineCount > selection.maxQuantity;
+        selection.maxQuantity !== null &&
+        parsed.nonEmptyLineCount > selection.maxQuantity;
 
       if (!hasValidCustomerEmailList(parsed) || exceedsStock) {
         let errorText: string;
         if (parsed.nonEmptyLineCount === 0) {
-          errorText = language === "en"
-            ? "❌ Please enter at least one email."
-            : language === "th"
-              ? "❌ กรุณากรอกอีเมลอย่างน้อยหนึ่งรายการ"
-              : "❌ Vui lòng nhập ít nhất một email.";
+          errorText =
+            language === "en"
+              ? "❌ Please enter at least one email."
+              : language === "th"
+                ? "❌ กรุณากรอกอีเมลอย่างน้อยหนึ่งรายการ"
+                : "❌ Vui lòng nhập ít nhất một email.";
         } else if (parsed.invalidLineNumbers.length > 0) {
           const lines = parsed.invalidLineNumbers.join(", ");
-          errorText = language === "en"
-            ? `❌ Invalid email on line(s): ${lines}.`
-            : language === "th"
-              ? `❌ อีเมลไม่ถูกต้องในบรรทัด: ${lines}`
-              : `❌ Email chưa hợp lệ ở dòng: ${lines}.`;
+          errorText =
+            language === "en"
+              ? `❌ Invalid email on line(s): ${lines}.`
+              : language === "th"
+                ? `❌ อีเมลไม่ถูกต้องในบรรทัด: ${lines}`
+                : `❌ Email chưa hợp lệ ở dòng: ${lines}.`;
         } else if (parsed.duplicateEmails.length > 0) {
-          errorText = language === "en"
-            ? "❌ Duplicate emails are not allowed."
-            : language === "th"
-              ? "❌ ไม่อนุญาตให้ใช้อีเมลซ้ำ"
-              : "❌ Danh sách có email bị trùng. Vui lòng kiểm tra lại.";
+          errorText =
+            language === "en"
+              ? "❌ Duplicate emails are not allowed."
+              : language === "th"
+                ? "❌ ไม่อนุญาตให้ใช้อีเมลซ้ำ"
+                : "❌ Danh sách có email bị trùng. Vui lòng kiểm tra lại.";
         } else {
-          errorText = language === "en"
-            ? `❌ You can enter at most ${selection.maxQuantity} email(s).`
-            : language === "th"
-              ? `❌ กรอกได้สูงสุด ${selection.maxQuantity} อีเมล`
-              : `❌ Chỉ được nhập tối đa ${selection.maxQuantity} email.`;
+          errorText =
+            language === "en"
+              ? `❌ You can enter at most ${selection.maxQuantity} email(s).`
+              : language === "th"
+                ? `❌ กรอกได้สูงสุด ${selection.maxQuantity} อีเมล`
+                : `❌ Chỉ được nhập tối đa ${selection.maxQuantity} email.`;
         }
 
         await this.sendText(
           token,
           message.chat.id,
-          this.buildCustomerEmailPromptText(selection.maxQuantity, language, errorText),
+          this.buildCustomerEmailPromptText(
+            selection.maxQuantity,
+            language,
+            errorText,
+          ),
           actions,
           {
             inline_keyboard: [[this.navBtn("back", language, "home:products")]],
@@ -4675,7 +7300,10 @@ export class TelegramBotService {
       quantity = parsed.emails.length;
       customerEmail = parsed.emails.join("\n");
     } else {
-      const parsedQuantity = this.parseQuantityMessage(message.text, selection.maxQuantity);
+      const parsedQuantity = this.parseQuantityMessage(
+        message.text,
+        selection.maxQuantity,
+      );
       if (!parsedQuantity) {
         const usdtVndRate = await this.getShopUsdtVndRate(shopId);
         await this.sendQuantityReplyPrompt(
@@ -4704,10 +7332,16 @@ export class TelegramBotService {
         customerEmail,
       };
 
+      const merchandiseAmount = this.getPromotionalTotal(
+        selection,
+        quantity,
+        selection.salePrice,
+      );
       const paymentProviders = await this.getAvailablePaymentOptions(
         shopId,
         telegramUserId,
-        selection.salePrice * quantity,
+        this.getPreorderPreviewAmounts(selection, merchandiseAmount)
+          .totalAmount,
       );
 
       if (paymentProviders.length === 0) {
@@ -4722,10 +7356,12 @@ export class TelegramBotService {
               : "Shop chưa có phương thức thanh toán khả dụng. Vui lòng liên hệ chủ shop.",
           actions,
           {
-            inline_keyboard: [[
-              this.navBtn("products", language, "home:products"),
-              this.navBtn("home", language, "home:menu"),
-            ]],
+            inline_keyboard: [
+              [
+                this.navBtn("products", language, "home:products"),
+                this.navBtn("home", language, "home:menu"),
+              ],
+            ],
           },
         );
         return true;
@@ -4733,12 +7369,17 @@ export class TelegramBotService {
 
       if (paymentProviders.length > 1) {
         await this.clearPendingQuantitySelection(shopId, telegramUserId);
-        await this.sessions.setPendingSession('pendingPaymentSelections', this.sessions.getPendingQuantityKey(shopId, telegramUserId), {
+        await this.sessions.setPendingSession(
+          "pendingPaymentSelections",
+          this.sessions.getPendingQuantityKey(shopId, telegramUserId),
+          {
             sourceProductId: selection.sourceProductId,
             quantity,
             ...customer,
             expiresAt: Date.now() + this.sessions.pendingPaymentTtlMs,
-          }, this.sessions.pendingPaymentTtlMs);
+          },
+          this.sessions.pendingPaymentTtlMs,
+        );
         await this.renderPaymentMethodPrompt(
           shopId,
           token,
@@ -4793,7 +7434,14 @@ export class TelegramBotService {
         ].join("\n"),
         actions,
         {
-          inline_keyboard: [[{ text: this.buttonLabel("back", language), callback_data: "home:products" }]],
+          inline_keyboard: [
+            [
+              {
+                text: this.buttonLabel("back", language),
+                callback_data: "home:products",
+              },
+            ],
+          ],
         },
       ).catch(() => undefined);
     }
@@ -4821,12 +7469,23 @@ export class TelegramBotService {
     // Parse amount based on currency
     let vndAmount: number;
     if (isUsdt) {
-      const usdtInput = parseFloat(String(message.text || "").trim().replace(",", "."));
+      const usdtInput = parseFloat(
+        String(message.text || "")
+          .trim()
+          .replace(",", "."),
+      );
       if (!isFinite(usdtInput) || usdtInput < 1) {
         await this.promptWalletTopupAmount(
-          shopId, token, Number(message.chat.id), telegramUserId, actions, "USDT",
-          language === "en" ? "❌ Invalid USDT amount. Minimum is 1 USDT."
-            : language === "th" ? "❌ จำนวน USDT ไม่ถูกต้อง ขั้นต่ำ 1 USDT"
+          shopId,
+          token,
+          Number(message.chat.id),
+          telegramUserId,
+          actions,
+          "USDT",
+          language === "en"
+            ? "❌ Invalid USDT amount. Minimum is 1 USDT."
+            : language === "th"
+              ? "❌ จำนวน USDT ไม่ถูกต้อง ขั้นต่ำ 1 USDT"
               : "❌ Số USDT không hợp lệ. Tối thiểu 1 USDT.",
           language,
           pending.provider,
@@ -4840,9 +7499,16 @@ export class TelegramBotService {
       const parsed = this.parseWalletTopupAmount(message.text);
       if (!parsed) {
         await this.promptWalletTopupAmount(
-          shopId, token, Number(message.chat.id), telegramUserId, actions, "VND",
-          language === "en" ? "❌ Invalid amount. Please enter an integer from 1,000 VND."
-            : language === "th" ? "❌ จำนวนเงินไม่ถูกต้อง กรุณาระบุจำนวนเต็มตั้งแต่ 1,000 VND ขึ้นไป"
+          shopId,
+          token,
+          Number(message.chat.id),
+          telegramUserId,
+          actions,
+          "VND",
+          language === "en"
+            ? "❌ Invalid amount. Please enter an integer from 1,000 VND."
+            : language === "th"
+              ? "❌ จำนวนเงินไม่ถูกต้อง กรุณาระบุจำนวนเต็มตั้งแต่ 1,000 VND ขึ้นไป"
               : "❌ Số tiền không hợp lệ. Vui lòng nhập số nguyên từ 1.000đ trở lên.",
           language,
         );
@@ -4852,7 +7518,8 @@ export class TelegramBotService {
     }
 
     const providerOverride = isUsdt
-      ? (pending.provider as PaymentProvider | undefined) || PaymentProvider.USDT_TRC20
+      ? (pending.provider as PaymentProvider | undefined) ||
+        PaymentProvider.USDT_TRC20
       : undefined;
 
     try {
@@ -4872,10 +7539,16 @@ export class TelegramBotService {
       await this.clearPendingWalletTopup(shopId, telegramUserId);
 
       let qrBuffer = created.bankInfo
-        ? await this.downloadVietQrAsBuffer(created.bankInfo, created.topup.amount)
+        ? await this.downloadVietQrAsBuffer(
+            created.bankInfo,
+            created.topup.amount,
+          )
         : null;
-      if (!qrBuffer) qrBuffer = this.decodeDataUriToBuffer(created.topup.qrCode);
-      const qrFallbackUrl = qrBuffer ? null : this.buildQrImageUrl(created.topup.qrCode);
+      if (!qrBuffer)
+        qrBuffer = this.decodeDataUriToBuffer(created.topup.qrCode);
+      const qrFallbackUrl = qrBuffer
+        ? null
+        : this.buildQrImageUrl(created.topup.qrCode);
       const usdtVndRate = await this.getShopUsdtVndRate(shopId);
       const text = this.buildWalletTopupInstructionText(
         created.topup.amount,
@@ -4890,19 +7563,35 @@ export class TelegramBotService {
       const replyMarkup = {
         inline_keyboard: [
           ...(this.isPublicCheckoutUrl(created.topup.checkoutUrl)
-            ? [[{
-              text: this.buttonLabel("openCheckout", language),
-              url: created.topup.checkoutUrl,
-            }]]
+            ? [
+                [
+                  {
+                    text: this.buttonLabel("openCheckout", language),
+                    url: created.topup.checkoutUrl,
+                  },
+                ],
+              ]
             : []),
           ...(isUsdt && pending.provider !== "USDT_TON"
-            ? [[{
-              text: this.buttonLabel("txHash", language),
-              callback_data: `txhash:topup:${created.topup.externalOrderCode}`,
-            }]]
+            ? [
+                [
+                  {
+                    text: this.buttonLabel("txHash", language),
+                    callback_data: `txhash:topup:${created.topup.externalOrderCode}`,
+                  },
+                ],
+              ]
             : []),
           [
-            { text: language === "en" ? "💳 View wallet" : language === "th" ? "💳 ดูกระเป๋าเงิน" : "💳 Xem ví", callback_data: "home:wallet" },
+            {
+              text:
+                language === "en"
+                  ? "💳 View wallet"
+                  : language === "th"
+                    ? "💳 ดูกระเป๋าเงิน"
+                    : "💳 Xem ví",
+              callback_data: "home:wallet",
+            },
             this.navBtn("home", language, "home:menu"),
           ],
         ],
@@ -4910,20 +7599,41 @@ export class TelegramBotService {
 
       let sentMessageId: number | null = null;
       if (qrBuffer || qrFallbackUrl) {
-        sentMessageId = await this.sendPhoto(token, message.chat.id, qrBuffer ?? qrFallbackUrl!, text, actions, replyMarkup, "HTML");
+        sentMessageId = await this.sendPhoto(
+          token,
+          message.chat.id,
+          qrBuffer ?? qrFallbackUrl!,
+          text,
+          actions,
+          replyMarkup,
+          "HTML",
+        );
       } else {
-        const result = await this.sendText(token, message.chat.id, text, actions, replyMarkup, "HTML");
-        sentMessageId = result && typeof result === "object" && "message_id" in result
-          ? (result as { message_id: number }).message_id
-          : null;
+        const result = await this.sendText(
+          token,
+          message.chat.id,
+          text,
+          actions,
+          replyMarkup,
+          "HTML",
+        );
+        sentMessageId =
+          result && typeof result === "object" && "message_id" in result
+            ? (result as { message_id: number }).message_id
+            : null;
       }
 
       if (sentMessageId) {
-        await this.sessions.setPendingSession('pendingQrMessages', created.topup.externalOrderCode, {
-          token,
-          chatId: message.chat.id,
-          messageId: sentMessageId,
-        }, 30 * 60 * 1000);
+        await this.sessions.setPendingSession(
+          "pendingQrMessages",
+          created.topup.externalOrderCode,
+          {
+            token,
+            chatId: message.chat.id,
+            messageId: sentMessageId,
+          },
+          30 * 60 * 1000,
+        );
       }
     } catch (error) {
       this.logger.error(
@@ -4932,11 +7642,19 @@ export class TelegramBotService {
       );
 
       await this.promptWalletTopupAmount(
-        shopId, token, Number(message.chat.id), telegramUserId, actions, currency,
+        shopId,
+        token,
+        Number(message.chat.id),
+        telegramUserId,
+        actions,
+        currency,
         this.localizeBotErrorMessage(
-          error, language,
-          language === "en" ? "Cannot create a wallet top-up right now."
-            : language === "th" ? "ไม่สามารถสร้างรายการเติมเงินได้ในขณะนี้"
+          error,
+          language,
+          language === "en"
+            ? "Cannot create a wallet top-up right now."
+            : language === "th"
+              ? "ไม่สามารถสร้างรายการเติมเงินได้ในขณะนี้"
               : "Không thể tạo lệnh nạp ví lúc này.",
         ),
         language,
@@ -4967,10 +7685,21 @@ export class TelegramBotService {
       return;
     }
 
-    const qrMsg = await this.sessions.getPendingSession<{ token: string; chatId: string | number; messageId: number }>('pendingQrMessages', externalOrderCode);
+    const qrMsg = await this.sessions.getPendingSession<{
+      token: string;
+      chatId: string | number;
+      messageId: number;
+    }>("pendingQrMessages", externalOrderCode);
     if (qrMsg) {
-      await telegramDeleteMessage(qrMsg.token, qrMsg.chatId, qrMsg.messageId).catch(() => undefined);
-      await this.sessions.delPendingSession('pendingQrMessages', externalOrderCode);
+      await telegramDeleteMessage(
+        qrMsg.token,
+        qrMsg.chatId,
+        qrMsg.messageId,
+      ).catch(() => undefined);
+      await this.sessions.delPendingSession(
+        "pendingQrMessages",
+        externalOrderCode,
+      );
     }
 
     await this.sendText(
@@ -5009,11 +7738,21 @@ export class TelegramBotService {
         inline_keyboard: [
           [
             {
-              text: language === "en" ? "💳 View wallet" : language === "th" ? "💳 ดูกระเป๋าเงิน" : "💳 Xem ví",
+              text:
+                language === "en"
+                  ? "💳 View wallet"
+                  : language === "th"
+                    ? "💳 ดูกระเป๋าเงิน"
+                    : "💳 Xem ví",
               callback_data: "home:wallet",
             },
             {
-              text: language === "en" ? "🛍️ Products" : language === "th" ? "🛍️ สินค้า" : "🛍️ Xem sản phẩm",
+              text:
+                language === "en"
+                  ? "🛍️ Products"
+                  : language === "th"
+                    ? "🛍️ สินค้า"
+                    : "🛍️ Xem sản phẩm",
               callback_data: "home:products",
             },
           ],
@@ -5070,8 +7809,28 @@ export class TelegramBotService {
       [],
       {
         inline_keyboard: [
-          [{ text: language === "en" ? "🏦 Top up again" : language === "th" ? "🏦 เติมเงินอีกครั้ง" : "🏦 Nạp lại", callback_data: "wallet:topup" }],
-          [{ text: language === "en" ? "💳 View wallet" : language === "th" ? "💳 ดูกระเป๋าเงิน" : "💳 Xem ví", callback_data: "home:wallet" }],
+          [
+            {
+              text:
+                language === "en"
+                  ? "🏦 Top up again"
+                  : language === "th"
+                    ? "🏦 เติมเงินอีกครั้ง"
+                    : "🏦 Nạp lại",
+              callback_data: "wallet:topup",
+            },
+          ],
+          [
+            {
+              text:
+                language === "en"
+                  ? "💳 View wallet"
+                  : language === "th"
+                    ? "💳 ดูกระเป๋าเงิน"
+                    : "💳 Xem ví",
+              callback_data: "home:wallet",
+            },
+          ],
         ],
       },
     ).catch(() => undefined);
@@ -5083,13 +7842,18 @@ export class TelegramBotService {
     amount: number,
     balanceAfter: number,
   ) {
-    const upstreamShop = await this.shopsService.getSellerShopByShopId(upstreamShopId);
+    const upstreamShop =
+      await this.shopsService.getSellerShopByShopId(upstreamShopId);
     const upstreamToken = decryptSecret(
       upstreamShop.botConfig?.telegramBotTokenEncrypted,
       this.config.encryptionKey,
     );
 
-    if (upstreamToken && upstreamShop.supportTelegram && !(this.config.mockTelegramEnabled && isMockBotToken(upstreamToken))) {
+    if (
+      upstreamToken &&
+      upstreamShop.supportTelegram &&
+      !(this.config.mockTelegramEnabled && isMockBotToken(upstreamToken))
+    ) {
       await telegramSendMessage(
         upstreamToken,
         upstreamShop.supportTelegram,
@@ -5103,7 +7867,11 @@ export class TelegramBotService {
       orderBy: { createdAt: "desc" },
     });
 
-    if (downstreamCustomer?.telegramChatId && upstreamToken && !(this.config.mockTelegramEnabled && isMockBotToken(upstreamToken))) {
+    if (
+      downstreamCustomer?.telegramChatId &&
+      upstreamToken &&
+      !(this.config.mockTelegramEnabled && isMockBotToken(upstreamToken))
+    ) {
       await telegramSendMessage(
         upstreamToken,
         downstreamCustomer.telegramChatId,
@@ -5148,15 +7916,44 @@ export class TelegramBotService {
     }
 
     // Prepare shared data once (catalog map, template, customization) before iterating chunks.
-    const catalog = await this.shopsService.getCatalogViewForShop(shopId, false, false, true);
-    const shopCustNotif = await this.resolveCustomization(shopData.botConfig?.customizationJson as Record<string, unknown> | null ?? null);
+    const catalog = await this.shopsService.getCatalogViewForShop(
+      shopId,
+      false,
+      false,
+      true,
+    );
+    const shopCustNotif = await this.resolveCustomization(
+      (shopData.botConfig?.customizationJson as Record<
+        string,
+        unknown
+      > | null) ?? null,
+    );
     const custDataNotif = {
-      custEmojis: (shopCustNotif?.buttonEmojis && typeof shopCustNotif.buttonEmojis === "object") ? shopCustNotif.buttonEmojis as Record<string, string> : {},
-      custLabels: (shopCustNotif?.buttonLabels && typeof shopCustNotif.buttonLabels === "object") ? shopCustNotif.buttonLabels as Record<string, Record<string, string>> : {},
-      custEmojiIds: (shopCustNotif?.buttonEmojiIds && typeof shopCustNotif.buttonEmojiIds === "object") ? shopCustNotif.buttonEmojiIds as Record<string, string> : {},
+      custEmojis:
+        shopCustNotif?.buttonEmojis &&
+        typeof shopCustNotif.buttonEmojis === "object"
+          ? (shopCustNotif.buttonEmojis as Record<string, string>)
+          : {},
+      custLabels:
+        shopCustNotif?.buttonLabels &&
+        typeof shopCustNotif.buttonLabels === "object"
+          ? (shopCustNotif.buttonLabels as Record<
+              string,
+              Record<string, string>
+            >)
+          : {},
+      custEmojiIds:
+        shopCustNotif?.buttonEmojiIds &&
+        typeof shopCustNotif.buttonEmojiIds === "object"
+          ? (shopCustNotif.buttonEmojiIds as Record<string, string>)
+          : {},
     };
     // Restock message body comes from the admin-configurable template (shop override > admin > default).
-    const restockTemplate = await this.shopsService.resolveRestockTemplateForShop(shopId);
+    const restockTemplate =
+      await this.shopsService.resolveRestockTemplateForShop(shopId);
+    const restockUsdtVndRate = this.resolveUsdtVndRate(
+      shopData.paymentConfig?.usdtVndRateOverride,
+    );
     // Bling (cusid) is gated on the shop OWNER's premium — same for every recipient of this broadcast.
     const canBlingNotif = await this.resolveCanBling(shopId);
     const productByExternalId = new Map(
@@ -5170,7 +7967,13 @@ export class TelegramBotService {
     for (const update of updates) {
       const product = productByExternalId.get(update.externalProductId);
       if (!product) continue;
-      if (await this.shopsService.claimRestockNotification(shopId, product.sourceProductId, update.available)) {
+      if (
+        await this.shopsService.claimRestockNotification(
+          shopId,
+          product.sourceProductId,
+          update.available,
+        )
+      ) {
         claimedUpdates.push(update);
       }
     }
@@ -5187,18 +7990,21 @@ export class TelegramBotService {
     let sentCount = 0;
 
     while (true) {
-      const customers: Array<{ id: string; telegramChatId: string; preferredLanguage: string | null }> =
-        await this.prisma.customer.findMany({
-          where: { shopId },
-          orderBy: { id: "asc" },
-          take: CHUNK,
-          ...(cursorId ? { cursor: { id: cursorId }, skip: 1 } : {}),
-          select: {
-            id: true,
-            telegramChatId: true,
-            preferredLanguage: true,
-          },
-        });
+      const customers: Array<{
+        id: string;
+        telegramChatId: string;
+        preferredLanguage: string | null;
+      }> = await this.prisma.customer.findMany({
+        where: { shopId },
+        orderBy: { id: "asc" },
+        take: CHUNK,
+        ...(cursorId ? { cursor: { id: cursorId }, skip: 1 } : {}),
+        select: {
+          id: true,
+          telegramChatId: true,
+          preferredLanguage: true,
+        },
+      });
 
       if (customers.length === 0) break;
 
@@ -5206,7 +8012,9 @@ export class TelegramBotService {
         for (const update of claimedUpdates) {
           const product = productByExternalId.get(update.externalProductId);
 
-          const customerLang = this.normalizeLanguage(customer.preferredLanguage);
+          const customerLang = this.normalizeLanguage(
+            customer.preferredLanguage,
+          );
 
           if (!product || product.hidden || !product.enabled) {
             continue;
@@ -5215,25 +8023,37 @@ export class TelegramBotService {
           if (customerLang === "vi" && product.hiddenVi) continue;
           if (customerLang === "en" && product.hiddenEn) continue;
 
-          const productName = this.localizeProductName(product.displayName || update.displayName, customerLang);
+          const productName = this.localizeProductName(
+            product.displayName || update.displayName,
+            customerLang,
+          );
           // Prefer the caller-provided snapshot (matches the price at the moment the restock
           // event happened). Fall back to the current catalog salePrice only if the caller
           // did not supply one — this covers manual-upload paths that don't have the
           // per-product override handy at the time they call this method.
           let priceForRender: number | null = null;
-          if (update.price != null && Number.isFinite(update.price) && update.price > 0) {
+          if (
+            update.price != null &&
+            Number.isFinite(update.price) &&
+            update.price > 0
+          ) {
             priceForRender = Number(update.price);
           } else {
             const catalogPrice = Number((product as any)?.salePrice);
-            priceForRender = Number.isFinite(catalogPrice) && catalogPrice > 0 ? catalogPrice : null;
+            priceForRender =
+              Number.isFinite(catalogPrice) && catalogPrice > 0
+                ? catalogPrice
+                : null;
           }
           const rendered = renderRestockHtml(restockTemplate, {
             productName,
             addedQuantity: update.addedQuantity,
             available: update.available,
             price: priceForRender,
+            usdtVndRate: restockUsdtVndRate,
+            productIcon: product.productIcon ?? null,
             productIconCustomEmojiId: product.iconCustomEmojiId ?? null,
-            language: customerLang,
+            language: customerLang === "zh" ? "en" : customerLang,
           });
 
           await this.sendText(
@@ -5243,7 +8063,16 @@ export class TelegramBotService {
             [],
             {
               inline_keyboard: [
-                [this.buildNavTextBtn(custDataNotif, "buyNow", "buyNow", `buy:${product.id}`, customerLang, canBlingNotif)],
+                [
+                  this.buildNavTextBtn(
+                    custDataNotif,
+                    "buyNow",
+                    "buyNow",
+                    `buy:${product.id}`,
+                    customerLang,
+                    canBlingNotif,
+                  ),
+                ],
               ],
             },
             rendered.hasHtml ? "HTML" : undefined,
@@ -5267,69 +8096,153 @@ export class TelegramBotService {
     token: string,
     chatId: string | number,
     telegramUserId: string,
-    selection: Omit<PendingQuantitySelection, "expiresAt"> | PendingQuantitySelection,
+    selection:
+      | Omit<PendingQuantitySelection, "expiresAt">
+      | PendingQuantitySelection,
     actions: unknown[],
     leadLine?: string,
     language: BotLanguage = "vi",
     usdtVndRate?: Prisma.Decimal | number | string | null,
   ) {
-    const shopData = await this.shopsService.getSellerShopByShopId(shopId).catch(() => null);
-    const cust = await this.resolveCustomization(shopData?.botConfig?.customizationJson as Record<string, unknown> | null ?? null);
-    const productNoteMap = (cust?.productNote && typeof cust.productNote === "object")
-      ? cust.productNote as Record<string, string> : {};
-    const msgEmojiIds = (cust?.messageEmojiIds && typeof cust.messageEmojiIds === "object")
-      ? cust.messageEmojiIds as Record<string, string> : {};
-    const labelEmojiIds = (cust?.labelEmojiIds && typeof cust.labelEmojiIds === "object")
-      ? cust.labelEmojiIds as Record<string, string> : {};
-    const labelEmojis = (cust?.labelEmojis && typeof cust.labelEmojis === "object")
-      ? cust.labelEmojis as Record<string, string> : {};
-    const custEmojiIdsQty = (cust?.buttonEmojiIds && typeof cust.buttonEmojiIds === "object")
-      ? cust.buttonEmojiIds as Record<string, string> : {};
-    const productNoteRaw = productNoteMap[language]?.trim() || productNoteMap["vi"]?.trim() || "";
-    const productNoteEmojiId = msgEmojiIds["productNote"]?.trim() || "";
-    const productNote = productNoteRaw
-      ? (productNoteEmojiId
-          ? `<tg-emoji emoji-id="${productNoteEmojiId}">💬</tg-emoji> ${productNoteRaw}`
-          : productNoteRaw)
+    const shopData = await this.shopsService
+      .getSellerShopByShopId(shopId)
+      .catch(() => null);
+    const cust = await this.resolveCustomization(
+      (shopData?.botConfig?.customizationJson as Record<
+        string,
+        unknown
+      > | null) ?? null,
+    );
+    const productNoteMap =
+      cust?.productNote && typeof cust.productNote === "object"
+        ? (cust.productNote as Record<string, string>)
+        : {};
+    const msgEmojiIds =
+      cust?.messageEmojiIds && typeof cust.messageEmojiIds === "object"
+        ? (cust.messageEmojiIds as Record<string, string>)
+        : {};
+    const labelEmojiIds =
+      cust?.labelEmojiIds && typeof cust.labelEmojiIds === "object"
+        ? (cust.labelEmojiIds as Record<string, string>)
+        : {};
+    const labelEmojis =
+      cust?.labelEmojis && typeof cust.labelEmojis === "object"
+        ? (cust.labelEmojis as Record<string, string>)
+        : {};
+    const custEmojiIdsQty =
+      cust?.buttonEmojiIds && typeof cust.buttonEmojiIds === "object"
+        ? (cust.buttonEmojiIds as Record<string, string>)
+        : {};
+    const productNoteRaw =
+      productNoteMap[language]?.trim() || productNoteMap["vi"]?.trim() || "";
+    const productNoteEmojiIdRaw = msgEmojiIds["productNote"]?.trim() || "";
+    const productNoteEmojiId = /^\d+$/.test(productNoteEmojiIdRaw)
+      ? productNoteEmojiIdRaw
+      : "";
+    const safeProductNote = this.escapeHtml(productNoteRaw);
+    const productNote = safeProductNote
+      ? productNoteEmojiId
+        ? `<tg-emoji emoji-id="${productNoteEmojiId}">💬</tg-emoji> ${safeProductNote}`
+        : safeProductNote
       : "";
 
-    const dbEmojiId = selection.iconCustomEmojiId?.trim() || "";
-    const customEmoji = !dbEmojiId ? this.resolveCustomEmojiId(selection.displayName, selection.sourceName) : null;
-    const staticEmojiChar = customEmoji?.char || this.resolveProductEmoji(selection.displayName, selection.sourceName);
-    const localizedName = this.localizeProductName(selection.displayName, language);
-    const priceStr = this.formatBotMoneyWithUsdOverride(selection.salePrice, (selection as any).salePriceUsd, language, usdtVndRate);
-    const stockLabel = selection.available === null ? "∞" : String(Math.max(0, selection.available));
+    const dbEmojiIdRaw = selection.iconCustomEmojiId?.trim() || "";
+    const dbEmojiId = /^\d+$/.test(dbEmojiIdRaw) ? dbEmojiIdRaw : "";
+    const customEmoji = !dbEmojiId
+      ? this.resolveCustomEmojiId(selection.displayName, selection.sourceName)
+      : null;
+    const staticEmojiChar =
+      customEmoji?.char ||
+      this.resolveProductEmoji(selection.displayName, selection.sourceName);
+    const localizedName = this.localizeProductName(
+      selection.displayName,
+      language,
+    );
+    const priceStr = this.formatBotMoneyWithUsdOverride(
+      selection.salePrice,
+      (selection as any).salePriceUsd,
+      language,
+      usdtVndRate,
+    );
+    const stockLabel = selection.isPreorderOnly
+      ? language === "en"
+        ? `Pre-order (+${selection.preorderFeePercent ?? 0}% fee)`
+        : language === "th"
+          ? `สั่งจองล่วงหน้า (+${selection.preorderFeePercent ?? 0}%)`
+          : `Đặt trước (+${selection.preorderFeePercent ?? 0}% phí)`
+      : selection.available === null
+        ? "∞"
+        : String(Math.max(0, selection.available));
     // Per-viewer: premium + a cusid → cusid icon only; everyone else → the text emoji (never blank).
     const buyOtherCustomEmoji = custEmojiIdsQty["buyOther"];
     const isPremiumQty = await this.resolveCanBling(shopId);
     const buyOtherFull = this.buttonLabel("buyOther", language);
     const replyMarkup = {
       inline_keyboard: [
-        [this.buildViewerBtn(
-          {
-            textEmoji: buyOtherFull.split(" ")[0] ?? "",
-            label: buyOtherFull.split(" ").slice(1).join(" "),
-            cusid: buyOtherCustomEmoji,
-            isPremium: isPremiumQty,
-          },
-          { callback_data: "home:products" },
-        )],
+        [
+          this.buildViewerBtn(
+            {
+              textEmoji: buyOtherFull.split(" ")[0] ?? "",
+              label: buyOtherFull.split(" ").slice(1).join(" "),
+              cusid: buyOtherCustomEmoji,
+              isPremium: isPremiumQty,
+            },
+            { callback_data: "home:products" },
+          ),
+        ],
       ],
     };
-    const quantityLine = this.buildQuantityPromptText(selection.maxQuantity, language, msgEmojiIds["quantityInput"] || "");
-    const nextStepPrompt = selection.requiresCustomerEmail
+    const quantityLine = this.buildQuantityPromptText(
+      selection.maxQuantity,
+      language,
+      msgEmojiIds["quantityInput"] || "",
+    );
+    const preorderPrompt = selection.isPreorderOnly
+      ? language === "en"
+        ? `🕒 This item is out of stock. Enter the quantity to pre-order. A ${selection.preorderFeePercent ?? 0}% fee applies; paid orders are delivered automatically in FIFO order when stock arrives.`
+        : language === "th"
+          ? `🕒 สินค้าหมด กรุณาระบุจำนวนที่ต้องการจอง มีค่าจอง ${selection.preorderFeePercent ?? 0}% และบอทจะจัดส่งอัตโนมัติตามลำดับ FIFO เมื่อมีสินค้า`
+          : `🕒 Sản phẩm đang hết hàng. Nhập số lượng muốn đặt trước. Phí đặt trước ${selection.preorderFeePercent ?? 0}%; đơn đã thanh toán sẽ được bot tự giao theo thứ tự FIFO khi có hàng.`
+      : "";
+    const nextStepPromptBase = selection.requiresCustomerEmail
       ? this.buildCustomerEmailPromptText(selection.maxQuantity, language)
       : quantityLine;
-    const hasLabelEmojis = Object.values(labelEmojiIds).some((v) => v?.trim());
-    // Force HTML mode when a description exists so the <blockquote> wrap renders
-    // as a styled card instead of leaking raw tags into the caption.
-    const useHtml = !!(dbEmojiId || productNoteEmojiId || hasLabelEmojis || selection.description?.trim());
+    const nextStepPrompt = preorderPrompt
+      ? `${preorderPrompt}\n\n${nextStepPromptBase}`
+      : nextStepPromptBase;
+    const hasLabelEmojis = Object.values(labelEmojiIds).some((v) =>
+      /^\d+$/.test(v?.trim() || ""),
+    );
+    const sellerDescription = selection.description?.trim() || "";
+    const sourceDescription = selection.providerDescription?.trim() || "";
+    // Once a reseller explicitly edits (or clears) the description, their choice is
+    // authoritative. Otherwise show the provider copy, falling back to sourceDescription
+    // for providers that do not expose a separate providerDescription metadata field.
+    const regularDescription =
+      selection.sourceDescriptionLocked || !sourceDescription
+        ? sellerDescription
+        : "";
+    const providerDescription = selection.sourceDescriptionLocked
+      ? ""
+      : sourceDescription;
+    // Force HTML mode when a description exists so Telegram formatting renders safely.
+    const useHtml = !!(
+      dbEmojiId ||
+      productNoteEmojiId ||
+      hasLabelEmojis ||
+      regularDescription ||
+      providerDescription
+    );
 
     const mkLabel = (key: string, fallback: string) => {
       const customChar = labelEmojis[key]?.trim();
-      const visible = customChar || fallback;
-      const eid = labelEmojiIds[key]?.trim();
-      return eid ? `<tg-emoji emoji-id="${eid}">${visible}</tg-emoji>` : visible;
+      const visibleRaw = customChar || fallback;
+      const visible = useHtml ? this.escapeHtml(visibleRaw) : visibleRaw;
+      const eidRaw = labelEmojiIds[key]?.trim() || "";
+      const eid = /^\d+$/.test(eidRaw) ? eidRaw : "";
+      return eid
+        ? `<tg-emoji emoji-id="${eid}">${visible}</tg-emoji>`
+        : visible;
     };
 
     if (selection.imageUrl && !leadLine) {
@@ -5338,39 +8251,79 @@ export class TelegramBotService {
       if (dbEmojiId) {
         nameLine = `<tg-emoji emoji-id="${dbEmojiId}">${staticEmojiChar}</tg-emoji> ${this.escapeHtml(localizedName)}`;
       } else {
-        nameLine = `${staticEmojiChar} ${localizedName}`;
+        nameLine = `${staticEmojiChar} ${this.escapeHtml(localizedName)}`;
       }
 
-      const priceLabel = language === "en" ? "Price" : language === "th" ? "ราคา" : "Giá";
-      const stockLabelText = language === "en" ? "In stock" : language === "th" ? "ในคลัง" : "Tồn kho";
-      const soldLabel = language === "en" ? "Sold" : language === "th" ? "ขายแล้ว" : "Đã bán";
-      const descLabel = language === "en" ? "Description" : language === "th" ? "รายละเอียด" : "Mô tả";
-      const unitLabel = language === "en" ? "accounts" : language === "th" ? "บัญชี" : "tài khoản";
-      const formatLabel = language === "en" ? "Format" : language === "th" ? "รูปแบบ" : "Định dạng";
+      const priceLabel =
+        language === "en" ? "Price" : language === "th" ? "ราคา" : "Giá";
+      const stockLabelText =
+        language === "en"
+          ? "In stock"
+          : language === "th"
+            ? "ในคลัง"
+            : "Tồn kho";
+      const soldLabel =
+        language === "en" ? "Sold" : language === "th" ? "ขายแล้ว" : "Đã bán";
+      const descLabel =
+        language === "en"
+          ? "Description"
+          : language === "th"
+            ? "รายละเอียด"
+            : "Mô tả";
+      const unitLabel =
+        language === "en"
+          ? "accounts"
+          : language === "th"
+            ? "บัญชี"
+            : "tài khoản";
+      const formatLabel =
+        language === "en"
+          ? "Format"
+          : language === "th"
+            ? "รูปแบบ"
+            : "Định dạng";
 
-      const escFn = useHtml ? (s: string) => this.escapeHtml(s) : (s: string) => s;
+      const escFn = useHtml
+        ? (s: string) => this.escapeHtml(s)
+        : (s: string) => s;
       const lines: string[] = [
         nameLine,
         `${mkLabel("price", "💳")} ${priceLabel}: ${escFn(priceStr)}`,
         `${mkLabel("stock", "📦")} ${stockLabelText}: ${stockLabel} ${unitLabel}`,
       ];
 
-      lines.push(`${mkLabel("sold", "📊")} ${soldLabel}: ${selection.soldCount ?? 0} ${unitLabel}`);
+      lines.push(
+        `${mkLabel("sold", "📊")} ${soldLabel}: ${selection.soldCount ?? 0} ${unitLabel}`,
+      );
 
       if ((selection as any).deliveryFormatHint?.trim()) {
-        lines.push(``, `${mkLabel("format", "🔑")} ${formatLabel}: ${escFn((selection as any).deliveryFormatHint.trim())}`);
+        lines.push(
+          ``,
+          `${mkLabel("format", "🔑")} ${formatLabel}: ${escFn((selection as any).deliveryFormatHint.trim())}`,
+        );
       }
-
-      if (selection.description?.trim()) {
+      if (regularDescription) {
         // Photo caption budget is tight (Telegram hard limit 1024) → keep description short.
         lines.push(
           ``,
           this.buildProductDescBlock(
-            selection.description,
+            regularDescription,
             `${mkLabel("description", "💬")} ${descLabel}:`,
             escFn,
             language,
             { maxLines: 20, maxChars: 700 },
+          ),
+        );
+      }
+
+      if (providerDescription) {
+        lines.push(
+          ``,
+          this.buildProviderDescriptionItalic(
+            providerDescription,
+            `${mkLabel("description", "💬")} ${descLabel}:`,
+            escFn,
+            { maxLines: 15, maxChars: 600 },
           ),
         );
       }
@@ -5383,34 +8336,89 @@ export class TelegramBotService {
 
       const caption = this.clampTelegramHtml(lines.join("\n"), 1024);
 
-      const captionEntities = !useHtml && customEmoji
-        ? [{ type: "custom_emoji", offset: 0, length: 2, custom_emoji_id: customEmoji.id }]
-        : undefined;
+      const captionEntities =
+        !useHtml && customEmoji
+          ? [
+              {
+                type: "custom_emoji",
+                offset: 0,
+                length: 2,
+                custom_emoji_id: customEmoji.id,
+              },
+            ]
+          : undefined;
 
-      if (this.isSimulationToken(token) || (this.config.mockTelegramEnabled && isMockBotToken(token))) {
-        actions.push({ type: "sendPhoto", chatId, photo: selection.imageUrl, caption, replyMarkup });
+      if (
+        this.isSimulationToken(token) ||
+        (this.config.mockTelegramEnabled && isMockBotToken(token))
+      ) {
+        actions.push({
+          type: "sendPhoto",
+          chatId,
+          photo: selection.imageUrl,
+          caption,
+          replyMarkup,
+        });
       } else {
         const sendOptions = {
           caption,
           reply_markup: replyMarkup,
-          ...(useHtml ? { parse_mode: "HTML" } : captionEntities ? { caption_entities: captionEntities } : {}),
+          ...(useHtml
+            ? { parse_mode: "HTML" }
+            : captionEntities
+              ? { caption_entities: captionEntities }
+              : {}),
         };
         if (isVideoUrl(selection.imageUrl)) {
-          await telegramSendVideo(token, chatId, selection.imageUrl, sendOptions);
+          await telegramSendVideo(
+            token,
+            chatId,
+            selection.imageUrl,
+            sendOptions,
+          );
         } else {
-          await telegramSendPhoto(token, chatId, selection.imageUrl, sendOptions);
+          await telegramSendPhoto(
+            token,
+            chatId,
+            selection.imageUrl,
+            sendOptions,
+          );
         }
       }
     } else {
       // Full-detail text message (no photo)
-      const priceLabel = language === "en" ? "Price" : language === "th" ? "ราคา" : "Giá";
-      const stockLabelText = language === "en" ? "In stock" : language === "th" ? "ในคลัง" : "Tồn kho";
-      const soldLabel = language === "en" ? "Sold" : language === "th" ? "ขายแล้ว" : "Đã bán";
-      const descLabel = language === "en" ? "Description" : language === "th" ? "รายละเอียด" : "Mô tả";
-      const unitLabel = language === "en" ? "accounts" : language === "th" ? "บัญชี" : "tài khoản";
-      const formatLabel = language === "en" ? "Format" : language === "th" ? "รูปแบบ" : "Định dạng";
+      const priceLabel =
+        language === "en" ? "Price" : language === "th" ? "ราคา" : "Giá";
+      const stockLabelText =
+        language === "en"
+          ? "In stock"
+          : language === "th"
+            ? "ในคลัง"
+            : "Tồn kho";
+      const soldLabel =
+        language === "en" ? "Sold" : language === "th" ? "ขายแล้ว" : "Đã bán";
+      const descLabel =
+        language === "en"
+          ? "Description"
+          : language === "th"
+            ? "รายละเอียด"
+            : "Mô tả";
+      const unitLabel =
+        language === "en"
+          ? "accounts"
+          : language === "th"
+            ? "บัญชี"
+            : "tài khoản";
+      const formatLabel =
+        language === "en"
+          ? "Format"
+          : language === "th"
+            ? "รูปแบบ"
+            : "Định dạng";
 
-      const escFn = useHtml ? (s: string) => this.escapeHtml(s) : (s: string) => s;
+      const escFn = useHtml
+        ? (s: string) => this.escapeHtml(s)
+        : (s: string) => s;
 
       let nameLine: string;
       if (dbEmojiId) {
@@ -5432,21 +8440,37 @@ export class TelegramBotService {
         `${mkLabel("stock", "📦")} ${stockLabelText}: ${stockLabel} ${unitLabel}`,
       );
 
-      textLines.push(`${mkLabel("sold", "📊")} ${soldLabel}: ${selection.soldCount ?? 0} ${unitLabel}`);
+      textLines.push(
+        `${mkLabel("sold", "📊")} ${soldLabel}: ${selection.soldCount ?? 0} ${unitLabel}`,
+      );
 
       if ((selection as any).deliveryFormatHint?.trim()) {
-        textLines.push(``, `${mkLabel("format", "🔑")} ${formatLabel}: ${escFn((selection as any).deliveryFormatHint.trim())}`);
+        textLines.push(
+          ``,
+          `${mkLabel("format", "🔑")} ${formatLabel}: ${escFn((selection as any).deliveryFormatHint.trim())}`,
+        );
       }
-
-      if (selection.description?.trim()) {
+      if (regularDescription) {
         textLines.push(
           ``,
           this.buildProductDescBlock(
-            selection.description,
+            regularDescription,
             `${mkLabel("description", "💬")} ${descLabel}:`,
             escFn,
             language,
             { maxLines: 60, maxChars: 3500 },
+          ),
+        );
+      }
+
+      if (providerDescription) {
+        textLines.push(
+          ``,
+          this.buildProviderDescriptionItalic(
+            providerDescription,
+            `${mkLabel("description", "💬")} ${descLabel}:`,
+            escFn,
+            { maxLines: 50, maxChars: 3000 },
           ),
         );
       }
@@ -5459,14 +8483,28 @@ export class TelegramBotService {
 
       const fullText = this.clampTelegramHtml(textLines.join("\n"), 4096);
 
-      await this.sendText(token, chatId, fullText, actions, replyMarkup, "HTML");
+      await this.sendText(
+        token,
+        chatId,
+        fullText,
+        actions,
+        replyMarkup,
+        "HTML",
+      );
     }
 
     // Keep the next-step instruction outside the product caption/text. Telegram truncates
     // photo captions at 1024 characters, so a long source description could otherwise hide
     // the quantity prompt completely and leave the buyer with only the "choose another"
     // button visible.
-    await this.sendText(token, chatId, nextStepPrompt, actions, undefined, "HTML");
+    await this.sendText(
+      token,
+      chatId,
+      nextStepPrompt,
+      actions,
+      undefined,
+      "HTML",
+    );
 
     await this.sessions.setPendingSession(
       "pendingQuantitySelections",
@@ -5481,10 +8519,21 @@ export class TelegramBotService {
         maxQuantity: selection.maxQuantity,
         imageUrl: selection.imageUrl ?? null,
         description: selection.description ?? null,
+        providerDescription: selection.providerDescription ?? null,
+        sourceDescriptionLocked: selection.sourceDescriptionLocked === true,
         soldCount: selection.soldCount ?? null,
         deliveryFormatHint: (selection as any).deliveryFormatHint ?? null,
         iconCustomEmojiId: selection.iconCustomEmojiId ?? null,
+        promoMessage: selection.promoMessage ?? null,
+        promoType: selection.promoType ?? null,
+        promoBulkMinQty: selection.promoBulkMinQty ?? null,
+        promoBulkDiscountPct: selection.promoBulkDiscountPct ?? null,
+        promoStartAt: selection.promoStartAt ?? null,
+        promoEndAt: selection.promoEndAt ?? null,
         requiresCustomerEmail: selection.requiresCustomerEmail === true,
+        preorderEnabled: selection.preorderEnabled === true,
+        preorderFeePercent: selection.preorderFeePercent ?? 0,
+        isPreorderOnly: selection.isPreorderOnly === true,
         expiresAt: Date.now() + this.sessions.pendingQuantityTtlMs,
       },
       this.sessions.pendingQuantityTtlMs,
@@ -5497,6 +8546,25 @@ export class TelegramBotService {
    * Telegram's 1024-char limit (or text past 4096) → sendPhoto/sendMessage fails → the product
    * silently doesn't render when tapped. Truncates by WHOLE lines so the escaped HTML stays valid.
    */
+  private buildProviderDescriptionItalic(
+    description: string,
+    header: string,
+    escFn: (value: string) => string,
+    opts: { maxLines: number; maxChars: number },
+  ): string {
+    const lines: string[] = [];
+    let used = 0;
+    for (const rawLine of description.trim().split(/\r?\n/)) {
+      const line = rawLine.trim();
+      if (!line) continue;
+      if (lines.length >= opts.maxLines || used >= opts.maxChars) break;
+      const clipped = line.length > 280 ? `${line.slice(0, 280)}…` : line;
+      lines.push(escFn(clipped));
+      used += clipped.length;
+    }
+    return `${header}\n<i>${lines.join("\n")}</i>`;
+  }
+
   private buildProductDescBlock(
     description: string,
     header: string,
@@ -5520,7 +8588,12 @@ export class TelegramBotService {
       used += bulleted.length;
     }
     if (truncated) {
-      const more = language === "en" ? "… (truncated)" : language === "th" ? "… (ย่อ)" : "… (đã rút gọn)";
+      const more =
+        language === "en"
+          ? "… (truncated)"
+          : language === "th"
+            ? "… (ย่อ)"
+            : "… (đã rút gọn)";
       descLines.push(escFn(more));
     }
     return `<blockquote>${descLines.join("\n")}</blockquote>`;
@@ -5528,19 +8601,61 @@ export class TelegramBotService {
 
   /**
    * Hard backstop: clamp an HTML message/caption so its raw length stays under Telegram's limit
-   * (photo caption 1024, text 4096). Cuts on a newline boundary (never inside a <tg-emoji>/tag),
-   * appends "…", and re-closes a <blockquote> if the cut landed inside one. Raw length ≥ visible
-   * length (tags don't count toward Telegram's limit), so clamping raw is conservative but safe.
+   * (photo caption 1024, text 4096). It never splits an HTML tag/entity and re-closes every
+   * formatting tag that remains open. Raw length ≥ visible length, so this is conservative.
    */
   private clampTelegramHtml(text: string, limit: number): string {
     if (text.length <= limit) return text;
-    let cut = text.lastIndexOf("\n", limit - 24);
-    if (cut < Math.floor(limit / 2)) cut = limit - 24; // no usable newline → hard cut
-    let out = `${text.slice(0, cut).trimEnd()}…`;
-    const opens = (out.match(/<blockquote>/g) || []).length;
-    const closes = (out.match(/<\/blockquote>/g) || []).length;
-    if (opens > closes) out += "</blockquote>";
-    return out;
+
+    const tokens =
+      text.match(/<[^>]*>|&(?:#\d+|#x[\da-f]+|[a-z]+);|[^<&]+|[<&]/gi) || [];
+    const openTags: string[] = [];
+    let out = "";
+
+    for (const token of tokens) {
+      const closing = token.match(/^<\/([a-z][\w-]*)\s*>$/i);
+      const opening = token.match(/^<([a-z][\w-]*)(?:\s[^>]*)?>$/i);
+      const nextOpenTags = [...openTags];
+
+      if (closing) {
+        const tag = closing[1]!;
+        const index = nextOpenTags.lastIndexOf(tag.toLowerCase());
+        if (index >= 0) nextOpenTags.splice(index, 1);
+      } else if (opening && !token.endsWith("/>")) {
+        nextOpenTags.push(opening[1]!.toLowerCase());
+      }
+
+      const closingSuffix = nextOpenTags
+        .slice()
+        .reverse()
+        .map((tag) => `</${tag}>`)
+        .join("");
+      const room = limit - out.length - closingSuffix.length - 1;
+      if (room <= 0) break;
+
+      if (token.startsWith("<") || token.startsWith("&")) {
+        if (token.length > room) break;
+        out += token;
+        openTags.splice(0, openTags.length, ...nextOpenTags);
+        continue;
+      }
+
+      if (token.length > room) {
+        out += token.slice(0, room);
+        break;
+      }
+
+      out += token;
+      openTags.splice(0, openTags.length, ...nextOpenTags);
+    }
+
+    out = out.trimEnd();
+    const suffix = openTags
+      .slice()
+      .reverse()
+      .map((tag) => `</${tag}>`)
+      .join("");
+    return `${out}…${suffix}`;
   }
 
   private async getCatalogItemForTelegram(
@@ -5548,7 +8663,15 @@ export class TelegramBotService {
     sourceProductId: string,
     language: BotLanguage = "vi",
   ) {
-    const product = await this.shopsService.getCatalogItemForShop(shopId, sourceProductId, true);
+    await this.shopsService.refreshInternalProductAvailability(
+      shopId,
+      sourceProductId,
+    );
+    const product = await this.shopsService.getCatalogItemForShop(
+      shopId,
+      sourceProductId,
+      true,
+    );
 
     if (!product || product.hidden || !product.enabled) {
       throw new Error(
@@ -5560,7 +8683,11 @@ export class TelegramBotService {
       );
     }
 
-    if (product.available !== null && product.available <= 0) {
+    if (
+      product.available !== null &&
+      product.available <= 0 &&
+      !product.preorderEnabled
+    ) {
       throw new Error(
         language === "en"
           ? "This product is out of stock."
@@ -5577,7 +8704,10 @@ export class TelegramBotService {
    * Return a short banner like "🎁 Mua 2 tặng 1" or "🔥 Mua 3+ giảm 10%" if product
    * has an active (in time window) promo, otherwise null.
    */
-  private getActivePromoBanner(item: any, language: BotLanguage = "vi"): string | null {
+  private getActivePromoBanner(
+    item: any,
+    language: BotLanguage = "vi",
+  ): string | null {
     if (!item) return null;
     const now = new Date();
     const start = item.promoStartAt ? new Date(item.promoStartAt) : null;
@@ -5588,14 +8718,70 @@ export class TelegramBotService {
     const M = Number(item.promoGetM || 0);
     const minQ = Number(item.promoBulkMinQty || 0);
     const pct = Number(item.promoBulkDiscountPct || 0);
+    if (
+      item.promoType === "TIER_PRICE" &&
+      Array.isArray(item.promoPriceTiers) &&
+      item.promoPriceTiers.length > 0
+    ) {
+      const tiers = item.promoPriceTiers
+        .map((tier: any) => ({
+          minQty: Number(tier.minQty),
+          price: Number(tier.price),
+        }))
+        .filter((tier: any) => tier.minQty > 0 && Number.isFinite(tier.price))
+        .sort((a: any, b: any) => a.minQty - b.minQty);
+      const labels = tiers.map((tier: any, index: number) => {
+        const next = tiers[index + 1];
+        const range = next
+          ? `${tier.minQty}–${next.minQty - 1}`
+          : language === "vi"
+            ? `Từ ${tier.minQty}`
+            : `${tier.minQty}+`;
+        return `${index === tiers.length - 1 ? "└" : "├"} ${range}: ${new Intl.NumberFormat("vi-VN").format(tier.price)}đ/sp`;
+      });
+      const title =
+        language === "en"
+          ? "🏷 Quantity pricing"
+          : language === "th"
+            ? "🏷 ราคาตามจำนวน"
+            : "🏷 Giá theo số lượng";
+      return `${title}\n${labels.join("\n")}`;
+    }
     if (item.promoType === "BUY_N_GET_M" && N > 0 && M > 0) {
-      return language === "en" ? `🎁 Buy ${N} get ${M} free`
-        : language === "th" ? `🎁 ซื้อ ${N} แถม ${M}`
-          : `🎁 Mua ${N} tặng ${M}`;
+      const tiers =
+        Array.isArray(item.promoTiers) && item.promoTiers.length > 0
+          ? item.promoTiers
+          : [{ buy: N, get: M }];
+      const labels = tiers.map((tier: any) => {
+        const buy = Number(tier.buy || 0);
+        const get = Number(tier.get || 0);
+        return language === "en"
+          ? `Buy ${buy}, get ${get}`
+          : language === "th"
+            ? `ซื้อ ${buy} แถม ${get}`
+            : `Mua ${buy} tặng ${get}`;
+      });
+      return `🎁 ${labels.join(" • ")}`;
+    }
+    if (item.promoType === "BUY_N_PAY_M" && N > 0 && M >= 0 && M < N) {
+      return language === "en"
+        ? `💸 Get ${N}, pay for ${M}`
+        : language === "th"
+          ? `💸 รับ ${N} จ่าย ${M}`
+          : `💸 Mua ${N} tính tiền ${M}`;
+    }
+    if (item.promoType === "PERCENT_DISCOUNT" && pct > 0) {
+      return language === "en"
+        ? `⚡ ${pct}% off every order`
+        : language === "th"
+          ? `⚡ ลด ${pct}% ทุกออเดอร์`
+          : `⚡ Giảm ${pct}% toàn đơn`;
     }
     if (item.promoType === "BULK_DISCOUNT" && minQ > 0 && pct > 0) {
-      return language === "en" ? `🔥 Buy ${minQ}+ get ${pct}% off`
-        : language === "th" ? `🔥 ซื้อ ${minQ}+ ลด ${pct}%`
+      return language === "en"
+        ? `🔥 Buy ${minQ}+ get ${pct}% off`
+        : language === "th"
+          ? `🔥 ซื้อ ${minQ}+ ลด ${pct}%`
           : `🔥 Mua từ ${minQ}+ giảm ${pct}%`;
     }
     return null;
@@ -5623,8 +8809,14 @@ export class TelegramBotService {
     return value;
   }
 
-  private buildQuantityPromptText(maxQuantity: number | null, language: BotLanguage = "vi", emojiId = "") {
-    const icon = emojiId ? `<tg-emoji emoji-id="${emojiId}">✏️</tg-emoji>` : "✏️";
+  private buildQuantityPromptText(
+    maxQuantity: number | null,
+    language: BotLanguage = "vi",
+    emojiId = "",
+  ) {
+    const icon = emojiId
+      ? `<tg-emoji emoji-id="${emojiId}">✏️</tg-emoji>`
+      : "✏️";
     if (language === "en") {
       return maxQuantity === null
         ? `${icon} Enter quantity to buy:`
@@ -5645,47 +8837,52 @@ export class TelegramBotService {
     language: BotLanguage = "vi",
     errorText?: string,
   ) {
-    const maxLine = maxQuantity === null
-      ? null
-      : language === "en"
-        ? `Maximum: ${maxQuantity} email(s).`
-        : language === "th"
-          ? `สูงสุด: ${maxQuantity} อีเมล`
-          : `Tối đa: ${maxQuantity} email.`;
-    const body = language === "en"
-      ? [
-          "📧 Please enter the emails that will receive a slot (one email per line).",
-          "💡 Quantity and total price are calculated automatically from the number of emails.",
-          ...(maxLine ? [maxLine] : []),
-          "",
-          "Example:",
-          "user1@gmail.com",
-          "user2@gmail.com",
-        ]
-      : language === "th"
+    const maxLine =
+      maxQuantity === null
+        ? null
+        : language === "en"
+          ? `Maximum: ${maxQuantity} email(s).`
+          : language === "th"
+            ? `สูงสุด: ${maxQuantity} อีเมล`
+            : `Tối đa: ${maxQuantity} email.`;
+    const body =
+      language === "en"
         ? [
-            "📧 กรุณากรอกอีเมลที่จะรับสล็อต (หนึ่งอีเมลต่อหนึ่งบรรทัด)",
-            "💡 ระบบจะคำนวณจำนวนและราคารวมอัตโนมัติตามจำนวนอีเมล",
+            "📧 Please enter the emails that will receive a slot (one email per line).",
+            "💡 Quantity and total price are calculated automatically from the number of emails.",
             ...(maxLine ? [maxLine] : []),
             "",
-            "ตัวอย่าง:",
+            "Example:",
             "user1@gmail.com",
             "user2@gmail.com",
           ]
-        : [
-            "📧 Vui lòng nhập email để nhận slot (mỗi dòng 1 email).",
-            "💡 Số lượng và tổng tiền sẽ được tính tự động theo số email bạn nhập.",
-            ...(maxLine ? [maxLine] : []),
-            "",
-            "Ví dụ:",
-            "user1@gmail.com",
-            "user2@gmail.com",
-          ];
+        : language === "th"
+          ? [
+              "📧 กรุณากรอกอีเมลที่จะรับสล็อต (หนึ่งอีเมลต่อหนึ่งบรรทัด)",
+              "💡 ระบบจะคำนวณจำนวนและราคารวมอัตโนมัติตามจำนวนอีเมล",
+              ...(maxLine ? [maxLine] : []),
+              "",
+              "ตัวอย่าง:",
+              "user1@gmail.com",
+              "user2@gmail.com",
+            ]
+          : [
+              "📧 Vui lòng nhập email để nhận slot (mỗi dòng 1 email).",
+              "💡 Số lượng và tổng tiền sẽ được tính tự động theo số email bạn nhập.",
+              ...(maxLine ? [maxLine] : []),
+              "",
+              "Ví dụ:",
+              "user1@gmail.com",
+              "user2@gmail.com",
+            ];
 
     return [...(errorText ? [errorText, ""] : []), ...body].join("\n");
   }
 
-  private buildInvalidQuantityText(maxQuantity: number | null, language: BotLanguage = "vi") {
+  private buildInvalidQuantityText(
+    maxQuantity: number | null,
+    language: BotLanguage = "vi",
+  ) {
     if (language === "en") {
       if (maxQuantity === null) {
         return "❌ Invalid quantity. Please enter a positive integer.";
@@ -5715,7 +8912,9 @@ export class TelegramBotService {
    * img.vietqr.io (which needs a NUMERIC bank BIN; PAY2S gives a bank CODE like "MBB" → vietqr 404).
    */
   private decodeDataUriToBuffer(value: string | null): Buffer | null {
-    const match = /^data:image\/\w+;base64,(.+)$/.exec(String(value || "").trim());
+    const match = /^data:image\/\w+;base64,(.+)$/.exec(
+      String(value || "").trim(),
+    );
     const b64 = match?.[1];
     if (!b64) return null;
     try {
@@ -5758,10 +8957,16 @@ export class TelegramBotService {
     return `https://img.vietqr.io/image/${bankInfo.bin}-${bankInfo.accountNumber}-compact.png?${params.toString()}`;
   }
 
-  private async downloadVietQrAsBuffer(bankInfo: PayOSBankInfo, amount: number): Promise<Buffer | null> {
+  private async downloadVietQrAsBuffer(
+    bankInfo: PayOSBankInfo,
+    amount: number,
+  ): Promise<Buffer | null> {
     try {
       const url = this.buildVietQrImageUrl(bankInfo, amount);
-      const response = await axios.get(url, { responseType: "arraybuffer", timeout: 8000 });
+      const response = await axios.get(url, {
+        responseType: "arraybuffer",
+        timeout: 8000,
+      });
       return Buffer.from(response.data);
     } catch {
       return null;
@@ -5770,157 +8975,241 @@ export class TelegramBotService {
 
   private async getPendingWalletTopup(shopId: string, telegramUserId: string) {
     const key = this.sessions.getPendingQuantityKey(shopId, telegramUserId);
-    const pending = await this.sessions.getPendingSession<PendingWalletTopupSelection>('pendingWalletTopups', key);
+    const pending =
+      await this.sessions.getPendingSession<PendingWalletTopupSelection>(
+        "pendingWalletTopups",
+        key,
+      );
 
     if (!pending) {
       return null;
     }
 
     if (pending.expiresAt <= Date.now()) {
-      await this.sessions.delPendingSession('pendingWalletTopups', key);
+      await this.sessions.delPendingSession("pendingWalletTopups", key);
       return null;
     }
 
     return pending;
   }
 
-  private async getPendingQuantitySelection(shopId: string, telegramUserId: string) {
+  private async getPendingQuantitySelection(
+    shopId: string,
+    telegramUserId: string,
+  ) {
     const key = this.sessions.getPendingQuantityKey(shopId, telegramUserId);
-    const selection = await this.sessions.getPendingSession<PendingQuantitySelection>('pendingQuantitySelections', key);
+    const selection =
+      await this.sessions.getPendingSession<PendingQuantitySelection>(
+        "pendingQuantitySelections",
+        key,
+      );
 
     if (!selection) {
       return null;
     }
 
     if (selection.expiresAt <= Date.now()) {
-      await this.sessions.delPendingSession('pendingQuantitySelections', key);
+      await this.sessions.delPendingSession("pendingQuantitySelections", key);
       return null;
     }
 
     return selection;
   }
 
-  private async getPendingPaymentSelection(shopId: string, telegramUserId: string) {
+  private async getPendingPaymentSelection(
+    shopId: string,
+    telegramUserId: string,
+  ) {
     const key = this.sessions.getPendingQuantityKey(shopId, telegramUserId);
-    const selection = await this.sessions.getPendingSession<PendingPaymentSelection>('pendingPaymentSelections', key);
+    const selection =
+      await this.sessions.getPendingSession<PendingPaymentSelection>(
+        "pendingPaymentSelections",
+        key,
+      );
 
     if (!selection) {
       return null;
     }
 
     if (selection.expiresAt <= Date.now()) {
-      await this.sessions.delPendingSession('pendingPaymentSelections', key);
+      await this.sessions.delPendingSession("pendingPaymentSelections", key);
       return null;
     }
 
     return selection;
   }
 
-  private async getPendingTxHashSubmission(shopId: string, telegramUserId: string) {
+  private async getPendingTxHashSubmission(
+    shopId: string,
+    telegramUserId: string,
+  ) {
     const key = this.sessions.getPendingQuantityKey(shopId, telegramUserId);
-    const pending = await this.sessions.getPendingSession<PendingTxHashSubmission>('pendingTxHashSubmissions', key);
+    const pending =
+      await this.sessions.getPendingSession<PendingTxHashSubmission>(
+        "pendingTxHashSubmissions",
+        key,
+      );
 
     if (!pending) {
       return null;
     }
 
     if (pending.expiresAt <= Date.now()) {
-      await this.sessions.delPendingSession('pendingTxHashSubmissions', key);
+      await this.sessions.delPendingSession("pendingTxHashSubmissions", key);
       return null;
     }
 
     return pending;
   }
 
-  private async getPendingWarrantyClaimSubmission(shopId: string, telegramUserId: string) {
+  private async getPendingWarrantyClaimSubmission(
+    shopId: string,
+    telegramUserId: string,
+  ) {
     const key = this.sessions.getPendingQuantityKey(shopId, telegramUserId);
-    const pending = await this.sessions.getPendingSession<PendingWarrantyClaimSubmission>('pendingWarrantyClaimSubmissions', key);
+    const pending =
+      await this.sessions.getPendingSession<PendingWarrantyClaimSubmission>(
+        "pendingWarrantyClaimSubmissions",
+        key,
+      );
 
     if (!pending) {
       return null;
     }
 
     if (pending.expiresAt <= Date.now()) {
-      await this.sessions.delPendingSession('pendingWarrantyClaimSubmissions', key);
+      await this.sessions.delPendingSession(
+        "pendingWarrantyClaimSubmissions",
+        key,
+      );
       return null;
     }
 
     return pending;
   }
 
-  private async clearPendingQuantitySelection(shopId: string, telegramUserId: string) {
+  private async clearPendingQuantitySelection(
+    shopId: string,
+    telegramUserId: string,
+  ) {
     if (!telegramUserId) {
       return;
     }
 
     const key = this.sessions.getPendingQuantityKey(shopId, telegramUserId);
     await Promise.all([
-      this.sessions.delPendingSession('pendingQuantitySelections', key),
-      this.sessions.delPendingSession('pendingCustomerEmailSelections', key),
+      this.sessions.delPendingSession("pendingQuantitySelections", key),
+      this.sessions.delPendingSession("pendingCustomerEmailSelections", key),
     ]);
   }
 
-  private async clearPendingWalletTopup(shopId: string, telegramUserId: string) {
+  private async clearPendingWalletTopup(
+    shopId: string,
+    telegramUserId: string,
+  ) {
     if (!telegramUserId) {
       return;
     }
-    await this.sessions.delPendingSession('pendingWalletTopups', this.sessions.getPendingQuantityKey(shopId, telegramUserId));
+    await this.sessions.delPendingSession(
+      "pendingWalletTopups",
+      this.sessions.getPendingQuantityKey(shopId, telegramUserId),
+    );
   }
 
-  private async clearPendingPaymentSelection(shopId: string, telegramUserId: string) {
-    if (!telegramUserId) {
-      return;
-    }
-
-    await this.sessions.delPendingSession('pendingPaymentSelections', this.sessions.getPendingQuantityKey(shopId, telegramUserId));
-  }
-
-  private async clearPendingTxHashSubmission(shopId: string, telegramUserId: string) {
-    if (!telegramUserId) {
-      return;
-    }
-
-    await this.sessions.delPendingSession('pendingTxHashSubmissions', this.sessions.getPendingQuantityKey(shopId, telegramUserId));
-  }
-
-  private async clearPendingWarrantyClaimSubmission(shopId: string, telegramUserId: string) {
+  private async clearPendingPaymentSelection(
+    shopId: string,
+    telegramUserId: string,
+  ) {
     if (!telegramUserId) {
       return;
     }
 
-    await this.sessions.delPendingSession('pendingWarrantyClaimSubmissions', this.sessions.getPendingQuantityKey(shopId, telegramUserId));
+    await this.sessions.delPendingSession(
+      "pendingPaymentSelections",
+      this.sessions.getPendingQuantityKey(shopId, telegramUserId),
+    );
   }
 
-  private async clearPendingWarrantyIssueDescription(shopId: string, telegramUserId: string) {
+  private async clearPendingTxHashSubmission(
+    shopId: string,
+    telegramUserId: string,
+  ) {
     if (!telegramUserId) {
       return;
     }
 
-    await this.sessions.delPendingSession("pendingWarrantyIssueDescriptions", this.sessions.getPendingQuantityKey(shopId, telegramUserId));
+    await this.sessions.delPendingSession(
+      "pendingTxHashSubmissions",
+      this.sessions.getPendingQuantityKey(shopId, telegramUserId),
+    );
   }
 
-  private async getPendingWarrantyAccountSelection(shopId: string, telegramUserId: string) {
+  private async clearPendingWarrantyClaimSubmission(
+    shopId: string,
+    telegramUserId: string,
+  ) {
+    if (!telegramUserId) {
+      return;
+    }
+
+    await this.sessions.delPendingSession(
+      "pendingWarrantyClaimSubmissions",
+      this.sessions.getPendingQuantityKey(shopId, telegramUserId),
+    );
+  }
+
+  private async clearPendingWarrantyIssueDescription(
+    shopId: string,
+    telegramUserId: string,
+  ) {
+    if (!telegramUserId) {
+      return;
+    }
+
+    await this.sessions.delPendingSession(
+      "pendingWarrantyIssueDescriptions",
+      this.sessions.getPendingQuantityKey(shopId, telegramUserId),
+    );
+  }
+
+  private async getPendingWarrantyAccountSelection(
+    shopId: string,
+    telegramUserId: string,
+  ) {
     const key = this.sessions.getPendingQuantityKey(shopId, telegramUserId);
-    const pending = await this.sessions.getPendingSession<PendingWarrantyAccountSelection>('pendingWarrantyAccountSelections', key);
+    const pending =
+      await this.sessions.getPendingSession<PendingWarrantyAccountSelection>(
+        "pendingWarrantyAccountSelections",
+        key,
+      );
 
     if (!pending) {
       return null;
     }
 
     if (pending.expiresAt <= Date.now()) {
-      await this.sessions.delPendingSession('pendingWarrantyAccountSelections', key);
+      await this.sessions.delPendingSession(
+        "pendingWarrantyAccountSelections",
+        key,
+      );
       return null;
     }
 
     return pending;
   }
 
-  private async clearPendingWarrantyAccountSelection(shopId: string, telegramUserId: string) {
+  private async clearPendingWarrantyAccountSelection(
+    shopId: string,
+    telegramUserId: string,
+  ) {
     if (!telegramUserId) {
       return;
     }
 
-    await this.sessions.delPendingSession('pendingWarrantyAccountSelections', this.sessions.getPendingQuantityKey(shopId, telegramUserId));
+    await this.sessions.delPendingSession(
+      "pendingWarrantyAccountSelections",
+      this.sessions.getPendingQuantityKey(shopId, telegramUserId),
+    );
   }
 
   private async handleProKeyReissue(
@@ -5931,12 +9220,18 @@ export class TelegramBotService {
     downstreamSellerId: string,
     actions: unknown[],
   ) {
-    if (shop.seller.tier !== SellerTier.ULTRA) return;
+    if (
+      shop.seller.tier !== SellerTier.PRO &&
+      shop.seller.tier !== SellerTier.ULTRA
+    )
+      return;
 
-    const existingConn = await this.prisma.downstreamSourceConnection.findFirst({
-      where: { upstreamShopId: shop.id, downstreamSellerId },
-      include: { apiKey: true },
-    });
+    const existingConn = await this.prisma.downstreamSourceConnection.findFirst(
+      {
+        where: { upstreamShopId: shop.id, downstreamSellerId },
+        include: { apiKey: true },
+      },
+    );
 
     if (existingConn?.apiKey) {
       await this.prisma.internalSourceApiKey.update({
@@ -5953,7 +9248,10 @@ export class TelegramBotService {
     if (existingConn) {
       await this.prisma.downstreamSourceConnection.update({
         where: { id: existingConn.id },
-        data: { apiKeyId: result.id, status: DownstreamSourceConnectionStatus.ACTIVE },
+        data: {
+          apiKeyId: result.id,
+          status: DownstreamSourceConnectionStatus.ACTIVE,
+        },
       });
     }
 
@@ -5981,10 +9279,18 @@ export class TelegramBotService {
     telegramUserId: string,
     actions: unknown[],
   ) {
-    const plusCustomer = await this.findPlusSellerByTelegramUserId(telegramUserId);
+    const plusCustomer =
+      await this.findPlusSellerByTelegramUserId(telegramUserId);
 
     if (!plusCustomer) {
-      await this.editOrSend(token, chatId, messageId, "⛔ Không tìm thấy tài khoản PRO.", { inline_keyboard: [] }, actions);
+      await this.editOrSend(
+        token,
+        chatId,
+        messageId,
+        "⛔ Không tìm thấy tài khoản PRO.",
+        { inline_keyboard: [] },
+        actions,
+      );
       return;
     }
 
@@ -5997,7 +9303,14 @@ export class TelegramBotService {
     });
 
     if (!connection) {
-      await this.editOrSend(token, chatId, messageId, "⛔ Không có kết nối đang hoạt động.", { inline_keyboard: [] }, actions);
+      await this.editOrSend(
+        token,
+        chatId,
+        messageId,
+        "⛔ Không có kết nối đang hoạt động.",
+        { inline_keyboard: [] },
+        actions,
+      );
       return;
     }
 
@@ -6005,7 +9318,10 @@ export class TelegramBotService {
     if (connection.downstreamTelegramChatId) {
       const wallet = await this.prisma.customerWallet.findFirst({
         where: {
-          customer: { shopId: connection.upstreamShopId, telegramChatId: connection.downstreamTelegramChatId },
+          customer: {
+            shopId: connection.upstreamShopId,
+            telegramChatId: connection.downstreamTelegramChatId,
+          },
         },
         select: { balance: true },
       });
@@ -6015,7 +9331,11 @@ export class TelegramBotService {
     await this.sessions.setPendingSession(
       "pendingConnectionTopupInputs",
       this.sessions.getPendingConnectionTopupKey(shop.id, telegramUserId),
-      { connectionId: connection.id, downstreamShopId: plusCustomer.shopId, expiresAt: Date.now() + this.sessions.pendingQuantityTtlMs },
+      {
+        connectionId: connection.id,
+        downstreamShopId: plusCustomer.shopId,
+        expiresAt: Date.now() + this.sessions.pendingQuantityTtlMs,
+      },
       this.sessions.pendingQuantityTtlMs,
     );
 
@@ -6029,7 +9349,9 @@ export class TelegramBotService {
         "",
         "Nhập số tiền muốn nạp (VND, tối thiểu 10,000đ):",
       ].join("\n"),
-      { inline_keyboard: [[{ text: "❌ Hủy", callback_data: "prokey:cancel" }]] },
+      {
+        inline_keyboard: [[{ text: "❌ Hủy", callback_data: "prokey:cancel" }]],
+      },
       actions,
     );
   }
@@ -6041,15 +9363,28 @@ export class TelegramBotService {
     actions: unknown[],
   ) {
     const telegramUserId = String(message.from?.id || "");
-    const key = this.sessions.getPendingConnectionTopupKey(shop.id, telegramUserId);
-    const pending = await this.sessions.getPendingSession<PendingConnectionTopupInput>('pendingConnectionTopupInputs', key);
+    const key = this.sessions.getPendingConnectionTopupKey(
+      shop.id,
+      telegramUserId,
+    );
+    const pending =
+      await this.sessions.getPendingSession<PendingConnectionTopupInput>(
+        "pendingConnectionTopupInputs",
+        key,
+      );
 
     if (!pending || pending.expiresAt <= Date.now()) {
-      if (pending) await this.sessions.delPendingSession('pendingConnectionTopupInputs', key);
+      if (pending)
+        await this.sessions.delPendingSession(
+          "pendingConnectionTopupInputs",
+          key,
+        );
       return false;
     }
 
-    const raw = String(message.text || "").trim().replace(/[,.]/g, "");
+    const raw = String(message.text || "")
+      .trim()
+      .replace(/[,.]/g, "");
     const amount = parseInt(raw, 10);
 
     if (!Number.isInteger(amount) || amount < 10000) {
@@ -6058,19 +9393,24 @@ export class TelegramBotService {
         message.chat.id,
         "⚠️ Số tiền không hợp lệ. Tối thiểu 10,000đ. Nhập lại:",
         actions,
-        { inline_keyboard: [[{ text: "❌ Hủy", callback_data: "prokey:cancel" }]] },
+        {
+          inline_keyboard: [
+            [{ text: "❌ Hủy", callback_data: "prokey:cancel" }],
+          ],
+        },
       );
       return true;
     }
 
-    await this.sessions.delPendingSession('pendingConnectionTopupInputs', key);
+    await this.sessions.delPendingSession("pendingConnectionTopupInputs", key);
 
     try {
-      const result = await this.connectionTopupService.createPayosTopupForConnection(
-        pending.connectionId,
-        pending.downstreamShopId,
-        amount,
-      );
+      const result =
+        await this.connectionTopupService.createPayosTopupForConnection(
+          pending.connectionId,
+          pending.downstreamShopId,
+          amount,
+        );
 
       await this.sendText(
         token,
@@ -6084,7 +9424,11 @@ export class TelegramBotService {
           `Hết hạn sau 15 phút.`,
         ].join("\n"),
         actions,
-        { inline_keyboard: [[{ text: "❌ Hủy giao dịch", callback_data: "prokey:cancel" }]] },
+        {
+          inline_keyboard: [
+            [{ text: "❌ Hủy giao dịch", callback_data: "prokey:cancel" }],
+          ],
+        },
       );
     } catch (error) {
       await this.sendText(
@@ -6159,23 +9503,50 @@ export class TelegramBotService {
 
     const buttons: { text: string; callback_data: string }[][] = [];
 
-    const connChatIds = connections.map((c) => c.downstreamTelegramChatId).filter((id): id is string => !!id);
-    const connWallets = connChatIds.length > 0
-      ? await this.prisma.customerWallet.findMany({
-          where: { customer: { shopId: shop.id, telegramChatId: { in: connChatIds } } },
-          include: { customer: { select: { telegramChatId: true } } },
-        })
-      : [];
-    const connWalletByChatId = new Map(connWallets.map((w) => [w.customer.telegramChatId, decimalToNumber(w.balance)]));
+    const connChatIds = connections
+      .map((c) => c.downstreamTelegramChatId)
+      .filter((id): id is string => !!id);
+    const connWallets =
+      connChatIds.length > 0
+        ? await this.prisma.customerWallet.findMany({
+            where: {
+              customer: {
+                shopId: shop.id,
+                telegramChatId: { in: connChatIds },
+              },
+            },
+            include: { customer: { select: { telegramChatId: true } } },
+          })
+        : [];
+    const connWalletByChatId = new Map(
+      connWallets.map((w) => [
+        w.customer.telegramChatId,
+        decimalToNumber(w.balance),
+      ]),
+    );
 
     for (const conn of connections) {
-      const name = conn.downstreamSeller?.displayName || conn.downstreamSellerId?.slice(0, 8) || conn.downstreamTelegramChatId || "?";
-      const status = conn.status === DownstreamSourceConnectionStatus.ACTIVE ? "✅" : "⏸️";
-      const balance = formatCurrency(conn.downstreamTelegramChatId ? (connWalletByChatId.get(conn.downstreamTelegramChatId) ?? 0) : 0);
-      const keyHint = conn.apiKey?.keyPrefix ? `${conn.apiKey.keyPrefix}…` : "chưa có key";
+      const name =
+        conn.downstreamSeller?.displayName ||
+        conn.downstreamSellerId?.slice(0, 8) ||
+        conn.downstreamTelegramChatId ||
+        "?";
+      const status =
+        conn.status === DownstreamSourceConnectionStatus.ACTIVE ? "✅" : "⏸️";
+      const balance = formatCurrency(
+        conn.downstreamTelegramChatId
+          ? (connWalletByChatId.get(conn.downstreamTelegramChatId) ?? 0)
+          : 0,
+      );
+      const keyHint = conn.apiKey?.keyPrefix
+        ? `${conn.apiKey.keyPrefix}…`
+        : "chưa có key";
       lines.push(`${status} ${name} — ${balance} — ${keyHint}`);
       buttons.push([
-        { text: `Cấp key: ${name.slice(0, 15)}`, callback_data: `prokey:reissue:${conn.downstreamSellerId}` },
+        {
+          text: `Cấp key: ${name.slice(0, 15)}`,
+          callback_data: `prokey:reissue:${conn.downstreamSellerId}`,
+        },
       ]);
     }
 
@@ -6196,7 +9567,10 @@ export class TelegramBotService {
 
   private generateReferralCode(): string {
     const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-    return Array.from({ length: 8 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
+    return Array.from(
+      { length: 8 },
+      () => chars[Math.floor(Math.random() * chars.length)],
+    ).join("");
   }
 
   private async getOrCreateReferralCode(customerId: string): Promise<string> {
@@ -6219,14 +9593,25 @@ export class TelegramBotService {
 
   private async applyAffiliateRef(
     shopId: string,
-    from: { telegramUserId: string; telegramChatId: string; telegramUsername: string | null; firstName: string | null; lastName: string | null },
+    from: {
+      telegramUserId: string;
+      telegramChatId: string;
+      telegramUsername: string | null;
+      firstName: string | null;
+      lastName: string | null;
+    },
     refParam: string,
   ) {
-    const shop = await this.prisma.shop.findUnique({ where: { id: shopId }, select: { sellerId: true } });
+    const shop = await this.prisma.shop.findUnique({
+      where: { id: shopId },
+      select: { sellerId: true },
+    });
     if (!shop) return;
 
     const customer = await this.prisma.customer.upsert({
-      where: { shopId_telegramUserId: { shopId, telegramUserId: from.telegramUserId } },
+      where: {
+        shopId_telegramUserId: { shopId, telegramUserId: from.telegramUserId },
+      },
       create: {
         shopId,
         sellerId: shop.sellerId,
@@ -6242,7 +9627,12 @@ export class TelegramBotService {
         firstName: from.firstName,
         lastName: from.lastName,
       },
-      select: { id: true, referredById: true, telegramUserId: true, telegramChatId: true },
+      select: {
+        id: true,
+        referredById: true,
+        telegramUserId: true,
+        telegramChatId: true,
+      },
     });
     if (customer.referredById) return;
 
@@ -6252,12 +9642,22 @@ export class TelegramBotService {
     });
     if (!referrer) return;
     if (referrer.id === customer.id) return;
-    if (referrer.telegramUserId && referrer.telegramUserId === customer.telegramUserId) {
-      this.logger.warn(`Self-referral blocked (same telegramUserId=${customer.telegramUserId}, shop=${shopId})`);
+    if (
+      referrer.telegramUserId &&
+      referrer.telegramUserId === customer.telegramUserId
+    ) {
+      this.logger.warn(
+        `Self-referral blocked (same telegramUserId=${customer.telegramUserId}, shop=${shopId})`,
+      );
       return;
     }
-    if (referrer.telegramChatId && referrer.telegramChatId === customer.telegramChatId) {
-      this.logger.warn(`Self-referral blocked (same telegramChatId=${customer.telegramChatId}, shop=${shopId})`);
+    if (
+      referrer.telegramChatId &&
+      referrer.telegramChatId === customer.telegramChatId
+    ) {
+      this.logger.warn(
+        `Self-referral blocked (same telegramChatId=${customer.telegramChatId}, shop=${shopId})`,
+      );
       return;
     }
 
@@ -6289,62 +9689,94 @@ export class TelegramBotService {
           : language === "th"
             ? `🤝 <b>โปรแกรมแนะนำเพื่อน</b>\n\nโปรแกรมแนะนำเพื่อนยังไม่ได้เปิดใช้งานในร้านนี้`
             : `🤝 <b>Chương trình Affiliate</b>\n\nChương trình affiliate chưa được kích hoạt tại shop này.`;
-      await this.editOrSend(token, chatId, messageId, text, {
-        inline_keyboard: [[this.navBtn("home", language, "home:menu")]],
-      }, actions, "HTML");
+      await this.editOrSend(
+        token,
+        chatId,
+        messageId,
+        text,
+        {
+          inline_keyboard: [[this.navBtn("home", language, "home:menu")]],
+        },
+        actions,
+        "HTML",
+      );
       return;
     }
 
     // Get or lazily create the referral token for this customer
-    const refCode = customer.referralCode || await this.getOrCreateReferralCode(customer.id);
+    const refCode =
+      customer.referralCode ||
+      (await this.getOrCreateReferralCode(customer.id));
 
     const stats = await this.affiliateService.getStatsByCustomer(customer.id);
     const botUsername = shop.botConfig?.telegramBotUsername || "";
-    const refLink = botUsername ? `https://t.me/${botUsername}?start=ref_${refCode}` : null;
+    const refLink = botUsername
+      ? `https://t.me/${botUsername}?start=ref_${refCode}`
+      : null;
     const commissionPct = Number(config.commissionPct);
 
     // Default intro: always describes the program + auto-mentions % when set
-    const defaultIntro = language === "en"
-      ? commissionPct > 0
-        ? `Share your referral link and earn <b>${commissionPct}%</b> commission for every successful order placed by people you refer. No limit on referrals.`
-        : `Join our affiliate program and earn commission for every customer you refer.`
-      : commissionPct > 0
-        ? `Chia sẻ link giới thiệu và nhận <b>${commissionPct}%</b> hoa hồng cho mỗi đơn thành công từ người bạn giới thiệu. Không giới hạn số lượt.`
-        : `Tham gia chương trình affiliate và nhận hoa hồng cho mỗi khách hàng bạn giới thiệu.`;
+    const defaultIntro =
+      language === "en"
+        ? commissionPct > 0
+          ? `Share your referral link and earn <b>${commissionPct}%</b> commission for every successful order placed by people you refer. No limit on referrals.`
+          : `Join our affiliate program and earn commission for every customer you refer.`
+        : commissionPct > 0
+          ? `Chia sẻ link giới thiệu và nhận <b>${commissionPct}%</b> hoa hồng cho mỗi đơn thành công từ người bạn giới thiệu. Không giới hạn số lượt.`
+          : `Tham gia chương trình affiliate và nhận hoa hồng cho mỗi khách hàng bạn giới thiệu.`;
 
     const programInfo = config.programText
       ? `${defaultIntro}\n\n${config.programText}`
       : defaultIntro;
 
-    const lines = language === "en" ? [
-      `🤝 <b>Affiliate Program</b>`,
-      ``,
-      programInfo,
-      ``,
-      `💰 Commission earned: <b>${stats.lifetimeCommission.toLocaleString("vi-VN")} ₫</b>`,
-      `👥 Referred customers: <b>${stats.downlineCount}</b>`,
-      refLink ? `\n🔗 <b>Your referral link:</b>\n<code>${refLink}</code>` : ``,
-    ] : language === "th" ? [
-      `🤝 <b>โปรแกรมแนะนำเพื่อน</b>`,
-      ``,
-      programInfo,
-      ``,
-      `💰 ค่าคอมมิชชันสะสม: <b>${stats.lifetimeCommission.toLocaleString("vi-VN")} ₫</b>`,
-      `👥 ลูกค้าที่แนะนำ: <b>${stats.downlineCount}</b>`,
-      refLink ? `\n🔗 <b>ลิงก์แนะนำของคุณ:</b>\n<code>${refLink}</code>` : ``,
-    ] : [
-      `🤝 <b>Chương trình Affiliate</b>`,
-      ``,
-      programInfo,
-      ``,
-      `💰 Hoa hồng tích lũy: <b>${stats.lifetimeCommission.toLocaleString("vi-VN")} ₫</b>`,
-      `👥 Người đã giới thiệu: <b>${stats.downlineCount}</b>`,
-      refLink ? `\n🔗 <b>Link giới thiệu của bạn:</b>\n<code>${refLink}</code>` : ``,
-    ];
+    const lines =
+      language === "en"
+        ? [
+            `🤝 <b>Affiliate Program</b>`,
+            ``,
+            programInfo,
+            ``,
+            `💰 Commission earned: <b>${stats.lifetimeCommission.toLocaleString("vi-VN")} ₫</b>`,
+            `👥 Referred customers: <b>${stats.downlineCount}</b>`,
+            refLink
+              ? `\n🔗 <b>Your referral link:</b>\n<code>${refLink}</code>`
+              : ``,
+          ]
+        : language === "th"
+          ? [
+              `🤝 <b>โปรแกรมแนะนำเพื่อน</b>`,
+              ``,
+              programInfo,
+              ``,
+              `💰 ค่าคอมมิชชันสะสม: <b>${stats.lifetimeCommission.toLocaleString("vi-VN")} ₫</b>`,
+              `👥 ลูกค้าที่แนะนำ: <b>${stats.downlineCount}</b>`,
+              refLink
+                ? `\n🔗 <b>ลิงก์แนะนำของคุณ:</b>\n<code>${refLink}</code>`
+                : ``,
+            ]
+          : [
+              `🤝 <b>Chương trình Affiliate</b>`,
+              ``,
+              programInfo,
+              ``,
+              `💰 Hoa hồng tích lũy: <b>${stats.lifetimeCommission.toLocaleString("vi-VN")} ₫</b>`,
+              `👥 Người đã giới thiệu: <b>${stats.downlineCount}</b>`,
+              refLink
+                ? `\n🔗 <b>Link giới thiệu của bạn:</b>\n<code>${refLink}</code>`
+                : ``,
+            ];
 
-    await this.editOrSend(token, chatId, messageId, lines.filter(Boolean).join("\n"), {
-      inline_keyboard: [[this.navBtn("home", language, "home:menu")]],
-    }, actions, "HTML");
+    await this.editOrSend(
+      token,
+      chatId,
+      messageId,
+      lines.filter(Boolean).join("\n"),
+      {
+        inline_keyboard: [[this.navBtn("home", language, "home:menu")]],
+      },
+      actions,
+      "HTML",
+    );
   }
 
   private async handleProKeyMenu(
@@ -6355,7 +9787,10 @@ export class TelegramBotService {
     _telegramUserId: string,
     actions: unknown[],
   ) {
-    if (shop.seller.tier !== SellerTier.ULTRA) {
+    if (
+      shop.seller.tier !== SellerTier.PRO &&
+      shop.seller.tier !== SellerTier.ULTRA
+    ) {
       await this.editOrSend(
         token,
         chatId,
@@ -6369,7 +9804,10 @@ export class TelegramBotService {
 
     const chatIdStr = String(chatId);
     const swaggerUrl = `${this.config.appPublicUrl}/api/swagger`;
-    const existing = await this.apiKeyService.getActiveKeyForTelegramChatId(shop.id, chatIdStr);
+    const existing = await this.apiKeyService.getActiveKeyForTelegramChatId(
+      shop.id,
+      chatIdStr,
+    );
 
     const displayKey = existing?.keyEncrypted
       ? this.apiKeyService.decryptKey(existing.keyEncrypted)
@@ -6380,7 +9818,10 @@ export class TelegramBotService {
       result = { key: displayKey };
     } else {
       await this.apiKeyService.revokeAllBotKeysForChatId(shop.id, chatIdStr);
-      result = await this.apiKeyService.issueKey(shop.sellerId, shop.id, { label: `Bot - ${chatIdStr}`, telegramChatId: chatIdStr });
+      result = await this.apiKeyService.issueKey(shop.sellerId, shop.id, {
+        label: `Bot - ${chatIdStr}`,
+        telegramChatId: chatIdStr,
+      });
     }
 
     await this.editOrSend(
@@ -6436,7 +9877,13 @@ export class TelegramBotService {
       totalPages: number;
       totalOrders: number;
       startIndex: number;
-    } = { view: "recent", page: 0, totalPages: 1, totalOrders: 0, startIndex: 0 },
+    } = {
+      view: "recent",
+      page: 0,
+      totalPages: 1,
+      totalOrders: 0,
+      startIndex: 0,
+    },
   ) {
     if (orders.length === 0) {
       if (language === "en") {
@@ -6465,114 +9912,85 @@ export class TelegramBotService {
       ].join("\n");
     }
 
-    const title = options.view === "all"
-      ? language === "en"
-        ? "📜 All purchase history"
-        : language === "th"
-          ? "📜 ประวัติการซื้อทั้งหมด"
-          : "📜 Toàn bộ lịch sử mua hàng"
-      : language === "en"
-        ? "📜 Recent orders"
-        : language === "th"
-          ? "📜 คำสั่งซื้อล่าสุด"
-          : "📜 Lịch sử mua hàng gần đây";
-    const pageSummary = options.view === "all"
-      ? language === "en"
-        ? `Page ${options.page + 1}/${options.totalPages} • ${options.totalOrders} orders`
-        : language === "th"
-          ? `หน้า ${options.page + 1}/${options.totalPages} • ${options.totalOrders} คำสั่งซื้อ`
-          : `Trang ${options.page + 1}/${options.totalPages} • ${options.totalOrders} đơn hàng`
-      : null;
+    const title =
+      options.view === "all"
+        ? language === "en"
+          ? "📜 All purchase history"
+          : language === "th"
+            ? "📜 ประวัติการซื้อทั้งหมด"
+            : "📜 Toàn bộ lịch sử mua hàng"
+        : language === "en"
+          ? "📜 Purchase history"
+          : language === "th"
+            ? "📜 ประวัติการซื้อ"
+            : "📜 Lịch sử mua hàng";
+    const pageSummary =
+      options.view === "all"
+        ? language === "en"
+          ? `Page ${options.page + 1}/${options.totalPages} • ${options.totalOrders} orders`
+          : language === "th"
+            ? `หน้า ${options.page + 1}/${options.totalPages} • ${options.totalOrders} คำสั่งซื้อ`
+            : `Trang ${options.page + 1}/${options.totalPages} • ${options.totalOrders} đơn hàng`
+        : null;
 
+    const instruction =
+      language === "en"
+        ? "Select an order to view details:"
+        : language === "th"
+          ? "เลือกคำสั่งซื้อเพื่อดูรายละเอียด:"
+          : "Chọn đơn để xem chi tiết:";
     const lines: string[] = [
       title,
       ...(pageSummary ? [pageSummary] : []),
       "",
-      ...orders.flatMap((order, index) => [
-        `${options.startIndex + index + 1}. ${this.localizeProductName(order.productNameSnapshot, language)}`,
-        language === "en" ? `   Order: ${order.orderCode}` : language === "th" ? `   คำสั่งซื้อ: ${order.orderCode}` : `   Mã đơn: ${order.orderCode}`,
-        language === "en"
-          ? `   Qty: ${order.quantity} • ${this.formatBotMoney(decimalToNumber(order.totalSaleAmount), language, usdtVndRate)}`
-          : language === "th"
-            ? `   จำนวน: ${order.quantity} • ${this.formatBotMoney(decimalToNumber(order.totalSaleAmount), language, usdtVndRate)}`
-            : `   SL: ${order.quantity} • ${this.formatBotMoney(decimalToNumber(order.totalSaleAmount), language, usdtVndRate)}`,
-        language === "en"
-          ? `   Status: ${this.formatCustomerOrderStatus(order.status, order.paymentStatus, language)}`
-          : language === "th"
-            ? `   สถานะ: ${this.formatCustomerOrderStatus(order.status, order.paymentStatus, language)}`
-            : `   Trạng thái: ${this.formatCustomerOrderStatus(order.status, order.paymentStatus, language)}`,
-        language === "en"
-          ? `   Time: ${this.formatDateTime(order.createdAt)}`
-          : language === "th"
-            ? `   เวลา: ${this.formatDateTime(order.createdAt)}`
-            : `   Thời gian: ${this.formatDateTime(order.createdAt)}`,
-        "",
-      ]),
+      instruction,
     ];
-
-    const deliveredOrders = orders.filter((order) => Boolean(order.deliveredAccountText)).slice(0, 3);
-
-    if (deliveredOrders.length > 0) {
-      lines.push(
-        options.view === "all"
-          ? language === "en"
-            ? "🔐 Delivered accounts on this page:"
-            : language === "th"
-              ? "🔐 บัญชีที่จัดส่งในหน้านี้:"
-              : "🔐 Tài khoản đã giao trong trang này:"
-          : language === "en"
-            ? "🔐 Recently delivered accounts:"
-            : language === "th"
-              ? "🔐 บัญชีที่จัดส่งล่าสุด:"
-              : "🔐 Tài khoản đã giao gần đây:",
-        "",
-      );
-
-      deliveredOrders.forEach((order, index) => {
-        lines.push(
-          `${index + 1}. ${order.orderCode} • ${this.truncateLabel(
-            this.localizeProductName(order.productNameSnapshot, language),
-            32,
-          )}`,
-        );
-        lines.push(this.indentBlock(this.buildDeliveredSnippet(order.deliveredAccountText || "")));
-        lines.push("");
-      });
-    }
 
     return lines.join("\n").trim();
   }
 
-  private buildWalletText(summary: {
-    balance: number;
-    commissionBalance?: number;
-    currency: string;
-    telegramUsername?: string | null;
-    telegramChatId?: string | null;
-    pendingTopups: Array<{
-      amount: number;
-      externalOrderCode: string;
-      createdAt: Date;
-      expiresAt: Date;
-      checkoutUrl: string;
-    }>;
-    recentTopups: Array<{
-      amount: number;
-      externalOrderCode: string;
-      status: string;
-      createdAt: Date;
-      paidAt: Date | null;
-    }>;
-  }, language: BotLanguage = "vi", usdtVndRate?: Prisma.Decimal | number | string | null, shopCust?: Record<string, unknown> | null) {
+  private buildWalletText(
+    summary: {
+      balance: number;
+      commissionBalance?: number;
+      currency: string;
+      telegramUsername?: string | null;
+      telegramChatId?: string | null;
+      pendingTopups: Array<{
+        amount: number;
+        externalOrderCode: string;
+        createdAt: Date;
+        expiresAt: Date;
+        checkoutUrl: string;
+      }>;
+      recentTopups: Array<{
+        amount: number;
+        externalOrderCode: string;
+        status: string;
+        createdAt: Date;
+        paidAt: Date | null;
+      }>;
+    },
+    language: BotLanguage = "vi",
+    usdtVndRate?: Prisma.Decimal | number | string | null,
+    shopCust?: Record<string, unknown> | null,
+  ) {
     const commissionBalance = summary.commissionBalance ?? 0;
-    const walletNoteMap = (shopCust as Record<string, unknown> | null)?.walletNote as Record<string, string> | undefined;
-    const walletNote = (walletNoteMap?.[language] || walletNoteMap?.["vi"] || "").trim();
+    const walletNoteMap = (shopCust as Record<string, unknown> | null)
+      ?.walletNote as Record<string, string> | undefined;
+    const walletNote = (
+      walletNoteMap?.[language] ||
+      walletNoteMap?.["vi"] ||
+      ""
+    ).trim();
     if (language === "en") {
       const lines: string[] = [
         "💳 Your wallet",
         "",
         ...(walletNote ? [walletNote, ""] : []),
-        ...(summary.telegramUsername ? [`Username: @${summary.telegramUsername}`] : []),
+        ...(summary.telegramUsername
+          ? [`Username: @${summary.telegramUsername}`]
+          : []),
         ...(summary.telegramChatId ? [`ID: ${summary.telegramChatId}`] : []),
         `💰 Wallet balance: ${this.formatBotMoney(summary.balance, language, usdtVndRate)}`,
         `🎁 Commission balance: ${this.formatBotMoney(commissionBalance, language, usdtVndRate)}`,
@@ -6633,7 +10051,9 @@ export class TelegramBotService {
       "💳 Ví của bạn",
       "",
       ...(walletNote ? [walletNote, ""] : []),
-      ...(summary.telegramUsername ? [`Username: @${summary.telegramUsername}`] : []),
+      ...(summary.telegramUsername
+        ? [`Username: @${summary.telegramUsername}`]
+        : []),
       ...(summary.telegramChatId ? [`ID: ${summary.telegramChatId}`] : []),
       `💰 Số dư nạp ví: ${this.formatBotMoney(summary.balance, language, usdtVndRate)}`,
       `🎁 Số dư hoa hồng: ${this.formatBotMoney(commissionBalance, language, usdtVndRate)}`,
@@ -6663,8 +10083,10 @@ export class TelegramBotService {
   private formatTopupStatus(status: string, language: BotLanguage = "vi") {
     const en = language === "en";
     const th = language === "th";
-    if (status === "paid") return en ? "Credited" : th ? "เครดิตแล้ว" : "Đã cộng tiền";
-    if (status === "canceled") return en ? "Canceled" : th ? "ยกเลิกแล้ว" : "Đã hủy";
+    if (status === "paid")
+      return en ? "Credited" : th ? "เครดิตแล้ว" : "Đã cộng tiền";
+    if (status === "canceled")
+      return en ? "Canceled" : th ? "ยกเลิกแล้ว" : "Đã hủy";
     if (status === "failed") return en ? "Failed" : th ? "ล้มเหลว" : "Thất bại";
     return en ? "Awaiting payment" : th ? "รอชำระเงิน" : "Chờ thanh toán";
   }
@@ -6677,13 +10099,26 @@ export class TelegramBotService {
     const en = language === "en";
     const th = language === "th";
 
-    if (status === "DELIVERED") return en ? "Delivered" : th ? "จัดส่งแล้ว" : "Đã giao";
+    if (status === "DELIVERED")
+      return en ? "Delivered" : th ? "จัดส่งแล้ว" : "Đã giao";
     if (status === "FAILED") return en ? "Failed" : th ? "ล้มเหลว" : "Thất bại";
-    if (status === "PAID_WAITING_STOCK") return en ? "Paid, waiting for stock" : th ? "ชำระแล้ว รอสินค้า" : "Đã thanh toán, chờ hàng";
-    if (status === "PROCESSING_PURCHASE") return en ? "Processing" : th ? "กำลังดำเนินการ" : "Đang xử lý";
-    if (status === "REFUNDED" || paymentStatus === "REFUNDED") return en ? "Refunded" : th ? "คืนเงินแล้ว" : "Đã hoàn tiền";
-    if (status === "PAID" || paymentStatus === "PAID") return en ? "Paid" : th ? "ชำระแล้ว" : "Đã thanh toán";
-    if (status === "AWAITING_PAYMENT" || paymentStatus === "PENDING" || paymentStatus === "UNPAID") {
+    if (status === "PAID_WAITING_STOCK")
+      return en
+        ? "Paid, waiting for stock"
+        : th
+          ? "ชำระแล้ว รอสินค้า"
+          : "Đã thanh toán, chờ hàng";
+    if (status === "PROCESSING_PURCHASE")
+      return en ? "Processing" : th ? "กำลังดำเนินการ" : "Đang xử lý";
+    if (status === "REFUNDED" || paymentStatus === "REFUNDED")
+      return en ? "Refunded" : th ? "คืนเงินแล้ว" : "Đã hoàn tiền";
+    if (status === "PAID" || paymentStatus === "PAID")
+      return en ? "Paid" : th ? "ชำระแล้ว" : "Đã thanh toán";
+    if (
+      status === "AWAITING_PAYMENT" ||
+      paymentStatus === "PENDING" ||
+      paymentStatus === "UNPAID"
+    ) {
       return en ? "Awaiting payment" : th ? "รอชำระเงิน" : "Chờ thanh toán";
     }
 
@@ -6709,16 +10144,37 @@ export class TelegramBotService {
     usdtVndRate?: Prisma.Decimal | number | string | null,
     bankInfo?: PayOSBankInfo,
     manualCrypto?: {
-      provider?: "BINANCE" | "OKX" | "USDT_TRC20" | "USDT_SOL" | "USDT_TON";
-      network?: "TRC20" | "SOLANA" | "TON" | null;
+      provider?:
+        | "BINANCE"
+        | "OKX"
+        | "USDT_TRC20"
+        | "USDT_BEP20"
+        | "USDT_SOL"
+        | "USDT_TON";
+      network?: "TRC20" | "BEP20" | "SOLANA" | "TON" | null;
       address?: string | null;
       usdtAmount: number;
       note: string;
     } | null,
   ) {
-    if (manualCrypto?.address && (manualCrypto.provider === "USDT_SOL" || manualCrypto.provider === "USDT_TON")) {
+    if (
+      manualCrypto?.address &&
+      (manualCrypto.provider === "USDT_SOL" ||
+        manualCrypto.provider === "USDT_TON" ||
+        manualCrypto.provider === "USDT_BEP20")
+    ) {
       const usdtFormatted = this.formatUsdt(manualCrypto.usdtAmount);
-      const network = manualCrypto.provider === "USDT_TON" ? "TON" : "Solana";
+      const network =
+        manualCrypto.provider === "USDT_TON"
+          ? "TON"
+          : manualCrypto.provider === "USDT_BEP20"
+            ? "BEP20 (BSC)"
+            : "Solana";
+      const transferWarnings = this.buildUsdtTransferWarningLines(
+        manualCrypto.provider,
+        manualCrypto.usdtAmount,
+        language,
+      );
       if (language === "en") {
         return [
           `💲 USDT top-up ${usdtFormatted} USDT (≈ ${formatCurrency(amount)})`,
@@ -6731,6 +10187,7 @@ export class TelegramBotService {
           `Reference: <code>${manualCrypto.note}</code>`,
           "",
           `Send the exact amount using only USDT on ${network}. The bot will confirm automatically within 30-60 seconds.`,
+          ...transferWarnings,
         ].join("\n");
       }
       if (language === "th") {
@@ -6744,6 +10201,7 @@ export class TelegramBotService {
           `จำนวน: <code>${usdtFormatted}</code> USDT`,
           "",
           `ส่งจำนวนที่ตรงกันด้วย USDT บน ${network} เท่านั้น ระบบจะยืนยันอัตโนมัติภายใน 30-60 วินาที`,
+          ...transferWarnings,
         ].join("\n");
       }
       return [
@@ -6757,12 +10215,18 @@ export class TelegramBotService {
         `Mã tham chiếu: <code>${manualCrypto.note}</code>`,
         "",
         `Chuyển đúng số tiền và chỉ dùng USDT mạng ${network}. Bot sẽ tự xác nhận trong 30-60 giây.`,
+        ...transferWarnings,
       ].join("\n");
     }
 
     // USDT TRC20 topup
     if (manualCrypto?.address) {
       const usdtFormatted = this.formatUsdt(manualCrypto.usdtAmount);
+      const transferWarnings = this.buildUsdtTransferWarningLines(
+        "USDT_TRC20",
+        manualCrypto.usdtAmount,
+        language,
+      );
       if (language === "en") {
         return [
           `💲 USDT top-up ${usdtFormatted} USDT (≈ ${formatCurrency(amount)})`,
@@ -6776,7 +10240,7 @@ export class TelegramBotService {
           `Memo / Note: <code>${manualCrypto.note}</code>`,
           "─────────────────",
           "After transferring, tap 'Send TX hash' below and paste the txid.",
-          "Only send USDT on the TRC20 network.",
+          ...transferWarnings,
         ].join("\n");
       }
       if (language === "th") {
@@ -6792,7 +10256,7 @@ export class TelegramBotService {
           `หมายเหตุ: <code>${manualCrypto.note}</code>`,
           "─────────────────",
           "หลังโอนแล้ว กด 'ส่ง TX hash' ด้านล่างแล้ววาง txid",
-          "ส่ง USDT บนเครือข่าย TRC20 เท่านั้น",
+          ...transferWarnings,
         ].join("\n");
       }
       return [
@@ -6807,7 +10271,7 @@ export class TelegramBotService {
         `Nội dung: <code>${manualCrypto.note}</code>`,
         "─────────────────",
         "Sau khi chuyển xong, bấm 'Gửi TX hash' bên dưới rồi dán txid.",
-        "Chỉ gửi USDT đúng mạng TRC20.",
+        ...transferWarnings,
       ].join("\n");
     }
 
@@ -6854,7 +10318,9 @@ export class TelegramBotService {
   }
 
   private buildDeliveredSnippet(value: string, maxLines = 4, maxLength = 280) {
-    const normalized = String(value || "").replace(/\r/g, "").trim();
+    const normalized = String(value || "")
+      .replace(/\r/g, "")
+      .trim();
     const snippet = normalized
       .split("\n")
       .map((line) => line.trim())
@@ -6885,13 +10351,17 @@ export class TelegramBotService {
       includeVerify?: boolean;
     },
   ) {
-    const inlineKeyboard: Array<Array<{ text: string; callback_data?: string; url?: string }>> = [];
+    const inlineKeyboard: Array<
+      Array<{ text: string; callback_data?: string; url?: string }>
+    > = [];
 
     if (this.isPublicCheckoutUrl(checkoutUrl || "")) {
-      inlineKeyboard.push([{
-        text: this.buttonLabel("openCheckout", language),
-        url: checkoutUrl,
-      }]);
+      inlineKeyboard.push([
+        {
+          text: this.buttonLabel("openCheckout", language),
+          url: checkoutUrl,
+        },
+      ]);
     }
 
     inlineKeyboard.push([
@@ -6948,16 +10418,16 @@ export class TelegramBotService {
     if (transaction.status !== "PENDING") {
       const alreadyProcessedText =
         transaction.order.status === "DELIVERED"
-          ? (language === "en"
-              ? "This payment has already been confirmed and the account has been delivered."
-              : language === "th"
-                ? "การชำระเงินนี้ได้รับการยืนยันแล้วและบัญชีถูกจัดส่งแล้ว"
-                : "Thanh toán này đã được xác nhận và tài khoản đã được giao.")
-          : (language === "en"
-              ? "This payment has already been confirmed. The system is processing your order."
-              : language === "th"
-                ? "การชำระเงินนี้ได้รับการยืนยันแล้ว ระบบกำลังดำเนินการคำสั่งซื้อของคุณ"
-                : "Thanh toán này đã được xác nhận. Hệ thống đang xử lý đơn hàng của bạn.");
+          ? language === "en"
+            ? "This payment has already been confirmed and the account has been delivered."
+            : language === "th"
+              ? "การชำระเงินนี้ได้รับการยืนยันแล้วและบัญชีถูกจัดส่งแล้ว"
+              : "Thanh toán này đã được xác nhận và tài khoản đã được giao."
+          : language === "en"
+            ? "This payment has already been confirmed. The system is processing your order."
+            : language === "th"
+              ? "การชำระเงินนี้ได้รับการยืนยันแล้ว ระบบกำลังดำเนินการคำสั่งซื้อของคุณ"
+              : "Thanh toán này đã được xác nhận. Hệ thống đang xử lý đơn hàng của bạn.";
 
       await this.editOrSend(
         token,
@@ -6976,13 +10446,19 @@ export class TelegramBotService {
     }
 
     try {
-      const paymentStatus = await this.paymentService.getExternalPaymentStatus(externalOrderCode);
-      const providerStatus = String(paymentStatus.providerStatus || "UNKNOWN").toUpperCase();
+      const paymentStatus =
+        await this.paymentService.getExternalPaymentStatus(externalOrderCode);
+      const providerStatus = String(
+        paymentStatus.providerStatus || "UNKNOWN",
+      ).toUpperCase();
       const isPaid =
-        ["PAID", "COMPLETED", "SUCCESS", "SUCCEEDED"].includes(providerStatus) ||
+        ["PAID", "COMPLETED", "SUCCESS", "SUCCEEDED"].includes(
+          providerStatus,
+        ) ||
         (Number(paymentStatus.amountPaid || 0) > 0 &&
           Number(paymentStatus.amount || 0) > 0 &&
-          Number(paymentStatus.amountPaid || 0) >= Number(paymentStatus.amount || 0));
+          Number(paymentStatus.amountPaid || 0) >=
+            Number(paymentStatus.amount || 0));
 
       if (!isPaid) {
         await this.editOrSend(
@@ -7012,7 +10488,9 @@ export class TelegramBotService {
       });
 
       if (messageId) {
-        await telegramDeleteMessage(token, chatId, messageId).catch(() => undefined);
+        await telegramDeleteMessage(token, chatId, messageId).catch(
+          () => undefined,
+        );
       }
 
       await this.sendText(
@@ -7056,20 +10534,36 @@ export class TelegramBotService {
     }
   }
 
-  private async getPendingBinanceOrderIdSubmission(shopId: string, telegramUserId: string) {
+  private async getPendingBinanceOrderIdSubmission(
+    shopId: string,
+    telegramUserId: string,
+  ) {
     const key = this.sessions.getPendingQuantityKey(shopId, telegramUserId);
-    const pending = await this.sessions.getPendingSession<PendingBinanceOrderIdSubmission>("pendingBinanceOrderIdSubmissions", key);
+    const pending =
+      await this.sessions.getPendingSession<PendingBinanceOrderIdSubmission>(
+        "pendingBinanceOrderIdSubmissions",
+        key,
+      );
     if (!pending) return null;
     if (pending.expiresAt <= Date.now()) {
-      await this.sessions.delPendingSession("pendingBinanceOrderIdSubmissions", key);
+      await this.sessions.delPendingSession(
+        "pendingBinanceOrderIdSubmissions",
+        key,
+      );
       return null;
     }
     return pending;
   }
 
-  private async clearPendingBinanceOrderIdSubmission(shopId: string, telegramUserId: string) {
+  private async clearPendingBinanceOrderIdSubmission(
+    shopId: string,
+    telegramUserId: string,
+  ) {
     if (!telegramUserId) return;
-    await this.sessions.delPendingSession('pendingBinanceOrderIdSubmissions', this.sessions.getPendingQuantityKey(shopId, telegramUserId));
+    await this.sessions.delPendingSession(
+      "pendingBinanceOrderIdSubmissions",
+      this.sessions.getPendingQuantityKey(shopId, telegramUserId),
+    );
   }
 
   private async handleBinanceOrderIdPrompt(
@@ -7093,7 +10587,9 @@ export class TelegramBotService {
       transaction.provider !== "BINANCE" ||
       transaction.order.shopId !== shopId
     ) {
-      await this.sendText(token, chatId,
+      await this.sendText(
+        token,
+        chatId,
         language === "en"
           ? "This payment is no longer pending or is invalid."
           : language === "th"
@@ -7112,7 +10608,7 @@ export class TelegramBotService {
         orderCode: transaction.order.orderCode,
         expiresAt: Date.now() + this.sessions.pendingBinanceOrderIdTtlMs,
       },
-      this.sessions.pendingBinanceOrderIdTtlMs
+      this.sessions.pendingBinanceOrderIdTtlMs,
     );
 
     await this.sendText(
@@ -7136,14 +10632,26 @@ export class TelegramBotService {
     language: BotLanguage,
   ): Promise<boolean> {
     const telegramUserId = String(message.from?.id || "");
-    const pending = await this.getPendingBinanceOrderIdSubmission(shopId, telegramUserId);
+    const pending = await this.getPendingBinanceOrderIdSubmission(
+      shopId,
+      telegramUserId,
+    );
     if (!pending) return false;
 
     const msgText = String(message.text || "").trim();
     if (!/^\d{15,22}$/.test(msgText)) return false;
 
     await this.clearPendingBinanceOrderIdSubmission(shopId, telegramUserId);
-    await this.handleBinanceVerifyByOrderId(shopId, token, message.chat.id, telegramUserId, pending.externalOrderCode, msgText, actions, language);
+    await this.handleBinanceVerifyByOrderId(
+      shopId,
+      token,
+      message.chat.id,
+      telegramUserId,
+      pending.externalOrderCode,
+      msgText,
+      actions,
+      language,
+    );
     return true;
   }
 
@@ -7151,12 +10659,16 @@ export class TelegramBotService {
   // OKX Personal API — paste tx-hash flow
   // ────────────────────────────────────────────────────────────────────
 
-  private async getPendingOkxTxHashSubmission(shopId: string, telegramUserId: string) {
+  private async getPendingOkxTxHashSubmission(
+    shopId: string,
+    telegramUserId: string,
+  ) {
     const key = this.sessions.getPendingQuantityKey(shopId, telegramUserId);
-    const pending = await this.sessions.getPendingSession<{ externalOrderCode: string; orderCode: string; expiresAt: number }>(
-      "pendingOkxTxHashSubmissions",
-      key,
-    );
+    const pending = await this.sessions.getPendingSession<{
+      externalOrderCode: string;
+      orderCode: string;
+      expiresAt: number;
+    }>("pendingOkxTxHashSubmissions", key);
     if (!pending) return null;
     if (pending.expiresAt <= Date.now()) {
       await this.sessions.delPendingSession("pendingOkxTxHashSubmissions", key);
@@ -7165,9 +10677,15 @@ export class TelegramBotService {
     return pending;
   }
 
-  private async clearPendingOkxTxHashSubmission(shopId: string, telegramUserId: string) {
+  private async clearPendingOkxTxHashSubmission(
+    shopId: string,
+    telegramUserId: string,
+  ) {
     if (!telegramUserId) return;
-    await this.sessions.delPendingSession("pendingOkxTxHashSubmissions", this.sessions.getPendingQuantityKey(shopId, telegramUserId));
+    await this.sessions.delPendingSession(
+      "pendingOkxTxHashSubmissions",
+      this.sessions.getPendingQuantityKey(shopId, telegramUserId),
+    );
   }
 
   private async handleOkxTxHashPrompt(
@@ -7233,7 +10751,10 @@ export class TelegramBotService {
     language: BotLanguage,
   ): Promise<boolean> {
     const telegramUserId = String(message.from?.id || "");
-    const pending = await this.getPendingOkxTxHashSubmission(shopId, telegramUserId);
+    const pending = await this.getPendingOkxTxHashSubmission(
+      shopId,
+      telegramUserId,
+    );
     if (!pending) return false;
     const msgText = String(message.text || "").trim();
     // Accept TRC20 (64 hex), BEP20/ETH (0x + 64 hex = 66), Solana (base58 ~ 80-90)
@@ -7317,13 +10838,26 @@ export class TelegramBotService {
       return;
     }
     try {
-      const apiKey = decryptSecret(config.okxPersonalApiKeyEncrypted, this.config.encryptionKey)?.trim() ?? "";
-      const secret = decryptSecret(config.okxPersonalSecretKeyEncrypted, this.config.encryptionKey)?.trim() ?? "";
-      const passphrase = decryptSecret(config.okxPersonalPassphraseEncrypted, this.config.encryptionKey)?.trim() ?? "";
-      const manualCrypto = (transaction.rawPayloadJson as any)?.manualCrypto || {};
+      const apiKey =
+        decryptSecret(
+          config.okxPersonalApiKeyEncrypted,
+          this.config.encryptionKey,
+        )?.trim() ?? "";
+      const secret =
+        decryptSecret(
+          config.okxPersonalSecretKeyEncrypted,
+          this.config.encryptionKey,
+        )?.trim() ?? "";
+      const passphrase =
+        decryptSecret(
+          config.okxPersonalPassphraseEncrypted,
+          this.config.encryptionKey,
+        )?.trim() ?? "";
+      const manualCrypto =
+        (transaction.rawPayloadJson as any)?.manualCrypto || {};
       const requiredUsdt = Number(manualCrypto.usdtAmount || 0);
 
-      const sinceMs = Math.max(0, transaction.createdAt.getTime() - 10 * 60 * 1000);
+      const sinceMs = Math.max(0, transaction.createdAt.getTime() - 60 * 1000);
       const deposit = await this.okxPersonalApiService.findDepositByTxHash(
         apiKey,
         secret,
@@ -7345,6 +10879,10 @@ export class TelegramBotService {
         return;
       }
       const matchAmount = Number(deposit.amt || 0);
+      const transactionAt = new Date(Number(deposit.ts));
+      if (!Number.isFinite(transactionAt.getTime())) {
+        throw new Error("OKX deposit timestamp is missing or invalid.");
+      }
       if (requiredUsdt > 0 && Math.abs(matchAmount - requiredUsdt) > 0.01) {
         await this.sendText(
           token,
@@ -7358,6 +10896,15 @@ export class TelegramBotService {
         );
         return;
       }
+      const receipt = await this.paymentService.claimOnchainPaymentReceipt({
+        provider: PaymentProvider.OKX,
+        txHash: deposit.txId,
+        externalOrderCode,
+        amountUsdt: matchAmount,
+        destination: String(manualCrypto.uid || "").trim(),
+        transactionAt,
+        rawPayload: deposit,
+      });
       await this.ordersService.markPaymentCompleted(
         externalOrderCode,
         {
@@ -7371,14 +10918,25 @@ export class TelegramBotService {
         },
         { cryptoTxHash: deposit.txId },
       );
+      await this.paymentService.markOnchainPaymentReceiptProcessed(
+        receipt.id,
+        deposit,
+      );
       await this.sendText(
         token,
         chatId,
-        language === "en" ? "✅ OKX payment verified successfully!" : language === "th" ? "✅ ยืนยันการชำระเงิน OKX สำเร็จ!" : "✅ Xác minh thanh toán OKX thành công!",
+        language === "en"
+          ? "✅ OKX payment verified successfully!"
+          : language === "th"
+            ? "✅ ยืนยันการชำระเงิน OKX สำเร็จ!"
+            : "✅ Xác minh thanh toán OKX thành công!",
         actions,
       );
     } catch (e) {
-      this.logger.error(`Error verifying OKX tx hash for shop ${shopId}:`, e instanceof Error ? e.stack : String(e));
+      this.logger.error(
+        `Error verifying OKX tx hash for shop ${shopId}:`,
+        e instanceof Error ? e.stack : String(e),
+      );
       await this.sendText(
         token,
         chatId,
@@ -7414,7 +10972,9 @@ export class TelegramBotService {
       transaction.order.shopId !== shopId ||
       transaction.order.customer?.telegramUserId !== telegramUserId
     ) {
-      await this.sendText(token, chatId,
+      await this.sendText(
+        token,
+        chatId,
         language === "en"
           ? "This payment is no longer pending or is invalid."
           : language === "th"
@@ -7427,31 +10987,65 @@ export class TelegramBotService {
 
     const config = await this.prisma.paymentConfig.findUnique({
       where: { shopId },
-      select: { binanceUid: true, binancePersonalApiKeyEncrypted: true, binancePersonalSecretKeyEncrypted: true },
+      select: {
+        binanceUid: true,
+        binancePersonalApiKeyEncrypted: true,
+        binancePersonalSecretKeyEncrypted: true,
+      },
     });
 
-    if (!config?.binanceUid || !config?.binancePersonalApiKeyEncrypted || !config?.binancePersonalSecretKeyEncrypted) {
-      await this.sendText(token, chatId,
-        language === "en" ? "Binance verification not configured." : language === "th" ? "ร้านค้ายังไม่ได้ตั้งค่า Binance API" : "Shop chưa cấu hình Binance API.",
+    if (
+      !config?.binanceUid ||
+      !config?.binancePersonalApiKeyEncrypted ||
+      !config?.binancePersonalSecretKeyEncrypted
+    ) {
+      await this.sendText(
+        token,
+        chatId,
+        language === "en"
+          ? "Binance verification not configured."
+          : language === "th"
+            ? "ร้านค้ายังไม่ได้ตั้งค่า Binance API"
+            : "Shop chưa cấu hình Binance API.",
         actions,
       );
       return;
     }
 
     try {
-      const apiKey = decryptSecret(config.binancePersonalApiKeyEncrypted, this.config.encryptionKey)?.trim() ?? "";
-      const secretKey = decryptSecret(config.binancePersonalSecretKeyEncrypted, this.config.encryptionKey)?.trim() ?? "";
+      const apiKey =
+        decryptSecret(
+          config.binancePersonalApiKeyEncrypted,
+          this.config.encryptionKey,
+        )?.trim() ?? "";
+      const secretKey =
+        decryptSecret(
+          config.binancePersonalSecretKeyEncrypted,
+          this.config.encryptionKey,
+        )?.trim() ?? "";
       const configuredBinanceUid = String(config.binanceUid || "").trim();
-      const manualCrypto = (transaction.rawPayloadJson as any)?.manualCrypto || {};
+      const manualCrypto =
+        (transaction.rawPayloadJson as any)?.manualCrypto || {};
       const requiredUsdt = Number(manualCrypto.usdtAmount || 0);
 
-      const startTime = Math.max(0, transaction.createdAt.getTime() - 10 * 60 * 1000);
-      const history = await this.binancePayService.queryPersonalPayTransactions(apiKey, secretKey, startTime);
+      const startTime = Math.max(
+        0,
+        transaction.createdAt.getTime() - 10 * 60 * 1000,
+      );
+      const history = await this.binancePayService.queryPersonalPayTransactions(
+        apiKey,
+        secretKey,
+        startTime,
+      );
 
-      const match = history.find((item) => String(item.orderId || "") === binanceOrderId);
+      const match = history.find(
+        (item) => String(item.orderId || "") === binanceOrderId,
+      );
 
       if (!match) {
-        await this.sendText(token, chatId,
+        await this.sendText(
+          token,
+          chatId,
           language === "en"
             ? "Order ID not found in recent Binance Pay history. Please check and try again."
             : language === "th"
@@ -7462,11 +11056,36 @@ export class TelegramBotService {
         return;
       }
 
-      const receiverBinanceId = String(match.receiverInfo?.binanceId || match.payeeId || "").trim();
+      const receiverBinanceId = String(
+        match.receiverInfo?.binanceId || match.payeeId || "",
+      ).trim();
       const matchAmount = Number(match.amount ?? match.orderAmount ?? 0);
+      const transactionAt = new Date(Number(match.transactionTime));
+      const matchCurrency = String(match.currency || "")
+        .trim()
+        .toUpperCase();
+
+      if (
+        matchCurrency !== "USDT" ||
+        !Number.isFinite(transactionAt.getTime()) ||
+        transactionAt.getTime() < transaction.createdAt.getTime() ||
+        transactionAt.getTime() > Date.now() + 5 * 60 * 1000
+      ) {
+        await this.sendText(
+          token,
+          chatId,
+          language === "en"
+            ? "This Binance transaction has the wrong currency or timestamp."
+            : "Giao dịch Binance không đúng loại tiền hoặc thời gian của yêu cầu thanh toán.",
+          actions,
+        );
+        return;
+      }
 
       if (receiverBinanceId !== configuredBinanceUid) {
-        await this.sendText(token, chatId,
+        await this.sendText(
+          token,
+          chatId,
           language === "en"
             ? "This payment was sent to a different Binance account. Please check and try again."
             : language === "th"
@@ -7477,8 +11096,13 @@ export class TelegramBotService {
         return;
       }
 
-      if (requiredUsdt > 0 && Math.abs(matchAmount - requiredUsdt) > 0.01) {
-        await this.sendText(token, chatId,
+      if (
+        requiredUsdt > 0 &&
+        !isBinanceAmountWithinTolerance(matchAmount, requiredUsdt)
+      ) {
+        await this.sendText(
+          token,
+          chatId,
           language === "en"
             ? `Payment amount mismatch. Expected ${requiredUsdt} USDT, got ${matchAmount} USDT.`
             : language === "th"
@@ -7488,6 +11112,16 @@ export class TelegramBotService {
         );
         return;
       }
+
+      const receipt = await this.paymentService.claimOnchainPaymentReceipt({
+        provider: PaymentProvider.BINANCE,
+        txHash: String(match.transactionId || match.orderId || "").trim(),
+        externalOrderCode,
+        amountUsdt: matchAmount,
+        destination: receiverBinanceId,
+        transactionAt,
+        rawPayload: match,
+      });
 
       await this.ordersService.markPaymentCompleted(
         externalOrderCode,
@@ -7503,14 +11137,29 @@ export class TelegramBotService {
         },
         { cryptoTxHash: match.transactionId },
       );
+      await this.paymentService.markOnchainPaymentReceiptProcessed(
+        receipt.id,
+        match,
+      );
 
-      await this.sendText(token, chatId,
-        language === "en" ? "✅ Payment verified successfully!" : language === "th" ? "✅ ยืนยันการชำระเงินสำเร็จ!" : "✅ Xác minh thanh toán thành công!",
+      await this.sendText(
+        token,
+        chatId,
+        language === "en"
+          ? "✅ Payment verified successfully!"
+          : language === "th"
+            ? "✅ ยืนยันการชำระเงินสำเร็จ!"
+            : "✅ Xác minh thanh toán thành công!",
         actions,
       );
     } catch (e) {
-      this.logger.error(`Error verifying Binance order ID for shop ${shopId}:`, e instanceof Error ? e.stack : String(e));
-      await this.sendText(token, chatId,
+      this.logger.error(
+        `Error verifying Binance order ID for shop ${shopId}:`,
+        e instanceof Error ? e.stack : String(e),
+      );
+      await this.sendText(
+        token,
+        chatId,
         language === "en"
           ? "Unable to check Binance payment right now. Please try again shortly."
           : language === "th"
@@ -7590,10 +11239,19 @@ export class TelegramBotService {
     }
 
     try {
-      const apiKey = decryptSecret(config.binancePersonalApiKeyEncrypted, this.config.encryptionKey)?.trim() ?? "";
-      const secretKey = decryptSecret(config.binancePersonalSecretKeyEncrypted, this.config.encryptionKey)?.trim() ?? "";
+      const apiKey =
+        decryptSecret(
+          config.binancePersonalApiKeyEncrypted,
+          this.config.encryptionKey,
+        )?.trim() ?? "";
+      const secretKey =
+        decryptSecret(
+          config.binancePersonalSecretKeyEncrypted,
+          this.config.encryptionKey,
+        )?.trim() ?? "";
       const configuredBinanceUid = String(config.binanceUid || "").trim();
-      const manualCrypto = (transaction.rawPayloadJson as any)?.manualCrypto || {};
+      const manualCrypto =
+        (transaction.rawPayloadJson as any)?.manualCrypto || {};
       const requiredUsdt = Number(manualCrypto.usdtAmount || 0);
 
       if (!apiKey || !secretKey || !configuredBinanceUid) {
@@ -7604,13 +11262,24 @@ export class TelegramBotService {
         throw new Error("Missing required Binance UID amount.");
       }
 
-      const startTime = Math.max(0, transaction.createdAt.getTime() - 10 * 60 * 1000);
-      const history = await this.binancePayService.queryPersonalPayTransactions(apiKey, secretKey, startTime);
+      const startTime = Math.max(
+        0,
+        transaction.createdAt.getTime() - 10 * 60 * 1000,
+      );
+      const history = await this.binancePayService.queryPersonalPayTransactions(
+        apiKey,
+        secretKey,
+        startTime,
+      );
 
       const match = history
         .filter((item) => {
-          const receiverBinanceId = String(item.receiverInfo?.binanceId || item.payeeId || "").trim();
-          const currency = String(item.currency || "").trim().toUpperCase();
+          const receiverBinanceId = String(
+            item.receiverInfo?.binanceId || item.payeeId || "",
+          ).trim();
+          const currency = String(item.currency || "")
+            .trim()
+            .toUpperCase();
           const amount = Number(item.amount ?? item.orderAmount ?? 0);
 
           return (
@@ -7624,6 +11293,18 @@ export class TelegramBotService {
         .sort((left, right) => left.transactionTime - right.transactionTime)[0];
 
       if (match) {
+        const matchAmount = Number(match.amount ?? match.orderAmount ?? 0);
+        const receipt = await this.paymentService.claimOnchainPaymentReceipt({
+          provider: PaymentProvider.BINANCE,
+          txHash: String(match.transactionId || match.orderId || "").trim(),
+          externalOrderCode,
+          amountUsdt: matchAmount,
+          destination: String(
+            match.receiverInfo?.binanceId || match.payeeId || "",
+          ).trim(),
+          transactionAt: new Date(Number(match.transactionTime)),
+          rawPayload: match,
+        });
         await this.ordersService.markPaymentCompleted(
           externalOrderCode,
           {
@@ -7637,6 +11318,10 @@ export class TelegramBotService {
             transactionTime: match.transactionTime,
           },
           { cryptoTxHash: match.transactionId },
+        );
+        await this.paymentService.markOnchainPaymentReceiptProcessed(
+          receipt.id,
+          match,
         );
 
         const successMessage =
@@ -7658,7 +11343,7 @@ export class TelegramBotService {
         }
 
         return;
-/*
+        /*
 
         if (messageId) {
           // Send verification success inline
@@ -7688,7 +11373,7 @@ export class TelegramBotService {
           actions,
         );
         return;
-/*
+        /*
 
         await this.sendText(
           token,
@@ -7716,13 +11401,12 @@ export class TelegramBotService {
         actions,
       );
       return;
-/*
+      /*
       this.logger.error("Error verifying Binance Personal:", e);
       await this.sendText(token, chatId, "❌ Error checking API. Please contact support.", actions);
 */
     }
   }
-
 
   private async ensureTelegramCustomerSeen(
     shop: Awaited<ReturnType<ShopsService["getSellerShopByShopId"]>>,
@@ -7783,7 +11467,10 @@ export class TelegramBotService {
     return this.render.normalizeLanguage(value);
   }
 
-  private async getCustomerLanguage(shopId: string, telegramUserId: string): Promise<BotLanguage> {
+  private async getCustomerLanguage(
+    shopId: string,
+    telegramUserId: string,
+  ): Promise<BotLanguage> {
     if (!telegramUserId) {
       return "vi";
     }
@@ -7813,11 +11500,25 @@ export class TelegramBotService {
    * NULL/true → attempt bling; false → text icons.
    */
   private async resolveCanBling(shopId: string): Promise<boolean> {
+    const contextual = this.btnCtx.getStore();
+    if (contextual) return contextual.canBling;
+
     const bc = await this.prisma.botConfig.findUnique({
       where: { shopId },
-      select: { cusidEmitOk: true },
+      select: { cusidEmitOk: true, ownerTelegramUserId: true },
     });
-    return bc?.cusidEmitOk !== false;
+    if (bc?.cusidEmitOk === false || !bc?.ownerTelegramUserId) return false;
+
+    const owner = await this.prisma.customer.findUnique({
+      where: {
+        shopId_telegramUserId: {
+          shopId,
+          telegramUserId: bc.ownerTelegramUserId,
+        },
+      },
+      select: { isPremium: true },
+    });
+    return owner?.isPremium === true;
   }
 
   /**
@@ -7827,7 +11528,10 @@ export class TelegramBotService {
    */
   private async markCusidEmitFailed(shopId: string): Promise<void> {
     await this.prisma.botConfig
-      .updateMany({ where: { shopId, cusidEmitOk: { not: false } }, data: { cusidEmitOk: false } })
+      .updateMany({
+        where: { shopId, cusidEmitOk: { not: false } },
+        data: { cusidEmitOk: false },
+      })
       .catch(() => undefined);
   }
 
@@ -7884,21 +11588,36 @@ export class TelegramBotService {
     const text =
       variant === "onboarding"
         ? language === "en"
-          ? ["🌐 Choose your language", "", "Please select a language before entering the shop."].join("\n")
+          ? [
+              "🌐 Choose your language",
+              "",
+              "Please select a language before entering the shop.",
+            ].join("\n")
           : language === "th"
             ? ["🌐 เลือกภาษา", "", "กรุณาเลือกภาษาก่อนเข้าร้านค้า"].join("\n")
-            : ["🌐 Chọn ngôn ngữ", "", "Vui lòng chọn ngôn ngữ trước khi vào shop."].join("\n")
+            : language === "zh"
+              ? ["🌐 选择语言", "", "进入商店前请选择语言。"].join("\n")
+              : [
+                  "🌐 Chọn ngôn ngữ",
+                  "",
+                  "Vui lòng chọn ngôn ngữ trước khi vào shop.",
+                ].join("\n")
         : language === "en"
           ? "🌐 Choose bot language"
           : language === "th"
             ? "🌐 เลือกภาษาของบอท"
-            : "🌐 Chọn ngôn ngữ cho bot";
+            : language === "zh"
+              ? "🌐 选择机器人语言"
+              : "🌐 Chọn ngôn ngữ cho bot";
 
-    const inlineKeyboard: Array<Array<{ text: string; callback_data: string }>> = [
+    const inlineKeyboard: Array<
+      Array<{ text: string; callback_data: string }>
+    > = [
       [
         { text: "🇻🇳 Tiếng Việt", callback_data: "lang:set:vi" },
         { text: "🇬🇧 English", callback_data: "lang:set:en" },
         { text: "🇹🇭 ภาษาไทย", callback_data: "lang:set:th" },
+        { text: "🇨🇳 简体中文", callback_data: "lang:set:zh" },
       ],
     ];
 
@@ -7907,18 +11626,12 @@ export class TelegramBotService {
     }
 
     // For onboarding we also attach the reply keyboard so it appears after language selection
-    const replyMarkup: Record<string, unknown> = variant === "onboarding"
-      ? { inline_keyboard: inlineKeyboard }
-      : { inline_keyboard: inlineKeyboard };
+    const replyMarkup: Record<string, unknown> =
+      variant === "onboarding"
+        ? { inline_keyboard: inlineKeyboard }
+        : { inline_keyboard: inlineKeyboard };
 
-    await this.editOrSend(
-      token,
-      chatId,
-      messageId,
-      text,
-      replyMarkup,
-      actions,
-    );
+    await this.editOrSend(token, chatId, messageId, text, replyMarkup, actions);
   }
 
   private buttonLabel(
@@ -7954,8 +11667,14 @@ export class TelegramBotService {
     const store = this.btnCtx.getStore();
     if (!store) return def;
     const cust = store.cust;
-    const labels = (cust?.buttonLabels && typeof cust.buttonLabels === "object") ? cust.buttonLabels as Record<string, Record<string, string>> : {};
-    const emojis = (cust?.buttonEmojis && typeof cust.buttonEmojis === "object") ? cust.buttonEmojis as Record<string, string> : {};
+    const labels =
+      cust?.buttonLabels && typeof cust.buttonLabels === "object"
+        ? (cust.buttonLabels as Record<string, Record<string, string>>)
+        : {};
+    const emojis =
+      cust?.buttonEmojis && typeof cust.buttonEmojis === "object"
+        ? (cust.buttonEmojis as Record<string, string>)
+        : {};
     const sp = def.split(" ");
     const defEmoji = sp[0] ?? "";
     const defLabel = sp.slice(1).join(" ");
@@ -7978,14 +11697,27 @@ export class TelegramBotService {
     const defLabel = sp.slice(1).join(" ");
     const store = this.btnCtx.getStore();
     const cust = store?.cust ?? {};
-    const labels = (cust?.buttonLabels && typeof cust.buttonLabels === "object") ? cust.buttonLabels as Record<string, Record<string, string>> : {};
-    const emojis = (cust?.buttonEmojis && typeof cust.buttonEmojis === "object") ? cust.buttonEmojis as Record<string, string> : {};
-    const emojiIds = (cust?.buttonEmojiIds && typeof cust.buttonEmojiIds === "object") ? cust.buttonEmojiIds as Record<string, string> : {};
+    const labels =
+      cust?.buttonLabels && typeof cust.buttonLabels === "object"
+        ? (cust.buttonLabels as Record<string, Record<string, string>>)
+        : {};
+    const emojis =
+      cust?.buttonEmojis && typeof cust.buttonEmojis === "object"
+        ? (cust.buttonEmojis as Record<string, string>)
+        : {};
+    const emojiIds =
+      cust?.buttonEmojiIds && typeof cust.buttonEmojiIds === "object"
+        ? (cust.buttonEmojiIds as Record<string, string>)
+        : {};
     const label = labels[key]?.[language] || defLabel;
     const cusid = emojiIds[key]?.trim();
     const useCusid = Boolean(store?.canBling) && Boolean(cusid);
     const emoji = emojis[key]?.trim() || defEmoji;
-    const btn: { text: string; callback_data: string; icon_custom_emoji_id?: string } = {
+    const btn: {
+      text: string;
+      callback_data: string;
+      icon_custom_emoji_id?: string;
+    } = {
       text: useCusid ? label : `${emoji} ${label}`.trim(),
       callback_data: cbData,
     };
@@ -8000,7 +11732,13 @@ export class TelegramBotService {
     language: BotLanguage = "vi",
     supportNote?: string | null,
   ) {
-    return this.render.buildSupportText(shopName, supportTelegram, supportZalo, language, supportNote);
+    return this.render.buildSupportText(
+      shopName,
+      supportTelegram,
+      supportZalo,
+      language,
+      supportNote,
+    );
   }
 
   private buildHomeText(
@@ -8012,7 +11750,15 @@ export class TelegramBotService {
     footerOverride?: string,
     iconOverride?: string,
   ) {
-    return this.render.buildHomeText(shopName, tagline, productCount, availableCount, language, footerOverride, iconOverride);
+    return this.render.buildHomeText(
+      shopName,
+      tagline,
+      productCount,
+      availableCount,
+      language,
+      footerOverride,
+      iconOverride,
+    );
   }
 
   private splitCatalogProducts(products: CatalogItem[]) {
@@ -8044,7 +11790,9 @@ export class TelegramBotService {
 
     return {
       featuredGroups,
-      otherProducts: sortedProducts.filter((product) => !matchedIds.has(product.id)),
+      otherProducts: sortedProducts.filter(
+        (product) => !matchedIds.has(product.id),
+      ),
     };
   }
 
@@ -8057,7 +11805,11 @@ export class TelegramBotService {
     language: BotLanguage = "vi",
   ) {
     const unit =
-      language === "en" ? "products" : language === "th" ? "รายการ" : "sản phẩm";
+      language === "en"
+        ? "products"
+        : language === "th"
+          ? "รายการ"
+          : "sản phẩm";
     return `${group.emoji} ${group.label} — ${group.items.length} ${unit}`;
   }
 
@@ -8068,30 +11820,67 @@ export class TelegramBotService {
     hasCustomIcon = false,
   ) {
     const effectiveUsdPrice =
-      language === "en" && product.salePriceUsd != null && product.salePriceUsd > 0
+      language === "en" &&
+      product.salePriceUsd != null &&
+      product.salePriceUsd > 0
         ? product.salePriceUsd
         : null;
-    const priceLabel = effectiveUsdPrice != null
-      ? new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(effectiveUsdPrice)
-      : this.formatCompactBotMoney(product.salePrice, language, usdtVndRate);
-    const stockLabel = product.available === null ? "∞" : String(Math.max(0, product.available));
-    const suffix = ` | ${priceLabel} | 📦 ${stockLabel}`;
+    const priceLabel =
+      effectiveUsdPrice != null
+        ? new Intl.NumberFormat("en-US", {
+            style: "currency",
+            currency: "USD",
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2,
+          }).format(effectiveUsdPrice)
+        : this.formatCatalogButtonMoney(
+            product.salePrice,
+            language,
+            usdtVndRate,
+          );
+    const isPreorderOnly =
+      product.preorderEnabled &&
+      product.available !== null &&
+      product.available <= 0;
+    const stockLabel = isPreorderOnly
+      ? language === "en"
+        ? `Pre-order +${product.preorderFeePercent}%`
+        : language === "th"
+          ? `สั่งจอง +${product.preorderFeePercent}%`
+          : `Đặt trước +${product.preorderFeePercent}%`
+      : product.available === null
+        ? "∞"
+        : String(Math.max(0, product.available));
+    const suffix = ` | ${priceLabel} | ${isPreorderOnly ? "🕒" : "📦"} ${stockLabel}`;
     // When the button already carries an icon_custom_emoji_id (Bot API 9.4+),
     // Telegram renders that premium emoji as the button icon, so prepending a text
     // emoji too would show two icons. Only prepend a text-emoji fallback when the
     // button has no custom icon.
     const emoji = hasCustomIcon
       ? ""
-      : (product.productIcon?.trim() || this.resolveProductEmoji(product.displayName, product.sourceName));
-    const normalizedName = [emoji, this.compactProductName(this.localizeProductName(product.displayName, language))].filter(Boolean).join(" ");
+      : product.productIcon?.trim() ||
+        this.resolveProductEmoji(product.displayName, product.sourceName);
+    const normalizedName = [
+      emoji,
+      this.compactProductName(
+        this.localizeProductName(product.displayName, language),
+      ),
+    ]
+      .filter(Boolean)
+      .join(" ");
     const safeNameLength = Math.max(16, 58 - suffix.length);
 
-    return this.sanitizeButtonText(`${this.truncateLabel(normalizedName, safeNameLength)}${suffix}`);
+    return this.sanitizeButtonText(
+      `${this.truncateLabel(normalizedName, safeNameLength)}${suffix}`,
+    );
   }
 
   private sanitizeButtonText(value: string): string {
     return String(value || "")
-      .replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, "") // lone surrogates
+      .replace(
+        /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g,
+        "",
+      ) // lone surrogates
       .replace(/ /g, "") // null bytes
       .replace(/[\x01-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "") // control chars except \t \n \r
       .trim();
@@ -8101,7 +11890,10 @@ export class TelegramBotService {
     return this.render.resolveProductEmoji(displayName, sourceName);
   }
 
-  private resolveCustomEmojiId(displayName: string, sourceName?: string | null): { char: string; id: string } | null {
+  private resolveCustomEmojiId(
+    displayName: string,
+    sourceName?: string | null,
+  ): { char: string; id: string } | null {
     return this.render.resolveCustomEmojiId(displayName, sourceName);
   }
 
@@ -8123,7 +11915,9 @@ export class TelegramBotService {
 
   private applyProductNameReplacements(
     value: string,
-    replacements: Array<[RegExp, string | ((match: string, ...groups: string[]) => string)]>,
+    replacements: Array<
+      [RegExp, string | ((match: string, ...groups: string[]) => string)]
+    >,
   ) {
     return this.render.applyProductNameReplacements(value, replacements);
   }
@@ -8132,7 +11926,10 @@ export class TelegramBotService {
     return this.render.normalizeTranslationSource(value);
   }
 
-  private formatEnglishCount(rawAmount: string, unit: "day" | "month" | "year") {
+  private formatEnglishCount(
+    rawAmount: string,
+    unit: "day" | "month" | "year",
+  ) {
     return this.render.formatEnglishCount(rawAmount, unit);
   }
 
@@ -8145,9 +11942,7 @@ export class TelegramBotService {
     return this.resolveUsdtVndRate(paymentConfig?.usdtVndRateOverride);
   }
 
-  private resolveUsdtVndRate(
-    value?: Prisma.Decimal | number | string | null,
-  ) {
+  private resolveUsdtVndRate(value?: Prisma.Decimal | number | string | null) {
     const overrideRate = Number(value ?? NaN);
 
     if (Number.isFinite(overrideRate) && overrideRate > 0) {
@@ -8155,7 +11950,9 @@ export class TelegramBotService {
     }
 
     const fallbackRate = Number(this.config.usdtVndRate || 26000);
-    return Number.isFinite(fallbackRate) && fallbackRate > 0 ? fallbackRate : 26000;
+    return Number.isFinite(fallbackRate) && fallbackRate > 0
+      ? fallbackRate
+      : 26000;
   }
 
   private toUsdtAmount(
@@ -8192,7 +11989,11 @@ export class TelegramBotService {
     language: BotLanguage = "vi",
     usdtVndRate?: Prisma.Decimal | number | string | null,
   ) {
-    if ((language === "en" || language === "th") && salePriceUsd != null && salePriceUsd > 0) {
+    if (
+      (language === "en" || language === "th") &&
+      salePriceUsd != null &&
+      salePriceUsd > 0
+    ) {
       return new Intl.NumberFormat("en-US", {
         style: "currency",
         currency: "USD",
@@ -8203,14 +12004,14 @@ export class TelegramBotService {
     return this.formatBotMoney(vndAmount, language, usdtVndRate);
   }
 
-  private formatCompactBotMoney(
+  private formatCatalogButtonMoney(
     value: number,
     language: BotLanguage = "vi",
     usdtVndRate?: Prisma.Decimal | number | string | null,
   ) {
     return language === "en" || language === "th"
       ? this.formatBotMoney(value, language, usdtVndRate)
-      : this.formatCompactMoney(value);
+      : this.render.formatCatalogButtonMoney(value);
   }
 
   private localizeBotErrorMessage(
@@ -8218,41 +12019,80 @@ export class TelegramBotService {
     language: BotLanguage,
     fallbackMessage?: string,
   ) {
-    return this.render.localizeBotErrorMessage(error, language, fallbackMessage);
+    return this.render.localizeBotErrorMessage(
+      error,
+      language,
+      fallbackMessage,
+    );
   }
 
   private isLikelyVietnameseText(value: string) {
     return this.render.isLikelyVietnameseText(value);
   }
 
-  private formatCompactMoney(value: number) {
-    return this.render.formatCompactMoney(value);
-  }
-
-  private async loadCustData(shopId: string): Promise<{ custEmojis: Record<string, string>; custLabels: Record<string, Record<string, string>>; custEmojiIds: Record<string, string> }> {
+  private async loadCustData(
+    shopId: string,
+  ): Promise<{
+    custEmojis: Record<string, string>;
+    custLabels: Record<string, Record<string, string>>;
+    custEmojiIds: Record<string, string>;
+  }> {
     const shopData = await this.shopsService.getSellerShopByShopId(shopId);
-    const customization = await this.resolveEffectiveCustomization(shopId, shopData.botConfig?.customizationJson as Record<string, unknown> | null ?? null);
+    const customization = await this.resolveEffectiveCustomization(
+      shopId,
+      (shopData.botConfig?.customizationJson as Record<
+        string,
+        unknown
+      > | null) ?? null,
+    );
     return {
-      custEmojis: (customization?.buttonEmojis && typeof customization.buttonEmojis === "object") ? customization.buttonEmojis as Record<string, string> : {},
-      custLabels: (customization?.buttonLabels && typeof customization.buttonLabels === "object") ? customization.buttonLabels as Record<string, Record<string, string>> : {},
-      custEmojiIds: (customization?.buttonEmojiIds && typeof customization.buttonEmojiIds === "object") ? customization.buttonEmojiIds as Record<string, string> : {},
+      custEmojis:
+        customization?.buttonEmojis &&
+        typeof customization.buttonEmojis === "object"
+          ? (customization.buttonEmojis as Record<string, string>)
+          : {},
+      custLabels:
+        customization?.buttonLabels &&
+        typeof customization.buttonLabels === "object"
+          ? (customization.buttonLabels as Record<
+              string,
+              Record<string, string>
+            >)
+          : {},
+      custEmojiIds:
+        customization?.buttonEmojiIds &&
+        typeof customization.buttonEmojiIds === "object"
+          ? (customization.buttonEmojiIds as Record<string, string>)
+          : {},
     };
   }
 
   private buildCatalogNavButtons(
-    custData: { custEmojis: Record<string, string>; custLabels: Record<string, Record<string, string>>; custEmojiIds: Record<string, string> },
+    custData: {
+      custEmojis: Record<string, string>;
+      custLabels: Record<string, Record<string, string>>;
+      custEmojiIds: Record<string, string>;
+    },
     language: BotLanguage,
     isPremium = false,
   ) {
-    const navBtn = (key: string, fallback: Parameters<typeof this.buttonLabel>[0], cbData: string) => {
+    const navBtn = (
+      key: string,
+      fallback: Parameters<typeof this.buttonLabel>[0],
+      cbData: string,
+    ) => {
       const full = this.buttonLabel(fallback, language);
       const defEmoji = full.split(" ")[0];
       const defLabel = full.split(" ").slice(1).join(" ");
       const useCustom = isPremium && Boolean(custData.custEmojiIds[key]);
       const emoji = custData.custEmojis[key]?.trim() || defEmoji;
       const label = custData.custLabels[key]?.[language] || defLabel;
-      const btn: Record<string, string> = { text: useCustom ? label : `${emoji} ${label}`, callback_data: cbData };
-      if (useCustom && custData.custEmojiIds[key]) btn.icon_custom_emoji_id = custData.custEmojiIds[key];
+      const btn: Record<string, string> = {
+        text: useCustom ? label : `${emoji} ${label}`,
+        callback_data: cbData,
+      };
+      if (useCustom && custData.custEmojiIds[key])
+        btn.icon_custom_emoji_id = custData.custEmojiIds[key];
       return btn;
     };
     return [
@@ -8291,37 +12131,73 @@ export class TelegramBotService {
   }
 
   /** Prev / page-indicator / Next row for a paginated catalog (callback catalog:page:N). Empty if 1 page. */
-  private buildCatalogPageNav(page: number, totalPages: number, language: BotLanguage): Record<string, string>[][] {
+  private buildCatalogPageNav(
+    page: number,
+    totalPages: number,
+    language: BotLanguage,
+  ): Record<string, string>[][] {
     if (totalPages <= 1) return [];
     const row: Record<string, string>[] = [];
     if (page > 0) {
-      row.push({ text: language === "en" ? "◀️ Prev" : language === "th" ? "◀️ ก่อนหน้า" : "◀️ Trước", callback_data: `catalog:page:${page - 1}` });
+      row.push({
+        text:
+          language === "en"
+            ? "◀️ Prev"
+            : language === "th"
+              ? "◀️ ก่อนหน้า"
+              : "◀️ Trước",
+        callback_data: `catalog:page:${page - 1}`,
+      });
     }
-    row.push({ text: `${page + 1}/${totalPages}`, callback_data: `catalog:page:${page}` });
+    row.push({
+      text: `${page + 1}/${totalPages}`,
+      callback_data: `catalog:page:${page}`,
+    });
     if (page < totalPages - 1) {
-      row.push({ text: language === "en" ? "Next ▶️" : language === "th" ? "ถัดไป ▶️" : "Sau ▶️", callback_data: `catalog:page:${page + 1}` });
+      row.push({
+        text:
+          language === "en"
+            ? "Next ▶️"
+            : language === "th"
+              ? "ถัดไป ▶️"
+              : "Sau ▶️",
+        callback_data: `catalog:page:${page + 1}`,
+      });
     }
     return [row];
   }
 
   private buildRefreshBtn(
-    custData: { custEmojis: Record<string, string>; custLabels: Record<string, Record<string, string>>; custEmojiIds: Record<string, string> },
+    custData: {
+      custEmojis: Record<string, string>;
+      custLabels: Record<string, Record<string, string>>;
+      custEmojiIds: Record<string, string>;
+    },
     language: BotLanguage,
     cbData: string,
     isPremium = false,
   ) {
     const defEmoji = "🔄";
-    const defLabel = language === "en" ? "Refresh" : language === "th" ? "รีเฟรช" : "Làm mới";
+    const defLabel =
+      language === "en" ? "Refresh" : language === "th" ? "รีเฟรช" : "Làm mới";
     const useCustom = isPremium && Boolean(custData.custEmojiIds["refresh"]);
     const emoji = custData.custEmojis["refresh"]?.trim() || defEmoji;
     const label = custData.custLabels["refresh"]?.[language] || defLabel;
-    const btn: Record<string, string> = { text: useCustom ? label : `${emoji} ${label}`, callback_data: cbData };
-    if (useCustom && custData.custEmojiIds["refresh"]) btn.icon_custom_emoji_id = custData.custEmojiIds["refresh"];
+    const btn: Record<string, string> = {
+      text: useCustom ? label : `${emoji} ${label}`,
+      callback_data: cbData,
+    };
+    if (useCustom && custData.custEmojiIds["refresh"])
+      btn.icon_custom_emoji_id = custData.custEmojiIds["refresh"];
     return btn;
   }
 
   private buildNavTextBtn(
-    custData: { custEmojis: Record<string, string>; custLabels: Record<string, Record<string, string>>; custEmojiIds: Record<string, string> },
+    custData: {
+      custEmojis: Record<string, string>;
+      custLabels: Record<string, Record<string, string>>;
+      custEmojiIds: Record<string, string>;
+    },
     key: string,
     fallback: Parameters<typeof this.buttonLabel>[0],
     cbData: string,
@@ -8334,8 +12210,12 @@ export class TelegramBotService {
     const useCustom = isPremium && Boolean(custData.custEmojiIds[key]);
     const emoji = custData.custEmojis[key]?.trim() || defEmoji;
     const label = custData.custLabels[key]?.[language] || defLabel;
-    const btn: Record<string, string> = { text: useCustom ? label : `${emoji} ${label}`, callback_data: cbData };
-    if (useCustom && custData.custEmojiIds[key]) btn.icon_custom_emoji_id = custData.custEmojiIds[key];
+    const btn: Record<string, string> = {
+      text: useCustom ? label : `${emoji} ${label}`,
+      callback_data: cbData,
+    };
+    if (useCustom && custData.custEmojiIds[key])
+      btn.icon_custom_emoji_id = custData.custEmojiIds[key];
     return btn;
   }
 
@@ -8345,7 +12225,12 @@ export class TelegramBotService {
    * non-premium viewer never gets a blank button. For the payment/quantity/notification gap sites.
    */
   private buildViewerBtn(
-    args: { textEmoji: string; label: string; cusid?: string | null; isPremium: boolean },
+    args: {
+      textEmoji: string;
+      label: string;
+      cusid?: string | null;
+      isPremium: boolean;
+    },
     extra: Record<string, string>,
   ): Record<string, string> {
     const useCustom = args.isPremium && Boolean(args.cusid);
@@ -8382,7 +12267,15 @@ export class TelegramBotService {
     actions: unknown[],
     parseMode?: "HTML" | "Markdown",
   ) {
-    return this.tg.editOrSend(token, chatId, messageId, text, replyMarkup, actions, parseMode);
+    return this.tg.editOrSend(
+      token,
+      chatId,
+      messageId,
+      text,
+      replyMarkup,
+      actions,
+      parseMode,
+    );
   }
 
   private async sendText(
@@ -8392,16 +12285,33 @@ export class TelegramBotService {
     actions: unknown[],
     replyMarkup?: Record<string, unknown>,
     parseMode?: "HTML" | "Markdown",
-    entities?: Array<{ type: string; offset: number; length: number; custom_emoji_id?: string }>,
+    entities?: Array<{
+      type: string;
+      offset: number;
+      length: number;
+      custom_emoji_id?: string;
+    }>,
   ) {
-    return this.tg.sendText(token, chatId, text, actions, replyMarkup, parseMode, entities);
+    return this.tg.sendText(
+      token,
+      chatId,
+      text,
+      actions,
+      replyMarkup,
+      parseMode,
+      entities,
+    );
   }
 
-  private hasInlineEmojiIds(markup: Record<string, unknown> | undefined): boolean {
+  private hasInlineEmojiIds(
+    markup: Record<string, unknown> | undefined,
+  ): boolean {
     return this.tg.hasInlineEmojiIds(markup);
   }
 
-  private stripInlineEmojiIds(markup: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
+  private stripInlineEmojiIds(
+    markup: Record<string, unknown> | undefined,
+  ): Record<string, unknown> | undefined {
     return this.tg.stripInlineEmojiIds(markup);
   }
 
@@ -8414,7 +12324,15 @@ export class TelegramBotService {
     replyMarkup?: Record<string, unknown>,
     parseMode?: "HTML" | "Markdown",
   ): Promise<number | null> {
-    return this.tg.sendPhoto(token, chatId, photo, caption, actions, replyMarkup, parseMode);
+    return this.tg.sendPhoto(
+      token,
+      chatId,
+      photo,
+      caption,
+      actions,
+      replyMarkup,
+      parseMode,
+    );
   }
 
   private async editText(
@@ -8426,11 +12344,48 @@ export class TelegramBotService {
     actions: unknown[],
     parseMode?: "HTML" | "Markdown",
     onCusidStripped?: () => void | Promise<void>,
+    resendOnFailure = true,
   ) {
-    return this.tg.editText(token, chatId, messageId, text, replyMarkup, actions, parseMode, onCusidStripped);
+    return this.tg.editText(
+      token,
+      chatId,
+      messageId,
+      text,
+      replyMarkup,
+      actions,
+      parseMode,
+      onCusidStripped,
+      resendOnFailure,
+    );
   }
 
-  private async answerCallback(token: string, callbackQueryId: string, actions: unknown[]) {
+  private async editCaption(
+    token: string,
+    chatId: string | number,
+    messageId: number,
+    caption: string,
+    replyMarkup: Record<string, unknown>,
+    actions: unknown[],
+    parseMode?: "HTML" | "Markdown",
+    onCusidStripped?: () => void | Promise<void>,
+  ) {
+    return this.tg.editCaption(
+      token,
+      chatId,
+      messageId,
+      caption,
+      replyMarkup,
+      actions,
+      parseMode,
+      onCusidStripped,
+    );
+  }
+
+  private async answerCallback(
+    token: string,
+    callbackQueryId: string,
+    actions: unknown[],
+  ) {
     return this.tg.answerCallback(token, callbackQueryId, actions);
   }
 }

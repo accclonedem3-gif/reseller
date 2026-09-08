@@ -15,6 +15,7 @@ import {
 
 import { PrismaService } from "../db/prisma.service";
 import { TelegramBotService } from "../lib/telegram-bot.service.v2";
+import { ShopsService } from "../shops/shops.service";
 import type { AuthenticatedUser } from "../types";
 
 import type {
@@ -32,6 +33,8 @@ export class ProductsStockService {
     private readonly prisma: PrismaService,
     @Inject(TelegramBotService)
     private readonly telegramBotService: TelegramBotService,
+    @Inject(ShopsService)
+    private readonly shopsService: ShopsService,
   ) {}
 
   // ============================================================
@@ -209,6 +212,9 @@ export class ProductsStockService {
         },
       ])
       .catch(() => undefined);
+    this.shopsService
+      .syncDownstreamCatalogTree(product.shopId)
+      .catch(() => undefined);
 
     return {
       batchId: result.batch.id,
@@ -360,8 +366,9 @@ export class ProductsStockService {
         throw new BadRequestException("mode không hợp lệ.");
       }
 
+      const pickedIdSet = new Set(pickedIds);
       const extracted = availableEntries
-        .filter((e) => pickedIds.includes(e.id))
+        .filter((e) => pickedIdSet.has(e.id))
         .map((e) => e.text);
 
       if (!dryRun) {
@@ -424,16 +431,31 @@ export class ProductsStockService {
     query: StockEntriesQueryDto,
   ) {
     const product = await this.loadOwnedProduct(user, productId);
-    const limit = Math.min(Math.max(Number(query.limit) || 500, 1), 2000);
+    const limit = Math.min(Math.max(Number(query.limit) || 500, 1), 100000);
     const offset = Math.max(Number(query.offset) || 0, 0);
-    const searchRaw = typeof query.search === "string" ? query.search.trim() : "";
-    const search = searchRaw.length > 0 ? searchRaw : null;
+    const searchTerms =
+      typeof query.search === "string"
+        ? Array.from(
+            new Set(
+              query.search
+                .split(/\r?\n/)
+                .map((item) => item.trim())
+                .filter(Boolean),
+            ),
+          ).slice(0, 500)
+        : [];
     const status = (query.status as StockEntryStatus | undefined) ?? null;
 
     const where: Prisma.StockEntryWhereInput = { sourceProductId: product.id };
     if (status) where.status = status;
     if (query.batchId) where.batchId = query.batchId;
-    if (search) where.text = { contains: search, mode: "insensitive" };
+    if (searchTerms.length === 1) {
+      where.text = { contains: searchTerms[0], mode: "insensitive" };
+    } else if (searchTerms.length > 1) {
+      where.OR = searchTerms.map((search) => ({
+        text: { contains: search, mode: "insensitive" },
+      }));
+    }
 
     const [items, total, available, sold, extractedCount] = await Promise.all([
       this.prisma.stockEntry.findMany({

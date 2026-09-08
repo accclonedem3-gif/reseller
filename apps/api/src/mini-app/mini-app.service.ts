@@ -11,7 +11,15 @@ export interface BotCustomization {
   productNote?: { vi?: string; en?: string; th?: string };
   catalogText?: { vi?: string; en?: string; th?: string };
   homeFooter?: { vi?: string; en?: string; th?: string };
+  walletNote?: { vi?: string; en?: string; th?: string };
   homeIcon?: string;
+  restockTemplate?: {
+    header?: { icon?: string; text?: string };
+    fieldIcons?: { product?: string; added?: string; stock?: string; price?: string };
+    labels?: { added?: string; stock?: string; price?: string };
+    footer?: string;
+    customEmojiIds?: { header?: string; product?: string; added?: string; stock?: string; price?: string };
+  };
   messageEmojiIds?: { welcomeMessage?: string; productNote?: string; footerBill?: string };
   labelEmojiIds?: { price?: string; stock?: string; sold?: string; format?: string; description?: string };
   outOfStockEmojiId?: string;

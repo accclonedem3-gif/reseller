@@ -1,4 +1,10 @@
-import { BadRequestException, Inject, Injectable, NotFoundException } from "@nestjs/common";
+import {
+  BadRequestException,
+  Inject,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from "@nestjs/common";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { extname, join } from "node:path";
@@ -6,12 +12,16 @@ import { Prisma, SellerTier } from "@prisma/client";
 
 import { AppConfigService } from "../config/app-config.service";
 import { PrismaService } from "../db/prisma.service";
-import { toDecimal } from "../lib/utils";
+import { decimalToNumber, toDecimal } from "../lib/utils";
 import type { AuthenticatedUser } from "../types";
 import { ShopsService } from "../shops/shops.service";
 import { QueueService } from "../lib/queue.service";
 
-import type { CreateManualProductDto, UpdateProductDto } from "./products.dto";
+import type {
+  BulkUpdateSourceProductsDto,
+  CreateManualProductDto,
+  UpdateProductDto,
+} from "./products.dto";
 
 type SourceProductBusinessFields = {
   internalSourceEnabled?: boolean;
@@ -29,6 +39,8 @@ type SourceProductBusinessFields = {
 
 @Injectable()
 export class ProductsService {
+  private readonly logger = new Logger(ProductsService.name);
+
   constructor(
     @Inject(PrismaService)
     private readonly prisma: PrismaService,
@@ -42,7 +54,75 @@ export class ProductsService {
 
   async listProducts(user: AuthenticatedUser) {
     const shop = await this.shopsService.getSellerShop(user.id);
-    return this.shopsService.getCatalogViewForShop(shop.id);
+    return this.shopsService.getCatalogViewForShop(
+      shop.id,
+      true,
+      false,
+      false,
+      true,
+    );
+  }
+
+  async bulkUpdateSourceProductStatus(
+    user: AuthenticatedUser,
+    dto: BulkUpdateSourceProductsDto,
+  ) {
+    const shop = await this.shopsService.getSellerShop(user.id);
+    const productIds = Array.from(new Set(dto.productIds));
+    const products = await this.prisma.sourceProduct.findMany({
+      where: {
+        id: { in: productIds },
+        shopId: shop.id,
+        providerSourceId: { not: null },
+        providerName: { not: "disconnected_archive" },
+        ...(dto.action === "PUBLISH" ? { archivedAt: null } : {}),
+      },
+      select: {
+        id: true,
+        sourceName: true,
+        sourcePrice: true,
+      },
+    });
+
+    const publish = dto.action === "PUBLISH";
+    await this.prisma.$transaction(async (tx) => {
+      for (const product of products) {
+        await tx.sellerProductOverride.upsert({
+          where: {
+            sellerId_sourceProductId: {
+              sellerId: shop.sellerId,
+              sourceProductId: product.id,
+            },
+          },
+          update: { enabled: publish, hidden: !publish },
+          create: {
+            sellerId: shop.sellerId,
+            shopId: shop.id,
+            sourceProductId: product.id,
+            displayName: product.sourceName,
+            salePrice: product.sourcePrice,
+            enabled: publish,
+            hidden: !publish,
+          },
+        });
+      }
+    });
+
+    if (
+      products.length > 0 &&
+      (user.sellerTier === SellerTier.PRO ||
+        user.sellerTier === SellerTier.ULTRA)
+    ) {
+      this.triggerDownstreamSync(shop.id).catch(() => undefined);
+    }
+
+    return {
+      ok: true,
+      action: dto.action,
+      requested: productIds.length,
+      updated: products.length,
+      skipped: productIds.length - products.length,
+    };
   }
 
   async getProduct(user: AuthenticatedUser, id: string) {
@@ -66,7 +146,13 @@ export class ProductsService {
     }
 
     const [view] = (
-      await this.shopsService.getCatalogViewForShop(shop.id)
+      await this.shopsService.getCatalogViewForShop(
+        shop.id,
+        true,
+        false,
+        false,
+        true,
+      )
     ).filter((item) => item.id === product.id);
 
     return view;
@@ -123,14 +209,17 @@ export class ProductsService {
   /**
    * Lookup admin template defaults by family — used to fill missing icon/emoji/imageUrl.
    */
-  private async getAdminTemplateDefaultsByFamily(family: string | null | undefined) {
+  private async getAdminTemplateDefaultsByFamily(
+    family: string | null | undefined,
+  ) {
     if (!family) return null;
     try {
       const tpl = await this.prisma.shop.findFirst({
         where: { isTemplate: true },
         select: { botConfig: { select: { customizationJson: true } } },
       });
-      const cust = (tpl?.botConfig?.customizationJson as Record<string, any>) ?? null;
+      const cust =
+        (tpl?.botConfig?.customizationJson as Record<string, any>) ?? null;
       if (!cust) return null;
       const map = (cust.productDefaultsByFamily ?? {}) as Record<string, any>;
       return map[family] ?? null;
@@ -139,7 +228,10 @@ export class ProductsService {
     }
   }
 
-  async createManualProduct(user: AuthenticatedUser, dto: CreateManualProductDto) {
+  async createManualProduct(
+    user: AuthenticatedUser,
+    dto: CreateManualProductDto,
+  ) {
     const shop = await this.shopsService.getSellerShop(user.id);
     const displayName = dto.displayName.trim();
 
@@ -147,9 +239,29 @@ export class ProductsService {
       throw new BadRequestException("Display name is required.");
     }
 
+    const initialSourcePrice = Number(dto.sourcePrice ?? 0);
+    if (Number(dto.salePrice) < initialSourcePrice) {
+      throw new BadRequestException(
+        "Sale price cannot be lower than the product source cost.",
+      );
+    }
+    if (
+      dto.internalSourceEnabled !== false &&
+      dto.internalSourcePrice != null &&
+      Number(dto.internalSourcePrice) < initialSourcePrice
+    ) {
+      throw new BadRequestException(
+        "Wholesale price cannot be lower than the product source cost.",
+      );
+    }
+
     const isShared = dto.isShared === true && !!dto.sharedContent?.trim();
-    const normalizedDeliveryText = isShared ? null : this.normalizeManualDeliveryText(dto.deliveryText);
-    const deliveryEntries = isShared ? [] : this.parseManualDeliveryEntries(normalizedDeliveryText);
+    const normalizedDeliveryText = isShared
+      ? null
+      : this.normalizeManualDeliveryText(dto.deliveryText);
+    const deliveryEntries = isShared
+      ? []
+      : this.parseManualDeliveryEntries(normalizedDeliveryText);
     const available = isShared
       ? (dto.available ?? 0)
       : deliveryEntries.length > 0
@@ -159,10 +271,22 @@ export class ProductsService {
           : null;
     const classificationFields = this.buildClassificationFields(dto);
     if (classificationFields.sourceDeliveryMode === undefined) {
-      classificationFields.sourceDeliveryMode = this.deriveSourceDeliveryMode(isShared, deliveryEntries.length);
+      classificationFields.sourceDeliveryMode = this.deriveSourceDeliveryMode(
+        isShared,
+        deliveryEntries.length,
+      );
+    }
+    if (classificationFields.sourceDeliveryMode === "ADD_MAIL") {
+      if (isShared || deliveryEntries.length > 0) {
+        throw new BadRequestException(
+          "ADD_MAIL products must be handled manually without auto-delivery content.",
+        );
+      }
+      classificationFields.accountType = "ADD_FAMILY";
+      classificationFields.accountTypeOther = null;
     }
     const wholesaleFields =
-      user.sellerTier === SellerTier.ULTRA
+      user.sellerTier === SellerTier.PRO || user.sellerTier === SellerTier.ULTRA
         ? {
             ...this.buildWholesaleFields(dto),
             internalSourceEnabled: dto.internalSourceEnabled ?? true,
@@ -171,13 +295,21 @@ export class ProductsService {
     const businessFields = { ...classificationFields, ...wholesaleFields };
 
     // Inherit admin template defaults by family if seller didn't provide
-    const adminDefaults = await this.getAdminTemplateDefaultsByFamily(dto.productFamily);
-    const inheritedIcon = dto.productIcon?.trim() || adminDefaults?.icon || null;
-    const inheritedEmojiId = dto.iconCustomEmojiId?.trim() || adminDefaults?.customEmojiId || null;
+    const adminDefaults = await this.getAdminTemplateDefaultsByFamily(
+      dto.productFamily,
+    );
+    const inheritedIcon =
+      dto.productIcon?.trim() || adminDefaults?.icon || null;
+    const inheritedEmojiId =
+      dto.iconCustomEmojiId?.trim() || adminDefaults?.customEmojiId || null;
     const inheritedImageUrl =
-      dto.imageUrl?.trim()
-      || ((adminDefaults?.media?.type === "photo" || adminDefaults?.media?.type === "video") ? (adminDefaults.media.url ?? null) : null);
-    const inheritedDescription = dto.sourceDescription?.trim() || adminDefaults?.description || null;
+      dto.imageUrl?.trim() ||
+      (adminDefaults?.media?.type === "photo" ||
+      adminDefaults?.media?.type === "video"
+        ? (adminDefaults.media.url ?? null)
+        : null);
+    const inheritedDescription =
+      dto.sourceDescription?.trim() || adminDefaults?.description || null;
 
     const created = await this.prisma.$transaction(async (tx) => {
       const product = await tx.sourceProduct.create({
@@ -191,6 +323,10 @@ export class ProductsService {
           sourcePrice: toDecimal(dto.sourcePrice ?? 0),
           available,
           totalCount: available ?? 0,
+          preorderEnabled:
+            classificationFields.sourceDeliveryMode !== "ADD_MAIL" &&
+            dto.preorderEnabled === true,
+          preorderFeePercent: toDecimal(dto.preorderFeePercent ?? 0),
           imageUrl: inheritedImageUrl,
           productIcon: inheritedIcon,
           iconCustomEmojiId: inheritedEmojiId,
@@ -205,6 +341,10 @@ export class ProductsService {
             hiddenDeliveredKeys: [],
             sourceDescription: dto.sourceDescription?.trim() || null,
             usageInstructions: dto.usageInstructions?.trim() || null,
+            requiresCustomerEmail:
+              classificationFields.sourceDeliveryMode === "ADD_MAIL",
+            requires_customer_email:
+              classificationFields.sourceDeliveryMode === "ADD_MAIL",
           } as Prisma.InputJsonValue,
         },
       });
@@ -246,14 +386,20 @@ export class ProductsService {
       return product;
     });
 
-    if (user.sellerTier === SellerTier.ULTRA) {
+    if (
+      user.sellerTier === SellerTier.PRO ||
+      user.sellerTier === SellerTier.ULTRA
+    ) {
       this.triggerDownstreamSync(shop.id).catch(() => {});
     }
 
     return this.getProduct(user, created.id);
   }
 
-  async reorderProducts(user: AuthenticatedUser, items: { id: string; position: number }[]) {
+  async reorderProducts(
+    user: AuthenticatedUser,
+    items: { id: string; position: number }[],
+  ) {
     if (!items.length) return { ok: true, updated: 0 };
     const shop = await this.shopsService.getSellerShop(user.id);
     const productIds = items.map((i) => i.id);
@@ -287,12 +433,23 @@ export class ProductsService {
     return { ok: true, updated };
   }
 
-  async updateProduct(user: AuthenticatedUser, id: string, dto: UpdateProductDto) {
+  async updateProduct(
+    user: AuthenticatedUser,
+    id: string,
+    dto: UpdateProductDto,
+  ) {
     const shop = await this.shopsService.getSellerShop(user.id);
     const product = await this.prisma.sourceProduct.findFirst({
       where: {
         id,
         shopId: shop.id,
+      },
+      include: {
+        overrides: {
+          where: { sellerId: shop.sellerId },
+          select: { salePrice: true },
+          take: 1,
+        },
       },
     });
 
@@ -300,15 +457,68 @@ export class ProductsService {
       throw new NotFoundException("Product not found.");
     }
 
+    if (
+      dto.sourcePrice !== undefined ||
+      dto.salePrice !== undefined ||
+      dto.internalSourcePrice !== undefined ||
+      dto.internalSourceEnabled !== undefined
+    ) {
+      const effectiveSourcePrice =
+        dto.sourcePrice !== undefined
+          ? Number(dto.sourcePrice)
+          : decimalToNumber(product.sourcePrice);
+      const effectiveSalePrice =
+        dto.salePrice !== undefined
+          ? Number(dto.salePrice)
+          : product.overrides[0]?.salePrice != null
+            ? decimalToNumber(product.overrides[0].salePrice)
+            : effectiveSourcePrice;
+      const effectiveWholesalePrice =
+        dto.internalSourcePrice !== undefined
+          ? Number(dto.internalSourcePrice)
+          : product.internalSourcePrice != null
+            ? decimalToNumber(product.internalSourcePrice)
+            : effectiveSalePrice;
+      const effectiveInternalSourceEnabled =
+        dto.internalSourceEnabled ?? product.internalSourceEnabled;
+      if (effectiveSalePrice < effectiveSourcePrice) {
+        throw new BadRequestException(
+          "Sale price cannot be lower than the product source cost.",
+        );
+      }
+      if (
+        effectiveInternalSourceEnabled &&
+        effectiveWholesalePrice < effectiveSourcePrice
+      ) {
+        throw new BadRequestException(
+          "Wholesale price cannot be lower than the product source cost.",
+        );
+      }
+    }
+
     const isManual = this.isManualProduct(product);
     const classificationFields = this.buildClassificationFields(dto);
     const wholesaleFields =
-      user.sellerTier === SellerTier.ULTRA ? this.buildWholesaleFields(dto) : {};
+      user.sellerTier === SellerTier.PRO || user.sellerTier === SellerTier.ULTRA
+        ? this.buildWholesaleFields(dto)
+        : {};
     const businessFields = { ...classificationFields, ...wholesaleFields };
+    const resolvedDeliveryMode =
+      dto.sourceDeliveryMode ?? product.sourceDeliveryMode;
+    if (resolvedDeliveryMode === "ADD_MAIL") {
+      businessFields.accountType = "ADD_FAMILY";
+      businessFields.accountTypeOther = null;
+    }
 
-    if (dto.internalSourcePrice !== undefined || dto.internalSourceEnabled !== undefined) {
+    if (
+      dto.internalSourcePrice !== undefined ||
+      dto.internalSourceEnabled !== undefined
+    ) {
       // eslint-disable-next-line no-console
-      console.log(`[products.update] sellerTier=${user.sellerTier} dto.internalSourceEnabled=${dto.internalSourceEnabled} dto.internalSourcePrice=${dto.internalSourcePrice} resolvedWholesale=`, wholesaleFields);
+      console.log(
+        `[products.update] sellerTier=${user.sellerTier} dto.internalSourceEnabled=${dto.internalSourceEnabled} dto.internalSourcePrice=${dto.internalSourcePrice} resolvedWholesale=`,
+        wholesaleFields,
+      );
     }
 
     let newAvailable: number | null | undefined = undefined;
@@ -316,14 +526,25 @@ export class ProductsService {
     if (isManual) {
       const currentMetadata = this.asRecord(product.metadataJson);
       const currentlyShared = currentMetadata.shared === true;
-      const wantShared = dto.isShared !== undefined ? dto.isShared === true : currentlyShared;
+      const wantShared =
+        dto.isShared !== undefined ? dto.isShared === true : currentlyShared;
+      if (resolvedDeliveryMode === "ADD_MAIL" && wantShared) {
+        throw new BadRequestException(
+          "ADD_MAIL products cannot use shared or automatic delivery content.",
+        );
+      }
 
       if (wantShared) {
         const sharedContent =
           dto.sharedContent !== undefined
             ? dto.sharedContent.trim()
-            : (typeof currentMetadata.sharedContent === "string" ? currentMetadata.sharedContent : "");
-        const available = dto.available !== undefined ? dto.available : (product.available ?? 0);
+            : typeof currentMetadata.sharedContent === "string"
+              ? currentMetadata.sharedContent
+              : "";
+        const available =
+          dto.available !== undefined
+            ? dto.available
+            : (product.available ?? 0);
         newAvailable = available;
 
         await this.prisma.sourceProduct.update({
@@ -332,115 +553,151 @@ export class ProductsService {
             sourceName: dto.sourceName?.trim() || undefined,
             sourceRawName: dto.sourceName?.trim() || undefined,
             sourceDescription: dto.sourceDescription?.trim() || undefined,
-            sourcePrice: dto.sourcePrice !== undefined ? toDecimal(dto.sourcePrice) : undefined,
+            sourcePrice:
+              dto.sourcePrice !== undefined
+                ? toDecimal(dto.sourcePrice)
+                : undefined,
             available,
-            totalCount: Math.max(product.soldCount + available, product.totalCount),
+            totalCount: Math.max(
+              product.soldCount + available,
+              product.totalCount,
+            ),
             ...businessFields,
             metadataJson: {
               ...currentMetadata,
               manual: true,
+              requiresCustomerEmail: resolvedDeliveryMode === "ADD_MAIL",
+              requires_customer_email: resolvedDeliveryMode === "ADD_MAIL",
               shared: true,
               sharedContent,
               deliveryFormatHint:
                 dto.deliveryFormatHint !== undefined
-                  ? (dto.deliveryFormatHint?.trim() || null)
-                  : (currentMetadata.deliveryFormatHint as string | null | undefined) ?? null,
+                  ? dto.deliveryFormatHint?.trim() || null
+                  : ((currentMetadata.deliveryFormatHint as
+                      | string
+                      | null
+                      | undefined) ?? null),
               sourceDescription:
                 dto.sourceDescription !== undefined
-                  ? (dto.sourceDescription?.trim() || null)
-                  : currentMetadata.sourceDescription ?? product.sourceDescription ?? null,
+                  ? dto.sourceDescription?.trim() || null
+                  : (currentMetadata.sourceDescription ??
+                    product.sourceDescription ??
+                    null),
               usageInstructions:
                 dto.usageInstructions !== undefined
-                  ? (dto.usageInstructions?.trim() || null)
-                  : (currentMetadata.usageInstructions as string | null | undefined) ?? null,
+                  ? dto.usageInstructions?.trim() || null
+                  : ((currentMetadata.usageInstructions as
+                      | string
+                      | null
+                      | undefined) ?? null),
             } as Prisma.InputJsonValue,
           },
         });
       } else {
-      const normalizedDeliveryText =
-        dto.deliveryText !== undefined
-          ? this.normalizeManualDeliveryText(dto.deliveryText)
-          : typeof currentMetadata.deliveryText === "string"
-            ? this.normalizeManualDeliveryText(currentMetadata.deliveryText)
-            : null;
-      const deliveryEntries =
-        dto.deliveryText !== undefined
-          ? this.parseManualDeliveryEntries(normalizedDeliveryText)
-          : this.readManualDeliveryEntries(currentMetadata);
-      const hasAutoDelivery = deliveryEntries.length > 0;
-      const available = hasAutoDelivery
-        ? deliveryEntries.length
-        : dto.available !== undefined
-          ? dto.available
-          : dto.deliveryText !== undefined
-            ? null
-            : undefined;
-      newAvailable = available;
-
-      await this.prisma.$transaction(async (tx) => {
-        await tx.sourceProduct.update({
-          where: { id: product.id },
-          data: {
-            sourceName: dto.sourceName?.trim() || undefined,
-            sourceRawName: dto.sourceName?.trim() || undefined,
-            sourceDescription: dto.sourceDescription?.trim() || undefined,
-            sourcePrice:
-              dto.sourcePrice !== undefined ? toDecimal(dto.sourcePrice) : undefined,
-            available,
-            totalCount:
-              available != null
-                ? Math.max(product.soldCount + available, product.totalCount)
-                : undefined,
-            ...businessFields,
-            metadataJson: {
-              ...currentMetadata,
-              manual: true,
-              shared: false,
-              sharedContent: undefined,
-              deliveryText: normalizedDeliveryText,
-              deliveryEntries,
-              deliveryFormatHint:
-                dto.deliveryFormatHint !== undefined
-                  ? (dto.deliveryFormatHint?.trim() || null)
-                  : (currentMetadata.deliveryFormatHint as string | null | undefined) ?? null,
-              sourceDescription:
-                dto.sourceDescription !== undefined
-                  ? (dto.sourceDescription?.trim() || null)
-                  : currentMetadata.sourceDescription ?? product.sourceDescription ?? null,
-              usageInstructions:
-                dto.usageInstructions !== undefined
-                  ? (dto.usageInstructions?.trim() || null)
-                  : (currentMetadata.usageInstructions as string | null | undefined) ?? null,
-            } as Prisma.InputJsonValue,
-          },
-        });
-
-        if (deliveryEntries.length > 0) {
-          const existingAvailable = await tx.stockEntry.count({
-            where: { sourceProductId: product.id, status: "AVAILABLE" },
-          });
-          if (existingAvailable === 0) {
-            const batch = await tx.stockBatch.create({
-              data: {
-                sourceProductId: product.id,
-                name: `Lô đồng bộ ${this.formatDateForBatchName(new Date())}`,
-                costPerUnit: dto.sourcePrice !== undefined ? toDecimal(dto.sourcePrice) : product.sourcePrice,
-                expiresAt: null,
-              },
-            });
-            const uploadedAt = new Date();
-            await tx.stockEntry.createMany({
-              data: deliveryEntries.map((text) => ({
-                sourceProductId: product.id,
-                batchId: batch.id,
-                text,
-                status: "AVAILABLE",
-                uploadedAt,
-              })),
-            });
-          }
+        const normalizedDeliveryText =
+          dto.deliveryText !== undefined
+            ? this.normalizeManualDeliveryText(dto.deliveryText)
+            : typeof currentMetadata.deliveryText === "string"
+              ? this.normalizeManualDeliveryText(currentMetadata.deliveryText)
+              : null;
+        const deliveryEntries =
+          dto.deliveryText !== undefined
+            ? this.parseManualDeliveryEntries(normalizedDeliveryText)
+            : this.readManualDeliveryEntries(currentMetadata);
+        if (resolvedDeliveryMode === "ADD_MAIL" && deliveryEntries.length > 0) {
+          throw new BadRequestException(
+            "ADD_MAIL products cannot use automatic delivery content.",
+          );
         }
-      });
+        const hasAutoDelivery = deliveryEntries.length > 0;
+        const available = hasAutoDelivery
+          ? deliveryEntries.length
+          : dto.available !== undefined
+            ? dto.available
+            : dto.deliveryText !== undefined
+              ? null
+              : undefined;
+        newAvailable = available;
+
+        await this.prisma.$transaction(async (tx) => {
+          await tx.sourceProduct.update({
+            where: { id: product.id },
+            data: {
+              sourceName: dto.sourceName?.trim() || undefined,
+              sourceRawName: dto.sourceName?.trim() || undefined,
+              sourceDescription: dto.sourceDescription?.trim() || undefined,
+              sourcePrice:
+                dto.sourcePrice !== undefined
+                  ? toDecimal(dto.sourcePrice)
+                  : undefined,
+              available,
+              totalCount:
+                available != null
+                  ? Math.max(product.soldCount + available, product.totalCount)
+                  : undefined,
+              ...businessFields,
+              metadataJson: {
+                ...currentMetadata,
+                manual: true,
+                requiresCustomerEmail: resolvedDeliveryMode === "ADD_MAIL",
+                requires_customer_email: resolvedDeliveryMode === "ADD_MAIL",
+                shared: false,
+                sharedContent: undefined,
+                deliveryText: normalizedDeliveryText,
+                deliveryEntries,
+                deliveryFormatHint:
+                  dto.deliveryFormatHint !== undefined
+                    ? dto.deliveryFormatHint?.trim() || null
+                    : ((currentMetadata.deliveryFormatHint as
+                        | string
+                        | null
+                        | undefined) ?? null),
+                sourceDescription:
+                  dto.sourceDescription !== undefined
+                    ? dto.sourceDescription?.trim() || null
+                    : (currentMetadata.sourceDescription ??
+                      product.sourceDescription ??
+                      null),
+                usageInstructions:
+                  dto.usageInstructions !== undefined
+                    ? dto.usageInstructions?.trim() || null
+                    : ((currentMetadata.usageInstructions as
+                        | string
+                        | null
+                        | undefined) ?? null),
+              } as Prisma.InputJsonValue,
+            },
+          });
+
+          if (deliveryEntries.length > 0) {
+            const existingAvailable = await tx.stockEntry.count({
+              where: { sourceProductId: product.id, status: "AVAILABLE" },
+            });
+            if (existingAvailable === 0) {
+              const batch = await tx.stockBatch.create({
+                data: {
+                  sourceProductId: product.id,
+                  name: `Lô đồng bộ ${this.formatDateForBatchName(new Date())}`,
+                  costPerUnit:
+                    dto.sourcePrice !== undefined
+                      ? toDecimal(dto.sourcePrice)
+                      : product.sourcePrice,
+                  expiresAt: null,
+                },
+              });
+              const uploadedAt = new Date();
+              await tx.stockEntry.createMany({
+                data: deliveryEntries.map((text) => ({
+                  sourceProductId: product.id,
+                  batchId: batch.id,
+                  text,
+                  status: "AVAILABLE",
+                  uploadedAt,
+                })),
+              });
+            }
+          }
+        });
       }
     } else if (dto.resetToSource === true) {
       await this.prisma.sourceProduct.update({
@@ -458,7 +715,8 @@ export class ProductsService {
     } else {
       const externalUpdate: Record<string, unknown> = { ...businessFields };
       if (dto.sourceDescription !== undefined) {
-        externalUpdate.sourceDescription = dto.sourceDescription?.trim() || null;
+        externalUpdate.sourceDescription =
+          dto.sourceDescription?.trim() || null;
         externalUpdate.sourceDescriptionLocked = true;
       }
       if (dto.usageInstructions !== undefined) {
@@ -477,32 +735,135 @@ export class ProductsService {
     }
 
     if (
+      dto.preorderEnabled !== undefined ||
+      dto.preorderFeePercent !== undefined ||
+      resolvedDeliveryMode === "ADD_MAIL"
+    ) {
+      await this.prisma.sourceProduct.update({
+        where: { id: product.id },
+        data: {
+          ...(resolvedDeliveryMode === "ADD_MAIL"
+            ? { preorderEnabled: false }
+            : dto.preorderEnabled !== undefined
+              ? { preorderEnabled: dto.preorderEnabled }
+              : {}),
+          ...(dto.preorderFeePercent !== undefined
+            ? { preorderFeePercent: toDecimal(dto.preorderFeePercent) }
+            : {}),
+        },
+      });
+    }
+
+    if (
       dto.imageUrl !== undefined ||
       dto.productIcon !== undefined ||
       dto.iconCustomEmojiId !== undefined ||
       dto.promoType !== undefined ||
       dto.promoBuyN !== undefined ||
       dto.promoGetM !== undefined ||
+      dto.promoTiers !== undefined ||
+      dto.promoPriceTiers !== undefined ||
       dto.promoBulkMinQty !== undefined ||
       dto.promoBulkDiscountPct !== undefined ||
       dto.promoStartAt !== undefined ||
       dto.promoEndAt !== undefined ||
       dto.promoBannerUrl !== undefined
     ) {
+      const latestPromoMetadata =
+        dto.promoTiers !== undefined || dto.promoPriceTiers !== undefined
+          ? this.asRecord(
+              (
+                await this.prisma.sourceProduct.findUnique({
+                  where: { id: product.id },
+                  select: { metadataJson: true },
+                })
+              )?.metadataJson,
+            )
+          : null;
+      const promoTiers =
+        dto.promoTiers === undefined
+          ? undefined
+          : dto.promoTiers
+              .map((tier) => ({
+                buy: Math.floor(Number(tier?.buy)),
+                get: Math.floor(Number(tier?.get)),
+              }))
+              .filter((tier) => tier.buy > 0 && tier.get > 0)
+              .slice(0, 20);
+      const promoPriceTiers =
+        dto.promoPriceTiers === undefined
+          ? undefined
+          : dto.promoPriceTiers
+              .map((tier) => ({
+                minQty: Math.floor(Number(tier?.minQty)),
+                price: Number(tier?.price),
+              }))
+              .filter(
+                (tier) =>
+                  tier.minQty > 0 &&
+                  Number.isFinite(tier.price) &&
+                  tier.price >= 0,
+              )
+              .sort((a, b) => a.minQty - b.minQty)
+              .filter(
+                (tier, index, tiers) =>
+                  index === 0 || tier.minQty !== tiers[index - 1]?.minQty,
+              )
+              .slice(0, 20);
       await this.prisma.sourceProduct.update({
         where: { id: product.id },
         data: {
-          ...(dto.imageUrl !== undefined ? { imageUrl: dto.imageUrl?.trim() || null } : {}),
-          ...(dto.productIcon !== undefined ? { productIcon: dto.productIcon?.trim() || null } : {}),
-          ...(dto.iconCustomEmojiId !== undefined ? { iconCustomEmojiId: dto.iconCustomEmojiId?.trim() || null } : {}),
-          ...(dto.promoType !== undefined ? { promoType: dto.promoType?.trim() || null } : {}),
-          ...(dto.promoBuyN !== undefined ? { promoBuyN: dto.promoBuyN || null } : {}),
-          ...(dto.promoGetM !== undefined ? { promoGetM: dto.promoGetM || null } : {}),
-          ...(dto.promoBulkMinQty !== undefined ? { promoBulkMinQty: dto.promoBulkMinQty || null } : {}),
-          ...(dto.promoBulkDiscountPct !== undefined ? { promoBulkDiscountPct: dto.promoBulkDiscountPct != null ? toDecimal(dto.promoBulkDiscountPct) : null } : {}),
-          ...(dto.promoStartAt !== undefined ? { promoStartAt: dto.promoStartAt ? new Date(dto.promoStartAt) : null } : {}),
-          ...(dto.promoEndAt !== undefined ? { promoEndAt: dto.promoEndAt ? new Date(dto.promoEndAt) : null } : {}),
-          ...(dto.promoBannerUrl !== undefined ? { promoBannerUrl: dto.promoBannerUrl?.trim() || null } : {}),
+          ...(dto.imageUrl !== undefined
+            ? { imageUrl: dto.imageUrl?.trim() || null }
+            : {}),
+          ...(dto.productIcon !== undefined
+            ? { productIcon: dto.productIcon?.trim() || null }
+            : {}),
+          ...(dto.iconCustomEmojiId !== undefined
+            ? { iconCustomEmojiId: dto.iconCustomEmojiId?.trim() || null }
+            : {}),
+          ...(dto.promoType !== undefined
+            ? { promoType: dto.promoType?.trim() || null }
+            : {}),
+          ...(dto.promoBuyN !== undefined
+            ? { promoBuyN: dto.promoBuyN || null }
+            : {}),
+          ...(dto.promoGetM !== undefined
+            ? { promoGetM: dto.promoGetM || null }
+            : {}),
+          ...(promoTiers !== undefined || promoPriceTiers !== undefined
+            ? {
+                metadataJson: {
+                  ...latestPromoMetadata,
+                  ...(promoTiers !== undefined ? { promoTiers } : {}),
+                  ...(promoPriceTiers !== undefined ? { promoPriceTiers } : {}),
+                } as Prisma.InputJsonValue,
+              }
+            : {}),
+          ...(dto.promoBulkMinQty !== undefined
+            ? { promoBulkMinQty: dto.promoBulkMinQty || null }
+            : {}),
+          ...(dto.promoBulkDiscountPct !== undefined
+            ? {
+                promoBulkDiscountPct:
+                  dto.promoBulkDiscountPct != null
+                    ? toDecimal(dto.promoBulkDiscountPct)
+                    : null,
+              }
+            : {}),
+          ...(dto.promoStartAt !== undefined
+            ? {
+                promoStartAt: dto.promoStartAt
+                  ? new Date(dto.promoStartAt)
+                  : null,
+              }
+            : {}),
+          ...(dto.promoEndAt !== undefined
+            ? { promoEndAt: dto.promoEndAt ? new Date(dto.promoEndAt) : null }
+            : {}),
+          ...(dto.promoBannerUrl !== undefined
+            ? { promoBannerUrl: dto.promoBannerUrl?.trim() || null }
+            : {}),
         },
       });
     }
@@ -522,7 +883,9 @@ export class ProductsService {
           dto.salePrice !== undefined ? toDecimal(dto.salePrice) : undefined,
         salePriceUsd:
           dto.salePriceUsd !== undefined
-            ? dto.salePriceUsd === 0 ? null : toDecimal(dto.salePriceUsd)
+            ? dto.salePriceUsd === 0
+              ? null
+              : toDecimal(dto.salePriceUsd)
             : undefined,
         hidden: dto.hidden ?? undefined,
         hiddenVi: dto.hiddenVi ?? undefined,
@@ -553,52 +916,70 @@ export class ProductsService {
       },
     });
 
-    if (user.sellerTier === SellerTier.ULTRA) {
+    if (
+      user.sellerTier === SellerTier.PRO ||
+      user.sellerTier === SellerTier.ULTRA
+    ) {
       this.triggerDownstreamSync(shop.id).catch(() => {});
+    }
 
-      if (
-        newAvailable != null &&
-        product.available != null &&
-        shop.providerConfig?.sourceNotificationSyncEnabled &&
-        shop.botConfig?.telegramBotTokenEncrypted
-      ) {
-        const addedQty = Math.max(0, newAvailable - Number(product.available));
-        if (addedQty > 0) {
-          const displayName = dto.displayName ?? product.sourceName ?? product.sourceRawName ?? "";
-          // Sale price snapshot for the restock notification. Prefer the just-updated
-          // override value, then fall back to the seller override / product source price.
-          let priceNum: number | null = null;
-          if (dto.salePrice !== undefined && Number.isFinite(Number(dto.salePrice))) {
-            priceNum = Number(dto.salePrice);
-          } else {
-            const override = await this.prisma.sellerProductOverride.findUnique({
-              where: {
-                sellerId_sourceProductId: {
-                  sellerId: shop.sellerId,
-                  sourceProductId: product.id,
-                },
+    if (
+      newAvailable != null &&
+      product.available != null &&
+      shop.providerConfig?.sourceNotificationSyncEnabled &&
+      shop.botConfig?.telegramBotTokenEncrypted
+    ) {
+      const addedQty = Math.max(0, newAvailable - Number(product.available));
+      if (addedQty > 0) {
+        const displayName =
+          dto.displayName ?? product.sourceName ?? product.sourceRawName ?? "";
+        // Sale price snapshot for the restock notification. Prefer the just-updated
+        // override value, then fall back to the seller override / product source price.
+        let priceNum: number | null = null;
+        if (
+          dto.salePrice !== undefined &&
+          Number.isFinite(Number(dto.salePrice))
+        ) {
+          priceNum = Number(dto.salePrice);
+        } else {
+          const override = await this.prisma.sellerProductOverride.findUnique({
+            where: {
+              sellerId_sourceProductId: {
+                sellerId: shop.sellerId,
+                sourceProductId: product.id,
               },
-              select: { salePrice: true },
-            });
-            const raw = override?.salePrice != null
+            },
+            select: { salePrice: true },
+          });
+          const raw =
+            override?.salePrice != null
               ? Number(override.salePrice)
               : product.sourcePrice != null
                 ? Number(product.sourcePrice)
                 : null;
-            if (raw != null && Number.isFinite(raw)) priceNum = raw;
-          }
-          this.shopsService.notifyCatalogStockUpdates(
+          if (raw != null && Number.isFinite(raw)) priceNum = raw;
+        }
+        this.shopsService
+          .notifyCatalogStockUpdates(
             shop.id,
             shop.botConfig.telegramBotTokenEncrypted,
-            [{
-              sourceProductId: product.id,
-              displayName,
-              addedQuantity: addedQty,
-              available: newAvailable,
-              price: priceNum,
-            }],
-          ).catch(() => {});
-        }
+            [
+              {
+                sourceProductId: product.id,
+                displayName,
+                addedQuantity: addedQty,
+                available: newAvailable,
+                price: priceNum,
+              },
+            ],
+          )
+          .catch((error) => {
+            this.logger.warn(
+              `Failed to send stock notification for shop=${shop.id} product=${product.id}: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            );
+          });
       }
     }
 
@@ -613,7 +994,8 @@ export class ProductsService {
     });
 
     if (!product) throw new NotFoundException("Product not found.");
-    if (!this.isManualProduct(product)) throw new BadRequestException("Only manual products can be duplicated.");
+    if (!this.isManualProduct(product))
+      throw new BadRequestException("Only manual products can be duplicated.");
 
     const override = product.overrides[0];
     const metadata = this.asRecord(product.metadataJson);
@@ -624,7 +1006,9 @@ export class ProductsService {
         externalProductId: `manual_${randomBytes(8).toString("hex")}`,
         providerName: "manual",
         sourceName: `${product.sourceName} copy`,
-        sourceRawName: product.sourceRawName ? `${product.sourceRawName} copy` : null,
+        sourceRawName: product.sourceRawName
+          ? `${product.sourceRawName} copy`
+          : null,
         sourceDescription: product.sourceDescription,
         sourcePrice: product.sourcePrice,
         available: null,
@@ -641,6 +1025,11 @@ export class ProductsService {
         durationTypeOther: product.durationTypeOther,
         sourceDeliveryMode: product.sourceDeliveryMode,
         warrantyPolicy: product.warrantyPolicy,
+        preorderEnabled:
+          product.sourceDeliveryMode === "ADD_MAIL"
+            ? false
+            : product.preorderEnabled,
+        preorderFeePercent: product.preorderFeePercent,
         metadataJson: {
           manual: true,
           deliveryText: null,
@@ -657,7 +1046,9 @@ export class ProductsService {
         sellerId: shop.sellerId,
         shopId: shop.id,
         sourceProductId: created.id,
-        displayName: override ? `${override.displayName} copy` : `${product.sourceName} copy`,
+        displayName: override
+          ? `${override.displayName} copy`
+          : `${product.sourceName} copy`,
         salePrice: override?.salePrice ?? product.sourcePrice,
         hidden: false,
         enabled: true,
@@ -665,7 +1056,10 @@ export class ProductsService {
       },
     });
 
-    if (user.sellerTier === SellerTier.ULTRA) {
+    if (
+      user.sellerTier === SellerTier.PRO ||
+      user.sellerTier === SellerTier.ULTRA
+    ) {
       this.triggerDownstreamSync(shop.id).catch(() => {});
     }
 
@@ -713,6 +1107,98 @@ export class ProductsService {
     };
   }
 
+  async setProductArchived(
+    user: AuthenticatedUser,
+    id: string,
+    archived: boolean,
+  ) {
+    const shop = await this.shopsService.getSellerShop(user.id);
+    const product = await this.prisma.sourceProduct.findFirst({
+      where: { id, shopId: shop.id },
+      select: { id: true, archivedAt: true, metadataJson: true },
+    });
+    if (!product) throw new NotFoundException("Product not found.");
+
+    const metadata = this.asRecord(product.metadataJson);
+
+    const updated = await this.prisma.sourceProduct.update({
+      where: { id: product.id },
+      data: {
+        archivedAt: archived ? product.archivedAt || new Date() : null,
+        metadataJson: {
+          ...metadata,
+          locallyArchived: archived,
+        } as Prisma.InputJsonValue,
+      },
+      select: { id: true, archivedAt: true },
+    });
+
+    if (
+      user.sellerTier === SellerTier.PRO ||
+      user.sellerTier === SellerTier.ULTRA
+    ) {
+      this.triggerDownstreamSync(shop.id).catch(() => undefined);
+    }
+
+    return { success: true, id: updated.id, archivedAt: updated.archivedAt };
+  }
+
+  async hideProductEverywhere(user: AuthenticatedUser, id: string) {
+    return this.setProductVisibilityEverywhere(user, id, false);
+  }
+
+  async showProductEverywhere(user: AuthenticatedUser, id: string) {
+    return this.setProductVisibilityEverywhere(user, id, true);
+  }
+
+  private async setProductVisibilityEverywhere(
+    user: AuthenticatedUser,
+    id: string,
+    visible: boolean,
+  ) {
+    const shop = await this.shopsService.getSellerShop(user.id);
+    const product = await this.prisma.sourceProduct.findFirst({
+      where: { id, shopId: shop.id },
+      select: { id: true, sourceName: true, sourcePrice: true },
+    });
+    if (!product) throw new NotFoundException("Product not found.");
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.sourceProduct.update({
+        where: { id: product.id },
+        data: { internalSourceEnabled: visible },
+      });
+
+      await tx.sellerProductOverride.upsert({
+        where: {
+          sellerId_sourceProductId: {
+            sellerId: shop.sellerId,
+            sourceProductId: product.id,
+          },
+        },
+        update: { hidden: !visible, enabled: visible },
+        create: {
+          sellerId: shop.sellerId,
+          shopId: shop.id,
+          sourceProductId: product.id,
+          displayName: product.sourceName,
+          salePrice: product.sourcePrice,
+          hidden: !visible,
+          enabled: visible,
+        },
+      });
+    });
+
+    if (
+      user.sellerTier === SellerTier.PRO ||
+      user.sellerTier === SellerTier.ULTRA
+    ) {
+      this.triggerDownstreamSync(shop.id).catch(() => undefined);
+    }
+
+    return this.getProduct(user, product.id);
+  }
+
   private async getManualProductForSeller(userId: string, productId: string) {
     const shop = await this.shopsService.getSellerShop(userId);
     const product = await this.prisma.sourceProduct.findFirst({
@@ -727,7 +1213,9 @@ export class ProductsService {
     }
 
     if (!this.isManualProduct(product)) {
-      throw new BadRequestException("Only manual products support inventory management.");
+      throw new BadRequestException(
+        "Only manual products support inventory management.",
+      );
     }
 
     return { shop, product };
@@ -738,11 +1226,16 @@ export class ProductsService {
     metadataJson?: Prisma.JsonValue | null;
   }) {
     const metadata = this.asRecord(product.metadataJson);
-    const availableEntries = this.readManualDeliveryEntries(metadata).map((content, index) => ({
-      key: this.buildManualInventoryKey("available", `${product.id}:${index}:${content}`),
-      status: "available" as const,
-      content,
-    }));
+    const availableEntries = this.readManualDeliveryEntries(metadata).map(
+      (content, index) => ({
+        key: this.buildManualInventoryKey(
+          "available",
+          `${product.id}:${index}:${content}`,
+        ),
+        status: "available" as const,
+        content,
+      }),
+    );
 
     const hiddenDeliveredKeys = new Set(this.readHiddenDeliveredKeys(metadata));
     const deliveredOrders = await this.prisma.order.findMany({
@@ -774,7 +1267,9 @@ export class ProductsService {
 
     const deliveredItems = deliveredOrders
       .flatMap((order) => {
-        const entries = this.parseManualDeliveryEntries(order.deliveredAccountText);
+        const entries = this.parseManualDeliveryEntries(
+          order.deliveredAccountText,
+        );
         return entries.map((content, index) => {
           const key = this.buildManualInventoryKey(
             "delivered",
@@ -911,7 +1406,13 @@ export class ProductsService {
     }
 
     const record = entry as Record<string, unknown>;
-    const account = [record.account, record.email, record.username, record.user, record.login]
+    const account = [
+      record.account,
+      record.email,
+      record.username,
+      record.user,
+      record.login,
+    ]
       .map((value) => String(value || "").trim())
       .find(Boolean);
     const password = [record.password, record.pass, record.pwd]
@@ -966,7 +1467,10 @@ export class ProductsService {
           : dto.productFamilyOther !== undefined
             ? null
             : undefined,
-      productPackage: dto.productPackage !== undefined ? (dto.productPackage?.trim() || null) : undefined,
+      productPackage:
+        dto.productPackage !== undefined
+          ? dto.productPackage?.trim() || null
+          : undefined,
       accountType: dto.accountType ?? undefined,
       accountTypeOther:
         dto.accountType === "OTHER"
@@ -1012,7 +1516,10 @@ export class ProductsService {
     return "MANUAL";
   }
 
-  async uploadProductImage(_user: AuthenticatedUser, file: Express.Multer.File): Promise<{ url: string }> {
+  async uploadProductImage(
+    _user: AuthenticatedUser,
+    file: Express.Multer.File,
+  ): Promise<{ url: string }> {
     if (!file) throw new BadRequestException("No file uploaded.");
     const ext = extname(file.originalname).toLowerCase() || ".jpg";
     const filename = `${randomUUID()}${ext}`;
@@ -1024,13 +1531,19 @@ export class ProductsService {
 
   private async triggerDownstreamSync(upstreamShopId: string) {
     const connections = await this.prisma.downstreamSourceConnection.findMany({
-      where: { upstreamShopId, status: "ACTIVE", downstreamShopId: { not: null } },
+      where: {
+        upstreamShopId,
+        status: "ACTIVE",
+        downstreamShopId: { not: null },
+      },
       select: { downstreamShopId: true },
     });
     for (const conn of connections) {
       if (!conn.downstreamShopId) continue;
       await this.queueService.addSyncCatalogJob(conn.downstreamShopId);
-      this.shopsService.syncCatalogForShop(conn.downstreamShopId).catch(() => {});
+      this.shopsService
+        .syncCatalogForShop(conn.downstreamShopId)
+        .catch(() => {});
     }
   }
 }

@@ -8,12 +8,14 @@
     "axios": "^1.8.4",
     "bullmq": "^5.49.1",
     "dotenv": "^16.5.0",
-    "ioredis": "^5.4.2"
+    "ioredis": "^5.4.2",
+    "telegram": "^2.26.22"
   },
   "scripts": {
     "dev": "tsx watch src/main.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/main.js",
+    "test:source-watch": "tsx test/source-watch.test.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   }
 }

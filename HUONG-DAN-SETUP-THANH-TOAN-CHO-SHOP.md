@@ -1,3 +1,4 @@
+
 # Hướng dẫn cài đặt phương thức thanh toán cho Shop Bot
 
 Tài liệu này dành cho chủ shop sử dụng bot Telegram trên hệ thống AltivoxAI.
@@ -171,8 +172,8 @@ PayPal thanh toán bằng USD. Hệ thống ưu tiên giá USD đã cấu hình 
 
 Ví dụ:
 
-> Giá sản phẩm: 260.000 VNĐ  
-> Tỷ giá: 26.000 VNĐ/USD  
+> Giá sản phẩm: 260.000 VNĐ
+> Tỷ giá: 26.000 VNĐ/USD
 > Số tiền PayPal: 10,00 USD
 
 ### Bước 3: Tạo PayPal Webhook

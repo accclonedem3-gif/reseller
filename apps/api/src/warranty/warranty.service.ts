@@ -1,4 +1,4 @@
-﻿import {
+import {
   BadRequestException,
   Inject,
   Injectable,
@@ -30,6 +30,7 @@ import {
 import { WARRANTY_AUTO_CHECK_STATUS } from "@reseller/shared";
 
 import { AppConfigService } from "../config/app-config.service";
+import { AffiliateService } from "../affiliate/affiliate.service";
 import { PrismaService } from "../db/prisma.service";
 import { IdempotencyService } from "../lib/idempotency.service";
 import { countResolvedWarrantyAccounts, decimalToNumber } from "../lib/utils";
@@ -105,6 +106,8 @@ export class WarrantyService {
     private readonly idempotency: IdempotencyService,
     @Inject(WarrantyAbuseService)
     private readonly abuse: WarrantyAbuseService,
+    @Inject(AffiliateService)
+    private readonly affiliateService: AffiliateService,
   ) {}
 
   /**
@@ -2413,6 +2416,15 @@ export class WarrantyService {
       });
     });
 
+    if (isFullRefund) {
+      await this.affiliateService.revokeCommission(fullOrder.id);
+    } else if (creditedToCustomer) {
+      await this.affiliateService.revokeCommissionForRefund(
+        fullOrder.id,
+        refundAmount,
+      );
+    }
+
     // Notify customer via Telegram bot: refund is already in their wallet.
     const token = decryptSecret(claim.shop.botConfig?.telegramBotTokenEncrypted, this.config.encryptionKey);
     if (token && claim.customer?.telegramChatId && !(this.config.mockTelegramEnabled && isMockBotToken(token))) {
@@ -2491,7 +2503,7 @@ export class WarrantyService {
     const refundAmount = Math.round(baseRefund * timeRatio);
     if (refundAmount <= 0) return;
 
-    await this.prisma.$transaction(async (tx) => {
+    const refundCredited = await this.prisma.$transaction(async (tx) => {
       // Lock the claim row first so the idempotency check is atomic per-claim (prevents
       // concurrent double partial-refund — same reasoning as autoRefundForOutOfStock).
       await tx.$queryRaw`SELECT id FROM warranty_claims WHERE id = ${claimId} FOR UPDATE`;
@@ -2499,7 +2511,7 @@ export class WarrantyService {
         where: { referenceType: "warranty_partial_refund", referenceId: claimId, customerId: order.customerId },
         select: { id: true },
       });
-      if (existing) return;
+      if (existing) return false;
 
       let wallet = await tx.customerWallet.findUnique({ where: { customerId: order.customerId } });
       if (!wallet) {
@@ -2532,7 +2544,14 @@ export class WarrantyService {
           note: `Hoàn ví ${refundAmount.toLocaleString("vi-VN")}đ — đơn ${order.orderCode} thiếu hàng bảo hành ${safeCount}/${order.quantity} tài khoản${commissionShare > 0 ? `, hoàn HH ${commissionShare.toLocaleString("vi-VN")}đ` : ""}.`,
         },
       });
+      return true;
     });
+    if (refundCredited) {
+      await this.affiliateService.revokeCommissionForRefund(
+        order.id,
+        refundAmount,
+      );
+    }
   }
 
   /**
@@ -4956,7 +4975,7 @@ export class WarrantyService {
     const qty = quantityOverride ?? order.quantity;
     const deliveryMode = order.warrantyDeliveryModeSnapshot || SourceDeliveryMode.AUTO_API;
 
-    if (deliveryMode === SourceDeliveryMode.MANUAL) {
+    if (deliveryMode === SourceDeliveryMode.MANUAL || deliveryMode === SourceDeliveryMode.ADD_MAIL) {
       return {
         nextStatus: WARRANTY_CLAIM_STATUS.PENDING_MANUAL,
         deliveredAccountText: null,
@@ -5501,7 +5520,7 @@ export class WarrantyService {
     // Per-order cap enforced at the caller via countNonRejectedClaims. See comment in
     // decideClaimRoute — we intentionally do NOT gate on claimNumber here.
 
-    if (deliveryMode === SourceDeliveryMode.MANUAL) {
+    if (deliveryMode === SourceDeliveryMode.MANUAL || deliveryMode === SourceDeliveryMode.ADD_MAIL) {
       return {
         nextStatus: WARRANTY_CLAIM_STATUS.PENDING_MANUAL,
         deliveredAccountText: null,

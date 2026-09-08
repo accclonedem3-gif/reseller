@@ -27,6 +27,10 @@
     "db:deploy": "prisma migrate deploy --schema prisma/schema.prisma",
     "db:seed": "tsx prisma/seed.ts",
     "db:purge-mock": "node scripts/purge-mock-data.cjs",
+    "audit:onchain": "node scripts/audit-onchain-payments.cjs",
+    "reconcile:bep20:dry-run": "node scripts/reconcile-bep20-history.cjs",
+    "backfill:bep20:receipts": "node scripts/backfill-bep20-receipts.cjs",
+    "backfill:roboticvn-order-codes": "node scripts/backfill-roboticvn-order-codes.cjs",
     "docker:up": "docker compose up -d",
     "docker:down": "docker compose down",
     "format": "prettier --write ."

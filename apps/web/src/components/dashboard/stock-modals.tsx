@@ -2157,6 +2157,8 @@ export function ViewStockModal({
   isLoading,
   statusFilter,
   onStatusChange,
+  searchValue,
+  onSearchChange,
   onExtractRequest,
   onCreateBatchRequest,
   onShowHistory,
@@ -2171,7 +2173,9 @@ export function ViewStockModal({
   isLoading: boolean;
   statusFilter: "ALL" | "AVAILABLE" | "SOLD" | "EXTRACTED";
   onStatusChange: (s: "ALL" | "AVAILABLE" | "SOLD" | "EXTRACTED") => void;
-  onExtractRequest: (selectedIds: string[]) => void;
+  searchValue: string;
+  onSearchChange: (value: string) => void;
+  onExtractRequest: (selectedIds: string[], wholeBatchId?: string) => void;
   onCreateBatchRequest: () => void;
   onShowHistory: () => void;
   onDeleteBatch: (batchId: string) => void;
@@ -2179,6 +2183,7 @@ export function ViewStockModal({
 }) {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [lastClickedIdx, setLastClickedIdx] = useState<number | null>(null);
+  const [searchDraft, setSearchDraft] = useState(searchValue);
   // Track EXPANDED group keys (default empty = all batches collapsed on open).
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
@@ -2189,6 +2194,12 @@ export function ViewStockModal({
       setExpanded(new Set());
     }
   }, [open]);
+
+  useEffect(() => {
+    setSearchDraft(searchValue);
+    setSelectedIds(new Set());
+    setLastClickedIdx(null);
+  }, [searchValue, statusFilter]);
 
   const batchMetaById = useMemo(() => {
     const m = new Map<string, StockBatchSummary>();
@@ -2264,6 +2275,15 @@ export function ViewStockModal({
   }
 
   const selectedCount = selectedIds.size;
+  const wholeSelectedBatchId = useMemo(() => {
+    if (selectedIds.size === 0) return undefined;
+    const matchingGroups = grouped.filter((group) => {
+      if (group.key === "__legacy__") return false;
+      const availableItems = group.items.filter((item) => item.status === "AVAILABLE");
+      return availableItems.length === selectedIds.size && availableItems.every((item) => selectedIds.has(item.id));
+    });
+    return matchingGroups.length === 1 ? matchingGroups[0]!.key : undefined;
+  }, [grouped, selectedIds]);
 
   return (
     <ModalShell
@@ -2313,6 +2333,69 @@ export function ViewStockModal({
           </button>
         </div>
 
+        <form
+          className="flex shrink-0 flex-col gap-2 p-3 sm:flex-row sm:items-stretch"
+          style={{ borderBottom: "1px solid var(--bd)", background: "var(--surface)" }}
+          onSubmit={(event) => {
+            event.preventDefault();
+            onSearchChange(searchDraft.trim());
+          }}
+        >
+          <div className="relative min-w-0 flex-1">
+            <Search
+              className="absolute left-3 top-3 h-4 w-4"
+              style={{ color: "var(--tx-f)" }}
+            />
+            <textarea
+              rows={2}
+              value={searchDraft}
+              onChange={(event) => setSearchDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+                  event.preventDefault();
+                  onSearchChange(searchDraft.trim());
+                }
+              }}
+              placeholder="Tìm theo tên tài khoản — mỗi dòng 1 tài khoản"
+              className="min-h-[64px] w-full resize-y rounded-xl py-2.5 pl-9 pr-9 font-mono text-[12px] outline-none"
+              style={{
+                background: "var(--inp)",
+                border: "1px solid var(--bd)",
+                color: "var(--tx)",
+              }}
+            />
+            {(searchDraft || searchValue) && (
+              <button
+                type="button"
+                aria-label="Xóa tìm kiếm"
+                onClick={() => {
+                  setSearchDraft("");
+                  onSearchChange("");
+                }}
+                className="absolute right-2.5 top-2.5 rounded-md p-1 hover:bg-white/10"
+                style={{ color: "var(--tx-f)" }}
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            )}
+          </div>
+          <button
+            type="submit"
+            className="inline-flex min-h-[42px] items-center justify-center gap-2 rounded-xl px-4 text-[12px] font-black transition hover:opacity-90"
+            style={{ background: "rgb(56,189,248)", color: "#07111f" }}
+          >
+            <Search className="h-4 w-4" /> Tìm kiếm
+          </button>
+          {searchValue && data && (
+            <div
+              className="flex min-h-[42px] items-center justify-center rounded-xl px-3 text-[11px] font-bold"
+              style={{ background: "var(--inp)", color: "var(--tx-m)" }}
+            >
+              {data.total.toLocaleString("vi-VN")} kết quả
+            </div>
+          )}
+        </form>
+
         {selectedCount > 0 && (
           <div
             className="flex shrink-0 items-center justify-between gap-2 px-4 py-2"
@@ -2332,7 +2415,7 @@ export function ViewStockModal({
               </button>
               <button
                 type="button"
-                onClick={() => onExtractRequest(Array.from(selectedIds))}
+                onClick={() => onExtractRequest(Array.from(selectedIds), wholeSelectedBatchId)}
                 className="rounded-lg px-3 py-1 text-[10px] font-black"
                 style={{ background: "rgb(168,85,247)", color: "#fff" }}
               >

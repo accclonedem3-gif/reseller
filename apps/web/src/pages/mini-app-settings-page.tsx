@@ -7,6 +7,13 @@ interface BotCustomization {
   catalogText?: { vi?: string; en?: string };
   homeFooter?: { vi?: string; en?: string };
   walletNote?: { vi?: string; en?: string };
+  restockTemplate?: {
+    header?: { icon?: string; text?: string };
+    fieldIcons?: { product?: string; added?: string; stock?: string; price?: string };
+    labels?: { added?: string; stock?: string; price?: string };
+    footer?: string;
+    customEmojiIds?: { header?: string; product?: string; added?: string; stock?: string; price?: string };
+  };
   homeIcon?: string;
   messageEmojiIds?: {
     welcomeMessage?: string;
@@ -73,6 +80,17 @@ const DEFAULT_LABELS_VI = BUTTON_LABELS_VI;
 
 const API_BASE = import.meta.env.VITE_API_URL || "/api/v1";
 
+function resolveTelegramInitData(): string {
+  const sdkValue = window.Telegram?.WebApp?.initData?.trim();
+  if (sdkValue) return sdkValue;
+
+  const searchValue = new URLSearchParams(window.location.search).get("tgWebAppData")?.trim();
+  if (searchValue) return searchValue;
+
+  const hash = window.location.hash.replace(/^#/, "");
+  return new URLSearchParams(hash).get("tgWebAppData")?.trim() || "";
+}
+
 declare global {
   interface Window {
     Telegram?: {
@@ -122,6 +140,7 @@ export function MiniAppSettingsPage() {
     catalogText: { vi: "", en: "" },
     homeFooter: { vi: "", en: "" },
     walletNote: { vi: "", en: "" },
+    restockTemplate: { header: { text: "" } },
     homeIcon: undefined,
     messageEmojiIds: {},
     labelEmojiIds: {},
@@ -140,7 +159,10 @@ export function MiniAppSettingsPage() {
     script.src = "https://telegram.org/js/telegram-web-app.js";
     script.async = true;
     script.onload = () => setSdkReady(true);
-    script.onerror = () => setError("Failed to load Telegram SDK.");
+    script.onerror = () => {
+      setError("Không tải được Telegram SDK. Vui lòng đóng và mở lại Mini App.");
+      setLoading(false);
+    };
     document.head.appendChild(script);
   }, []);
 
@@ -148,13 +170,33 @@ export function MiniAppSettingsPage() {
     if (!sdkReady) return;
     const twa = window.Telegram?.WebApp;
     if (twa?.ready) twa.ready();
-    setInitData(twa?.initData || null);
     const tp = twa?.themeParams || {};
     const mapped: Record<string, string> = {};
     for (const [k, v] of Object.entries(tp)) {
       if (typeof v === "string") mapped[k] = v;
     }
     setThemeParams(mapped);
+
+    let attempts = 0;
+    const syncInitData = () => {
+      const value = resolveTelegramInitData();
+      if (value) {
+        setInitData(value);
+        return true;
+      }
+      attempts += 1;
+      if (attempts >= 20) {
+        setInitData("");
+        return true;
+      }
+      return false;
+    };
+
+    if (syncInitData()) return;
+    const timer = window.setInterval(() => {
+      if (syncInitData()) window.clearInterval(timer);
+    }, 250);
+    return () => window.clearInterval(timer);
   }, [sdkReady]);
 
   const fetchSettings = useCallback(async () => {
@@ -176,6 +218,14 @@ export function MiniAppSettingsPage() {
           catalogText: { vi: "", en: "", ...prev.catalogText, ...data.customization.catalogText },
           homeFooter: { vi: "", en: "", ...prev.homeFooter, ...data.customization.homeFooter },
           walletNote: { vi: "", en: "", ...prev.walletNote, ...data.customization.walletNote },
+          restockTemplate: {
+            ...prev.restockTemplate,
+            ...data.customization.restockTemplate,
+            header: {
+              ...prev.restockTemplate?.header,
+              ...data.customization.restockTemplate?.header,
+            },
+          },
           homeIcon: data.customization.homeIcon !== undefined ? data.customization.homeIcon : prev.homeIcon,
           messageEmojiIds: { ...prev.messageEmojiIds, ...data.customization.messageEmojiIds },
           labelEmojiIds: { ...prev.labelEmojiIds, ...data.customization.labelEmojiIds },
@@ -502,6 +552,37 @@ export function MiniAppSettingsPage() {
                 (val) => setCustomization((p) => ({ ...p, messageEmojiIds: { ...p.messageEmojiIds, welcomeMessage: val } })),
                 "✨ Icon động (document_id)",
               )}
+            </div>
+
+            {/* Restock notification title */}
+            <div style={card}>
+              {sectionTitle(
+                "📢",
+                "Tiêu đề thông báo hàng về",
+                "Dòng đầu tiên khách nhận khi sản phẩm được nhập thêm kho",
+              )}
+              <label style={lbl}>Nội dung tùy chỉnh</label>
+              <input
+                type="text"
+                style={inp}
+                placeholder="VD: Hàng về bấy bì!"
+                value={customization.restockTemplate?.header?.text || ""}
+                onChange={(e) =>
+                  setCustomization((previous) => ({
+                    ...previous,
+                    restockTemplate: {
+                      ...previous.restockTemplate,
+                      header: {
+                        ...previous.restockTemplate?.header,
+                        text: e.target.value,
+                      },
+                    },
+                  }))
+                }
+              />
+              <div style={{ color: hintColor, fontSize: "11px", marginTop: "6px" }}>
+                Để trống để bot dùng tiêu đề mặc định theo ngôn ngữ của khách.
+              </div>
             </div>
 
             {/* Footer bill */}

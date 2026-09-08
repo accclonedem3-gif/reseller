@@ -152,6 +152,7 @@ export const sourceDeliveryModeOptions = [
   { value: "AUTO_API", label: "Tự động qua API nguồn" },
   { value: "AUTO_STOCK", label: "Tự động từ kho nội bộ" },
   { value: "MANUAL", label: "Giao thủ công" },
+  { value: "ADD_MAIL", label: "Add mail chính chủ" },
 ] as const;
 
 export const sourceWarrantyPolicyOptions = [

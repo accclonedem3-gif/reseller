@@ -81,7 +81,8 @@ export class InternalSourceAuthMiddleware implements NestMiddleware {
     // Read-only requests (GET catalog/balance) are fully serviceable from the key
     // alone (apiKey.shopId is the upstream shop). Only writes (placing orders) need
     // a funded downstream connection, because they debit a customer wallet.
-    const isWriteRequest = req.method === "POST" || req.method === "PUT" || req.method === "PATCH";
+    const isClientConnectRequest = req.method === "POST" && /\/internal-source\/v1\/connect\/?$/.test(req.path);
+    const isWriteRequest = !isClientConnectRequest && (req.method === "POST" || req.method === "PUT" || req.method === "PATCH");
     if (isWriteRequest) {
       if (!connection) {
         throw new ForbiddenException("Source API key has no downstream connection assigned.");

@@ -3,6 +3,7 @@ import {
   Controller,
   Get,
   Inject,
+  NotFoundException,
   Param,
   Post,
   UseGuards,
@@ -10,6 +11,7 @@ import {
 
 import { CurrentUser } from "../common/decorators/current-user.decorator";
 import { JwtAuthGuard } from "../common/guards/jwt-auth.guard";
+import { AppConfigService } from "../config/app-config.service";
 import type { AuthenticatedUser } from "../types";
 
 import { CreateUpgradePaymentDto } from "./upgrade.dto";
@@ -21,6 +23,8 @@ export class UpgradeController {
   constructor(
     @Inject(UpgradeService)
     private readonly upgradeService: UpgradeService,
+    @Inject(AppConfigService)
+    private readonly config: AppConfigService,
   ) {}
 
   /**
@@ -50,12 +54,22 @@ export class UpgradeController {
   /**
    * Mock confirm — chỉ dùng khi MOCK mode (dev).
    * POST /upgrade/mock-confirm/:externalOrderCode
-   */
+  */
   @Post("mock-confirm/:externalOrderCode")
-  async mockConfirm(@Param("externalOrderCode") externalOrderCode: string) {
-    const result = await this.upgradeService.confirmUpgradeByExternalOrderCode(
+  async mockConfirm(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param("externalOrderCode") externalOrderCode: string,
+  ) {
+    if (
+      this.config.nodeEnv === "production"
+      || this.config.paymentMode.trim().toLowerCase() !== "mock"
+    ) {
+      throw new NotFoundException("Not found.");
+    }
+
+    const result = await this.upgradeService.confirmMockUpgrade(
+      user,
       externalOrderCode,
-      { mock: true, confirmedAt: new Date().toISOString() },
     );
 
     return result ?? { skipped: true };

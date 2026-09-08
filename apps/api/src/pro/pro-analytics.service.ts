@@ -264,6 +264,13 @@ export class ProAnalyticsService {
     const [products, orderStats, warrantyStats] = await Promise.all([
       this.prisma.sourceProduct.findMany({
         where: { shopId: shop.id, internalSourceEnabled: true },
+        include: {
+          overrides: {
+            where: { sellerId: shop.sellerId },
+            select: { salePrice: true },
+            take: 1,
+          },
+        },
         orderBy: { soldCount: "desc" },
       }),
       this.prisma.internalSourceOrder.groupBy({
@@ -299,7 +306,11 @@ export class ProAnalyticsService {
       const revenue = stat?._sum.totalAmount ? decimalToNumber(stat._sum.totalAmount) : 0;
       const unitsSold = stat?._sum.quantity ?? p.soldCount;
       const sourcePrice = decimalToNumber(p.sourcePrice);
-      const internalPrice = decimalToNumber(p.internalSourcePrice ?? p.sourcePrice);
+      const internalPrice = p.internalSourcePrice != null
+        ? decimalToNumber(p.internalSourcePrice)
+        : p.overrides[0]?.salePrice != null
+          ? decimalToNumber(p.overrides[0].salePrice)
+          : 0;
       const cost = sourcePrice * unitsSold;
       const grossProfit = revenue - cost;
 

@@ -1,4 +1,6 @@
-import { Body, Controller, Delete, Get, Inject, Param, Post, Put, UseGuards } from "@nestjs/common";
+import { BadRequestException, Body, Controller, Delete, Get, Inject, Param, Post, Put, Query, UploadedFile, UseGuards, UseInterceptors } from "@nestjs/common";
+import { FileInterceptor } from "@nestjs/platform-express";
+import { memoryStorage } from "multer";
 import { SellerTier } from "@prisma/client";
 
 import { CurrentUser } from "../common/decorators/current-user.decorator";
@@ -11,6 +13,7 @@ import type { AuthenticatedUser } from "../types";
 
 import {
   AdjustCustomerWalletDto,
+  CustomerWalletLedgerQueryDto,
   CreateDepositRequestDto,
   CreateWithdrawRequestDto,
   CreateWalletPromotionDto,
@@ -51,6 +54,14 @@ export class WalletController {
     return this.walletService.getCustomerTopupHistory(user, customerId);
   }
 
+  @Get("customer-wallets/:customerId/ledgers")
+  getCustomerWalletLedgers(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param("customerId") customerId: string,
+    @Query() query: CustomerWalletLedgerQueryDto,
+  ) {
+    return this.walletService.getCustomerWalletLedgers(user, customerId, query);
+  }
   @Put("customer-wallets/:customerId/adjust")
   @UseGuards(SellerTierGuard)
   @RequireSellerTier(SellerTier.PRO, SellerTier.ULTRA)
@@ -122,6 +133,23 @@ export class WalletController {
     @Body() body: CreateWalletPromotionDto,
   ) {
     return this.promotionService.createPromotion(user, body);
+  }
+
+  @Post("promotions/upload-image")
+  @UseGuards(SellerTierGuard)
+  @RequireSellerTier(SellerTier.PRO, SellerTier.ULTRA)
+  @UseInterceptors(FileInterceptor("file", {
+    storage: memoryStorage(),
+    limits: { fileSize: 5 * 1024 * 1024 },
+    fileFilter: (_req, file, cb) => file.mimetype.startsWith("image/")
+      ? cb(null, true)
+      : cb(new BadRequestException("Chỉ chấp nhận file ảnh."), false),
+  }))
+  uploadPromotionImage(
+    @CurrentUser() user: AuthenticatedUser,
+    @UploadedFile() file: Express.Multer.File,
+  ) {
+    return this.promotionService.uploadPromotionImage(user, file);
   }
 
   @Delete("promotions/:id")

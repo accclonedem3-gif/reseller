@@ -41,6 +41,9 @@ export interface RestockRenderData {
   available: number;
   /** Sale price in VND (nullable → the price line is skipped when null/undefined). */
   price?: number | null;
+  /** VND per USDT. A valid value adds an indicative USDT amount beside the VND price. */
+  usdtVndRate?: number | null;
+  productIcon?: string | null;
   productIconCustomEmojiId?: string | null;
   language?: RestockLanguage;
 }
@@ -68,6 +71,27 @@ function formatPrice(value: number | null | undefined, lang: RestockLanguage): s
   }
 }
 
+function formatUsdtPrice(
+  price: number | null | undefined,
+  usdtVndRate: number | null | undefined,
+): string {
+  const numericPrice = Number(price);
+  const numericRate = Number(usdtVndRate);
+  if (
+    !Number.isFinite(numericPrice) ||
+    numericPrice < 0 ||
+    !Number.isFinite(numericRate) ||
+    numericRate <= 0
+  ) {
+    return "";
+  }
+
+  return (numericPrice / numericRate).toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+}
+
 function escHtml(input: string): string {
   return String(input)
     .replace(/&/g, "&amp;")
@@ -90,6 +114,7 @@ function fillPlaceholders(raw: string, data: RestockRenderData): string {
     .replace(/\{product_name\}/g, data.productName || "")
     .replace(/\{added\}/g, String(data.addedQuantity ?? ""))
     .replace(/\{current_stock\}/g, String(data.available ?? ""))
+    .replace(/\{price_usdt\}/g, formatUsdtPrice(data.price, data.usdtVndRate))
     .replace(/\{price\}/g, formatPrice(data.price, lang));
 }
 
@@ -152,8 +177,13 @@ export function renderRestockHtml(
 
   const headerIcon = renderEmoji(template.header.icon, template.customEmojiIds.header);
   // Per-product icon (from the product itself) takes priority over the template's product icon.
+  // When a cusid exists, keep the template emoji as the HTML entity placeholder. Telegram validates
+  // that inner glyph separately; productIcon is suitable as plain fallback but may not be a valid
+  // <tg-emoji> placeholder even though the same cusid works on an inline-keyboard button.
   const productIcon = renderEmoji(
-    template.fieldIcons.product,
+    data.productIconCustomEmojiId
+      ? template.fieldIcons.product
+      : data.productIcon || template.fieldIcons.product,
     data.productIconCustomEmojiId || template.customEmojiIds.product,
   );
   const addedIcon = renderEmoji(template.fieldIcons.added, template.customEmojiIds.added);
@@ -161,6 +191,7 @@ export function renderRestockHtml(
   const priceIcon = renderEmoji(template.fieldIcons.price, template.customEmojiIds.price);
 
   const priceText = formatPrice(data.price, lang);
+  const usdtPriceText = formatUsdtPrice(data.price, data.usdtVndRate);
 
   const lines = [
     `${headerIcon} ${escHtml(fillPlaceholders(headerText, data))}`,
@@ -170,7 +201,9 @@ export function renderRestockHtml(
     `${stockIcon} ${escHtml(stockLabel)}: ${data.available}`,
   ];
   if (priceText) {
-    lines.push(`${priceIcon} ${escHtml(priceLabel)}: ${priceText}`);
+    lines.push(
+      `${priceIcon} ${escHtml(priceLabel)}: ${priceText}${usdtPriceText ? ` (~${usdtPriceText} USDT)` : ""}`,
+    );
   }
   const footer = fillPlaceholders(template.footer, data).trim();
   if (footer) {
@@ -181,12 +214,17 @@ export function renderRestockHtml(
   return { text, hasHtml: /<tg-emoji /.test(text) };
 }
 
+export function stripRestockCustomEmojiHtml(html: string): string {
+  return html.replace(/<tg-emoji\b[^>]*>([\s\S]*?)<\/tg-emoji>/gi, "$1");
+}
+
 export function buildSampleRestockData(overrides?: Partial<RestockRenderData>): RestockRenderData {
   return {
     productName: "Slot X Premium 3 tháng | BHF",
     addedQuantity: 50,
     available: 87,
     price: 89000,
+    usdtVndRate: 27000,
     language: "vi",
     ...(overrides || {}),
   };

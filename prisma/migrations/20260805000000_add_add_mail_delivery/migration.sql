@@ -1,0 +1,1 @@
+ALTER TYPE "SourceDeliveryMode" ADD VALUE IF NOT EXISTS 'ADD_MAIL';

@@ -1,4 +1,4 @@
-import { BadRequestException, Inject, Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, Inject, Injectable, NotFoundException, ServiceUnavailableException } from "@nestjs/common";
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { PaymentProvider, Prisma } from "@prisma/client";
 import {
@@ -9,6 +9,7 @@ import {
   decryptSecret,
   fetchWeb2mTransactions,
   getPayOSPaymentLinkStatus,
+  normalizeBep20Address,
   normalizeTonAddress,
   type Pay2sBankInfo,
   type PaymentLinkResult,
@@ -25,6 +26,7 @@ import {
   summarizePaypalOrder,
 } from "./paypal-payment";
 import { PaypalService } from "./paypal.service";
+import { FeatureFlagService, type FeatureFlagKey } from "./feature-flag.service";
 
 @Injectable()
 export class PaymentService {
@@ -37,6 +39,8 @@ export class PaymentService {
     private readonly binancePayService: BinancePayService,
     @Inject(PaypalService)
     private readonly paypalService: PaypalService,
+    @Inject(FeatureFlagService)
+    private readonly featureFlags: FeatureFlagService,
   ) {}
 
   private safeDecryptSecret(payload: string | null | undefined) {
@@ -100,52 +104,68 @@ export class PaymentService {
     amountUsdt: number;
     destination: string;
     transactionAt: Date;
+    tokenAddress?: string | null;
+    blockReference?: string | number | null;
+    confirmations?: number | null;
     rawPayload?: unknown;
   }) {
+    const providerFeature: FeatureFlagKey | null =
+      input.provider === PaymentProvider.USDT_TRC20 ? "payment_trc20"
+      : input.provider === PaymentProvider.USDT_BEP20 ? "payment_bep20"
+      : input.provider === PaymentProvider.USDT_SOL ? "payment_solana"
+      : input.provider === PaymentProvider.USDT_TON ? "payment_ton"
+      : null;
+    if (providerFeature) await this.featureFlags.assertEnabled(providerFeature);
+
     const allowedProviders = new Set<PaymentProvider>([
+      PaymentProvider.BINANCE,
+      PaymentProvider.OKX,
       PaymentProvider.USDT_TRC20,
+      PaymentProvider.USDT_BEP20,
       PaymentProvider.USDT_SOL,
       PaymentProvider.USDT_TON,
     ]);
     if (!allowedProviders.has(input.provider)) {
-      throw new BadRequestException("Unsupported on-chain payment provider.");
+      throw new BadRequestException("Unsupported USDT payment provider.");
     }
     if (!input.txHash || !input.externalOrderCode || !input.destination) {
-      throw new BadRequestException("On-chain receipt data is incomplete.");
+      throw new BadRequestException("USDT receipt data is incomplete.");
     }
     if (!Number.isFinite(input.amountUsdt) || input.amountUsdt <= 0) {
-      throw new BadRequestException("On-chain receipt amount is invalid.");
+      throw new BadRequestException("USDT receipt amount is invalid.");
     }
 
+    const txHashNormalized = this.normalizeOnchainTxHash(input.txHash);
     const target = await this.resolvePaymentStatusTarget(input.externalOrderCode);
     if (!target) throw new NotFoundException("Payment target not found.");
     if (target.provider !== input.provider) {
       throw new BadRequestException("On-chain receipt provider does not match the payment target.");
     }
-    if (input.provider === PaymentProvider.USDT_TON) {
-      const payload = target.rawPayloadJson && typeof target.rawPayloadJson === "object"
-        ? target.rawPayloadJson as Record<string, unknown>
-        : null;
-      const manualCrypto = payload?.manualCrypto && typeof payload.manualCrypto === "object"
-        ? payload.manualCrypto as Record<string, unknown>
-        : null;
-      const expectedAmountUsdt = Number(manualCrypto?.usdtAmount || 0);
-      const expectedDestination = normalizeTonAddress(String(manualCrypto?.address || ""));
-      const actualDestination = normalizeTonAddress(input.destination);
-      if (!Number.isFinite(expectedAmountUsdt) || expectedAmountUsdt <= 0) {
-        throw new BadRequestException("TON invoice amount is missing.");
+    const transactionAtMs = input.transactionAt?.getTime();
+    const minimumTransactionAt = target.createdAt.getTime() - 60 * 1000;
+    if (!Number.isFinite(transactionAtMs) || transactionAtMs! < minimumTransactionAt) {
+      throw new BadRequestException("Blockchain transaction predates this payment request.");
+    }
+    if (transactionAtMs! > Date.now() + 5 * 60 * 1000) {
+      throw new BadRequestException("Blockchain transaction timestamp is invalid.");
+    }
+    if (this.isReceiptBackedCryptoProvider(input.provider)) {
+      const expectation = this.extractOnchainExpectation(target);
+      const actualDestination = this.normalizeOnchainDestination(input.provider, input.destination);
+      if (Math.abs(input.amountUsdt - expectation.amountUsdt) > this.config.usdtPaymentTolerance + 1e-9) {
+        throw new BadRequestException("On-chain transfer amount does not match the invoice.");
       }
-      if (Math.abs(input.amountUsdt - expectedAmountUsdt) > 0.000001) {
-        throw new BadRequestException("TON transfer amount does not match the invoice.");
+      if (!actualDestination || actualDestination !== expectation.destination) {
+        throw new BadRequestException("On-chain transfer destination does not match the invoice.");
       }
-      if (!expectedDestination || !actualDestination || expectedDestination !== actualDestination) {
-        throw new BadRequestException("TON transfer destination does not match the invoice.");
+      if (target.expiresAt && transactionAtMs! > target.expiresAt.getTime() + 60_000) {
+        throw new BadRequestException("Blockchain transaction was made after this payment request expired.");
       }
     }
 
     const [byTransaction, byExternalOrderCode] = await Promise.all([
       this.prisma.onchainPaymentReceipt.findUnique({
-        where: { provider_txHash: { provider: input.provider, txHash: input.txHash } },
+        where: { txHashNormalized },
       }),
       this.prisma.onchainPaymentReceipt.findUnique({
         where: { externalOrderCode: input.externalOrderCode },
@@ -153,7 +173,10 @@ export class PaymentService {
     ]);
     const existing = byTransaction || byExternalOrderCode;
     if (existing) {
-      if (existing.externalOrderCode !== input.externalOrderCode || existing.txHash !== input.txHash) {
+      if (
+        existing.externalOrderCode !== input.externalOrderCode
+        || existing.txHashNormalized !== txHashNormalized
+      ) {
         throw new BadRequestException("This blockchain transaction or invoice has already been claimed.");
       }
       return existing;
@@ -164,16 +187,21 @@ export class PaymentService {
         data: {
           provider: input.provider,
           txHash: input.txHash,
+          txHashNormalized,
           externalOrderCode: input.externalOrderCode,
           amountUsdt: input.amountUsdt,
           destination: input.destination,
+          tokenAddress: input.tokenAddress || null,
+          blockReference: input.blockReference == null ? null : String(input.blockReference),
+          confirmations: input.confirmations == null ? null : Math.max(0, Math.floor(input.confirmations)),
+          verificationVersion: 2,
           transactionAt: input.transactionAt,
           rawPayloadJson: input.rawPayload as Prisma.InputJsonValue,
         },
       });
     } catch (error) {
       const raced = await this.prisma.onchainPaymentReceipt.findUnique({
-        where: { provider_txHash: { provider: input.provider, txHash: input.txHash } },
+        where: { txHashNormalized },
       });
       if (raced?.externalOrderCode === input.externalOrderCode) return raced;
       throw error;
@@ -188,6 +216,151 @@ export class PaymentService {
         rawPayloadJson: rawPayload as Prisma.InputJsonValue,
       },
     });
+  }
+
+  async getOnchainPaymentExpectation(externalOrderCode: string) {
+    const target = await this.resolvePaymentStatusTarget(externalOrderCode);
+    if (!target) throw new NotFoundException("Payment target not found.");
+    if (!this.isReceiptBackedCryptoProvider(target.provider)) {
+      throw new BadRequestException("Payment target is not a receipt-backed crypto payment.");
+    }
+    const expectation = this.extractOnchainExpectation(target);
+    return {
+      ...expectation,
+      provider: target.provider,
+      shopId: target.shopId,
+      createdAt: target.createdAt,
+      expiresAt: target.expiresAt,
+    };
+  }
+
+  async assertCryptoReceiptClaimed(
+    externalOrderCode: string,
+    provider: PaymentProvider,
+    txHash?: string | null,
+  ) {
+    if (!this.isReceiptBackedCryptoProvider(provider)) return null;
+
+    const receipt = await this.prisma.onchainPaymentReceipt.findUnique({
+      where: { externalOrderCode },
+    });
+    if (!receipt || receipt.provider !== provider) {
+      throw new BadRequestException(
+        "Crypto payment cannot be settled before its provider receipt is verified.",
+      );
+    }
+
+    if (txHash) {
+      const normalized = this.normalizeOnchainTxHash(txHash);
+      if (receipt.txHashNormalized !== normalized) {
+        throw new BadRequestException(
+          "Crypto transaction hash does not match the verified receipt.",
+        );
+      }
+    }
+
+    return receipt;
+  }
+
+  normalizeOnchainTxHash(value: string) {
+    const trimmed = String(value || "").trim();
+    if (!trimmed) throw new BadRequestException("Blockchain transaction hash is required.");
+    const withoutPrefix = trimmed.replace(/^0x/i, "");
+    if (/^[a-fA-F0-9]{64}$/.test(withoutPrefix)) return withoutPrefix.toLowerCase();
+    return trimmed;
+  }
+
+  private isDirectOnchainProvider(provider: PaymentProvider) {
+    return provider === PaymentProvider.USDT_TRC20
+      || provider === PaymentProvider.USDT_BEP20
+      || provider === PaymentProvider.USDT_SOL
+      || provider === PaymentProvider.USDT_TON;
+  }
+
+  private isReceiptBackedCryptoProvider(provider: PaymentProvider) {
+    return provider === PaymentProvider.BINANCE
+      || provider === PaymentProvider.OKX
+      || this.isDirectOnchainProvider(provider);
+  }
+
+  private normalizeOnchainDestination(provider: PaymentProvider, value: string) {
+    if (provider === PaymentProvider.USDT_BEP20) {
+      return normalizeBep20Address(value) || "";
+    }
+    if (provider === PaymentProvider.USDT_TON) {
+      return normalizeTonAddress(value) || "";
+    }
+    return String(value || "").trim();
+  }
+
+  private extractOnchainExpectation(target: {
+    provider: PaymentProvider;
+    rawPayloadJson?: Prisma.JsonValue | null;
+  }) {
+    const payload = target.rawPayloadJson && typeof target.rawPayloadJson === "object"
+      ? target.rawPayloadJson as Record<string, unknown>
+      : null;
+    const manualCrypto = payload?.manualCrypto && typeof payload.manualCrypto === "object"
+      ? payload.manualCrypto as Record<string, unknown>
+      : null;
+    const amountUsdt = Number(manualCrypto?.usdtAmount || 0);
+    const destination = this.normalizeOnchainDestination(
+      target.provider,
+      String(manualCrypto?.address || manualCrypto?.uid || ""),
+    );
+    if (!Number.isFinite(amountUsdt) || amountUsdt <= 0) {
+      throw new BadRequestException("On-chain invoice amount is missing.");
+    }
+    if (!destination) {
+      throw new BadRequestException("On-chain invoice destination is missing or invalid.");
+    }
+    return { amountUsdt, destination };
+  }
+
+  private async reserveOnchainInvoiceAmount(input: {
+    provider: PaymentProvider;
+    destination: string;
+    amountUsdt: number;
+    externalOrderCode: string;
+  }) {
+    const destination = this.normalizeOnchainDestination(input.provider, input.destination);
+    if (!destination) throw new BadRequestException("On-chain receiving address is invalid.");
+
+    const existing = await this.prisma.onchainInvoiceReservation.findUnique({
+      where: { externalOrderCode: input.externalOrderCode },
+    });
+    if (existing) return Number(existing.amountKey);
+
+    const now = new Date();
+    await this.prisma.onchainInvoiceReservation.deleteMany({
+      where: { expiresAt: { lt: now } },
+    });
+    const step = Math.max(0.01, this.config.usdtPaymentTolerance * 2 + 0.01);
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      const candidate = this.ceilToDecimals(input.amountUsdt + attempt * step, 2);
+      const amountKey = candidate.toFixed(8);
+      try {
+        await this.prisma.onchainInvoiceReservation.create({
+          data: {
+            provider: input.provider,
+            destination,
+            amountKey,
+            externalOrderCode: input.externalOrderCode,
+            expiresAt: new Date(now.getTime() + 60 * 60 * 1000),
+          },
+        });
+        return candidate;
+      } catch (error) {
+        if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== "P2002") {
+          throw error;
+        }
+        const raced = await this.prisma.onchainInvoiceReservation.findUnique({
+          where: { externalOrderCode: input.externalOrderCode },
+        });
+        if (raced) return Number(raced.amountKey);
+      }
+    }
+    throw new ServiceUnavailableException("Could not reserve a unique on-chain payment amount.");
   }
 
   resolveUsdtVndRate(paymentConfig: {
@@ -238,10 +411,10 @@ export class PaymentService {
     providerReference?: string;
     bankInfo?: PayOSBankInfo;
     manualCrypto?: {
-      provider: "BINANCE" | "OKX" | "USDT_TRC20" | "USDT_SOL" | "USDT_TON";
+      provider: "BINANCE" | "OKX" | "USDT_TRC20" | "USDT_BEP20" | "USDT_SOL" | "USDT_TON";
       uid?: string | null;
       address?: string | null;
-      network?: "TRC20" | "SOLANA" | "TON" | null;
+      network?: "TRC20" | "BEP20" | "SOLANA" | "TON" | null;
       usdtAmount: number;
       usdtVndRate: number;
       note: string;
@@ -268,6 +441,16 @@ export class PaymentService {
     const provider = this.config.paymentMode === "mock"
       ? PaymentProvider.MOCK
       : (input.providerOverride || paymentConfig?.provider || PaymentProvider.PAYOS);
+
+    const providerFeature: FeatureFlagKey | null =
+      provider === PaymentProvider.USDT_TRC20 ? "payment_trc20"
+      : provider === PaymentProvider.USDT_BEP20 ? "payment_bep20"
+      : provider === PaymentProvider.USDT_SOL ? "payment_solana"
+      : provider === PaymentProvider.USDT_TON ? "payment_ton"
+      : provider === PaymentProvider.PAYOS || provider === PaymentProvider.PAY2S || provider === PaymentProvider.WEB2M
+        ? "payment_bank"
+        : null;
+    if (providerFeature) await this.featureFlags.assertEnabled(providerFeature);
 
     if (provider === PaymentProvider.PAYPAL) {
       const paypalVndRate = this.resolvePaypalVndRate(paymentConfig);
@@ -320,6 +503,7 @@ export class PaymentService {
       provider === PaymentProvider.BINANCE ||
       provider === PaymentProvider.OKX ||
       provider === PaymentProvider.USDT_TRC20 ||
+      provider === PaymentProvider.USDT_BEP20 ||
       provider === PaymentProvider.USDT_SOL ||
       provider === PaymentProvider.USDT_TON
     ) {
@@ -449,7 +633,7 @@ export class PaymentService {
       amount: number;
     },
   ) {
-    const cryptoProvider: "BINANCE" | "OKX" | "USDT_TRC20" | "USDT_SOL" | "USDT_TON" =
+    const cryptoProvider: "BINANCE" | "OKX" | "USDT_TRC20" | "USDT_BEP20" | "USDT_SOL" | "USDT_TON" =
       provider === PaymentProvider.BINANCE
         ? "BINANCE"
         : provider === PaymentProvider.OKX
@@ -458,7 +642,9 @@ export class PaymentService {
             ? "USDT_SOL"
             : provider === PaymentProvider.USDT_TON
               ? "USDT_TON"
-              : "USDT_TRC20";
+              : provider === PaymentProvider.USDT_BEP20
+                ? "USDT_BEP20"
+                : "USDT_TRC20";
     const uid = String(
       cryptoProvider === "BINANCE"
         ? paymentConfig?.binanceUid || ""
@@ -469,15 +655,21 @@ export class PaymentService {
     const address = String(
       cryptoProvider === "USDT_TRC20"
         ? paymentConfig?.usdtTrc20Address || ""
-        : cryptoProvider === "USDT_SOL"
-          ? paymentConfig?.usdtSolanaAddress || ""
-          : cryptoProvider === "USDT_TON"
-            ? paymentConfig?.usdtTonAddress || ""
-            : "",
+        : cryptoProvider === "USDT_BEP20"
+          ? paymentConfig?.usdtBep20Address || ""
+          : cryptoProvider === "USDT_SOL"
+            ? paymentConfig?.usdtSolanaAddress || ""
+            : cryptoProvider === "USDT_TON"
+              ? paymentConfig?.usdtTonAddress || ""
+              : "",
     ).trim();
 
     if (cryptoProvider === "USDT_TRC20" && !address) {
       throw new BadRequestException("USDT TRC20 address is not configured.");
+    }
+
+    if (cryptoProvider === "USDT_BEP20" && !address) {
+      throw new BadRequestException("USDT BEP20 address is not configured.");
     }
 
     if (cryptoProvider === "USDT_SOL" && !address) {
@@ -488,7 +680,7 @@ export class PaymentService {
       throw new BadRequestException("USDT TON address is not configured.");
     }
 
-    if (!["USDT_TRC20", "USDT_SOL", "USDT_TON"].includes(cryptoProvider) && !uid) {
+    if (!["USDT_TRC20", "USDT_BEP20", "USDT_SOL", "USDT_TON"].includes(cryptoProvider) && !uid) {
       throw new BadRequestException(
         cryptoProvider === "BINANCE"
           ? "Binance UID is not configured."
@@ -608,6 +800,53 @@ export class PaymentService {
       usdtAmount = targetUsdt;
     }
 
+    // Anti-collision for USDT_BEP20 (auto-detect needs unique amounts to match)
+    if (cryptoProvider === "USDT_BEP20") {
+      const [recentPendingOrders, recentPendingTopups, recentPendingDeposits] = await Promise.all([
+        this.prisma.paymentTransaction.findMany({
+          where: {
+            provider: PaymentProvider.USDT_BEP20,
+            status: "PENDING",
+            createdAt: { gte: new Date(Date.now() - 60 * 60 * 1000) },
+          },
+          select: { rawPayloadJson: true },
+        }),
+        this.prisma.customerWalletTopup.findMany({
+          where: {
+            provider: PaymentProvider.USDT_BEP20,
+            status: "PENDING",
+            createdAt: { gte: new Date(Date.now() - 60 * 60 * 1000) },
+          },
+          select: { rawPayloadJson: true },
+        }),
+        this.prisma.depositRequest.findMany({
+          where: {
+            provider: PaymentProvider.USDT_BEP20,
+            status: "PENDING",
+            createdAt: { gte: new Date(Date.now() - 60 * 60 * 1000) },
+          },
+          select: { rawPayloadJson: true },
+        }),
+      ]);
+      const usedAmounts = new Set<number>();
+      for (const t of [...recentPendingOrders, ...recentPendingTopups, ...recentPendingDeposits]) {
+        const payload = t.rawPayloadJson as any;
+        const amount = Number(payload?.manualCrypto?.usdtAmount || 0);
+        if (amount > 0) usedAmounts.add(Number(amount.toFixed(2)));
+      }
+      const minimumGap = Math.max(0.01, this.config.usdtPaymentTolerance * 2);
+      let offset = 0;
+      let targetUsdt = usdtAmount;
+      const collides = (candidate: number) => [...usedAmounts].some(
+        (used) => Math.abs(used - candidate) <= minimumGap + 1e-9,
+      );
+      while (collides(Number(targetUsdt.toFixed(2))) && offset < 99) {
+        offset += 0.01;
+        targetUsdt = this.ceilToDecimals(usdtAmount + offset, 2);
+      }
+      usdtAmount = targetUsdt;
+    }
+
     // Anti-collision for USDT_SOL (auto-detect needs unique amounts to match)
     if (cryptoProvider === "USDT_SOL") {
       const [recentPendingOrders, recentPendingTopups] = await Promise.all([
@@ -682,13 +921,33 @@ export class PaymentService {
         if (amount > 0) usedAmounts.add(Number(amount.toFixed(2)));
       }
 
+      // Matching accepts +/- USDT_PAYMENT_TOLERANCE, so invoice amounts must be farther
+      // apart than twice that tolerance; merely avoiding exact duplicates is insufficient.
+      const minimumGap = Math.max(0.01, this.config.usdtPaymentTolerance * 2);
       let offset = 0;
       let targetUsdt = usdtAmount;
-      while (usedAmounts.has(Number(targetUsdt.toFixed(2))) && offset < 99) {
+      const collides = (candidate: number) => [...usedAmounts].some(
+        (used) => Math.abs(used - candidate) <= minimumGap + 1e-9,
+      );
+      while (collides(Number(targetUsdt.toFixed(2))) && offset < 99) {
         offset += 0.01;
         targetUsdt = this.ceilToDecimals(usdtAmount + offset, 2);
       }
       usdtAmount = targetUsdt;
+    }
+
+    if ([
+      "USDT_TRC20",
+      "USDT_BEP20",
+      "USDT_SOL",
+      "USDT_TON",
+    ].includes(cryptoProvider)) {
+      usdtAmount = await this.reserveOnchainInvoiceAmount({
+        provider,
+        destination: address,
+        amountUsdt: usdtAmount,
+        externalOrderCode: input.externalOrderCode,
+      });
     }
 
     const note = input.externalOrderCode;
@@ -698,18 +957,20 @@ export class PaymentService {
       address: address || null,
       network: cryptoProvider === "USDT_TRC20"
         ? ("TRC20" as const)
-        : cryptoProvider === "USDT_SOL"
-          ? ("SOLANA" as const)
-          : cryptoProvider === "USDT_TON"
-            ? ("TON" as const)
-            : null,
+        : cryptoProvider === "USDT_BEP20"
+          ? ("BEP20" as const)
+          : cryptoProvider === "USDT_SOL"
+            ? ("SOLANA" as const)
+            : cryptoProvider === "USDT_TON"
+              ? ("TON" as const)
+              : null,
       usdtAmount,
       usdtVndRate: rate,
       note,
       hasPersonalApi,
     };
     const checkoutUrl = `manual-crypto://${cryptoProvider.toLowerCase()}/${input.externalOrderCode}`;
-    const qrCode = ["USDT_TRC20", "USDT_SOL", "USDT_TON"].includes(cryptoProvider)
+    const qrCode = ["USDT_TRC20", "USDT_BEP20", "USDT_SOL", "USDT_TON"].includes(cryptoProvider)
       ? `qrdata:${address}`
       : null;
 
@@ -929,6 +1190,7 @@ export class PaymentService {
           provider: PaymentProvider.WEB2M,
           status: "PENDING",
           createdAt: { gte: since },
+          order: { shopId },
         },
         select: {
           externalOrderCode: true,
@@ -937,7 +1199,8 @@ export class PaymentService {
         },
         take: 200,
       }),
-      this.prisma.depositRequest.findMany({
+      this.isPlatformShop(shopId)
+        ? this.prisma.depositRequest.findMany({
         where: {
           provider: PaymentProvider.WEB2M,
           status: "PENDING",
@@ -948,14 +1211,16 @@ export class PaymentService {
           externalOrderCode: true,
           amount: true,
         },
-        take: 200,
-      }),
+          take: 200,
+        })
+        : Promise.resolve([]),
       // Customer wallet top-ups — same gap as PAY2S: without this the WEB2M bank webhook only
       // matched orders + seller deposits, so a wallet top-up never auto-credited.
       this.prisma.customerWalletTopup.findMany({
         where: {
           provider: PaymentProvider.WEB2M,
           status: "PENDING",
+          shopId,
           createdAt: { gte: since },
         },
         select: {
@@ -1103,7 +1368,11 @@ export class PaymentService {
           provider: PaymentProvider.PAY2S,
           status: "PENDING",
         },
-        select: { externalOrderCode: true, amount: true },
+        select: {
+          externalOrderCode: true,
+          amount: true,
+          order: { select: { orderCode: true } },
+        },
         orderBy: { createdAt: "desc" },
         take: 100,
       }),
@@ -1131,16 +1400,20 @@ export class PaymentService {
     ]);
 
     const candidates = [
-      ...pendingTx.map((p) => ({ externalOrderCode: p.externalOrderCode, amount: p.amount })),
-      ...pendingDeposits.map((d) => ({ externalOrderCode: d.externalOrderCode!, amount: d.amount })),
-      ...pendingTopups.map((t) => ({ externalOrderCode: t.externalOrderCode, amount: t.amount })),
+      ...pendingTx.map((p) => ({ externalOrderCode: p.externalOrderCode, orderCode: p.order.orderCode, amount: p.amount })),
+      ...pendingDeposits.map((d) => ({ externalOrderCode: d.externalOrderCode!, orderCode: null, amount: d.amount })),
+      ...pendingTopups.map((t) => ({ externalOrderCode: t.externalOrderCode, orderCode: null, amount: t.amount })),
     ];
 
     for (const p of candidates) {
       const code = String(p.externalOrderCode).toUpperCase().replace(/[^A-Z0-9]/g, "");
       if (!code) continue;
       const last6 = code.slice(-6);
-      const codeMatches = normalized.includes(code) || (last6.length === 6 && normalized.includes(last6));
+      const orderCode = String(p.orderCode || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+      const codeMatches =
+        normalized.includes(code) ||
+        (last6.length === 6 && normalized.includes(last6)) ||
+        (orderCode.length > 0 && normalized.includes(orderCode));
       if (!codeMatches) continue;
       const expectedAmount = Number(p.amount);
       // tolerance ±1 VND for rounding
@@ -1580,6 +1853,8 @@ export class PaymentService {
     kind: "order" | "customer_topup" | "seller_deposit" | "connection_topup";
     provider: PaymentProvider;
     shopId: string;
+    createdAt: Date;
+    expiresAt: Date | null;
     localPaymentStatus: string | null;
     localOrderStatus?: string | null;
     failureReason?: string | null;
@@ -1608,6 +1883,8 @@ export class PaymentService {
         kind: "order",
         provider: paymentTransaction.provider,
         shopId: paymentTransaction.order.shopId,
+        createdAt: paymentTransaction.createdAt,
+        expiresAt: new Date(paymentTransaction.createdAt.getTime() + 30 * 60 * 1000),
         localPaymentStatus: paymentTransaction.status,
         localOrderStatus: paymentTransaction.order.status,
         failureReason: paymentTransaction.order.failureReason,
@@ -1629,6 +1906,8 @@ export class PaymentService {
         shopId: true,
         status: true,
         rawPayloadJson: true,
+        createdAt: true,
+        expiresAt: true,
       },
     });
 
@@ -1637,6 +1916,8 @@ export class PaymentService {
         kind: "customer_topup",
         provider: customerTopup.provider,
         shopId: customerTopup.shopId,
+        createdAt: customerTopup.createdAt,
+        expiresAt: customerTopup.expiresAt,
         localPaymentStatus: customerTopup.status,
         rawPayloadJson: customerTopup.rawPayloadJson,
       };
@@ -1651,13 +1932,15 @@ export class PaymentService {
         sellerId: true,
         status: true,
         rawPayloadJson: true,
+        createdAt: true,
+        expiresAt: true,
       },
     });
 
     if (!deposit) {
       const connectionTopup = await this.prisma.connectionTopupRequest.findUnique({
         where: { externalOrderCode },
-        select: { provider: true, upstreamShopId: true, status: true, rawPayloadJson: true },
+        select: { provider: true, upstreamShopId: true, status: true, rawPayloadJson: true, createdAt: true, expiresAt: true },
       });
 
       if (!connectionTopup) {
@@ -1668,6 +1951,8 @@ export class PaymentService {
         kind: "connection_topup",
         provider: connectionTopup.provider,
         shopId: connectionTopup.upstreamShopId,
+        createdAt: connectionTopup.createdAt,
+        expiresAt: connectionTopup.expiresAt,
         localPaymentStatus: connectionTopup.status,
         rawPayloadJson: connectionTopup.rawPayloadJson,
       };
@@ -1693,6 +1978,8 @@ export class PaymentService {
       kind: "seller_deposit",
       provider: deposit.provider,
       shopId: shop.id,
+      createdAt: deposit.createdAt,
+      expiresAt: deposit.expiresAt,
       localPaymentStatus: deposit.status,
       rawPayloadJson: deposit.rawPayloadJson,
     };
