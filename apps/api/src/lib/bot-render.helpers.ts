@@ -59,6 +59,47 @@ export class BotRenderHelpers {
       .replace(/>/g, "&gt;");
   }
 
+  /**
+   * Escape text characters (&, <, >) without double-encoding existing valid XML entities.
+   */
+  escapeHtmlText(value: string): string {
+    return String(value || "")
+      .replace(/&(?!amp;|lt;|gt;|quot;|#\d+;|#x[\da-f]+;)/gi, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
+  }
+
+  /**
+   * Preserves valid Telegram HTML tags (<b>, <i>, <u>, <s>, <a>, <code>, <pre>, <blockquote>, <tg-spoiler>, <tg-emoji>)
+   * while safely escaping raw characters (&, <, >) that are not part of valid tags.
+   */
+  sanitizeTelegramHtml(value: string): string {
+    if (!value) return "";
+    const raw = String(value);
+    const validTagRegex =
+      /<\/?(?:b|strong|i|em|u|ins|s|strike|del|code|pre|blockquote|tg-spoiler)\b[^>]*>|<a\s+href=["'][^"']*["'][^>]*>|<\/a>|<tg-emoji\s+emoji-id=["']\d+["'][^>]*>|<\/tg-emoji>|<span\s+class=["']tg-spoiler["'][^>]*>|<\/span>/gi;
+
+    const parts: string[] = [];
+    let lastIndex = 0;
+    let match: RegExpExecArray | null;
+
+    while ((match = validTagRegex.exec(raw)) !== null) {
+      const textBefore = raw.substring(lastIndex, match.index);
+      if (textBefore) {
+        parts.push(this.escapeHtmlText(textBefore));
+      }
+      parts.push(match[0]);
+      lastIndex = validTagRegex.lastIndex;
+    }
+
+    const remaining = raw.substring(lastIndex);
+    if (remaining) {
+      parts.push(this.escapeHtmlText(remaining));
+    }
+
+    return parts.join("");
+  }
+
   truncateLabel(value: string, maxLength: number) {
     if (value.length <= maxLength) {
       return value;
@@ -702,7 +743,9 @@ export class BotRenderHelpers {
     language: BotLanguage = "vi",
     supportNote?: string | null,
   ) {
-    const note = supportNote?.trim() || null;
+    const note = supportNote?.trim()
+      ? this.sanitizeTelegramHtml(supportNote.trim())
+      : null;
     if (language === "en") {
       return [
         `💬 Support | ${shopName}`,
@@ -784,14 +827,14 @@ export class BotRenderHelpers {
     iconOverride?: string,
   ) {
     const safeName = this.escapeHtml(shopName);
-    const safeTagline = this.escapeHtml(tagline);
+    const safeTagline = this.sanitizeTelegramHtml(tagline);
     const icon = iconOverride !== undefined ? iconOverride.trim() : "🔥";
     const title = icon ? `${icon} <b>${safeName}</b>` : `<b>${safeName}</b>`;
 
     if (language === "en") {
       const footer =
         footerOverride != null
-          ? this.escapeHtml(footerOverride)
+          ? this.sanitizeTelegramHtml(footerOverride)
           : "Choose a product below to start ↘️";
       return [title, safeTagline, ...(footer ? ["", footer] : [])].join("\n");
     }
@@ -799,7 +842,7 @@ export class BotRenderHelpers {
     if (language === "th") {
       const footer =
         footerOverride != null
-          ? this.escapeHtml(footerOverride)
+          ? this.sanitizeTelegramHtml(footerOverride)
           : "เลือกสินค้าด้านล่างเพื่อเริ่มต้น ↘️";
       return [title, safeTagline, ...(footer ? ["", footer] : [])].join("\n");
     }
@@ -807,14 +850,14 @@ export class BotRenderHelpers {
     if (language === "zh") {
       const footer =
         footerOverride != null
-          ? this.escapeHtml(footerOverride)
+          ? this.sanitizeTelegramHtml(footerOverride)
           : "请选择下方商品开始购买 ↘️";
       return [title, safeTagline, ...(footer ? ["", footer] : [])].join("\n");
     }
 
     const footer =
       footerOverride != null
-        ? this.escapeHtml(footerOverride)
+        ? this.sanitizeTelegramHtml(footerOverride)
         : "Chọn sản phẩm bên dưới để bắt đầu nhé ↘️";
     return [title, safeTagline, ...(footer ? ["", footer] : [])].join("\n");
   }

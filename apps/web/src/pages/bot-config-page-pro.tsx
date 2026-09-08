@@ -22,6 +22,7 @@ import { Button } from "@/components/ui/button";
 import { InfoHint } from "@/components/ui/info-hint";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { TelegramRichEditor } from "@/components/dashboard/telegram-rich-editor";
 import { useToast } from "@/components/ui/toast";
 import { useAuth } from "@/auth/auth-provider";
 import { api } from "@/lib/api";
@@ -1305,16 +1306,18 @@ export function BotConfigPage() {
                 </Field>
               </div>
               <div className="sm:col-span-2">
-                <Field label={t.fieldTagline} hint="Optional">
-                  <Textarea
-                    className="min-h-[80px]"
-                    value={form.shopTagline}
-                    onChange={(e) =>
-                      setForm((c) => ({ ...c, shopTagline: e.target.value }))
-                    }
-                    placeholder={t.phTagline}
-                  />
-                </Field>
+                <TelegramRichEditor
+                  label={t.fieldTagline}
+                  hint="Optional"
+                  description="Hiển thị ở trang chủ bot Telegram ngay dưới tên hoặc banner của shop. Bạn có thể chèn emoji động, số neon, huy hiệu badge để trang chào hàng nổi bật."
+                  value={form.shopTagline}
+                  onChange={(val) =>
+                    setForm((c) => ({ ...c, shopTagline: val }))
+                  }
+                  placeholder={t.phTagline}
+                  rows={4}
+                  botUsername={configQuery.data?.telegramBotUsername}
+                />
               </div>
               <Field label={t.fieldTelegramSupport}>
                 <Input
@@ -1335,23 +1338,18 @@ export function BotConfigPage() {
                 />
               </Field>
               <div className="sm:col-span-2">
-                <Field label="Tin nhắn hỗ trợ tùy chọn" hint="Optional">
-                  <Textarea
-                    className="min-h-[80px]"
-                    value={form.supportNote}
-                    onChange={(e) =>
-                      setForm((c) => ({ ...c, supportNote: e.target.value }))
-                    }
-                    placeholder="VD: Vui lòng cung cấp email đã đặt hàng và ảnh chụp màn hình lỗi để được hỗ trợ nhanh hơn."
-                  />
-                  <p
-                    className="mt-1 text-[11px]"
-                    style={{ color: "var(--tx-f)" }}
-                  >
-                    Hiển thị phía trên thông tin liên hệ Telegram/Zalo khi khách
-                    bấm Hỗ trợ.
-                  </p>
-                </Field>
+                <TelegramRichEditor
+                  label="Tin nhắn hỗ trợ tùy chọn"
+                  hint="Optional"
+                  description="Hiển thị phía trên thông tin liên hệ Telegram/Zalo khi khách bấm Hỗ trợ."
+                  value={form.supportNote}
+                  onChange={(val) =>
+                    setForm((c) => ({ ...c, supportNote: val }))
+                  }
+                  placeholder="VD: Vui lòng cung cấp email đã đặt hàng và ảnh chụp màn hình lỗi để được hỗ trợ nhanh hơn."
+                  rows={3}
+                  botUsername={configQuery.data?.telegramBotUsername}
+                />
               </div>
             </div>
             <div className="mt-6 flex justify-end">

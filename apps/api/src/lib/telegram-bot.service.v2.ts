@@ -810,6 +810,7 @@ export class TelegramBotService {
               [this.navBtn("home", messageLanguage, "home:menu")],
             ],
           },
+          "HTML",
         );
         return { ok: true, actions };
       }
@@ -1207,6 +1208,60 @@ export class TelegramBotService {
           },
         );
       }
+      return { ok: true, actions };
+    }
+
+    // Inspect custom emojis sent by owner or /getid, /emoji command
+    const customEmojiEntities = (message?.entities || []).filter(
+      (e: any) => e.type === "custom_emoji" && e.custom_emoji_id,
+    );
+    const isExplicitEmojiCmd =
+      message?.text?.startsWith("/getid") ||
+      message?.text?.startsWith("/emoji");
+    const isOwner =
+      Boolean(shop.botConfig?.ownerTelegramUserId) &&
+      String(message?.from?.id || "") === shop.botConfig?.ownerTelegramUserId;
+    const isShortEmojiMessage =
+      (message?.text?.trim()?.length ?? 0) <= 30 && customEmojiEntities.length > 0;
+
+    if (
+      customEmojiEntities.length > 0 &&
+      (isExplicitEmojiCmd || (isOwner && isShortEmojiMessage))
+    ) {
+      const uniqueIds = Array.from(
+        new Set(customEmojiEntities.map((e: any) => String(e.custom_emoji_id))),
+      );
+      const lines = [
+        "✨ <b>Thông tin Custom Emoji đã nhận:</b>",
+        "",
+        ...uniqueIds.map((id, index) => {
+          return [
+            `<b>Icon #${index + 1}:</b> <tg-emoji emoji-id="${id}">⭐️</tg-emoji>`,
+            `• ID: <code>${id}</code>`,
+            `• Thẻ HTML: <code>&lt;tg-emoji emoji-id="${id}"&gt;⭐️&lt;/tg-emoji&gt;</code>`,
+            "",
+          ].join("\n");
+        }),
+        "💡 <i>Chạm vào mã ID hoặc thẻ HTML ở trên để sao chép, sau đó dán vào trang Cấu hình bot!</i>",
+      ];
+      await this.sendText(
+        outboundToken,
+        message.chat.id,
+        lines.join("\n"),
+        actions,
+        undefined,
+        "HTML",
+      );
+      return { ok: true, actions };
+    } else if (isExplicitEmojiCmd) {
+      await this.sendText(
+        outboundToken,
+        message.chat.id,
+        "💡 <b>Hướng dẫn lấy mã Emoji ID:</b>\nHãy gửi một tin nhắn chứa các icon/emoji động bạn muốn lấy mã vào đây. Bot sẽ tự động trích xuất mã ID và thẻ HTML để bạn sao chép!",
+        actions,
+        undefined,
+        "HTML",
+      );
       return { ok: true, actions };
     }
 
@@ -1817,6 +1872,7 @@ export class TelegramBotService {
             ],
           },
           actions,
+          "HTML",
         );
       } else if (data === "home:api") {
         await this.handleProKeyMenu(
@@ -2248,8 +2304,8 @@ export class TelegramBotService {
     const welcomeEmojiId = custMsgEmojiIds["welcomeMessage"]?.trim() || "";
     const welcomeFormatted = welcomeExtra
       ? welcomeEmojiId
-        ? `<tg-emoji emoji-id="${welcomeEmojiId}">👋</tg-emoji> ${this.escapeHtml(welcomeExtra)}`
-        : this.escapeHtml(welcomeExtra)
+        ? `<tg-emoji emoji-id="${welcomeEmojiId}">👋</tg-emoji> ${this.render.sanitizeTelegramHtml(welcomeExtra)}`
+        : this.render.sanitizeTelegramHtml(welcomeExtra)
       : "";
     const fullHomeText = welcomeFormatted
       ? `${homeText}\n\n${welcomeFormatted}`
@@ -8227,7 +8283,7 @@ export class TelegramBotService {
     const productNoteEmojiId = /^\d+$/.test(productNoteEmojiIdRaw)
       ? productNoteEmojiIdRaw
       : "";
-    const safeProductNote = this.escapeHtml(productNoteRaw);
+    const safeProductNote = this.render.sanitizeTelegramHtml(productNoteRaw);
     const productNote = safeProductNote
       ? productNoteEmojiId
         ? `<tg-emoji emoji-id="${productNoteEmojiId}">💬</tg-emoji> ${safeProductNote}`
