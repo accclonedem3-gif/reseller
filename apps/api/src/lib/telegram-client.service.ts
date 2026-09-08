@@ -217,10 +217,25 @@ export class TelegramClientService {
       ...(parseMode ? { parse_mode: parseMode } : {}),
       ...(entities && entities.length > 0 ? { entities } : {}),
     }).catch(async (err: unknown) => {
+      const isMarkupTooLong = this.isMarkupTooLongError(err);
+      if (isMarkupTooLong) {
+        const safeMarkup = this.makeMarkupSafe(replyMarkup);
+        try {
+          const res = await telegramSendMessage(token, chatId, text, {
+            reply_markup: safeMarkup,
+            ...(parseMode ? { parse_mode: parseMode } : {}),
+            ...(entities && entities.length > 0 ? { entities } : {}),
+          });
+          await onCusidStripped?.();
+          return res;
+        } catch {
+          // fall through to text cusid stripping or further retry below
+        }
+      }
       const hasInlineEmojiIds = !!(
         replyMarkup && this.hasInlineEmojiIds(replyMarkup)
       );
-      if (!hasInlineEmojiIds && !hasTextEmojiIds) throw err;
+      if (!hasInlineEmojiIds && !hasTextEmojiIds && !isMarkupTooLong) throw err;
       // Retry once unchanged to cover transient Telegram errors. If that still fails, isolate one
       // bad body cusid at a time. A manually configured product icon may be invalid while all of the
       // template + button cusids remain valid; never erase the whole visual template for one bad id.
@@ -379,6 +394,19 @@ export class TelegramClientService {
           .includes("not modified")
       )
         return;
+      if (this.isMarkupTooLongError(err)) {
+        const safeMarkup = this.makeMarkupSafe(replyMarkup);
+        try {
+          await telegramEditMessageText(token, chatId, messageId, text, {
+            reply_markup: safeMarkup,
+            ...(parseMode ? { parse_mode: parseMode } : {}),
+          });
+          await onCusidStripped?.();
+          return;
+        } catch {
+          // fall through to resend below
+        }
+      }
       if (!resendOnFailure) {
         const plainMarkup =
           this.stripInlineEmojiIds(replyMarkup) ?? replyMarkup;
@@ -407,6 +435,12 @@ export class TelegramClientService {
       try {
         await telegramSendMessage(token, chatId, text, opts(replyMarkup));
       } catch (err2) {
+        if (this.isMarkupTooLongError(err2)) {
+          const safeMarkup = this.makeMarkupSafe(replyMarkup);
+          await telegramSendMessage(token, chatId, text, opts(safeMarkup));
+          await onCusidStripped?.();
+          return;
+        }
         if (!hasEmoji) throw err2;
         await telegramSendMessage(
           token,
@@ -491,5 +525,32 @@ export class TelegramClientService {
     await telegramAnswerCallbackQuery(token, callbackQueryId).catch(
       () => undefined,
     );
+  }
+
+  isMarkupTooLongError(err: unknown): boolean {
+    const msg = String((err as Error)?.message || "").toLowerCase();
+    return (
+      msg.includes("reply markup is too long") ||
+      msg.includes("button_row_too_long")
+    );
+  }
+
+  makeMarkupSafe(
+    markup: Record<string, unknown> | undefined,
+  ): Record<string, unknown> | undefined {
+    if (!markup) return markup;
+    const stripped = this.stripInlineEmojiIds(markup) ?? markup;
+    if (!Array.isArray(stripped.inline_keyboard)) return stripped;
+    const rows = stripped.inline_keyboard as unknown[][];
+    if (rows.length <= 15 && JSON.stringify(stripped).length < 7500) {
+      return stripped;
+    }
+    // Keep first 12 rows, and up to 2 trailing nav rows if available
+    const head = rows.slice(0, 12);
+    const tail = rows.length > 14 ? rows.slice(-2) : [];
+    return {
+      ...stripped,
+      inline_keyboard: [...head, ...tail],
+    };
   }
 }
