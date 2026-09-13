@@ -24,6 +24,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/components/ui/toast";
+import { AdjustBalanceModal } from "@/components/admin/adjust-balance-modal";
 import { api } from "@/lib/api";
 import { formatCurrency, formatDate, formatStatusLabel } from "@/lib/format";
 
@@ -318,6 +319,7 @@ export function AdminCtvPage() {
   const [filterStatus, setFilterStatus] = useState("");
   const [editingAccount, setEditingAccount] = useState<SellerAccount | null>(null);
   const [tierModalAccount, setTierModalAccount] = useState<SellerAccount | null>(null);
+  const [adjustBalanceAccount, setAdjustBalanceAccount] = useState<SellerAccount | null>(null);
   const [showCreatePanel, setShowCreatePanel] = useState(false);
 
   const accountsQuery = useQuery({
@@ -389,6 +391,17 @@ export function AdminCtvPage() {
           onClose={() => setTierModalAccount(null)}
           onConfirm={(tier, tierStartedAt, tierExpiresAt) => tierMutation.mutate({ userId: tierModalAccount.id, tier, tierStartedAt, tierExpiresAt })}
           loading={tierMutation.isPending}
+        />
+      )}
+
+      {adjustBalanceAccount && (
+        <AdjustBalanceModal
+          account={adjustBalanceAccount}
+          onClose={() => setAdjustBalanceAccount(null)}
+          onSuccess={async () => {
+            setAdjustBalanceAccount(null);
+            await queryClient.invalidateQueries({ queryKey: ["admin", "sellers"] });
+          }}
         />
       )}
 
@@ -483,8 +496,16 @@ export function AdminCtvPage() {
                             <p className="text-xs text-slate-500">{formatStatusLabel(account.shopStatus)}</p>
                           )}
                         </td>
-                        <td className="px-4 py-3 text-right font-medium text-white">
-                          {formatCurrency(account.walletBalance)}
+                        <td className="px-4 py-3 text-right">
+                          <button
+                            type="button"
+                            onClick={() => setAdjustBalanceAccount(account)}
+                            className="group inline-flex items-center gap-1.5 font-medium text-white hover:text-emerald-400 transition"
+                            title="Bấm để điều chỉnh số dư"
+                          >
+                            <span>{formatCurrency(account.walletBalance)}</span>
+                            <Wallet className="h-3 w-3 text-slate-500 group-hover:text-emerald-400 transition" />
+                          </button>
                         </td>
                         <td className="px-4 py-3 text-right text-slate-300">
                           {account.orderCount}
@@ -501,6 +522,14 @@ export function AdminCtvPage() {
                             >
                               360°
                             </Link>
+                            <button
+                              type="button"
+                              title="Điều chỉnh số dư"
+                              onClick={() => setAdjustBalanceAccount(account)}
+                              className="rounded-[8px] border border-white/8 bg-[#18233c] p-1.5 text-slate-400 transition hover:text-emerald-300"
+                            >
+                              <Wallet className="h-3.5 w-3.5" />
+                            </button>
                             <button
                               type="button"
                               title="Đổi gói"

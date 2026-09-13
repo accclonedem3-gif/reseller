@@ -25,6 +25,7 @@ import {
 import { WalletService } from "../wallet/wallet.service";
 
 import {
+  AdminAdjustSellerBalanceDto,
   BulkUpdateSystemConfigDto,
   GenerateUserbotLicenseKeyDto,
   ListAdminOrdersQueryDto,
@@ -131,6 +132,15 @@ export class AdminController {
     @Body() body: UpdateSellerTierDatesDto,
   ) {
     return this.adminService.updateSellerTierDates(userId, body);
+  }
+
+  @Post(["sellers/:userId/balance", "ctv/:userId/balance"])
+  adjustSellerBalance(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param("userId") userId: string,
+    @Body() body: AdminAdjustSellerBalanceDto,
+  ) {
+    return this.walletService.adminAdjustSellerBalance(user, userId, body);
   }
 
   @Get("orders")

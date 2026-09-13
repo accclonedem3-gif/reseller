@@ -10,6 +10,7 @@ import {
   DepositStatus,
   PaymentTransactionStatus,
   Prisma,
+  UserRole,
   WalletLedgerType,
   WithdrawStatus,
 } from "@prisma/client";
@@ -24,6 +25,7 @@ import { decimalToNumber, generateExternalPaymentCode, toDecimal } from "../lib/
 import { ShopsService } from "../shops/shops.service";
 import { WalletNotifyService } from "../customer-wallet/wallet-notify.service";
 import type { AuthenticatedUser } from "../types";
+import type { AdminAdjustSellerBalanceDto } from "../admin/admin.dto";
 
 import type {
   AdjustCustomerWalletDto,
@@ -1110,5 +1112,119 @@ export class WalletService {
     });
 
     return decimalToNumber(aggregate._sum.amount);
+  }
+
+  async adminAdjustSellerBalance(
+    adminUser: AuthenticatedUser,
+    identifier: string,
+    dto: AdminAdjustSellerBalanceDto,
+  ) {
+    if (adminUser.role !== UserRole.SUPER_ADMIN) {
+      throw new ForbiddenException("Chỉ Super Admin mới có quyền điều chỉnh số dư.");
+    }
+
+    const seller = await this.prisma.seller.findFirst({
+      where: {
+        OR: [
+          { userId: identifier },
+          { id: identifier },
+        ],
+      },
+      include: {
+        user: {
+          select: { id: true, username: true, email: true },
+        },
+      },
+    });
+
+    if (!seller) {
+      throw new NotFoundException("Seller not found.");
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      let wallet = await tx.sellerWallet.findUnique({
+        where: { sellerId: seller.id },
+      });
+
+      if (!wallet) {
+        wallet = await tx.sellerWallet.create({
+          data: { sellerId: seller.id, balance: toDecimal(0) },
+        });
+      }
+
+      await tx.$queryRaw(
+        Prisma.sql`SELECT id FROM seller_wallets WHERE id = ${wallet.id} FOR UPDATE`,
+      );
+
+      const currentWallet = await tx.sellerWallet.findUniqueOrThrow({
+        where: { id: wallet.id },
+      });
+
+      const balanceBefore = decimalToNumber(currentWallet.balance);
+      let delta: number;
+      let balanceAfter: number;
+
+      if (dto.action === "topup") {
+        delta = dto.amount;
+        balanceAfter = balanceBefore + delta;
+      } else if (dto.action === "deduct") {
+        delta = -dto.amount;
+        balanceAfter = balanceBefore + delta;
+        if (balanceAfter < 0) {
+          throw new BadRequestException(
+            `Số dư hiện tại (${balanceBefore.toLocaleString("vi-VN")}đ) không đủ để trừ ${dto.amount.toLocaleString("vi-VN")}đ.`,
+          );
+        }
+      } else if (dto.action === "set") {
+        delta = dto.amount - balanceBefore;
+        balanceAfter = dto.amount;
+      } else {
+        throw new BadRequestException("Hành động không hợp lệ (topup, deduct, set).");
+      }
+
+      const updatedWallet = await tx.sellerWallet.update({
+        where: { id: currentWallet.id },
+        data: { balance: toDecimal(balanceAfter) },
+      });
+
+      const actionText =
+        dto.action === "topup"
+          ? `Cộng +${dto.amount.toLocaleString("vi-VN")}đ`
+          : dto.action === "deduct"
+          ? `Trừ -${dto.amount.toLocaleString("vi-VN")}đ`
+          : `Đặt lại số dư = ${dto.amount.toLocaleString("vi-VN")}đ`;
+
+      const adminLabel = adminUser.username || adminUser.email || "admin";
+      const note = dto.note?.trim()
+        ? `Admin [${adminLabel}] điều chỉnh: ${dto.note.trim()} (${actionText})`
+        : `Admin [${adminLabel}] điều chỉnh số dư (${actionText})`;
+
+      const ledger = await tx.walletLedger.create({
+        data: {
+          sellerId: seller.id,
+          walletId: currentWallet.id,
+          type: WalletLedgerType.ADJUST,
+          amount: toDecimal(delta),
+          balanceBefore: toDecimal(balanceBefore),
+          balanceAfter: toDecimal(balanceAfter),
+          referenceType: "admin_adjustment",
+          referenceId: adminUser.id,
+          note,
+        },
+      });
+
+      return {
+        success: true,
+        sellerId: seller.id,
+        userId: seller.userId,
+        username: seller.user.username,
+        balanceBefore,
+        balanceAfter,
+        delta,
+        action: dto.action,
+        ledgerId: ledger.id,
+        note,
+      };
+    });
   }
 }

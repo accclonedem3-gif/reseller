@@ -102,3 +102,18 @@ export class GenerateUserbotLicenseKeyDto {
   @Max(100)
   count!: number;
 }
+
+export class AdminAdjustSellerBalanceDto {
+  @IsEnum(["topup", "deduct", "set"])
+  action!: "topup" | "deduct" | "set";
+
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  amount!: number;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  note?: string;
+}
