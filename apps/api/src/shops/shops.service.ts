@@ -51,6 +51,8 @@ import {
   isDoicardProvider,
   isHaiVanKhoSiBaseUrl,
   isHaiVanKhoSiProvider,
+  isKhommoBaseUrl,
+  isKhommoProvider,
   isValidBep20Address,
   maskSecret,
   normalizeTonAddress,
@@ -721,7 +723,9 @@ export class ShopsService {
                     ? "doicard68"
                     : isHaiVanKhoSiBaseUrl(resolvedProviderBaseUrl)
                       ? "haivankhosi"
-                      : isRoboticvnBaseUrl(resolvedProviderBaseUrl)
+                      : isKhommoBaseUrl(resolvedProviderBaseUrl)
+                        ? "khommo"
+                        : isRoboticvnBaseUrl(resolvedProviderBaseUrl)
                         ? "roboticvn"
                         : this.config.providerName
           : shop.providerConfig?.providerName ||
@@ -737,9 +741,11 @@ export class ShopsService {
                       ? "doicard68"
                       : isHaiVanKhoSiBaseUrl(resolvedProviderBaseUrl)
                         ? "haivankhosi"
-                        : isRoboticvnBaseUrl(resolvedProviderBaseUrl)
-                          ? "roboticvn"
-                          : this.config.providerName);
+                        : isKhommoBaseUrl(resolvedProviderBaseUrl)
+                          ? "khommo"
+                          : isRoboticvnBaseUrl(resolvedProviderBaseUrl)
+                            ? "roboticvn"
+                            : this.config.providerName);
       const savedProviderConfig = await tx.providerConfig.upsert({
         where: { shopId: shop.id },
         update: {
@@ -1950,6 +1956,7 @@ export class ShopsService {
       .toLowerCase();
     if (requested === "doicard" || requested === "doicard68") return "doicard68";
     if (requested === "haivankhosi" || requested === "haivan") return "haivankhosi";
+    if (requested === "khommo" || requested === "khommovn") return "khommo";
     if (requested) return requested;
     if (isDinostoreKey(buyerKey) || isDinostoreBaseUrl(baseUrl))
       return "dinostore";
@@ -1958,6 +1965,7 @@ export class ShopsService {
     if (isGigaPowerBaseUrl(baseUrl)) return "gigapower";
     if (isDoicardBaseUrl(baseUrl)) return "doicard68";
     if (isHaiVanKhoSiBaseUrl(baseUrl)) return "haivankhosi";
+    if (isKhommoBaseUrl(baseUrl)) return "khommo";
     if (isRoboticvnKey(buyerKey) || isRoboticvnBaseUrl(baseUrl))
       return "roboticvn";
     if (isShopMmoKey(buyerKey) || /shopmmo/i.test(baseUrl)) return "shopmmo";

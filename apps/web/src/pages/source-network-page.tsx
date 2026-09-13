@@ -1114,6 +1114,7 @@ export function SourceNetworkPage({
                   canboso: "https://canboso.com",
                   doicard68: "https://doicard68.com",
                   haivankhosi: "https://webshop.haivankhosi.site",
+                  khommo: "https://khommo.vn",
                   dinostore: "https://api.dinos-tore.com",
                   dinostore_social: "https://api.dinos-tore.com",
                   shopmmo: "https://shopmmo.pro",
@@ -1138,6 +1139,7 @@ export function SourceNetworkPage({
               <option value="canboso">Canboso</option>
               <option value="doicard68">Doicard68 (Thẻ cào & Thẻ Game)</option>
               <option value="haivankhosi">HaiVanKhoSi (Shop Bot)</option>
+              <option value="khommo">KhoMMO (khommo.vn)</option>
               <option value="dinostore">Dinostore (Tài khoản & Bản quyền)</option>
               <option value="dinostore_social">Dinostore Social (Tăng tương tác MXH)</option>
               <option value="shopmmo">ShopMMO</option>
@@ -1180,9 +1182,11 @@ export function SourceNetworkPage({
                     ? "partner_id|partner_key|wallet_number"
                     : providerForm.providerName === "haivankhosi"
                       ? "API Key từ Telegram Bot (/apikey)"
-                      : providerForm.providerName === "dinostore" || providerForm.providerName === "dinostore_social"
-                        ? "sk_live_..."
-                        : "API / buyer key"
+                      : providerForm.providerName === "khommo"
+                        ? "API Key từ khommo.vn/client/document-api"
+                        : providerForm.providerName === "dinostore" || providerForm.providerName === "dinostore_social"
+                          ? "sk_live_..."
+                          : "API / buyer key"
               }
             />
             <div className="flex gap-2">

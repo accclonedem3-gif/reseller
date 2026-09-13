@@ -211,6 +211,8 @@ function displayProviderName(value: unknown) {
     doicard: "Doicard68",
     haivankhosi: "HaiVanKhoSi",
     haivan: "HaiVanKhoSi",
+    khommo: "KhoMMO",
+    khommovn: "KhoMMO",
     dinostore: "Dinostore",
     dinostore_social: "Dinostore Social",
     shopmmo: "ShopMMO",

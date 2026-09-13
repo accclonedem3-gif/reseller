@@ -66,6 +66,14 @@ import {
   purchaseFromHaiVanKhoSi,
   fetchHaiVanKhoSiOrderStatus,
 } from "./haivankhosi";
+import {
+  isKhommoBaseUrl,
+  isKhommoProvider,
+  fetchKhommoProducts,
+  fetchKhommoBalance,
+  purchaseFromKhommo,
+  fetchKhommoOrderStatus,
+} from "./khommo";
 
 export {
   isRoboticvnBaseUrl,
@@ -95,6 +103,10 @@ export {
   isHaiVanKhoSiBaseUrl,
   isHaiVanKhoSiProvider,
 } from "./haivankhosi";
+export {
+  isKhommoBaseUrl,
+  isKhommoProvider,
+} from "./khommo";
 
 export interface ProviderCredentials {
   baseUrl?: string;
@@ -449,6 +461,10 @@ export async function verifyProviderConnection(
     const products = await fetchHaiVanKhoSiProducts(creds);
     return { ok: true, providerName: "haivankhosi", sampleSize: products.length };
   }
+  if (isKhommoProvider(creds)) {
+    const products = await fetchKhommoProducts(creds);
+    return { ok: true, providerName: "khommo", sampleSize: products.length };
+  }
   if (isGigaPowerProvider(creds)) {
     const products = await fetchGigaPowerProducts(creds);
     return { ok: true, providerName: "gigapower", sampleSize: products.length };
@@ -491,6 +507,9 @@ export async function fetchProviderProducts(
   }
   if (isHaiVanKhoSiProvider(credentials)) {
     return fetchHaiVanKhoSiProducts(credentials);
+  }
+  if (isKhommoProvider(credentials)) {
+    return fetchKhommoProducts(credentials);
   }
   if (isGigaPowerProvider(credentials)) {
     return fetchGigaPowerProducts(credentials);
@@ -673,6 +692,9 @@ export async function fetchProviderBalance(
   if (isHaiVanKhoSiProvider(credentials)) {
     return fetchHaiVanKhoSiBalance(credentials);
   }
+  if (isKhommoProvider(credentials)) {
+    return fetchKhommoBalance(credentials);
+  }
   if (isGigaPowerProvider(credentials)) {
     return fetchGigaPowerBalance(credentials);
   }
@@ -742,6 +764,9 @@ export async function purchaseFromProvider(
   }
   if (isHaiVanKhoSiProvider(credentials)) {
     return purchaseFromHaiVanKhoSi(credentials, input);
+  }
+  if (isKhommoProvider(credentials)) {
+    return purchaseFromKhommo(credentials, input);
   }
   if (isGigaPowerProvider(credentials)) {
     return purchaseFromGigaPower(credentials, input);
@@ -937,6 +962,9 @@ export async function fetchProviderOrderStatus(
   }
   if (isHaiVanKhoSiProvider(credentials)) {
     return fetchHaiVanKhoSiOrderStatus(credentials, input);
+  }
+  if (isKhommoProvider(credentials)) {
+    return fetchKhommoOrderStatus(credentials, input);
   }
   if (isGigaPowerProvider(credentials)) {
     return fetchGigaPowerOrderStatus(credentials, input);
