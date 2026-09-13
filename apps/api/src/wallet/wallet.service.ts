@@ -180,8 +180,8 @@ export class WalletService {
           ? "BINANCE"
           : "PAYOS";
 
-    // PayOS: 5 phút (chuyển ngân hàng nhanh) — USDT/Binance: 30 phút (chuyển crypto chậm hơn)
-    const expiryMinutes = providerOverride === "PAYOS" ? 5 : 30;
+    // Cho khách 30 phút để chuyển khoản và xác nhận thanh toán (tương tự như mua gói)
+    const expiryMinutes = 30;
     const externalOrderCode = generateExternalPaymentCode();
     const expiresAt = new Date(Date.now() + expiryMinutes * 60 * 1000);
     const payment = await this.paymentService.createPaymentLink({
@@ -258,7 +258,7 @@ export class WalletService {
       if (!currentDeposit) {
         throw new NotFoundException("Deposit request not found.");
       }
-      if (currentDeposit.status !== DepositStatus.PENDING) {
+      if (currentDeposit.status === DepositStatus.CONFIRMED) {
         return currentDeposit;
       }
 

@@ -1958,26 +1958,12 @@ export class PaymentService {
       };
     }
 
-    const shop = await this.prisma.shop.findFirst({
-      where: {
-        sellerId: deposit.sellerId,
-      },
-      select: {
-        id: true,
-      },
-      orderBy: {
-        createdAt: "asc",
-      },
-    });
-
-    if (!shop) {
-      throw new BadRequestException("Shop not found for seller deposit payment.");
-    }
+    const platformShopId = this.config.platformDepositShopId || "platform-tier";
 
     return {
       kind: "seller_deposit",
       provider: deposit.provider,
-      shopId: shop.id,
+      shopId: platformShopId,
       createdAt: deposit.createdAt,
       expiresAt: deposit.expiresAt,
       localPaymentStatus: deposit.status,

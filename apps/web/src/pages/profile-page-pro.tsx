@@ -647,6 +647,13 @@ export function ProfilePage() {
     const initialBalance = sellerWallet?.balance ?? 0;
     const interval = setInterval(async () => {
       try {
+        if (depositResponse.reconcileToken) {
+          try {
+            await api.post(`/webhooks/payments/reconcile/${depositResponse.externalOrderCode}`, {
+              token: depositResponse.reconcileToken,
+            });
+          } catch {}
+        }
         const { data } = await api.get("/wallet");
         if (data.balance > initialBalance) {
           void queryClient.invalidateQueries({ queryKey: ["wallet", "seller"] });
@@ -654,9 +661,9 @@ export function ProfilePage() {
           closeDepositModal();
         }
       } catch {}
-    }, 4000);
+    }, 3000);
     return () => clearInterval(interval);
-  }, [depositResponse?.externalOrderCode]);
+  }, [depositResponse?.externalOrderCode, depositResponse?.reconcileToken]);
 
   function closeDepositModal() {
     setDepositOpen(false);

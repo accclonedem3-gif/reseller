@@ -135,6 +135,13 @@ export function TierPricingPage() {
     if (!paymentResponse?.externalOrderCode) return;
     const interval = setInterval(async () => {
       try {
+        if (paymentResponse.reconcileToken) {
+          try {
+            await api.post(`/webhooks/payments/reconcile/${paymentResponse.externalOrderCode}`, {
+              token: paymentResponse.reconcileToken,
+            });
+          } catch {}
+        }
         const { data } = await api.get(`/tiers/quote`);
         // Check if tier was renewed (tierExpiresAt updated)
         if (data.currentTierExpiresAt && quote?.currentTierExpiresAt !== data.currentTierExpiresAt) {
@@ -146,9 +153,9 @@ export function TierPricingPage() {
           if (tier) navigate(`/?welcome=${tier}`);
         }
       } catch {}
-    }, 4000);
+    }, 3000);
     return () => clearInterval(interval);
-  }, [paymentResponse?.externalOrderCode]);
+  }, [paymentResponse?.externalOrderCode, paymentResponse?.reconcileToken]);
 
   const closeModal = () => {
     setModalTier(null);

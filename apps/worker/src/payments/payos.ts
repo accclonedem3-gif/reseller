@@ -167,12 +167,12 @@ export async function reconcilePendingPayOSOrders(purchaseQueue: Queue): Promise
 }
 
 // ─────────────────────────────────────────────────────────────────
-// Tier subscription PayOS fallback — tier payments are stored as
-// DepositRequest (note "TIER_SUB:..."), NOT as Order, so the order
-// sweep above does not cover them. Without this, a tier renewal only
-// confirms if the live PayOS webhook lands — a missed/late webhook
-// leaves the seller paid-but-not-upgraded. Poll PayOS for pending
-// tier deposits and confirm via the internal endpoint as a fallback.
+// ─────────────────────────────────────────────────────────────────
+// Platform PayOS deposit fallback — handles BOTH tier subscriptions
+// (note "TIER_SUB:...") and seller wallet top-ups (note "WALLET_TOPUP:...").
+// Without this, deposits rely solely on live PayOS webhooks — any
+// missed or late webhook leaves the user paid-but-not-credited.
+// Poll PayOS for all pending platform deposits and confirm via internal endpoint.
 // ─────────────────────────────────────────────────────────────────
 export async function reconcilePendingTierDeposits(): Promise<void> {
   const platformShopId = process.env.PLATFORM_DEPOSIT_SHOP_ID || "platform-tier";
@@ -181,7 +181,6 @@ export async function reconcilePendingTierDeposits(): Promise<void> {
       provider: "PAYOS",
       status: "PENDING",
       externalOrderCode: { not: null },
-      note: { startsWith: "TIER_SUB:" },
     },
     orderBy: { createdAt: "asc" },
     take: 20,
@@ -226,7 +225,7 @@ export async function reconcilePendingTierDeposits(): Promise<void> {
           externalOrderCode
         )}`,
         {
-          source: "worker_tier_payos_poll",
+          source: "worker_deposit_payos_poll",
           providerStatus,
           payos: remoteStatus.providerResponse,
         },
@@ -239,11 +238,11 @@ export async function reconcilePendingTierDeposits(): Promise<void> {
         }
       );
       console.log(
-        `[worker] Tier PayOS deposit ${externalOrderCode} → confirmed via poll (${providerStatus}).`
+        `[worker] Platform PayOS deposit ${externalOrderCode} → confirmed via poll (${providerStatus}).`
       );
     } catch (error) {
       console.error(
-        `[worker] Tier PayOS deposit reconcile failed for ${externalOrderCode}:`,
+        `[worker] Platform PayOS deposit reconcile failed for ${externalOrderCode}:`,
         formatError(error)
       );
     }
@@ -270,36 +269,32 @@ export async function expireSellerDepositRequests(): Promise<void> {
     return;
   }
 
-  // MONEY-SAFETY: a slow inter-bank transfer can land right at / just past the tier link's
-  // 30-min expiry. Before REJECTing a TIER_SUB PayOS deposit, ask PayOS one last time — if it's
-  // actually paid, confirm it (auto-upgrade) instead of rejecting. Otherwise the seller paid but
-  // gets no tier and no auto-refund.
+  // MONEY-SAFETY: a slow inter-bank transfer can land right at / just past the payment link's
+  // expiry. Before REJECTing any PayOS deposit (tier sub or wallet top-up), ask PayOS one last time — if it's
+  // actually paid, confirm it instead of rejecting. Otherwise the user paid but
+  // gets no balance and no auto-refund.
   const baseUrl = (process.env.APP_PUBLIC_URL || "http://localhost:3000").replace(
     /\/$/,
     ""
   );
   const internalToken = process.env.INTERNAL_API_TOKEN || "";
-  let tierPayosCredentials: any = null;
-  const hasTierPayos = expiredRequests.some(
-    (r) => r.provider === "PAYOS" && String(r.note || "").startsWith("TIER_SUB:")
-  );
-  if (hasTierPayos) {
+  let platformPayosCredentials: any = null;
+  const hasPayos = expiredRequests.some((r) => r.provider === "PAYOS");
+  if (hasPayos) {
     const platformShopId = process.env.PLATFORM_DEPOSIT_SHOP_ID || "platform-tier";
     const platformShop = await prisma.shop.findUnique({
       where: { id: platformShopId },
       include: { paymentConfig: true },
     });
-    tierPayosCredentials = resolvePayOSCredentials(platformShop?.paymentConfig);
+    platformPayosCredentials = resolvePayOSCredentials(platformShop?.paymentConfig);
   }
 
   for (const request of expiredRequests) {
-    const isTierPayos =
-      request.provider === "PAYOS" &&
-      String(request.note || "").startsWith("TIER_SUB:");
-    if (isTierPayos && tierPayosCredentials && request.externalOrderCode) {
+    const isPayos = request.provider === "PAYOS";
+    if (isPayos && platformPayosCredentials && request.externalOrderCode) {
       try {
         const remoteStatus = await getPayOSPaymentLinkStatus(
-          tierPayosCredentials,
+          platformPayosCredentials,
           request.externalOrderCode
         );
         const providerStatus = String(remoteStatus.status || "UNKNOWN").toUpperCase();
@@ -314,7 +309,7 @@ export async function expireSellerDepositRequests(): Promise<void> {
               request.externalOrderCode
             )}`,
             {
-              source: "worker_tier_expire_recheck",
+              source: "worker_deposit_expire_recheck",
               providerStatus,
               payos: remoteStatus.providerResponse,
             },
@@ -327,13 +322,13 @@ export async function expireSellerDepositRequests(): Promise<void> {
             }
           );
           console.log(
-            `[worker] Tier PayOS deposit ${request.externalOrderCode} paid late → confirmed at expiry (not rejected).`
+            `[worker] PayOS deposit ${request.externalOrderCode} paid late → confirmed at expiry (not rejected).`
           );
           continue; // skip the REJECT below
         }
       } catch (error) {
         console.error(
-          `[worker] Tier expire recheck failed for ${request.externalOrderCode}:`,
+          `[worker] PayOS deposit expire recheck failed for ${request.externalOrderCode}:`,
           formatError(error)
         );
         // fall through to reject
