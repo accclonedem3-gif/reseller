@@ -2246,6 +2246,7 @@ export class ShopsService {
       return synced + providerSourceSynced;
     } else {
       if (
+        providerSources.length > 0 ||
         providerSources.some((source) => source.id === shop.providerConfig!.id)
       ) {
         return providerSourceSynced;
@@ -2256,6 +2257,7 @@ export class ShopsService {
       );
 
       if (!buyerKey) {
+        if (providerSourceSynced > 0) return providerSourceSynced;
         throw new BadRequestException("Provider buyer key is missing.");
       }
 

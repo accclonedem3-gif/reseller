@@ -576,14 +576,21 @@ export async function syncCatalogForShop(
     }
   } else if (
     shop.providerConfig &&
-    !providerSources.some((source) => source.id === shop.providerConfig?.id)
+    providerSources.length === 0 &&
+    Boolean(shop.providerConfig.buyerKeyEncrypted)
   ) {
     // Legacy single external provider fallback (for shops that have not yet migrated to shop_provider_sources)
     const buyerKey = decryptSecret(
       shop.providerConfig.buyerKeyEncrypted,
       getEncryptionKey(),
     );
-    if (!buyerKey) throw new Error("Provider buyer key is missing.");
+    if (!buyerKey) {
+      if (syncedScopes.size > 0) {
+        // Already synced other scopes, do not fail
+      } else {
+        throw new Error("Provider buyer key is missing.");
+      }
+    } else {
     const isRoboticvn = isRoboticvnProvider({
       baseUrl: shop.providerConfig.baseUrl,
       buyerKey,
@@ -615,6 +622,7 @@ export async function syncCatalogForShop(
       syncedScopes.add("legacy");
       products.push(...legacyProducts);
     }
+  }
   }
 
   if (products.length === 0 && syncedScopes.size === 0) {
