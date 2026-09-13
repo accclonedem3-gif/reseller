@@ -207,6 +207,12 @@ function displayProviderName(value: unknown) {
   const provider = String(value || "").trim().toLowerCase();
   const labels: Record<string, string> = {
     canboso: "Canboso",
+    doicard68: "Doicard68",
+    doicard: "Doicard68",
+    haivankhosi: "HaiVanKhoSi",
+    haivan: "HaiVanKhoSi",
+    dinostore: "Dinostore",
+    dinostore_social: "Dinostore Social",
     shopmmo: "ShopMMO",
     roboticvn: "RoboticVN",
     zampto: "Zampto",
@@ -489,13 +495,13 @@ export function OrdersPageStudio() {
               </button>
             </div>
           </div>
-          <div className="mt-3 flex items-center gap-1">
+          <div className="mt-3 flex items-center gap-1 overflow-x-auto pb-1">
             {filterTabs.map((f) => tabBtn(f.key, f.label, f.dot))}
           </div>
         </div>
 
-        {/* Table */}
-        <div className="overflow-x-auto">
+        {/* Desktop Table (hidden on mobile, visible on lg) */}
+        <div className="hidden lg:block overflow-x-auto">
           <table className="w-full text-sm" style={{ minWidth: 980 }}>
             <thead>
               <tr style={{ background: "var(--inp)", borderBottom: "1px solid var(--bd)" }}>
@@ -616,7 +622,7 @@ export function OrdersPageStudio() {
                             <Clock className="h-5 w-5" style={{ color: "rgb(251,191,36)" }} />
                           )}
                         </span>
-                        {["binance", "okx", "usdt_trc20"].includes(String(order.paymentTransaction?.provider || "").toLowerCase()) &&
+                        {["binance", "okx", "usdt_trc20", "usdt_bep20", "usdt_sol", "usdt_ton"].includes(String(order.paymentTransaction?.provider || "").toLowerCase()) &&
                           payStatus !== "paid" && (
                           <div className="mt-2 space-y-1.5">
                             <p className="text-[11px]" style={{ color: "var(--tx-f)" }}>
@@ -723,6 +729,188 @@ export function OrdersPageStudio() {
               })}
             </tbody>
           </table>
+        </div>
+
+        {/* Mobile Cards List (hidden on lg, visible on mobile) */}
+        <div className="block lg:hidden divide-y" style={{ borderColor: "var(--bd)" }}>
+          {pageItems.length === 0 ? (
+            <div className="py-12 text-center text-[13px]" style={{ color: "var(--tx-f)" }}>
+              Không có đơn hàng nào
+            </div>
+          ) : (
+            pageItems.map((order: any) => {
+              const hasAccount = Boolean(order.deliveredAccountText);
+              const isExpanded = expandedOrderId === order.id;
+              const { prefix, suffix } = shortOrderCode(order.orderCode || "");
+              const status = String(order.status || "").toLowerCase();
+              const payStatus = String(order.paymentStatus || "").toLowerCase();
+              const sourceAmount = Number(order.totalSourceAmount) || 0;
+              const profit = Number(order.totalSaleAmount || 0) - sourceAmount;
+
+              return (
+                <div key={order.id} className="p-4 space-y-3 transition-colors hover:bg-[rgba(139,92,246,0.03)]">
+                  {/* Top row: Order code + Status Badges */}
+                  <div className="flex items-start justify-between gap-2">
+                    <div>
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span className="font-mono text-[12px]" style={{ color: "var(--tx-f)" }}>
+                          {prefix}-<span className="font-bold" style={{ color: "rgb(52,211,153)" }}>{suffix}</span>
+                        </span>
+                        {order.isPreorder && (
+                          <span className="inline-flex rounded-full border border-amber-400/30 bg-amber-400/10 px-2 py-0.5 text-[10px] font-black uppercase text-amber-400">
+                            {String(order.preorderCancellationStatus || "").toLowerCase() === "requested"
+                              ? (lang === "en" ? "Cancel review" : lang === "th" ? "รอตรวจสอบยกเลิก" : "Chờ duyệt hủy")
+                              : (lang === "en" ? "Pre-order" : lang === "th" ? "จองล่วงหน้า" : "Đặt trước")}
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-[11px] tabular-nums mt-0.5" style={{ color: "var(--tx-f)" }}>
+                        {formatOrderDate(order.createdAt)}
+                      </p>
+                    </div>
+
+                    <div className="flex items-center gap-1.5">
+                      {/* Delivery Status */}
+                      <span
+                        className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-bold"
+                        style={
+                          status === "delivered"
+                            ? { background: "rgba(52,211,153,0.12)", color: "rgb(52,211,153)" }
+                            : status === "failed" || status === "refunded"
+                            ? { background: "rgba(248,113,113,0.12)", color: "rgb(248,113,113)" }
+                            : status === "paid_waiting_stock"
+                            ? { background: "rgba(245,158,11,0.15)", color: "rgb(251,191,36)" }
+                            : { background: "var(--inp)", color: "var(--tx-f)" }
+                        }
+                      >
+                        {status === "delivered" ? (
+                          <><CheckCircle2 className="h-3 w-3" /> {lang === "en" ? "Delivered" : "Đã giao"}</>
+                        ) : status === "failed" ? (
+                          <><XCircle className="h-3 w-3" /> {lang === "en" ? "Failed" : "Thất bại"}</>
+                        ) : status === "refunded" ? (
+                          <><XCircle className="h-3 w-3" /> {lang === "en" ? "Refunded" : "Hoàn tiền"}</>
+                        ) : status === "paid_waiting_stock" ? (
+                          <><AlertTriangle className="h-3 w-3" /> {lang === "en" ? "Waiting stock" : "Chờ hàng"}</>
+                        ) : (
+                          <><Clock className="h-3 w-3" /> {formatStatusLabel(order.status)}</>
+                        )}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Product info */}
+                  <div className="rounded-xl p-2.5" style={{ background: "var(--inp)", border: "1px solid var(--bd)" }}>
+                    <p className="text-[13px] font-semibold" style={{ color: "var(--tx)" }}>
+                      {order.productName}
+                    </p>
+                    <div className="mt-1 flex items-center justify-between text-[11px]" style={{ color: "var(--tx-f)" }}>
+                      <span>
+                        {order.sourceProvider ? displayProviderName(order.sourceProvider) : "Direct"}
+                      </span>
+                      <span>
+                        Khách: <strong style={{ color: "var(--tx)" }}>{order.customer?.telegramUsername ? `@${order.customer.telegramUsername}` : order.customer?.name || "—"}</strong>
+                      </span>
+                    </div>
+                    {order.failureReason && (
+                      <p className="mt-1.5 text-[11px] leading-4 text-rose-400">
+                        ⚠️ {order.failureReason}
+                      </p>
+                    )}
+                  </div>
+
+                  {/* Financial amounts */}
+                  <div className="flex items-center justify-between pt-1">
+                    <div>
+                      <p className="text-[10px] uppercase font-bold" style={{ color: "var(--tx-f)" }}>Tổng tiền</p>
+                      <p className="text-[14px] font-black tabular-nums" style={{ color: "var(--tx)" }}>
+                        {formatCurrency(order.totalSaleAmount)}
+                      </p>
+                    </div>
+                    {sourceAmount > 0 && (
+                      <div className="text-right">
+                        <p className="text-[10px] uppercase font-bold" style={{ color: "var(--tx-f)" }}>Lợi nhuận</p>
+                        <p
+                          className="text-[13px] font-bold tabular-nums"
+                          style={{ color: profit >= 0 ? "rgb(52,211,153)" : "rgb(248,113,113)" }}
+                        >
+                          {profit >= 0 ? "+" : ""}{formatCurrency(profit)}
+                        </p>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Manual USDT payment button */}
+                  {["binance", "okx", "usdt_trc20", "usdt_bep20", "usdt_sol", "usdt_ton"].includes(String(order.paymentTransaction?.provider || "").toLowerCase()) &&
+                    payStatus !== "paid" && (
+                    <div className="flex items-center justify-between rounded-xl p-2.5" style={{ background: "rgba(245,158,11,0.1)", border: "1px solid rgba(245,158,11,0.25)" }}>
+                      <span className="text-[11px] text-amber-400 font-medium">
+                        {formatStatusLabel(order.paymentTransaction?.provider)} {t.manualUSDT}
+                      </span>
+                      <button
+                        type="button"
+                        disabled={confirmManualPaymentMutation.isPending}
+                        onClick={() => {
+                          if (window.confirm(t.confirmUSDTMsg(order.orderCode))) {
+                            confirmManualPaymentMutation.mutate(order.id);
+                          }
+                        }}
+                        className="rounded-lg px-3 py-1.5 text-[11px] font-bold transition hover:opacity-80 disabled:opacity-40"
+                        style={{ background: "rgba(245,158,11,0.2)", border: "1px solid rgba(245,158,11,0.4)", color: "rgb(251,191,36)" }}
+                      >
+                        {t.confirmUSDT}
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Account Deliver Info / Toggle */}
+                  {hasAccount && (
+                    <div className="pt-1">
+                      <button
+                        type="button"
+                        onClick={() => setExpandedOrderId((p) => (p === order.id ? null : order.id))}
+                        className="w-full flex items-center justify-between rounded-xl px-3 py-2 text-[12px] font-bold transition"
+                        style={{ background: "rgba(52,211,153,0.08)", border: "1px solid rgba(52,211,153,0.2)", color: "rgb(52,211,153)" }}
+                      >
+                        <span className="flex items-center gap-1.5">
+                          <KeyRound className="h-3.5 w-3.5" />
+                          {isExpanded ? "Ẩn tài khoản đã giao" : "Xem tài khoản đã giao"}
+                        </span>
+                        <span>{isExpanded ? "▲" : "▼"}</span>
+                      </button>
+
+                      {isExpanded && (
+                        <div className="mt-2 rounded-2xl p-3 space-y-2" style={{ background: "var(--inp)", border: "1px solid var(--bd)" }}>
+                          <div className="flex items-center justify-between">
+                            <span className="text-[11px] font-bold uppercase tracking-wider text-emerald-400">
+                              {t.deliveredAccount}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => void handleCopy(order.id, order.deliveredAccountText)}
+                              className="flex items-center gap-1 rounded-lg px-2.5 py-1 text-[11px] font-bold transition"
+                              style={{ background: "var(--surface)", border: "1px solid var(--bd)", color: "var(--tx)" }}
+                            >
+                              {copiedOrderId === order.id ? (
+                                <><Check className="h-3 w-3 text-emerald-400" /> {t.copied}</>
+                              ) : (
+                                <><Copy className="h-3 w-3" /> {t.copy}</>
+                              )}
+                            </button>
+                          </div>
+                          <pre
+                            className="overflow-x-auto whitespace-pre-wrap break-all rounded-xl p-2.5 text-[12px] leading-5 font-mono"
+                            style={{ background: "var(--surface)", color: "var(--tx)", border: "1px solid var(--bd)" }}
+                          >
+                            {order.deliveredAccountText}
+                          </pre>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })
+          )}
         </div>
 
         {/* Pagination */}

@@ -45,6 +45,12 @@ import {
   isShopMmoKey,
   isZamptoBaseUrl,
   isZamptoKey,
+  isDinostoreBaseUrl,
+  isDinostoreKey,
+  isDoicardBaseUrl,
+  isDoicardProvider,
+  isHaiVanKhoSiBaseUrl,
+  isHaiVanKhoSiProvider,
   isValidBep20Address,
   maskSecret,
   normalizeTonAddress,
@@ -83,6 +89,7 @@ import { AlchemyBep20Service } from "../lib/alchemy-bep20.service";
 import type { AuthenticatedUser } from "../types";
 import type {
   CreateProviderSourceDto,
+  UpdateProviderSourceDto,
   ProviderSourceOrdersQueryDto,
   UpdateBotConfigDto,
   UpdateShopDto,
@@ -676,21 +683,23 @@ export class ShopsService {
         incomingBuyerKey || incomingProviderBaseUrl,
       );
       const providerDetectedFromKey = incomingBuyerKey
-        ? isZamptoKey(incomingBuyerKey)
-          ? { name: "zampto", baseUrl: "http://node12.zampto.net:20291" }
-          : isHuyMaiKey(incomingBuyerKey)
-            ? {
-                name: "huymai",
-                baseUrl: "https://huymai.testflighty.com/api/v1",
-              }
-            : isRoboticvnKey(incomingBuyerKey)
-              ? { name: "roboticvn", baseUrl: "https://api.roboticvn.com" }
-              : isShopMmoKey(incomingBuyerKey)
-                ? { name: "shopmmo", baseUrl: "https://shopmmo.pro" }
-                : {
-                    name: this.config.providerName,
-                    baseUrl: this.config.providerBaseUrl,
-                  }
+        ? isDinostoreKey(incomingBuyerKey)
+          ? { name: "dinostore", baseUrl: "https://api.dinos-tore.com" }
+          : isZamptoKey(incomingBuyerKey)
+            ? { name: "zampto", baseUrl: "http://node12.zampto.net:20291" }
+            : isHuyMaiKey(incomingBuyerKey)
+              ? {
+                  name: "huymai",
+                  baseUrl: "https://huymai.testflighty.com/api/v1",
+                }
+              : isRoboticvnKey(incomingBuyerKey)
+                ? { name: "roboticvn", baseUrl: "https://api.roboticvn.com" }
+                : isShopMmoKey(incomingBuyerKey)
+                  ? { name: "shopmmo", baseUrl: "https://shopmmo.pro" }
+                  : {
+                      name: this.config.providerName,
+                      baseUrl: this.config.providerBaseUrl,
+                    }
         : null;
       const resolvedProviderBaseUrl =
         providerDetectedFromKey?.baseUrl ||
@@ -700,25 +709,37 @@ export class ShopsService {
       const resolvedProviderName = providerDetectedFromKey
         ? providerDetectedFromKey.name
         : providerConnectionChanging
-          ? isZamptoBaseUrl(resolvedProviderBaseUrl)
-            ? "zampto"
-            : isHuyMaiBaseUrl(resolvedProviderBaseUrl)
-              ? "huymai"
-              : isGigaPowerBaseUrl(resolvedProviderBaseUrl)
-                ? "gigapower"
-                : isRoboticvnBaseUrl(resolvedProviderBaseUrl)
-                  ? "roboticvn"
-                  : this.config.providerName
-          : shop.providerConfig?.providerName ||
-            (isZamptoBaseUrl(resolvedProviderBaseUrl)
+          ? isDinostoreBaseUrl(resolvedProviderBaseUrl)
+            ? "dinostore"
+            : isZamptoBaseUrl(resolvedProviderBaseUrl)
               ? "zampto"
               : isHuyMaiBaseUrl(resolvedProviderBaseUrl)
                 ? "huymai"
                 : isGigaPowerBaseUrl(resolvedProviderBaseUrl)
                   ? "gigapower"
-                  : isRoboticvnBaseUrl(resolvedProviderBaseUrl)
-                    ? "roboticvn"
-                    : this.config.providerName);
+                  : isDoicardBaseUrl(resolvedProviderBaseUrl)
+                    ? "doicard68"
+                    : isHaiVanKhoSiBaseUrl(resolvedProviderBaseUrl)
+                      ? "haivankhosi"
+                      : isRoboticvnBaseUrl(resolvedProviderBaseUrl)
+                        ? "roboticvn"
+                        : this.config.providerName
+          : shop.providerConfig?.providerName ||
+            (isDinostoreBaseUrl(resolvedProviderBaseUrl)
+              ? "dinostore"
+              : isZamptoBaseUrl(resolvedProviderBaseUrl)
+                ? "zampto"
+                : isHuyMaiBaseUrl(resolvedProviderBaseUrl)
+                  ? "huymai"
+                  : isGigaPowerBaseUrl(resolvedProviderBaseUrl)
+                    ? "gigapower"
+                    : isDoicardBaseUrl(resolvedProviderBaseUrl)
+                      ? "doicard68"
+                      : isHaiVanKhoSiBaseUrl(resolvedProviderBaseUrl)
+                        ? "haivankhosi"
+                        : isRoboticvnBaseUrl(resolvedProviderBaseUrl)
+                          ? "roboticvn"
+                          : this.config.providerName);
       const savedProviderConfig = await tx.providerConfig.upsert({
         where: { shopId: shop.id },
         update: {
@@ -769,7 +790,6 @@ export class ShopsService {
       await tx.shopProviderSource.updateMany({
         where: { id: savedProviderConfig.id, shopId: shop.id },
         data: {
-          label: "Nguồn chính",
           providerName: savedProviderConfig.providerName,
           baseUrl: savedProviderConfig.baseUrl,
           buyerKeyEncrypted: savedProviderConfig.buyerKeyEncrypted,
@@ -1350,7 +1370,7 @@ export class ShopsService {
         ]);
       summaries.unshift({
         id: `legacy:${providerConfig.id}`,
-        label: "Nguồn chính",
+        label: providerConfig.providerName || "Nguồn sỉ",
         providerName: providerConfig.providerName,
         connectionStatus: providerConfig.connectionStatus.toLowerCase(),
         productCount,
@@ -1747,6 +1767,60 @@ export class ShopsService {
     return { id: source.id, providerName, sampleSize, synced };
   }
 
+  async updateProviderSource(
+    user: AuthenticatedUser,
+    sourceId: string,
+    dto: UpdateProviderSourceDto,
+  ) {
+    const shop = await this.getSellerShop(user.id);
+    const source = await this.prisma.shopProviderSource.findFirst({
+      where: { id: sourceId, shopId: shop.id },
+    });
+    if (!source) throw new NotFoundException("Provider source not found.");
+
+    const data: Prisma.ShopProviderSourceUpdateInput = {};
+    if (dto.label !== undefined && dto.label.trim()) {
+      data.label = dto.label.trim();
+    }
+    if (dto.priceMarkupPercent !== undefined) {
+      data.priceMarkupPercent =
+        dto.priceMarkupPercent == null
+          ? null
+          : toDecimal(dto.priceMarkupPercent);
+    }
+    if (dto.sourceNotificationSyncEnabled !== undefined) {
+      data.sourceNotificationSyncEnabled = dto.sourceNotificationSyncEnabled;
+    }
+    if (dto.baseUrl !== undefined && dto.baseUrl.trim()) {
+      data.baseUrl = dto.baseUrl.trim();
+    }
+    if (dto.buyerKey !== undefined && dto.buyerKey.trim()) {
+      data.buyerKeyEncrypted = encryptSecret(
+        dto.buyerKey.trim(),
+        this.config.encryptionKey,
+      );
+    }
+
+    const updated = await this.prisma.shopProviderSource.update({
+      where: { id: source.id },
+      data,
+    });
+
+    return {
+      id: updated.id,
+      label: updated.label,
+      providerName: updated.providerName,
+      baseUrl: updated.baseUrl,
+      enabled: updated.enabled,
+      priceMarkupPercent:
+        updated.priceMarkupPercent == null
+          ? null
+          : Number(updated.priceMarkupPercent),
+      sourceNotificationSyncEnabled: updated.sourceNotificationSyncEnabled,
+      connectionStatus: updated.connectionStatus.toLowerCase(),
+    };
+  }
+
   async syncProviderSource(user: AuthenticatedUser, sourceId: string) {
     const shop = await this.getSellerShop(user.id);
     const synced = await this.syncProviderSourceByRecord(shop.id, sourceId);
@@ -1874,10 +1948,16 @@ export class ShopsService {
     const requested = String(explicit || "")
       .trim()
       .toLowerCase();
+    if (requested === "doicard" || requested === "doicard68") return "doicard68";
+    if (requested === "haivankhosi" || requested === "haivan") return "haivankhosi";
     if (requested) return requested;
+    if (isDinostoreKey(buyerKey) || isDinostoreBaseUrl(baseUrl))
+      return "dinostore";
     if (isZamptoKey(buyerKey) || isZamptoBaseUrl(baseUrl)) return "zampto";
     if (isHuyMaiKey(buyerKey) || isHuyMaiBaseUrl(baseUrl)) return "huymai";
     if (isGigaPowerBaseUrl(baseUrl)) return "gigapower";
+    if (isDoicardBaseUrl(baseUrl)) return "doicard68";
+    if (isHaiVanKhoSiBaseUrl(baseUrl)) return "haivankhosi";
     if (isRoboticvnKey(buyerKey) || isRoboticvnBaseUrl(baseUrl))
       return "roboticvn";
     if (isShopMmoKey(buyerKey) || /shopmmo/i.test(baseUrl)) return "shopmmo";
@@ -2067,14 +2147,14 @@ export class ShopsService {
               some: {
                 sellerId: connection.upstreamSellerId,
                 enabled: true,
-                groupId: { not: null },
+                hidden: false,
               },
             },
           },
           include: {
             overrides: {
               where: { sellerId: connection.upstreamSellerId },
-              select: { salePrice: true },
+              select: { salePrice: true, enabled: true, hidden: true },
               take: 1,
             },
           },
@@ -2458,8 +2538,7 @@ export class ShopsService {
           sourcePrice: toDecimal(product.price),
           available: nextAvailable,
           totalCount: nextAvailable ?? 0,
-          internalSourceEnabled:
-            shop.seller.tier === "PRO" || shop.seller.tier === "ULTRA",
+          internalSourceEnabled: false,
           ...(internalSourceConnectionId
             ? { archivedAt: inheritedArchivedAt }
             : {}),
@@ -3587,6 +3666,25 @@ export class ShopsService {
       promoStartAt: (product as any).promoStartAt ?? null,
       promoEndAt: (product as any).promoEndAt ?? null,
       promoBannerUrl: (product as any).promoBannerUrl ?? null,
+      isSocial:
+        metadata.is_social === true ||
+        product.providerName === "dinostore_social" ||
+        String(product.sourceDeliveryMode || "").toLowerCase().includes("social"),
+      minQuantity:
+        typeof metadata.minimum_order_quantity === "number"
+          ? metadata.minimum_order_quantity
+          : typeof metadata.min_quantity === "number"
+            ? metadata.min_quantity
+            : null,
+      maxQuantity:
+        typeof metadata.maximum_order_quantity === "number"
+          ? metadata.maximum_order_quantity
+          : typeof metadata.max_quantity === "number"
+            ? metadata.max_quantity
+            : null,
+      socialInputFields: Array.isArray(metadata.social_input_fields)
+        ? (metadata.social_input_fields as string[])
+        : null,
     };
   }
 
@@ -3770,7 +3868,27 @@ export class ShopsService {
     }
 
     if (!shop.providerConfig) {
-      throw new BadRequestException("Provider buyer key is missing.");
+      const firstSource = await this.prisma.shopProviderSource.findFirst({
+        where: { shopId, enabled: true },
+        orderBy: { createdAt: "asc" },
+      });
+      if (firstSource) {
+        return this.getProviderBalanceForShopId(shopId, null, firstSource.id);
+      }
+      return {
+        success: true,
+        walletCurrency: "VND",
+        balance: 0,
+        balanceVnd: 0,
+        balanceUsd: 0,
+        balanceText: "0 đ",
+        usdtBalance: 0,
+        updatedAt: new Date().toISOString(),
+        requesterName: null,
+        requesterChatId: null,
+        botSource: null,
+        rawPayload: null,
+      };
     }
 
     if (

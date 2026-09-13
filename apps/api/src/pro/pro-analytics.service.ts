@@ -207,11 +207,13 @@ export class ProAnalyticsService {
     if (filters.status) where.status = filters.status;
     const search = (filters.search || "").trim();
     if (search) {
-      // Match the source order code (ISO-…), the downstream PRO order code (ORD-…), the product
-      // name, or the downstream seller name — so ULTRA can look up an order by whatever it has.
+      // Match the source order code (SRC-…), the downstream PRO order code (order:…), F0 order code, the product
+      // name, or the downstream seller name — so ULTRA can look up an order by whatever code is provided.
       where.OR = [
         { sourceOrderCode: { contains: search, mode: "insensitive" } },
         { downstreamOrderCode: { contains: search, mode: "insensitive" } },
+        { providerOrderCode: { contains: search, mode: "insensitive" } },
+        { providerOrderId: { contains: search, mode: "insensitive" } },
         { sourceProduct: { is: { sourceName: { contains: search, mode: "insensitive" } } } },
         { downstreamSeller: { is: { displayName: { contains: search, mode: "insensitive" } } } },
       ];
@@ -246,6 +248,9 @@ export class ProAnalyticsService {
         id: o.id,
         orderCode: o.sourceOrderCode,
         downstreamOrderCode: o.downstreamOrderCode,
+        providerOrderId: o.providerOrderId || null,
+        providerOrderCode: o.providerOrderCode || null,
+        upstreamOrderCode: o.providerOrderCode || null,
         downstreamSellerName: o.downstreamSeller?.displayName ?? "Khách",
         productName: o.sourceProduct.sourceName,
         quantity: o.quantity,

@@ -1419,7 +1419,7 @@ export class InternalSourceService {
           some: {
             sellerId: connection.upstreamSellerId,
             enabled: true,
-            groupId: { not: null },
+            hidden: false,
           },
         },
       },
@@ -1550,7 +1550,7 @@ export class InternalSourceService {
           some: {
             sellerId: connection.upstreamSellerId,
             enabled: true,
-            groupId: { not: null },
+            hidden: false,
           },
         },
       },
@@ -1884,6 +1884,7 @@ export class InternalSourceService {
       order: {
         id: order.id,
         orderCode: order.sourceOrderCode,
+        downstreamOrderCode: order.downstreamOrderCode,
         status: order.status.toLowerCase(),
         quantity: order.quantity,
         totalAmount: decimalToNumber(order.totalAmount),
@@ -1989,6 +1990,8 @@ export class InternalSourceService {
     status: InternalSourceOrderStatus;
     deliveredAccountText: string | null;
     failureReason: string | null;
+    providerOrderId?: string | null;
+    providerOrderCode?: string | null;
   }) {
     return {
       success: order.status === InternalSourceOrderStatus.DELIVERED,
@@ -2002,6 +2005,12 @@ export class InternalSourceService {
         orderCode: order.sourceOrderCode,
         deliveredText: order.deliveredAccountText ?? undefined,
         message: order.failureReason ?? undefined,
+        upstreamOrderId: order.providerOrderId || undefined,
+        upstreamOrderCode: order.providerOrderCode || undefined,
+        f0_order_id: order.providerOrderId || undefined,
+        f0_order_code: order.providerOrderCode || undefined,
+        providerOrderId: order.providerOrderId || undefined,
+        providerOrderCode: order.providerOrderCode || undefined,
       },
     };
   }
@@ -2394,6 +2403,8 @@ export class InternalSourceService {
             status: InternalSourceOrderStatus.DELIVERED,
             deliveredAccountText: purchaseResult.deliveredText,
             deliveredAt: new Date(),
+            providerOrderId: purchaseResult.providerOrderId || null,
+            providerOrderCode: purchaseResult.providerOrderCode || null,
           },
         });
 
@@ -2434,8 +2445,12 @@ export class InternalSourceService {
           orderId: order.id,
           orderCode: order.sourceOrderCode,
           deliveredText: purchaseResult.deliveredText,
-          upstreamOrderId: purchaseResult.providerOrderId,
-          upstreamOrderCode: purchaseResult.providerOrderCode,
+          upstreamOrderId: purchaseResult.providerOrderId || null,
+          upstreamOrderCode: purchaseResult.providerOrderCode || null,
+          f0_order_id: purchaseResult.providerOrderId || null,
+          f0_order_code: purchaseResult.providerOrderCode || null,
+          providerOrderId: purchaseResult.providerOrderId || null,
+          providerOrderCode: purchaseResult.providerOrderCode || null,
         },
       };
     }
@@ -2855,6 +2870,12 @@ export class InternalSourceService {
       id: order.id,
       orderCode: order.sourceOrderCode,
       downstreamOrderCode: order.downstreamOrderCode,
+      providerOrderId: order.providerOrderId || null,
+      providerOrderCode: order.providerOrderCode || null,
+      upstreamOrderId: order.providerOrderId || null,
+      upstreamOrderCode: order.providerOrderCode || null,
+      f0_order_id: order.providerOrderId || null,
+      f0_order_code: order.providerOrderCode || null,
       status: order.status.toLowerCase(),
       quantity: order.quantity,
       unitPrice: decimalToNumber(order.unitPrice),

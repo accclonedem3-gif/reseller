@@ -6,6 +6,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Clock3,
+  Edit3,
   ExternalLink,
   KeyRound,
   Package,
@@ -14,16 +15,28 @@ import {
   ShoppingBag,
   UserRound,
   Wallet,
+  X,
 } from "lucide-react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { Link, useParams } from "react-router-dom";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { useToast } from "@/components/ui/toast";
 import { api } from "@/lib/api";
 import { formatCurrency, formatDate, formatStatusLabel } from "@/lib/format";
+
+function getApiErrorMessage(error: unknown, fallback: string) {
+  if (typeof error === "object" && error !== null && "response" in error) {
+    const data = (error as AxiosError<{ message?: string }>).response?.data;
+    if (typeof data?.message === "string") return data.message;
+  }
+  return fallback;
+}
 
 type ProviderSourceOrder = {
   id: string;
@@ -245,9 +258,47 @@ function DetailSkeleton() {
 
 export function ProviderSourceDetailPage() {
   const { sourceId } = useParams<{ sourceId: string }>();
+  const { showToast } = useToast();
+  const queryClient = useQueryClient();
   const [orderPage, setOrderPage] = useState(1);
   const [orderSearchDraft, setOrderSearchDraft] = useState("");
   const [orderSearch, setOrderSearch] = useState("");
+  const [isEditing, setIsEditing] = useState(false);
+  const [editLabel, setEditLabel] = useState("");
+  const [editMarkup, setEditMarkup] = useState("");
+  const [editNotificationSync, setEditNotificationSync] = useState(true);
+  const [editBuyerKey, setEditBuyerKey] = useState("");
+
+  const updateSourceMutation = useMutation({
+    mutationFn: async (payload: {
+      label?: string;
+      priceMarkupPercent?: number | null;
+      sourceNotificationSyncEnabled?: boolean;
+      buyerKey?: string;
+    }) => api.patch(`/provider-sources/${sourceId}`, payload),
+    onSuccess: async () => {
+      showToast({ tone: "success", message: "Đã cập nhật thông tin nguồn." });
+      setIsEditing(false);
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: ["provider-source-detail", sourceId],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ["source-network", "provider-sources"],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ["source-products", "catalog"],
+        }),
+      ]);
+    },
+    onError: (error) => {
+      showToast({
+        tone: "error",
+        message: getApiErrorMessage(error, "Lỗi cập nhật nguồn"),
+      });
+    },
+  });
+
   const detailQuery = useQuery({
     queryKey: ["provider-source-detail", sourceId],
     enabled: Boolean(sourceId),
@@ -334,18 +385,38 @@ export function ProviderSourceDetailPage() {
             nguồn này.
           </p>
         </div>
-        <Button
-          variant="secondary"
-          disabled={detailQuery.isFetching || sourceOrdersQuery.isFetching}
-          onClick={() =>
-            void Promise.all([detailQuery.refetch(), sourceOrdersQuery.refetch()])
-          }
-        >
-          <RefreshCcw
-            className={`h-4 w-4 ${detailQuery.isFetching || sourceOrdersQuery.isFetching ? "animate-spin" : ""}`}
-          />
-          Làm mới
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="secondary"
+            onClick={() => {
+              setEditLabel(detail.source.label);
+              setEditMarkup(
+                detail.source.priceMarkupPercent != null
+                  ? String(detail.source.priceMarkupPercent)
+                  : "",
+              );
+              setEditNotificationSync(
+                detail.source.sourceNotificationSyncEnabled ?? true,
+              );
+              setEditBuyerKey("");
+              setIsEditing(true);
+            }}
+          >
+            <Edit3 className="h-4 w-4" /> Chỉnh sửa
+          </Button>
+          <Button
+            variant="secondary"
+            disabled={detailQuery.isFetching || sourceOrdersQuery.isFetching}
+            onClick={() =>
+              void Promise.all([detailQuery.refetch(), sourceOrdersQuery.refetch()])
+            }
+          >
+            <RefreshCcw
+              className={`h-4 w-4 ${detailQuery.isFetching || sourceOrdersQuery.isFetching ? "animate-spin" : ""}`}
+            />
+            Làm mới
+          </Button>
+        </div>
       </div>
 
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
@@ -438,6 +509,13 @@ export function ProviderSourceDetailPage() {
             </InfoRow>
             <InfoRow label="Lãi mặc định">
               {detail.source.priceMarkupPercent ?? 0}%
+            </InfoRow>
+            <InfoRow label="Thông báo restock">
+              {detail.source.sourceNotificationSyncEnabled ? (
+                <span className="text-emerald-400">Đang bật</span>
+              ) : (
+                <span className="text-zinc-500">Tắt</span>
+              )}
             </InfoRow>
             <InfoRow label="Xác minh lần cuối">
               {formatDate(detail.source.lastVerifiedAt)}
@@ -755,6 +833,176 @@ export function ProviderSourceDetailPage() {
           </div>
         )}
       </Card>
+
+      {isEditing &&
+        createPortal(
+          <div
+            className="fixed inset-0 z-[80] flex items-center justify-center p-4"
+            style={{ background: "rgba(0,0,0,0.55)" }}
+            onClick={() => setIsEditing(false)}
+          >
+            <div
+              className="w-full max-w-md rounded-2xl p-6 shadow-2xl space-y-4"
+              style={{
+                background: "var(--surface)",
+                border: "1px solid var(--bd)",
+              }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between">
+                <div>
+                  <p
+                    className="text-[11px] font-black uppercase tracking-widest mb-0.5"
+                    style={{ color: "rgb(249,115,22)" }}
+                  >
+                    Chỉnh sửa nguồn
+                  </p>
+                  <h3
+                    className="text-base font-black"
+                    style={{ color: "var(--tx)" }}
+                  >
+                    {detail.source.providerName}
+                  </h3>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIsEditing(false)}
+                  className="flex h-8 w-8 items-center justify-center rounded-xl transition hover:opacity-70"
+                  style={{
+                    background: "var(--inp)",
+                    border: "1px solid var(--bd)",
+                    color: "var(--tx-f)",
+                  }}
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+
+              <div className="space-y-3 text-xs">
+                <div>
+                  <label
+                    className="mb-1 block font-semibold"
+                    style={{ color: "var(--tx-m)" }}
+                  >
+                    Tên hiển thị nguồn (Label)
+                  </label>
+                  <Input
+                    value={editLabel}
+                    onChange={(e) => setEditLabel(e.target.value)}
+                    placeholder="VD: RoboticVN, Canboso sỉ, v.v."
+                  />
+                  <p
+                    className="mt-1 text-[11px]"
+                    style={{ color: "var(--tx-f)" }}
+                  >
+                    Tên này hiển thị trong danh mục sản phẩm và quản lý nguồn.
+                  </p>
+                </div>
+
+                <div>
+                  <label
+                    className="mb-1 block font-semibold"
+                    style={{ color: "var(--tx-m)" }}
+                  >
+                    % Lãi mặc định (Markup)
+                  </label>
+                  <Input
+                    type="number"
+                    min={0}
+                    step={1}
+                    value={editMarkup}
+                    onChange={(e) => setEditMarkup(e.target.value)}
+                    placeholder="VD: 20"
+                  />
+                  <p
+                    className="mt-1 text-[11px]"
+                    style={{ color: "var(--tx-f)" }}
+                  >
+                    Để trống nếu muốn giữ nguyên giá sỉ gốc.
+                  </p>
+                </div>
+
+                <div>
+                  <label
+                    className="mb-1 block font-semibold"
+                    style={{ color: "var(--tx-m)" }}
+                  >
+                    Cập nhật API / Buyer Key (Tùy chọn)
+                  </label>
+                  <Input
+                    type="password"
+                    value={editBuyerKey}
+                    onChange={(e) => setEditBuyerKey(e.target.value)}
+                    placeholder="Để trống nếu không đổi key"
+                  />
+                  <p
+                    className="mt-1 text-[11px]"
+                    style={{ color: "var(--tx-f)" }}
+                  >
+                    Chỉ nhập nếu bạn muốn thay đổi API key kết nối nguồn này.
+                  </p>
+                </div>
+
+                <div
+                  className="flex items-center justify-between gap-3 rounded-xl p-3"
+                  style={{
+                    background: "var(--inp)",
+                    border: "1px solid var(--bd)",
+                  }}
+                >
+                  <div>
+                    <p
+                      className="font-semibold"
+                      style={{ color: "var(--tx)" }}
+                    >
+                      Đồng bộ thông báo tồn kho
+                    </p>
+                    <p
+                      className="text-[11px]"
+                      style={{ color: "var(--tx-f)" }}
+                    >
+                      Gửi tin thông báo restock về kênh của bot khi nguồn restock.
+                    </p>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={editNotificationSync}
+                    onChange={(e) => setEditNotificationSync(e.target.checked)}
+                    className="h-4 w-4 accent-orange-500 cursor-pointer"
+                  />
+                </div>
+              </div>
+
+              <div className="mt-5 flex justify-end gap-2">
+                <Button
+                  variant="secondary"
+                  onClick={() => setIsEditing(false)}
+                >
+                  Hủy
+                </Button>
+                <Button
+                  disabled={
+                    updateSourceMutation.isPending || !editLabel.trim()
+                  }
+                  onClick={() => {
+                    updateSourceMutation.mutate({
+                      label: editLabel.trim(),
+                      priceMarkupPercent:
+                        editMarkup.trim() !== "" ? Number(editMarkup) : null,
+                      sourceNotificationSyncEnabled: editNotificationSync,
+                      buyerKey: editBuyerKey.trim() || undefined,
+                    });
+                  }}
+                >
+                  {updateSourceMutation.isPending
+                    ? "Đang lưu..."
+                    : "Lưu thay đổi"}
+                </Button>
+              </div>
+            </div>
+          </div>,
+          document.body,
+        )}
     </div>
   );
 }

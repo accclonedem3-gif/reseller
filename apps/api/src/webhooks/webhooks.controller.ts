@@ -942,4 +942,20 @@ export class WebhooksController {
   ) {
     return this.shopsService.handleSourceCatalogWebhook(webhookKey, body);
   }
+
+  @Get("doicard68")
+  async handleDoicard68Get(@Query() query: Record<string, any>) {
+    this.logger.log(`[doicard68] GET callback received: ${JSON.stringify(query)}`);
+    return { status: 200, message: "OK" };
+  }
+
+  @Post("doicard68")
+  async handleDoicard68Post(
+    @Body() body: Record<string, any>,
+    @Query() query: Record<string, any>,
+  ) {
+    this.logger.log(`[doicard68] POST callback received: ${JSON.stringify(body || query)}`);
+    return { status: 200, message: "OK" };
+  }
 }
+

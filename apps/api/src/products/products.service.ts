@@ -87,6 +87,12 @@ export class ProductsService {
     const publish = dto.action === "PUBLISH";
     await this.prisma.$transaction(async (tx) => {
       for (const product of products) {
+        if (!publish) {
+          await tx.sourceProduct.update({
+            where: { id: product.id },
+            data: { internalSourceEnabled: false },
+          });
+        }
         await tx.sellerProductOverride.upsert({
           where: {
             sellerId_sourceProductId: {
@@ -289,7 +295,7 @@ export class ProductsService {
       user.sellerTier === SellerTier.PRO || user.sellerTier === SellerTier.ULTRA
         ? {
             ...this.buildWholesaleFields(dto),
-            internalSourceEnabled: dto.internalSourceEnabled ?? true,
+            internalSourceEnabled: dto.internalSourceEnabled ?? false,
           }
         : {};
     const businessFields = { ...classificationFields, ...wholesaleFields };

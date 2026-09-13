@@ -26,6 +26,8 @@ import {
   isMockBotToken,
   isMockBuyerKey,
   isRoboticvnProvider,
+  isDinostoreProvider,
+  isDoicardProvider,
   checkProviderVariantStock,
   fetchProviderProducts,
   purchaseFromMockProvider,
@@ -37,6 +39,7 @@ import {
   sendInvoiceMessages,
   resolveUsageInstructionsTemplate,
   sendUsageInstructionsMessage,
+  DEFAULT_USDT_VND_RATE,
   JOBS,
 } from "@reseller/shared/server";
 
@@ -166,6 +169,295 @@ export async function deleteQrMessage(
   );
 }
 
+export async function refundOutOfStockOrderToCustomerWallet(input: {
+  orderId: string;
+  botToken?: string | null;
+  reason?: string | null;
+  isOutOfStock?: boolean;
+}): Promise<boolean> {
+  const order = await prisma.order.findUnique({
+    where: { id: input.orderId },
+    include: {
+      shop: { include: { botConfig: true } },
+      customer: true,
+      sourceProduct: true,
+    },
+  });
+  if (!order) {
+    return false;
+  }
+
+  // Pre-orders explicitly agreed to wait for stock; do not auto-refund
+  if (order.isPreorder) {
+    return false;
+  }
+
+  // Idempotency: if already refunded or delivered, skip
+  if (order.status === "REFUNDED" || order.status === "DELIVERED") {
+    return false;
+  }
+
+  const isOutOfStock = input.isOutOfStock !== false;
+  const orderTotal = Math.max(0, Number(order.totalSaleAmount || 0));
+  const failureReason =
+    input.reason ||
+    (isOutOfStock
+      ? "Sản phẩm đã hết hàng do có khách hàng khác thanh toán trước. Số tiền đã được hoàn vào ví bot của bạn."
+      : "Đơn hàng thất bại từ nhà cung cấp. Số tiền đã được hoàn vào ví bot của bạn.");
+
+  try {
+    await prisma.$transaction(async (tx) => {
+      await tx.$queryRawUnsafe(
+        "SELECT id FROM orders WHERE id = $1 FOR UPDATE",
+        order.id
+      );
+
+      const lockedOrder = await tx.order.findUnique({
+        where: { id: order.id },
+      });
+      if (
+        !lockedOrder ||
+        lockedOrder.status === "REFUNDED" ||
+        lockedOrder.status === "DELIVERED"
+      ) {
+        return;
+      }
+
+      // Check if already refunded to wallet
+      const existingRefund = await tx.customerWalletLedger.findFirst({
+        where: {
+          customerId: order.customerId,
+          type: "REFUND_ORDER",
+          referenceId: order.id,
+        },
+      });
+      if (existingRefund) {
+        return;
+      }
+
+      // Customer wallet lookup or creation
+      let wallet = await tx.customerWallet.findUnique({
+        where: { customerId: order.customerId },
+      });
+      if (!wallet) {
+        wallet = await tx.customerWallet.create({
+          data: { customerId: order.customerId },
+        });
+      }
+
+      await tx.$queryRawUnsafe(
+        "SELECT id FROM customer_wallets WHERE id = $1 FOR UPDATE",
+        wallet.id
+      );
+
+      const freshWallet = await tx.customerWallet.findUniqueOrThrow({
+        where: { id: wallet.id },
+      });
+
+      // Check original wallet spend (if order was paid from wallet balance)
+      const originalSpend = await tx.customerWalletLedger.findFirst({
+        where: {
+          customerId: order.customerId,
+          type: "SPEND_ORDER",
+          referenceType: "order",
+          referenceId: order.id,
+        },
+        orderBy: { createdAt: "asc" },
+      });
+
+      const originalCommissionSpend = originalSpend
+        ? Math.max(
+            0,
+            Number(originalSpend.commissionBalanceBefore) -
+              Number(originalSpend.commissionBalanceAfter)
+          )
+        : 0;
+
+      const commissionRefund = Math.min(orderTotal, originalCommissionSpend);
+      const mainRefund = Math.max(0, orderTotal - commissionRefund);
+
+      const balanceBefore = Number(freshWallet.balance);
+      const commissionBalanceBefore = Number(freshWallet.commissionBalance);
+      const balanceUsdtBefore = Number(freshWallet.balanceUsdt);
+
+      const balanceAfter = balanceBefore + mainRefund;
+      const commissionBalanceAfter =
+        commissionBalanceBefore + commissionRefund;
+
+      const safeUsdtVndRate = Number(
+        process.env.USDT_VND_RATE || DEFAULT_USDT_VND_RATE
+      );
+      const balanceUsdtAfter =
+        balanceUsdtBefore + mainRefund / Math.max(1, safeUsdtVndRate);
+
+      await tx.customerWallet.update({
+        where: { id: freshWallet.id },
+        data: {
+          balance: new Prisma.Decimal(balanceAfter.toFixed(2)),
+          commissionBalance: new Prisma.Decimal(
+            commissionBalanceAfter.toFixed(2)
+          ),
+          balanceUsdt: new Prisma.Decimal(balanceUsdtAfter.toFixed(2)),
+        },
+      });
+
+      await tx.customerWalletLedger.create({
+        data: {
+          customerId: order.customerId,
+          walletId: freshWallet.id,
+          type: "REFUND_ORDER",
+          amount: new Prisma.Decimal(orderTotal.toFixed(2)),
+          balanceBefore: new Prisma.Decimal(balanceBefore.toFixed(2)),
+          balanceAfter: new Prisma.Decimal(balanceAfter.toFixed(2)),
+          commissionBalanceBefore: new Prisma.Decimal(
+            commissionBalanceBefore.toFixed(2)
+          ),
+          commissionBalanceAfter: new Prisma.Decimal(
+            commissionBalanceAfter.toFixed(2)
+          ),
+          referenceType: isOutOfStock ? "race_out_of_stock" : "upstream_failed",
+          referenceId: order.id,
+          note: isOutOfStock
+            ? `Hoàn tiền đơn hàng ${order.orderCode} do hết hàng (khách khác thanh toán trước)`
+            : `Hoàn tiền đơn hàng ${order.orderCode} do lỗi nguồn hàng (${failureReason})`,
+        },
+      });
+
+      await tx.order.update({
+        where: { id: order.id },
+        data: {
+          status: "REFUNDED",
+          paymentStatus: "REFUNDED",
+          failureReason,
+        },
+      });
+
+      await tx.orderEvent.create({
+        data: {
+          orderId: order.id,
+          eventType: isOutOfStock ? "race_out_of_stock_refund" : "upstream_failed_refund",
+          payloadJson: {
+            refundAmount: orderTotal,
+            reason: failureReason,
+            balanceAfter,
+            commissionBalanceAfter,
+          },
+        },
+      });
+    });
+  } catch (txErr) {
+    console.error(
+      `[refundOutOfStockOrder] transaction error for order ${order.orderCode}:`,
+      formatError(txErr)
+    );
+    return false;
+  }
+
+  // Send customer Telegram notification
+  const resolvedBotToken =
+    input.botToken ||
+    decryptSecret(
+      order.shop.botConfig?.telegramBotTokenEncrypted,
+      getEncryptionKey()
+    );
+
+  if (
+    resolvedBotToken &&
+    !(
+      String(process.env.MOCK_TELEGRAM_MODE || "false") === "true" &&
+      isMockBotToken(resolvedBotToken)
+    ) &&
+    order.customer?.telegramChatId
+  ) {
+    await deleteQrMessage(resolvedBotToken, order);
+
+    const lang = normalizeLanguage(order.customer?.preferredLanguage);
+    const formattedAmount = formatVndMoney(orderTotal);
+    const prodName = order.productNameSnapshot || "sản phẩm";
+
+    let msg = "";
+    let walletBtnText = "";
+    let shopBtnText = "";
+
+    if (lang === "en") {
+      msg = isOutOfStock
+        ? [
+            "⚠️ <b>OUT OF STOCK & REFUNDED TO WALLET</b>",
+            "",
+            `We are sorry, <b>${prodName}</b> (Qty: <b>${order.quantity}</b>) for order <code>${order.orderCode}</code> is <b>out of stock</b> because another customer completed payment first.`,
+            "",
+            `💰 <b>Amount:</b> <code>${formattedAmount}</code> has been <b>100% refunded to your bot wallet</b>!`,
+            "You can use your wallet balance to place a new order or purchase other products anytime.",
+          ].join("\n")
+        : [
+            "⚠️ <b>ORDER FAILED & REFUNDED TO WALLET</b>",
+            "",
+            `We are sorry, your order <code>${order.orderCode}</code> for <b>${prodName}</b> (Qty: <b>${order.quantity}</b>) could not be fulfilled (${failureReason}).`,
+            "",
+            `💰 <b>Amount:</b> <code>${formattedAmount}</code> has been <b>100% refunded to your bot wallet</b>!`,
+            "You can use your wallet balance to place a new order or purchase other products anytime.",
+          ].join("\n");
+      walletBtnText = "💳 View bot wallet";
+      shopBtnText = "🛍️ Continue shopping";
+    } else {
+      msg = isOutOfStock
+        ? [
+            "⚠️ <b>THÔNG BÁO HẾT HÀNG & HOÀN TIỀN VÀO VÍ</b>",
+            "",
+            `Rất tiếc, sản phẩm <b>${prodName}</b> (Số lượng: <b>${order.quantity}</b>) trong đơn hàng <code>${order.orderCode}</code> đã <b>hết hàng</b> do có khách hàng khác nhanh tay thanh toán trước.`,
+            "",
+            `💰 <b>Số tiền:</b> <code>${formattedAmount}</code> đã được <b>hoàn 100% vào số dư ví bot</b> của bạn!`,
+            "Bạn có thể dùng số dư ví để mua sản phẩm khác bất cứ lúc nào.",
+          ].join("\n")
+        : [
+            "⚠️ <b>THÔNG BÁO HỦY ĐƠN & HOÀN TIỀN VÀO VÍ</b>",
+            "",
+            `Rất tiếc, đơn hàng <code>${order.orderCode}</code> mua <b>${prodName}</b> (Số lượng: <b>${order.quantity}</b>) không thể hoàn tất do lỗi nhà cung cấp (${failureReason}).`,
+            "",
+            `💰 <b>Số tiền:</b> <code>${formattedAmount}</code> đã được <b>hoàn 100% vào số dư ví bot</b> của bạn!`,
+            "Bạn có thể dùng số dư ví để mua sản phẩm khác bất cứ lúc nào.",
+          ].join("\n");
+      walletBtnText = "💳 Xem ví bot";
+      shopBtnText = "🛍️ Tiếp tục mua sắm";
+    }
+
+    const supportLines: string[] = [];
+    if (order.shop?.supportTelegram) {
+      supportLines.push(
+        `💬 Support Telegram: @${order.shop.supportTelegram.replace(/^@/, "")}`
+      );
+    }
+    if (order.shop?.supportZalo) {
+      supportLines.push(`📞 Hotline/Zalo: ${order.shop.supportZalo}`);
+    }
+    if (supportLines.length > 0) {
+      msg += `\n\n${supportLines.join("\n")}`;
+    }
+
+    await telegramSendMessage(
+      resolvedBotToken,
+      order.customer.telegramChatId,
+      msg,
+      {
+        parse_mode: "HTML",
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: walletBtnText, callback_data: "home:wallet" }],
+            [{ text: shopBtnText, callback_data: "home:products" }],
+          ],
+        },
+      }
+    ).catch((err) => {
+      console.warn(
+        `[refundOutOfStockOrder] failed to send Telegram notification for ${order.orderCode}:`,
+        err
+      );
+    });
+  }
+
+  return true;
+}
+
 export async function enqueuePaidOrder(
   queue: Queue,
   orderId: string,
@@ -225,7 +517,11 @@ export async function processPurchase(job: Job<{ orderId: string }>): Promise<vo
           providerConfig: true,
         },
       },
-      sourceProduct: true,
+      sourceProduct: {
+        include: {
+          providerSource: true,
+        },
+      },
       paymentTransaction: true,
     },
   });
@@ -242,11 +538,52 @@ export async function processPurchase(job: Job<{ orderId: string }>): Promise<vo
   const isManualProduct =
     String(order.sourceProduct?.providerName || "").toLowerCase() === "manual" ||
     sourceMetadata.manual === true;
-  // Manual products are fulfilled by internal stock — providerConfig is only required
-  // for the external-source branch below. A shop that sells only manual products may
-  // legitimately have no providerConfig, so guard it AFTER the manual branch.
-  const providerConfig = order.shop.providerConfig;
-  if (!isManualProduct && !providerConfig) {
+  const internalSourceConnId =
+    order.sourceProduct?.internalSourceConnectionId ||
+    (order.sourceProduct?.sourceScope?.startsWith("internal:")
+      ? order.sourceProduct.sourceScope.replace("internal:", "")
+      : null) ||
+    order.shop.providerConfig?.internalSourceConnectionId ||
+    null;
+  const isInternalSource = Boolean(
+    internalSourceConnId ||
+    order.sourceProviderKindSnapshot === "INTERNAL" ||
+    order.sourceProduct?.providerName === "internal_pro" ||
+    order.shop.providerConfig?.providerKind === "INTERNAL"
+  );
+
+  // Resolve provider configuration for external products:
+  // Prefer the direct ShopProviderSource assigned to the product (multi-provider support),
+  // falling back to the shop's legacy single-source providerConfig.
+  let directProviderSource = order.sourceProduct?.providerSource;
+  if (!directProviderSource && order.sourceProduct?.providerSourceId) {
+    directProviderSource = await prisma.shopProviderSource.findUnique({
+      where: { id: order.sourceProduct.providerSourceId },
+    });
+  }
+
+  const providerConfig = directProviderSource
+    ? {
+        id: directProviderSource.id,
+        shopId: directProviderSource.shopId,
+        providerKind: "EXTERNAL" as const,
+        providerName: directProviderSource.providerName,
+        baseUrl: directProviderSource.baseUrl,
+        buyerKeyEncrypted: directProviderSource.buyerKeyEncrypted,
+        internalSourceConnectionId: null,
+        sourceWebhookKey: null,
+        sourceNotificationSyncEnabled:
+          directProviderSource.sourceNotificationSyncEnabled,
+        ownProductsOnly: false,
+        priceMarkupPercent: directProviderSource.priceMarkupPercent,
+        connectionStatus: directProviderSource.connectionStatus,
+        lastVerifiedAt: directProviderSource.lastVerifiedAt,
+        createdAt: directProviderSource.createdAt,
+        updatedAt: directProviderSource.updatedAt,
+      }
+    : order.shop.providerConfig;
+
+  if (!isManualProduct && !isInternalSource && !providerConfig) {
     return;
   }
   if (isManualProduct) {
@@ -262,6 +599,21 @@ export async function processPurchase(job: Job<{ orderId: string }>): Promise<vo
     ) {
       const deliveredText = sourceMetadata.sharedContent.trim();
       const currentAvailable = order.sourceProduct?.available ?? 0;
+      if (
+        order.sourceProduct?.available !== null &&
+        order.sourceProduct?.available !== undefined &&
+        currentAvailable < order.quantity
+      ) {
+        if (!order.isPreorder) {
+          await refundOutOfStockOrderToCustomerWallet({
+            orderId: order.id,
+            botToken,
+            reason:
+              "Sản phẩm đã hết hàng do có khách hàng khác thanh toán trước. Số tiền đã được hoàn vào ví bot của bạn.",
+          });
+          return;
+        }
+      }
       const newAvailable = Math.max(0, currentAvailable - order.quantity);
       const deliveredAt = new Date();
       await prisma.$transaction(async (tx) => {
@@ -352,6 +704,9 @@ export async function processPurchase(job: Job<{ orderId: string }>): Promise<vo
             }
           );
           if (!popped) {
+            if (!order.isPreorder) {
+              throw Symbol.for("race_out_of_stock_refund");
+            }
             const shortageReason =
               "Kho tai khoan giao tu dong khong du so luong. Don da chuyen sang cho seller xu ly thu cong.";
             await tx.order.update({
@@ -417,6 +772,15 @@ export async function processPurchase(job: Job<{ orderId: string }>): Promise<vo
           });
         });
       } catch (e) {
+        if (e === Symbol.for("race_out_of_stock_refund")) {
+          await refundOutOfStockOrderToCustomerWallet({
+            orderId: order.id,
+            botToken,
+            reason:
+              "Kho tài khoản tự động đã hết hàng do có khách khác thanh toán trước. Số tiền đã được hoàn vào ví bot của bạn.",
+          });
+          return;
+        }
         if (e === __SHORTAGE_SENTINEL) {
           console.warn(
             "[manual-delivery] shortage detected after FOR UPDATE re-read",
@@ -462,6 +826,15 @@ export async function processPurchase(job: Job<{ orderId: string }>): Promise<vo
       return;
     }
     if (availableManualEntries > 0 && availableManualEntries < order.quantity) {
+      if (!order.isPreorder) {
+        await refundOutOfStockOrderToCustomerWallet({
+          orderId: order.id,
+          botToken,
+          reason:
+            "Kho tài khoản tự động không đủ số lượng do có khách khác thanh toán trước. Số tiền đã được hoàn vào ví bot của bạn.",
+        });
+        return;
+      }
       const shortageReason =
         "Kho tai khoan giao tu dong khong du so luong. Don da chuyen sang cho seller xu ly thu cong.";
       await prisma.$transaction(async (tx) => {
@@ -490,7 +863,12 @@ export async function processPurchase(job: Job<{ orderId: string }>): Promise<vo
         ) {
           await tx.sourceProduct.update({
             where: { id: order.sourceProductId },
-            data: { available: { decrement: order.quantity } },
+            data: {
+              available: Math.max(
+                0,
+                (order.sourceProduct.available ?? 0) - order.quantity
+              ),
+            },
           });
         }
       });
@@ -519,6 +897,21 @@ export async function processPurchase(job: Job<{ orderId: string }>): Promise<vo
       }
       return;
     }
+
+    const isAddMail =
+      order.sourceProduct?.sourceDeliveryMode === "ADD_MAIL" ||
+      sourceMetadata.requiresCustomerEmail === true;
+
+    if (!isAddMail && !order.isPreorder) {
+      await refundOutOfStockOrderToCustomerWallet({
+        orderId: order.id,
+        botToken,
+        reason:
+          "Kho tài khoản tự động đã hết hàng do có khách khác thanh toán trước. Số tiền đã được hoàn vào ví bot của bạn.",
+      });
+      return;
+    }
+
     await prisma.$transaction(async (tx) => {
       await tx.order.update({
         where: { id: order.id },
@@ -543,7 +936,12 @@ export async function processPurchase(job: Job<{ orderId: string }>): Promise<vo
       ) {
         await tx.sourceProduct.update({
           where: { id: order.sourceProductId },
-          data: { available: { decrement: order.quantity } },
+          data: {
+            available: Math.max(
+              0,
+              (order.sourceProduct.available ?? 0) - order.quantity
+            ),
+          },
         });
       }
     });
@@ -573,15 +971,12 @@ export async function processPurchase(job: Job<{ orderId: string }>): Promise<vo
     return;
   }
 
-  if (!providerConfig) {
+  if (!isInternalSource && !providerConfig) {
     return;
   }
 
   // INTERNAL source: pull delivery entries directly from upstream ULTRA product
-  if (
-    providerConfig.providerKind === "INTERNAL" &&
-    providerConfig.internalSourceConnectionId
-  ) {
+  if (isInternalSource && internalSourceConnId) {
     if (!order.sourceProduct) {
       return;
     }
@@ -600,7 +995,7 @@ export async function processPurchase(job: Job<{ orderId: string }>): Promise<vo
         : {};
     const upstreamConnection =
       await prisma.downstreamSourceConnection.findUnique({
-        where: { id: providerConfig.internalSourceConnectionId },
+        where: { id: internalSourceConnId },
         include: { upstreamShop: { include: { providerConfig: true } } },
       });
     const upstreamAvailable = upstreamProduct
@@ -629,6 +1024,9 @@ export async function processPurchase(job: Job<{ orderId: string }>): Promise<vo
             }
           );
           if (!popped) {
+            if (!order.isPreorder) {
+              throw Symbol.for("upstream_race_out_of_stock_refund");
+            }
             const shortageReason =
               "Kho tai khoan giao tu dong khong du so luong. Don da chuyen sang cho seller xu ly thu cong.";
             await tx.order.update({
@@ -736,6 +1134,15 @@ export async function processPurchase(job: Job<{ orderId: string }>): Promise<vo
           });
         });
       } catch (e) {
+        if (e === Symbol.for("upstream_race_out_of_stock_refund")) {
+          await refundOutOfStockOrderToCustomerWallet({
+            orderId: order.id,
+            botToken,
+            reason:
+              "Nguồn sản phẩm nội bộ đã hết hàng do có khách khác thanh toán trước. Số tiền đã được hoàn vào ví bot của bạn.",
+          });
+          return;
+        }
         if (e === __UPSTREAM_SHORTAGE_SENTINEL) {
           console.warn(
             "[internal-source-delivery] upstream shortage detected after FOR UPDATE re-read",
@@ -751,7 +1158,7 @@ export async function processPurchase(job: Job<{ orderId: string }>): Promise<vo
         txTotalCost > 0 ? txTotalCost : Number(order.totalSourceAmount || 0);
       if (totalSourceAmount > 0) {
         await debitConnectionBalance(
-          providerConfig.internalSourceConnectionId,
+          internalSourceConnId,
           totalSourceAmount,
           order.id
         ).catch(() => undefined);
@@ -790,27 +1197,59 @@ export async function processPurchase(job: Job<{ orderId: string }>): Promise<vo
       return;
     }
 
-    // No manual delivery entries — check if upstream shop can purchase from Canboso
-    const upstreamProviderConfig =
-      upstreamConnection?.upstreamShop?.providerConfig;
+    // No manual delivery entries — check if upstream shop can purchase from external provider
+    const upstreamDirectSource = upstreamProduct?.providerSourceId
+      ? await prisma.shopProviderSource.findUnique({
+          where: { id: upstreamProduct.providerSourceId },
+        })
+      : null;
+
+    const resolvedUpstreamConfig = upstreamDirectSource
+      ? {
+          baseUrl: upstreamDirectSource.baseUrl,
+          buyerKeyEncrypted: upstreamDirectSource.buyerKeyEncrypted,
+          providerName: upstreamDirectSource.providerName,
+          providerKind: "EXTERNAL" as const,
+        }
+      : upstreamConnection?.upstreamShop?.providerConfig;
+
+    const isUpstreamProductExternal =
+      upstreamProduct?.providerName !== "manual" &&
+      !upstreamMetadata.manual &&
+      Boolean(upstreamProduct?.externalProductId) &&
+      !upstreamProduct?.externalProductId?.startsWith("manual_");
+
+    let upstreamBuyerKey: string | null = null;
     if (
-      upstreamProviderConfig?.providerKind === "EXTERNAL" &&
-      upstreamProduct?.externalProductId
+      isUpstreamProductExternal &&
+      resolvedUpstreamConfig?.providerKind === "EXTERNAL" &&
+      resolvedUpstreamConfig?.buyerKeyEncrypted
     ) {
-      const upstreamBuyerKey = decryptSecret(
-        upstreamProviderConfig.buyerKeyEncrypted,
+      upstreamBuyerKey = decryptSecret(
+        resolvedUpstreamConfig.buyerKeyEncrypted,
         getEncryptionKey()
       );
+    }
+
+    if (
+      isUpstreamProductExternal &&
+      resolvedUpstreamConfig?.providerKind === "EXTERNAL" &&
+      upstreamBuyerKey &&
+      upstreamProduct?.externalProductId
+    ) {
       const upstreamResult = await purchaseFromProvider(
         {
-          baseUrl: upstreamProviderConfig.baseUrl,
+          baseUrl: resolvedUpstreamConfig.baseUrl,
           buyerKey: upstreamBuyerKey,
+          providerName: resolvedUpstreamConfig.providerName,
           timeoutMs: 120000,
         },
         {
           productId: upstreamProduct.externalProductId,
           quantity: order.quantity,
           customerEmail: order.customerEmail || null,
+          targetLink: (order as any).targetLink || null,
+          comments: (order as any).comments || null,
           clientOrderCode: order.orderCode,
         }
       );
@@ -847,10 +1286,11 @@ export async function processPurchase(job: Job<{ orderId: string }>): Promise<vo
               status: "DELIVERED",
               deliveredAccountText: upstreamResult.deliveredText,
               deliveredAt,
-              internalSourceOrderId:
-                createdInternalSourceOrderId || undefined,
-              internalSourceOrderCode:
-                upstreamResult.providerOrderCode || undefined,
+              providerOrderId: upstreamResult.providerOrderId || undefined,
+              providerOrderCode: upstreamResult.providerOrderCode || undefined,
+              ...(createdInternalSourceOrderId
+                ? { internalSourceOrderId: createdInternalSourceOrderId }
+                : {}),
               failureReason: null,
             },
           });
@@ -875,7 +1315,10 @@ export async function processPurchase(job: Job<{ orderId: string }>): Promise<vo
                   order.sourceProduct?.available === null ||
                   order.sourceProduct?.available === undefined
                     ? undefined
-                    : { decrement: order.quantity },
+                    : Math.max(
+                        0,
+                        (order.sourceProduct.available ?? 0) - order.quantity
+                      ),
               },
             });
           }
@@ -893,7 +1336,7 @@ export async function processPurchase(job: Job<{ orderId: string }>): Promise<vo
         const totalSourceAmount = Number(order.totalSourceAmount || 0);
         if (totalSourceAmount > 0) {
           await debitConnectionBalance(
-            providerConfig.internalSourceConnectionId,
+            internalSourceConnId,
             totalSourceAmount,
             order.id
           ).catch(() => undefined);
@@ -932,6 +1375,21 @@ export async function processPurchase(job: Job<{ orderId: string }>): Promise<vo
         }
         return;
       }
+
+      if (!upstreamResult.success && !upstreamResult.pending && !order.isPreorder) {
+        await refundOutOfStockOrderToCustomerWallet({
+          orderId: order.id,
+          botToken,
+          isOutOfStock: Boolean(upstreamResult.outOfStock),
+          reason:
+            upstreamResult.message ||
+            (upstreamResult.outOfStock
+              ? "Nguồn hàng tạm hết do có khách khác thanh toán trước. Số tiền đã được hoàn vào ví bot của bạn."
+              : "Đơn hàng thất bại từ nhà cung cấp. Số tiền đã được hoàn vào ví bot của bạn."),
+        });
+        return;
+      }
+
       await prisma.$transaction(async (tx) => {
         await tx.order.update({
           where: { id: order.id },
@@ -942,8 +1400,8 @@ export async function processPurchase(job: Job<{ orderId: string }>): Promise<vo
                 : "FAILED",
             failureReason:
               upstreamResult.message || "Upstream Canboso purchase failed.",
-            internalSourceOrderId: upstreamResult.providerOrderId || undefined,
-            internalSourceOrderCode:
+            providerOrderId: upstreamResult.providerOrderId || undefined,
+            providerOrderCode:
               upstreamResult.providerOrderCode || undefined,
           },
         });
@@ -970,6 +1428,7 @@ export async function processPurchase(job: Job<{ orderId: string }>): Promise<vo
           isMockBotToken(botToken)
         )
       ) {
+        await deleteQrMessage(botToken, order);
         await telegramSendMessage(
           botToken,
           order.customer.telegramChatId,
@@ -989,7 +1448,141 @@ export async function processPurchase(job: Job<{ orderId: string }>): Promise<vo
       return;
     }
 
+    // Upstream has no immediate stock:
+    // Check if upstream product is manual or requires seller processing (ADD_MAIL, manual slot, etc.)
+    const isManualUpstream =
+      upstreamProduct?.providerName === "manual" ||
+      upstreamMetadata.manual === true ||
+      upstreamProduct?.sourceDeliveryMode === "ADD_MAIL" ||
+      upstreamMetadata.requiresCustomerEmail === true;
+
+    if (isManualUpstream && upstreamConnection && upstreamProduct) {
+      const unitPriceISO =
+        order.quantity > 0
+          ? Number(order.totalSourceAmount || 0) / order.quantity
+          : Number(order.totalSourceAmount || 0);
+      const sourcePriceSnapshotISO = upstreamProduct.sourcePrice
+        ? Number(upstreamProduct.sourcePrice)
+        : 0;
+
+      await prisma.$transaction(async (tx) => {
+        const isoRow = await recordInternalSourceOrder(tx, {
+          connection: upstreamConnection,
+          order,
+          upstreamProduct,
+          unitPrice: unitPriceISO,
+          sourcePriceSnapshot: sourcePriceSnapshotISO,
+          totalAmount: Number(order.totalSourceAmount || 0),
+          deliveredText: null,
+          deliveredAt: null,
+          fulfillment: "ultra_manual_pending",
+          status: "PENDING_MANUAL",
+          failureReason: "Sản phẩm đang chờ shop nguồn xử lý thủ công.",
+        });
+
+        await tx.order.update({
+          where: { id: order.id },
+          data: {
+            status: "PAID_WAITING_STOCK",
+            failureReason: "Sản phẩm đang chờ shop nguồn xử lý thủ công.",
+            internalSourceOrderId: isoRow.id,
+            internalSourceOrderCode: isoRow.sourceOrderCode,
+          },
+        });
+
+        await tx.orderEvent.create({
+          data: {
+            orderId: order.id,
+            eventType: "internal_source_pending_manual",
+            payloadJson: {
+              message: "Đơn hàng manual đã tạo trên shop nguồn, đang chờ shop nguồn xử lý.",
+              internalSourceOrderId: isoRow.id,
+              internalSourceOrderCode: isoRow.sourceOrderCode,
+              customerEmail: order.customerEmail || null,
+            },
+          },
+        });
+
+        if (order.sourceProductId) {
+          await tx.sourceProduct.update({
+            where: { id: order.sourceProductId },
+            data: {
+              available:
+                order.sourceProduct?.available === null ||
+                order.sourceProduct?.available === undefined
+                  ? undefined
+                  : Math.max(
+                      0,
+                      (order.sourceProduct.available ?? 0) - order.quantity
+                    ),
+            },
+          });
+        }
+        if (upstreamProduct) {
+          await tx.sourceProduct.update({
+            where: { id: upstreamProduct.id },
+            data: {
+              soldCount: { increment: order.quantity },
+              available:
+                upstreamProduct.available === null ||
+                upstreamProduct.available === undefined
+                  ? undefined
+                  : Math.max(
+                      0,
+                      (upstreamProduct.available ?? 0) - order.quantity
+                    ),
+            },
+          });
+        }
+      });
+
+      const totalSourceAmount = Number(order.totalSourceAmount || 0);
+      if (totalSourceAmount > 0) {
+        await debitConnectionBalance(
+          internalSourceConnId,
+          totalSourceAmount,
+          order.id
+        ).catch(() => undefined);
+      }
+
+      if (
+        botToken &&
+        !(
+          String(process.env.MOCK_TELEGRAM_MODE || "false") === "true" &&
+          isMockBotToken(botToken)
+        )
+      ) {
+        await deleteQrMessage(botToken, order);
+        await telegramSendMessage(
+          botToken,
+          order.customer.telegramChatId,
+          buildManualPendingMessage({
+            language: customerLanguage,
+            orderCode: order.orderCode,
+            productName: order.productNameSnapshot,
+            quantity: order.quantity,
+            shortage: false,
+            shop: {
+              supportTelegram: order.shop.supportTelegram,
+              supportZalo: order.shop.supportZalo,
+            },
+          })
+        ).catch(() => undefined);
+      }
+      return;
+    }
+
     // Upstream has no stock — wait for ULTRA to add entries
+    if (!order.isPreorder) {
+      await refundOutOfStockOrderToCustomerWallet({
+        orderId: order.id,
+        botToken,
+        reason:
+          "Nguồn sản phẩm nội bộ đã hết hàng do có khách khác thanh toán trước. Số tiền đã được hoàn vào ví bot của bạn.",
+      });
+      return;
+    }
+
     await prisma.$transaction(async (tx) => {
       await tx.order.update({
         where: { id: order.id },
@@ -1016,6 +1609,7 @@ export async function processPurchase(job: Job<{ orderId: string }>): Promise<vo
         isMockBotToken(botToken)
       )
     ) {
+      await deleteQrMessage(botToken, order);
       await telegramSendMessage(
         botToken,
         order.customer.telegramChatId,
@@ -1024,7 +1618,7 @@ export async function processPurchase(job: Job<{ orderId: string }>): Promise<vo
           orderCode: order.orderCode,
           productName: order.productNameSnapshot,
           quantity: order.quantity,
-          shortage: false,
+          shortage: true,
           shop: {
             supportTelegram: order.shop.supportTelegram,
             supportZalo: order.shop.supportZalo,
@@ -1032,6 +1626,10 @@ export async function processPurchase(job: Job<{ orderId: string }>): Promise<vo
         })
       ).catch(() => undefined);
     }
+    return;
+  }
+
+  if (!providerConfig) {
     return;
   }
 
@@ -1070,6 +1668,15 @@ export async function processPurchase(job: Job<{ orderId: string }>): Promise<vo
           parentProductId
         );
         if (inStock === false) {
+          if (!order.isPreorder) {
+            await refundOutOfStockOrderToCustomerWallet({
+              orderId: order.id,
+              botToken,
+              reason:
+                "Sản phẩm tạm hết hàng bên nhà cung cấp do có khách khác thanh toán trước. Số tiền đã được hoàn vào ví bot của bạn.",
+            });
+            return;
+          }
           await prisma.order.update({
             where: { id: order.id },
             data: {
@@ -1089,6 +1696,7 @@ export async function processPurchase(job: Job<{ orderId: string }>): Promise<vo
         const catalog = await fetchProviderProducts({
           baseUrl: providerConfig.baseUrl,
           buyerKey,
+          providerName: providerConfig.providerName,
           timeoutMs: 5000,
         });
         const entry = catalog.find(
@@ -1099,6 +1707,15 @@ export async function processPurchase(job: Job<{ orderId: string }>): Promise<vo
           entry.hidden ||
           (entry.available !== null && entry.available <= 0)
         ) {
+          if (!order.isPreorder) {
+            await refundOutOfStockOrderToCustomerWallet({
+              orderId: order.id,
+              botToken,
+              reason:
+                "Sản phẩm tạm hết hàng bên nhà cung cấp do có khách khác thanh toán trước. Số tiền đã được hoàn vào ví bot của bạn.",
+            });
+            return;
+          }
           await prisma.order.update({
             where: { id: order.id },
             data: {
@@ -1126,12 +1743,15 @@ export async function processPurchase(job: Job<{ orderId: string }>): Promise<vo
           {
             baseUrl: providerConfig.baseUrl,
             buyerKey,
+            providerName: providerConfig.providerName,
             timeoutMs: 120000,
           },
           {
             productId: order.sourceProduct?.externalProductId || "",
             quantity: order.quantity,
             customerEmail: order.customerEmail || null,
+            targetLink: (order as any).targetLink || null,
+            comments: (order as any).comments || null,
             clientOrderCode: order.orderCode,
           }
         );
@@ -1145,8 +1765,8 @@ export async function processPurchase(job: Job<{ orderId: string }>): Promise<vo
           status: "DELIVERED",
           deliveredAccountText: result.deliveredText,
           deliveredAt,
-          internalSourceOrderId: result.providerOrderId || undefined,
-          internalSourceOrderCode: result.providerOrderCode || undefined,
+          providerOrderId: result.providerOrderId || undefined,
+          providerOrderCode: result.providerOrderCode || undefined,
           failureReason: null,
         },
       });
@@ -1172,9 +1792,10 @@ export async function processPurchase(job: Job<{ orderId: string }>): Promise<vo
               order.sourceProduct?.available === null ||
               order.sourceProduct?.available === undefined
                 ? undefined
-                : {
-                    decrement: order.quantity,
-                  },
+                : Math.max(
+                    0,
+                    (order.sourceProduct.available ?? 0) - order.quantity
+                  ),
           },
         });
       }
@@ -1228,6 +1849,20 @@ export async function processPurchase(job: Job<{ orderId: string }>): Promise<vo
     return;
   }
 
+  if (!result.success && !result.pending && !order.isPreorder) {
+    await refundOutOfStockOrderToCustomerWallet({
+      orderId: order.id,
+      botToken,
+      isOutOfStock: Boolean(result.outOfStock),
+      reason:
+        result.message ||
+        (result.outOfStock
+          ? "Sản phẩm tạm hết hàng bên nhà cung cấp do có khách hàng khác thanh toán trước. Số tiền đã được hoàn vào ví bot của bạn."
+          : "Đơn hàng thất bại từ nhà cung cấp. Số tiền đã được hoàn vào ví bot của bạn."),
+    });
+    return;
+  }
+
   await prisma.$transaction(async (tx) => {
     await tx.order.update({
       where: { id: order.id },
@@ -1237,8 +1872,8 @@ export async function processPurchase(job: Job<{ orderId: string }>): Promise<vo
             ? "PAID_WAITING_STOCK"
             : "FAILED",
         failureReason: result.message || "Upstream purchase failed.",
-        internalSourceOrderId: result.providerOrderId || undefined,
-        internalSourceOrderCode: result.providerOrderCode || undefined,
+        providerOrderId: result.providerOrderId || undefined,
+        providerOrderCode: result.providerOrderCode || undefined,
       },
     });
     await tx.orderEvent.create({
@@ -1296,6 +1931,103 @@ export async function reconcilePendingInternalSourceOrders(): Promise<void> {
   });
 
   for (const order of orders) {
+    // 1. Direct DB lookup if internalSourceOrderId is present
+    if (order.internalSourceOrderId) {
+      const iso = await prisma.internalSourceOrder.findUnique({
+        where: { id: order.internalSourceOrderId },
+      });
+      if (iso) {
+        if (iso.status === "DELIVERED" && iso.deliveredAccountText) {
+          const deliveredAt = iso.deliveredAt || new Date();
+          const deliveredText = iso.deliveredAccountText;
+          await prisma.$transaction(async (tx) => {
+            await tx.order.update({
+              where: { id: order.id },
+              data: {
+                status: "DELIVERED",
+                deliveredAccountText: deliveredText,
+                deliveredAt,
+                internalSourceOrderId: iso.id,
+                internalSourceOrderCode: iso.sourceOrderCode,
+                failureReason: null,
+              },
+            });
+            await tx.orderEvent.create({
+              data: {
+                orderId: order.id,
+                eventType: "internal_source_order_delivered",
+                payloadJson: {
+                  internalSourceOrderId: iso.id,
+                  internalSourceOrderCode: iso.sourceOrderCode,
+                  deliveredText,
+                  deliveredAt,
+                },
+              },
+            });
+          });
+          await snapshotWarrantyForDeliveredOrder(order.id);
+          await creditAffiliateCommission(order.id).catch(() => undefined);
+          const botToken = decryptSecret(
+            order.shop.botConfig?.telegramBotTokenEncrypted,
+            getEncryptionKey()
+          );
+          const sourceMetadata =
+            order.sourceProduct?.metadataJson &&
+            typeof order.sourceProduct.metadataJson === "object" &&
+            !Array.isArray(order.sourceProduct.metadataJson)
+              ? (order.sourceProduct.metadataJson as Record<string, any>)
+              : {};
+          const customerLanguage = normalizeLanguage(
+            order.customer?.preferredLanguage
+          );
+          if (
+            botToken &&
+            !(
+              String(process.env.MOCK_TELEGRAM_MODE || "false") === "true" &&
+              isMockBotToken(botToken)
+            )
+          ) {
+            await deleteQrMessage(botToken, order);
+            await sendDeliveredOrderMessages({
+              botToken,
+              shopId: order.shopId,
+              productIcon: order.sourceProduct?.productIcon,
+              productIconCustomEmojiId: order.sourceProduct?.iconCustomEmojiId,
+              chatId: order.customer.telegramChatId,
+              orderCode: order.orderCode,
+              productName: order.productNameSnapshot,
+              quantity: order.quantity,
+              amount: order.totalSaleAmount,
+              deliveredText,
+              deliveredAt,
+              language: customerLanguage,
+              sourceDescription: order.sourceProduct?.sourceDescription,
+              metadata: sourceMetadata,
+              warrantyPolicy:
+                order.warrantyPolicySnapshot ||
+                order.sourceProduct?.warrantyPolicy,
+              shop: {
+                supportTelegram: order.shop.supportTelegram,
+                supportZalo: order.shop.supportZalo,
+              },
+            });
+          }
+          continue;
+        } else if (iso.status === "FAILED" || iso.status === "CANCELED") {
+          await prisma.order.update({
+            where: { id: order.id },
+            data: {
+              status: "FAILED",
+              failureReason: iso.failureReason || "Đơn hàng nguồn đã bị hủy.",
+            },
+          });
+          continue;
+        }
+        // Still pending (PENDING_MANUAL, PENDING_STOCK, etc.) - wait for upstream delivery
+        continue;
+      }
+    }
+
     const providerConfig = order.shop.providerConfig;
     if (!providerConfig) {
       continue;
@@ -1315,8 +2047,12 @@ export async function reconcilePendingInternalSourceOrders(): Promise<void> {
           providerName: providerConfig.providerName,
         },
         {
-          orderId: order.internalSourceOrderId,
-          orderCode: order.internalSourceOrderCode,
+          orderId: order.internalSourceOrderId || order.providerOrderId || undefined,
+          orderCode:
+            order.internalSourceOrderCode ||
+            order.providerOrderCode ||
+            order.orderCode ||
+            undefined,
         }
       );
       if (!result.providerOrderId && !result.providerOrderCode && !result.status) {
@@ -1331,8 +2067,15 @@ export async function reconcilePendingInternalSourceOrders(): Promise<void> {
               status: "DELIVERED",
               deliveredAccountText: result.deliveredText,
               deliveredAt,
-              internalSourceOrderId:
+              providerOrderId:
                 result.providerOrderId ||
+                order.providerOrderId ||
+                undefined,
+              providerOrderCode:
+                result.providerOrderCode ||
+                order.providerOrderCode ||
+                undefined,
+              internalSourceOrderId:
                 order.internalSourceOrderId ||
                 undefined,
               internalSourceOrderCode:
@@ -1363,9 +2106,10 @@ export async function reconcilePendingInternalSourceOrders(): Promise<void> {
                   order.sourceProduct?.available === null ||
                   order.sourceProduct?.available === undefined
                     ? undefined
-                    : {
-                        decrement: order.quantity,
-                      },
+                    : Math.max(
+                        0,
+                        (order.sourceProduct.available ?? 0) - order.quantity
+                      ),
               },
             });
           }
@@ -1432,8 +2176,15 @@ export async function reconcilePendingInternalSourceOrders(): Promise<void> {
               failureReason:
                 result.failureReason ||
                 "Internal source order is waiting for seller handling.",
-              internalSourceOrderId:
+              providerOrderId:
                 result.providerOrderId ||
+                order.providerOrderId ||
+                undefined,
+              providerOrderCode:
+                result.providerOrderCode ||
+                order.providerOrderCode ||
+                undefined,
+              internalSourceOrderId:
                 order.internalSourceOrderId ||
                 undefined,
               internalSourceOrderCode:
@@ -1455,8 +2206,15 @@ export async function reconcilePendingInternalSourceOrders(): Promise<void> {
                 result.failureReason ||
                 result.message ||
                 "Internal source order needs seller review.",
-              internalSourceOrderId:
+              providerOrderId:
                 result.providerOrderId ||
+                order.providerOrderId ||
+                undefined,
+              providerOrderCode:
+                result.providerOrderCode ||
+                order.providerOrderCode ||
+                undefined,
+              internalSourceOrderId:
                 order.internalSourceOrderId ||
                 undefined,
               internalSourceOrderCode:
@@ -1485,12 +2243,20 @@ export async function reconcilePendingRoboticvnOrders(): Promise<void> {
   const orders = await prisma.order.findMany({
     where: {
       status: "PAID_WAITING_STOCK",
-      internalSourceOrderCode: { startsWith: "order_" },
+      OR: [
+        { providerOrderCode: { not: null } },
+        { providerOrderId: { not: null } },
+        { internalSourceOrderCode: { not: null } },
+      ],
     },
     include: {
       customer: true,
       shop: { include: { botConfig: true, providerConfig: true } },
-      sourceProduct: true,
+      sourceProduct: {
+        include: {
+          providerSource: true,
+        },
+      },
       paymentTransaction: true,
     },
     orderBy: { createdAt: "asc" },
@@ -1498,7 +2264,22 @@ export async function reconcilePendingRoboticvnOrders(): Promise<void> {
   });
 
   for (const order of orders) {
-    const providerConfig = order.shop.providerConfig;
+    const directProviderSource =
+      order.sourceProduct?.providerSource ||
+      (order.sourceProduct?.providerSourceId
+        ? await prisma.shopProviderSource.findUnique({
+            where: { id: order.sourceProduct.providerSourceId },
+          })
+        : null);
+
+    const providerConfig = directProviderSource
+      ? {
+          baseUrl: directProviderSource.baseUrl,
+          buyerKeyEncrypted: directProviderSource.buyerKeyEncrypted,
+          providerName: directProviderSource.providerName,
+        }
+      : order.shop.providerConfig;
+
     if (!providerConfig) {
       continue;
     }
@@ -1509,11 +2290,28 @@ export async function reconcilePendingRoboticvnOrders(): Promise<void> {
     if (!buyerKey) {
       continue;
     }
-    // Guard: only roboticvn (routed by apk_ key prefix or host) — never touch a canboso order.
-    if (!isRoboticvnProvider({ baseUrl: providerConfig.baseUrl, buyerKey })) {
+    // Guard: only roboticvn and dinostore — never touch a canboso order.
+    if (
+      !isRoboticvnProvider({ baseUrl: providerConfig.baseUrl, buyerKey }) &&
+      !isDinostoreProvider({
+        baseUrl: providerConfig.baseUrl,
+        buyerKey,
+        providerName: providerConfig.providerName,
+      }) &&
+      !isDoicardProvider({
+        baseUrl: providerConfig.baseUrl,
+        buyerKey,
+        providerName: providerConfig.providerName,
+      })
+    ) {
       continue;
     }
     try {
+      const orderRef =
+        order.providerOrderCode ||
+        order.providerOrderId ||
+        order.internalSourceOrderCode ||
+        order.orderCode;
       const result = await fetchProviderOrderStatus(
         {
           baseUrl: providerConfig.baseUrl,
@@ -1521,9 +2319,25 @@ export async function reconcilePendingRoboticvnOrders(): Promise<void> {
           providerName: providerConfig.providerName,
         },
         {
-          orderId: order.internalSourceOrderCode,
+          orderId: orderRef,
+          orderCode: orderRef,
         }
       );
+      if (result.status === "failed") {
+        const botToken = decryptSecret(
+          order.shop.botConfig?.telegramBotTokenEncrypted,
+          getEncryptionKey()
+        );
+        await refundOutOfStockOrderToCustomerWallet({
+          orderId: order.id,
+          botToken,
+          isOutOfStock: false,
+          reason:
+            result.message ||
+            "Nhà cung cấp đã hủy hoặc không thể hoàn thành đơn hàng. Số tiền đã được hoàn lại vào ví của bạn.",
+        });
+        continue;
+      }
       if (!(result.status === "delivered" && result.deliveredText)) {
         continue; // still pending / not ready — leave for the next sweep
       }
@@ -1535,8 +2349,13 @@ export async function reconcilePendingRoboticvnOrders(): Promise<void> {
             status: "DELIVERED",
             deliveredAccountText: result.deliveredText,
             deliveredAt,
-            internalSourceOrderCode:
+            providerOrderId:
+              result.providerOrderId ||
+              order.providerOrderId ||
+              undefined,
+            providerOrderCode:
               result.providerOrderCode ||
+              order.providerOrderCode ||
               order.internalSourceOrderCode ||
               undefined,
             failureReason: null,
@@ -1548,8 +2367,13 @@ export async function reconcilePendingRoboticvnOrders(): Promise<void> {
             eventType: "upstream_purchase_success",
             payloadJson: {
               deliveredText: result.deliveredText,
+              providerOrderId:
+                result.providerOrderId ||
+                order.providerOrderId ||
+                null,
               providerOrderCode:
                 result.providerOrderCode ||
+                order.providerOrderCode ||
                 order.internalSourceOrderCode ||
                 null,
               note: "roboticvn delayed delivery reconciled",
@@ -1565,7 +2389,10 @@ export async function reconcilePendingRoboticvnOrders(): Promise<void> {
                 order.sourceProduct?.available === null ||
                 order.sourceProduct?.available === undefined
                   ? undefined
-                  : { decrement: order.quantity },
+                  : Math.max(
+                      0,
+                      (order.sourceProduct.available ?? 0) - order.quantity
+                    ),
             },
           });
         }

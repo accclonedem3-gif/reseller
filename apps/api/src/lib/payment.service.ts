@@ -142,7 +142,7 @@ export class PaymentService {
       throw new BadRequestException("On-chain receipt provider does not match the payment target.");
     }
     const transactionAtMs = input.transactionAt?.getTime();
-    const minimumTransactionAt = target.createdAt.getTime() - 60 * 1000;
+    const minimumTransactionAt = target.createdAt.getTime() - 180 * 1000;
     if (!Number.isFinite(transactionAtMs) || transactionAtMs! < minimumTransactionAt) {
       throw new BadRequestException("Blockchain transaction predates this payment request.");
     }

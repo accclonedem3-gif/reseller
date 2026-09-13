@@ -359,11 +359,17 @@ export class CreateProviderSourceDto {
   @IsString()
   @IsIn([
     "canboso",
+    "dinostore",
+    "dinostore_social",
     "shopmmo",
     "roboticvn",
     "zampto",
     "huymai",
     "gigapower",
+    "doicard68",
+    "doicard",
+    "haivankhosi",
+    "haivan",
   ])
   providerName?: string;
 
@@ -388,6 +394,40 @@ export class CreateProviderSourceDto {
   priceMarkupPercent?: number | null;
 }
 
+export class UpdateProviderSourceDto {
+  @IsOptional()
+  @Transform(emptyStringToUndefined)
+  @IsString()
+  @MinLength(2)
+  label?: string;
+
+  @IsOptional()
+  @Transform(({ value }) => {
+    if (value === null || value === undefined || value === "") return null;
+    const n = Number(value);
+    return Number.isFinite(n) ? n : null;
+  })
+  @IsNumber()
+  @Min(0)
+  @Max(500)
+  priceMarkupPercent?: number | null;
+
+  @IsOptional()
+  @IsBoolean()
+  sourceNotificationSyncEnabled?: boolean;
+
+  @IsOptional()
+  @Transform(emptyStringToUndefined)
+  @IsString()
+  @MinLength(3)
+  buyerKey?: string;
+
+  @IsOptional()
+  @Transform(emptyStringToUndefined)
+  @IsUrl({ require_tld: false, require_protocol: true })
+  baseUrl?: string;
+}
+
 export class ProviderSourceOrdersQueryDto {
   @IsOptional()
   @Type(() => Number)
@@ -401,3 +441,5 @@ export class ProviderSourceOrdersQueryDto {
   @MaxLength(200)
   search?: string;
 }
+
+

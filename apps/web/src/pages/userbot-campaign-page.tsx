@@ -243,7 +243,7 @@ export function UserbotCampaignPage() {
         await api.post("/userbot-campaign/templates", {
           name: templateName,
           type: templateType,
-          content: templateContent || undefined,
+          content: (templateContent && templateContent.trim()) || (templateType === "SPINTAX_TEXT" ? templateName.trim() : undefined),
           savedMessageId: selectedSavedMsgId || undefined,
           savedMessageText: selectedSavedMsgText || undefined,
         })

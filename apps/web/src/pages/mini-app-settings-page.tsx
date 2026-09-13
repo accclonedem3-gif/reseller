@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import { resolveApiBaseUrl } from "@/lib/api";
 
 interface BotCustomization {
   welcomeMessage?: { vi?: string; en?: string };
@@ -78,7 +79,7 @@ const BUTTON_GROUPS: { label: string; keys: (typeof BUTTON_KEYS)[number][] }[] =
 
 const DEFAULT_LABELS_VI = BUTTON_LABELS_VI;
 
-const API_BASE = import.meta.env.VITE_API_URL || "/api/v1";
+const API_BASE = resolveApiBaseUrl();
 
 function resolveTelegramInitData(): string {
   const sdkValue = window.Telegram?.WebApp?.initData?.trim();
@@ -98,6 +99,7 @@ declare global {
         initData?: string;
         themeParams?: Record<string, string>;
         ready?: () => void;
+        expand?: () => void;
       };
     };
   }
@@ -170,6 +172,7 @@ export function MiniAppSettingsPage() {
     if (!sdkReady) return;
     const twa = window.Telegram?.WebApp;
     if (twa?.ready) twa.ready();
+    if (twa?.expand) twa.expand();
     const tp = twa?.themeParams || {};
     const mapped: Record<string, string> = {};
     for (const [k, v] of Object.entries(tp)) {
@@ -353,7 +356,7 @@ export function MiniAppSettingsPage() {
     borderRadius: "10px",
     padding: "10px 12px",
     width: "100%",
-    fontSize: "15px",
+    fontSize: "16px",
     outline: "none",
     boxSizing: "border-box",
     fontFamily: "system-ui, -apple-system, sans-serif",
@@ -505,7 +508,7 @@ export function MiniAppSettingsPage() {
       </div>
 
       {/* Content */}
-      <div key={activeTab} style={{ padding: "14px 12px 120px", animation: "fadeIn 0.18s ease" }}>
+      <div key={activeTab} style={{ padding: "14px 12px calc(120px + env(safe-area-inset-bottom, 0px))", animation: "fadeIn 0.18s ease" }}>
 
         {/* ── Tab: Tin nhắn ── */}
         {activeTab === "messages" && (
@@ -942,7 +945,7 @@ export function MiniAppSettingsPage() {
       {activeTab !== "products" && (
         <div style={{
           position: "fixed", bottom: 0, left: 0, right: 0,
-          padding: "10px 12px 12px",
+          padding: "10px 12px calc(14px + env(safe-area-inset-bottom, 0px))",
           backgroundColor: bg,
           borderTop: `1px solid ${borderColor}`,
           backdropFilter: "blur(12px)",

@@ -33,6 +33,9 @@ export type PendingQuantitySelection = {
   preorderEnabled?: boolean;
   preorderFeePercent?: number;
   isPreorderOnly?: boolean;
+  isSocial?: boolean;
+  minQuantity?: number | null;
+  socialInputFields?: string[];
 };
 
 export type PendingWalletTopupSelection = {
@@ -50,6 +53,21 @@ export type PendingPaymentSelection = {
   firstName?: string | null;
   lastName?: string | null;
   customerEmail?: string | null;
+  targetLink?: string | null;
+  comments?: string | null;
+  isSocial?: boolean;
+  expiresAt: number;
+};
+
+export type PendingSocialTargetSelection = {
+  sourceProductId: string;
+  quantity: number;
+  displayName: string;
+  isSocial: boolean;
+  socialInputFields?: string[];
+  targetLink?: string | null;
+  comments?: string | null;
+  step: "link" | "comments";
   expiresAt: number;
 };
 
@@ -59,7 +77,7 @@ export type PendingTxHashSubmission = {
   allowMockHash: boolean;
   expiresAt: number;
   isTopup?: boolean;
-  provider?: "USDT_TRC20" | "USDT_SOL" | "USDT_TON";
+  provider?: "USDT_TRC20" | "USDT_SOL" | "USDT_TON" | "USDT_BEP20";
 };
 
 export type PendingBinanceOrderIdSubmission = {

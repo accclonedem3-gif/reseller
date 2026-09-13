@@ -93,6 +93,15 @@ export const TON_PAYMENT_SCAN_LOCK_TTL_MS = Math.max(
   120000,
   TON_PAYMENT_SCAN_INTERVAL_MS * 4,
 );
+export const BEP20_PAYMENT_SCAN_INTERVAL_MS = Math.max(
+  10000,
+  Number(process.env.BEP20_PAYMENT_SCAN_INTERVAL_MS || 30000) || 30000,
+);
+export const BEP20_PAYMENT_SCAN_LOCK_KEY = "locks:payments:usdt-bep20-scan";
+export const BEP20_PAYMENT_SCAN_LOCK_TTL_MS = Math.max(
+  120000,
+  BEP20_PAYMENT_SCAN_INTERVAL_MS * 4,
+);
 export const INTERNAL_SOURCE_ORDER_SWEEP_INTERVAL_MS = Number(
   process.env.INTERNAL_SOURCE_ORDER_SWEEP_INTERVAL_MS || 15000,
 );

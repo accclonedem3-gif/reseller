@@ -15,7 +15,14 @@ interface AuthContextValue {
   session: StoredSession | null;
   ready: boolean;
   login: (username: string, password: string) => Promise<void>;
-  register: (username: string, email: string, password: string, displayName: string, referralCode?: string | null) => Promise<void>;
+  register: (
+    username: string,
+    email: string,
+    password: string,
+    displayName: string,
+    referralCode?: string | null,
+    turnstileToken?: string | null,
+  ) => Promise<void>;
   changePassword: (currentPassword: string, newPassword: string) => Promise<void>;
   updateRecoveryEmail: (recoveryEmail: string | null) => Promise<void>;
   updateDisplayName: (displayName: string) => Promise<void>;
@@ -76,13 +83,14 @@ export function AuthProvider({ children }: PropsWithChildren) {
         setSession(response.data);
         setStoredSession(response.data);
       },
-      async register(username, email, password, displayName, referralCode) {
+      async register(username, email, password, displayName, referralCode, turnstileToken) {
         const response = await api.post("/auth/register", {
           username,
           email,
           password,
           displayName,
           referralCode: referralCode || undefined,
+          turnstileToken: turnstileToken || undefined,
         });
 
         setSession(response.data);

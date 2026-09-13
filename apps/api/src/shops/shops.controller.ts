@@ -6,6 +6,7 @@ import {
   Get,
   Inject,
   Param,
+  Patch,
   Post,
   Put,
   Query,
@@ -27,6 +28,7 @@ import type { AuthenticatedUser } from "../types";
 
 import {
   CreateProviderSourceDto,
+  UpdateProviderSourceDto,
   ProviderSourceOrdersQueryDto,
   UpdateBotConfigDto,
   UpdateShopDto,
@@ -170,6 +172,18 @@ export class ShopsController {
     @Body() body: CreateProviderSourceDto,
   ) {
     return this.shopsService.createProviderSource(user, body);
+  }
+
+  @Patch("provider-sources/:id")
+  @UseGuards(SellerTierGuard, SellerCapabilitiesGuard)
+  @RequireSellerTier(SellerTier.PRO, SellerTier.ULTRA)
+  @RequireSellerCapabilities("source_external_use")
+  updateProviderSource(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param("id") id: string,
+    @Body() body: UpdateProviderSourceDto,
+  ) {
+    return this.shopsService.updateProviderSource(user, id, body);
   }
 
   @Post("provider-sources/:id/sync")

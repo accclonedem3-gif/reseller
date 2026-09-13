@@ -1,5 +1,5 @@
 import { MessageCircle, Send, ShieldCheck } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Navigate, useLocation, useSearchParams } from "react-router-dom";
 
 import { useAuth } from "@/auth/auth-provider";
@@ -22,6 +22,23 @@ export function LoginPageStudio() {
   const [recoveryEmail, setRecoveryEmail] = useState("");
   const [referralCodeInput, setReferralCodeInput] = useState(refFromUrl.toUpperCase());
 
+  const [securityConfig, setSecurityConfig] = useState<{
+    turnstileEnabled: boolean;
+    turnstileSiteKey: string | null;
+  } | null>(null);
+  const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
+  const turnstileContainerRef = useRef<HTMLDivElement | null>(null);
+  const turnstileWidgetId = useRef<string | null>(null);
+
+  useEffect(() => {
+    api
+      .get("/auth/security-config")
+      .then((res) => {
+        setSecurityConfig(res.data);
+      })
+      .catch(() => {});
+  }, []);
+
   useEffect(() => {
     if (refFromUrl) {
       setReferralCodeInput(refFromUrl.toUpperCase());
@@ -30,6 +47,79 @@ export function LoginPageStudio() {
       setMode("register");
     }
   }, [refFromUrl, onRegisterRoute]);
+
+  useEffect(() => {
+    if (mode !== "register" || !securityConfig?.turnstileEnabled || !securityConfig.turnstileSiteKey) {
+      return;
+    }
+
+    const scriptId = "cf-turnstile-script";
+    const existingScript = document.getElementById(scriptId);
+
+    const renderWidget = () => {
+      const turnstile = (window as any).turnstile;
+      if (
+        turnstile &&
+        turnstileContainerRef.current &&
+        !turnstileWidgetId.current &&
+        securityConfig.turnstileSiteKey
+      ) {
+        try {
+          turnstileWidgetId.current = turnstile.render(turnstileContainerRef.current, {
+            sitekey: securityConfig.turnstileSiteKey,
+            callback: (token: string) => {
+              setTurnstileToken(token);
+              setError(null);
+            },
+            "expired-callback": () => {
+              setTurnstileToken(null);
+            },
+            "error-callback": () => {
+              setTurnstileToken(null);
+            },
+            theme: "auto",
+          });
+        } catch (e) {
+          console.error("Turnstile render error", e);
+        }
+      }
+    };
+
+    if (!existingScript) {
+      const script = document.createElement("script");
+      script.id = scriptId;
+      script.src = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
+      script.async = true;
+      script.defer = true;
+      script.onload = () => {
+        renderWidget();
+      };
+      document.head.appendChild(script);
+    } else {
+      if ((window as any).turnstile) {
+        renderWidget();
+      } else {
+        const interval = setInterval(() => {
+          if ((window as any).turnstile) {
+            renderWidget();
+            clearInterval(interval);
+          }
+        }, 100);
+        return () => clearInterval(interval);
+      }
+    }
+
+    return () => {
+      if (turnstileWidgetId.current && (window as any).turnstile) {
+        try {
+          (window as any).turnstile.remove(turnstileWidgetId.current);
+        } catch {}
+        turnstileWidgetId.current = null;
+      }
+      setTurnstileToken(null);
+    };
+  }, [mode, securityConfig]);
+
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [devResetLink, setDevResetLink] = useState<string | null>(null);
@@ -85,10 +175,29 @@ export function LoginPageStudio() {
       return;
     }
 
+    if (securityConfig?.turnstileEnabled && !turnstileToken) {
+      setError("Vui lòng hoàn thành xác minh bảo mật (CAPTCHA).");
+      setLoading(false);
+      return;
+    }
+
     try {
-      await register(username.trim(), email.trim(), password, displayName.trim(), referralCodeInput.trim().toUpperCase() || null);
+      await register(
+        username.trim(),
+        email.trim(),
+        password,
+        displayName.trim(),
+        referralCodeInput.trim().toUpperCase() || null,
+        turnstileToken,
+      );
     } catch (err: any) {
       setError(err?.response?.data?.message || err?.message || "Không thể tạo tài khoản lúc này.");
+      if ((window as any).turnstile && turnstileWidgetId.current) {
+        try {
+          (window as any).turnstile.reset(turnstileWidgetId.current);
+        } catch {}
+        setTurnstileToken(null);
+      }
     } finally {
       setLoading(false);
     }
@@ -117,6 +226,13 @@ export function LoginPageStudio() {
     setError(null);
     setNotice(null);
     setDevResetLink(null);
+    if (turnstileWidgetId.current && (window as any).turnstile) {
+      try {
+        (window as any).turnstile.remove(turnstileWidgetId.current);
+      } catch {}
+      turnstileWidgetId.current = null;
+    }
+    setTurnstileToken(null);
     if (next === "register") {
       setNotice("Tài khoản mới sẽ bắt đầu ở gói FREE và chỉ có quyền xem.");
     }
@@ -354,6 +470,12 @@ export function LoginPageStudio() {
                     className="font-mono uppercase tracking-wider"
                   />
                 </AuthField>
+
+                {securityConfig?.turnstileEnabled && (
+                  <div className="my-2 flex justify-center">
+                    <div ref={turnstileContainerRef} />
+                  </div>
+                )}
 
                 <AuthMessages error={error} notice={notice} devResetLink={devResetLink} />
 

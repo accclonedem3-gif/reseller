@@ -13,6 +13,11 @@ import {
   isMockBuyerKey,
   getMockProviderProducts,
   fetchProviderProducts,
+  convertProviderPriceToVnd,
+  DEFAULT_USDT_VND_RATE,
+  resolveSyncedWholesalePrice,
+  resolveSyncedSalePrice,
+  resolveInternalCatalogSourcePrice,
 } from "@reseller/shared/server";
 import { prisma } from "../infra/prisma";
 import {
@@ -84,11 +89,23 @@ export async function refreshActiveCatalogShopIds(
   const shops = await prisma.shop.findMany({
     where: {
       status: "ACTIVE",
-      providerConfig: {
-        is: {
-          connectionStatus: "VERIFIED",
+      OR: [
+        {
+          providerConfig: {
+            is: {
+              connectionStatus: "VERIFIED",
+            },
+          },
         },
-      },
+        {
+          providerSources: {
+            some: {
+              enabled: true,
+              connectionStatus: "VERIFIED",
+            },
+          },
+        },
+      ],
     },
     select: {
       id: true,
@@ -364,100 +381,203 @@ export async function syncCatalogForShop(
   if (!shop?.providerConfig) {
     throw new Error("Shop provider config not found.");
   }
-  let products: any[] | null;
-  if (shop.providerConfig.providerKind === "INTERNAL") {
-    const connectionId = shop.providerConfig.internalSourceConnectionId;
-    if (!connectionId)
-      throw new Error("INTERNAL shop missing internalSourceConnectionId.");
-    const connection = await prisma.downstreamSourceConnection.findUnique({
-      where: { id: connectionId },
+  let products: any[] = [];
+  const syncedScopes = new Set<string>();
+  const providerSources = await prisma.shopProviderSource.findMany({
+    where: { shopId: shop.id, enabled: true },
+    orderBy: { createdAt: "asc" },
+  });
+
+  for (const source of providerSources) {
+    const buyerKey = decryptSecret(
+      source.buyerKeyEncrypted,
+      getEncryptionKey(),
+    );
+    if (!buyerKey) continue;
+    const isRoboticvnSource = isRoboticvnProvider({
+      baseUrl: source.baseUrl,
+      buyerKey,
     });
-    if (!connection || connection.status !== "ACTIVE")
-      throw new Error("Internal source connection is not active.");
-    const upstreamProducts = await prisma.sourceProduct.findMany({
-      where: {
-        shopId: connection.upstreamShopId,
-        internalSourceEnabled: true,
-      },
-      include: {
-        overrides: {
-          where: { sellerId: connection.upstreamSellerId },
-          select: { salePrice: true },
-          take: 1,
-        },
-      },
-      orderBy: { createdAt: "asc" },
+    if (
+      isRoboticvnSource &&
+      source.lastCatalogSyncAt &&
+      Date.now() - source.lastCatalogSyncAt.getTime() <
+        ROBOTICVN_CATALOG_SYNC_INTERVAL_MS
+    ) {
+      continue;
+    }
+    const sourceProducts = await fetchProviderProducts({
+      baseUrl: source.baseUrl,
+      buyerKey,
+      providerName: source.providerName,
+    }).catch(async (error: any) => {
+      console.error(
+        `[worker] provider source sync failed source=${source.id}:`,
+        error?.response?.status || error?.message,
+      );
+      await prisma.shopProviderSource
+        .update({
+          where: { id: source.id },
+          data: { connectionStatus: "FAILED", lastVerifiedAt: new Date() },
+        })
+        .catch(() => undefined);
+      return null;
     });
-    products = upstreamProducts.map((p) => {
-      const fallbackSalePrice = p.overrides?.[0]?.salePrice
-        ? Number(p.overrides[0].salePrice)
-        : 0;
-      const wholesalePrice =
-        p.internalSourcePrice != null
-          ? Number(p.internalSourcePrice)
-          : fallbackSalePrice;
-      const upstreamMetadata =
-        p.metadataJson &&
-        typeof p.metadataJson === "object" &&
-        !Array.isArray(p.metadataJson)
-          ? p.metadataJson
-          : {};
-      const requiresCustomerEmail =
-        (upstreamMetadata as any).requiresCustomerEmail === true ||
-        (upstreamMetadata as any).requires_customer_email === true;
-      return {
-        externalId: p.id,
-        sourceName: p.sourceName,
-        sourceRawName: p.sourceRawName || p.sourceName,
-        description: p.sourceDescription,
-        rawDescription: p.sourceDescription,
-        price: wholesalePrice,
-        available: p.available,
-        hidden: false,
-        isSlotProduct: false,
-        requiresCustomerEmail,
-        requiresSlotMonths: false,
-        slotDurations: [],
-        quantityFixed: 1,
-        walletCurrency: "VND",
+    if (!sourceProducts) continue;
+    syncedScopes.add(`provider:${source.id}`);
+    products.push(
+      ...sourceProducts.map((product) => ({
+        ...product,
         metadata: {
-          productFamily: p.productFamily ?? null,
-          productFamilyOther: p.productFamilyOther ?? null,
-          accountType: p.accountType ?? null,
-          accountTypeOther: p.accountTypeOther ?? null,
-          durationType: p.durationType ?? null,
-          durationTypeOther: p.durationTypeOther ?? null,
-          sourceDeliveryMode: p.sourceDeliveryMode ?? null,
-          deliveryMode: p.sourceDeliveryMode ?? null,
-          warrantyPolicy: p.warrantyPolicy ?? null,
-          internalSourceEnabled: p.internalSourceEnabled,
-          internalSourcePrice:
-            p.internalSourcePrice != null
-              ? Number(p.internalSourcePrice)
-              : null,
-          requiresCustomerEmail,
+          ...(product.metadata || {}),
+          providerSourceId: source.id,
+          sourceScope: `provider:${source.id}`,
+          sourceProviderName: source.providerName,
+          sourceNotificationSyncEnabled: source.sourceNotificationSyncEnabled,
+          sourceMarkupPercent:
+            source.priceMarkupPercent == null
+              ? null
+              : Number(source.priceMarkupPercent),
         },
-      };
-    });
-    await prisma.downstreamSourceConnection
+      })),
+    );
+    await prisma.shopProviderSource
       .update({
-        where: { id: connection.id },
-        data: { lastCatalogSyncAt: new Date() },
+        where: { id: source.id },
+        data: {
+          connectionStatus: "VERIFIED",
+          lastVerifiedAt: new Date(),
+          lastCatalogSyncAt: new Date(),
+        },
       })
       .catch(() => undefined);
-  } else {
+  }
+
+  if (shop.providerConfig.providerKind === "INTERNAL") {
+    const connections = await prisma.downstreamSourceConnection.findMany({
+      where: { downstreamShopId: shop.id, status: "ACTIVE" },
+      orderBy: { createdAt: "asc" },
+    });
+    if (connections.length === 0 && providerSources.length === 0)
+      throw new Error("INTERNAL shop has no active source connections.");
+    for (const connection of connections) {
+      syncedScopes.add(`internal:${connection.id}`);
+      const upstreamProducts = await prisma.sourceProduct.findMany({
+        where: {
+          shopId: connection.upstreamShopId,
+          internalSourceEnabled: true,
+          archivedAt: null,
+          overrides: {
+            some: {
+              sellerId: connection.upstreamSellerId,
+              enabled: true,
+              hidden: false,
+            },
+          },
+        },
+        include: {
+          overrides: {
+            where: { sellerId: connection.upstreamSellerId },
+            select: { salePrice: true, enabled: true, hidden: true },
+            take: 1,
+          },
+        },
+        orderBy: { createdAt: "asc" },
+      });
+      const connCustomer = connection.downstreamTelegramChatId
+        ? await prisma.customer.findFirst({
+            where: {
+              shopId: connection.upstreamShopId,
+              telegramChatId: connection.downstreamTelegramChatId,
+            },
+            select: { discountPercent: true },
+          })
+        : null;
+      const connDiscount = Number(connCustomer?.discountPercent ?? 0);
+      products.push(
+        ...upstreamProducts.map((p) => {
+          const wholesalePrice = resolveInternalCatalogSourcePrice({
+            internalSourcePrice:
+              p.internalSourcePrice != null
+                ? Number(p.internalSourcePrice)
+                : null,
+            fallbackSalePrice:
+              p.overrides[0]?.salePrice != null
+                ? Number(p.overrides[0].salePrice)
+                : null,
+            connectionDiscountPercent: connDiscount,
+          });
+          const upstreamMetadata =
+            p.metadataJson &&
+            typeof p.metadataJson === "object" &&
+            !Array.isArray(p.metadataJson)
+              ? p.metadataJson
+              : {};
+          const requiresCustomerEmail =
+            p.sourceDeliveryMode === "ADD_MAIL" ||
+            (upstreamMetadata as any).requiresCustomerEmail === true ||
+            (upstreamMetadata as any).requires_customer_email === true;
+          return {
+            externalId: p.id,
+            sourceName: p.sourceName,
+            sourceRawName: p.sourceRawName || p.sourceName,
+            description: p.sourceDescription,
+            rawDescription: p.sourceDescription,
+            price: wholesalePrice,
+            available: p.available,
+            hidden: false,
+            isSlotProduct: false,
+            requiresCustomerEmail,
+            requiresSlotMonths: false,
+            slotDurations: [],
+            quantityFixed: 1,
+            walletCurrency: "VND",
+            metadata: {
+              internalSourceConnectionId: connection.id,
+              sourceScope: `internal:${connection.id}`,
+              sourceProviderName: "internal_pro",
+              productFamily: p.productFamily ?? null,
+              productFamilyOther: p.productFamilyOther ?? null,
+              accountType: p.accountType ?? null,
+              accountTypeOther: p.accountTypeOther ?? null,
+              durationType: p.durationType ?? null,
+              durationTypeOther: p.durationTypeOther ?? null,
+              sourceDeliveryMode: p.sourceDeliveryMode ?? null,
+              deliveryMode: p.sourceDeliveryMode ?? null,
+              warrantyPolicy: p.warrantyPolicy ?? null,
+              internalSourceEnabled: p.internalSourceEnabled,
+              internalSourcePrice:
+                p.internalSourcePrice != null
+                  ? Number(p.internalSourcePrice)
+                  : null,
+              requiresCustomerEmail,
+              upstreamArchivedAt: p.archivedAt?.toISOString() ?? null,
+            },
+          };
+        }),
+      );
+      await prisma.downstreamSourceConnection
+        .update({
+          where: { id: connection.id },
+          data: { lastCatalogSyncAt: new Date() },
+        })
+        .catch(() => undefined);
+    }
+  } else if (
+    shop.providerConfig &&
+    !providerSources.some((source) => source.id === shop.providerConfig?.id)
+  ) {
+    // Legacy single external provider fallback (for shops that have not yet migrated to shop_provider_sources)
     const buyerKey = decryptSecret(
       shop.providerConfig.buyerKeyEncrypted,
       getEncryptionKey(),
     );
     if (!buyerKey) throw new Error("Provider buyer key is missing.");
-    // Roboticvn: enforce longer sync interval to stay within 120 req/min rate limit.
-    if (
-      isRoboticvnProvider({
-        baseUrl: shop.providerConfig.baseUrl,
-        buyerKey,
-      })
-    ) {
+    const isRoboticvn = isRoboticvnProvider({
+      baseUrl: shop.providerConfig.baseUrl,
+      buyerKey,
+    });
+    if (isRoboticvn) {
       const lastSync = shop.lastCatalogSyncAt
         ? shop.lastCatalogSyncAt.getTime()
         : 0;
@@ -465,13 +585,14 @@ export async function syncCatalogForShop(
         return { synced: 0, notified: 0 };
       }
     }
-    products =
+    const legacyProducts =
       String(process.env.MOCK_PROVIDER_ENABLED || "false") === "true" &&
       isMockBuyerKey(buyerKey)
         ? (getMockProviderProducts() as any[])
         : await fetchProviderProducts({
             baseUrl: shop.providerConfig.baseUrl,
             buyerKey,
+            providerName: shop.providerConfig.providerName,
           }).catch((err: any) => {
             console.error(
               `[worker] fetchProviderProducts failed for shop ${shopId}:`,
@@ -479,47 +600,134 @@ export async function syncCatalogForShop(
             );
             return null;
           });
+    if (legacyProducts) {
+      syncedScopes.add("legacy");
+      products.push(...legacyProducts);
+    }
   }
-  if (!products) {
+
+  if (products.length === 0 && syncedScopes.size === 0) {
     return { synced: 0, notified: 0 };
   }
-  const connectionId = shop.providerConfig.internalSourceConnectionId;
-  const sourceScope =
-    shop.providerConfig.providerKind === "INTERNAL" && connectionId
-      ? `internal:${connectionId}`
-      : "legacy";
+
+  products = products
+    .filter((product) => String(product.externalId || "").trim() !== "")
+    .map((product) => {
+      const originalPrice = Number(product.price);
+      const originalCurrency = String(product.walletCurrency || "VND")
+        .trim()
+        .toUpperCase();
+      const usdVndRate = Number(
+        process.env.USDT_VND_RATE || DEFAULT_USDT_VND_RATE,
+      );
+      const priceVnd = convertProviderPriceToVnd(
+        originalPrice,
+        originalCurrency,
+        usdVndRate,
+      );
+      return {
+        ...product,
+        price: priceVnd,
+        metadata: {
+          ...(product.metadata || {}),
+          sourcePricing: {
+            amount: originalPrice,
+            currency: originalCurrency,
+            amountVnd: priceVnd,
+            usdVndRate:
+              originalCurrency === "USD" || originalCurrency === "USDT"
+                ? usdVndRate
+                : null,
+          },
+        },
+      };
+    });
+
   const existingProducts = await prisma.sourceProduct.findMany({
-    where: { shopId: shop.id, sourceScope },
+    where: { shopId: shop.id },
     select: {
       id: true,
       externalProductId: true,
+      sourceScope: true,
       providerName: true,
       available: true,
       sourcePrice: true,
+      internalSourcePrice: true,
       sourceDescriptionLocked: true,
       metadataJson: true,
+      archivedAt: true,
       overrides: {
         where: { sellerId: shop.sellerId },
         select: {
           salePrice: true,
           displayNameLocked: true,
           salePriceLocked: true,
+          enabled: true,
+          hidden: true,
         },
         take: 1,
       },
     },
   });
+
   const existingByExternalId = new Map(
-    existingProducts.map((item) => [item.externalProductId, item]),
+    existingProducts.map((item) => [
+      `${item.sourceScope}:${item.externalProductId}`,
+      item,
+    ]),
   );
+
   const stockNotifications: StockNotificationItem[] = [];
   const syncedAt = new Date();
+
   for (const product of products) {
-    const previous = existingByExternalId.get(product.externalId);
-    const businessFields =
-      shop.providerConfig.providerKind === "INTERNAL"
-        ? extractInternalBusinessFields(product.metadata)
+    const productMetadata =
+      product.metadata &&
+      typeof product.metadata === "object" &&
+      !Array.isArray(product.metadata)
+        ? product.metadata
         : {};
+    const sourceScope = String(productMetadata.sourceScope || "legacy");
+    const previous = existingByExternalId.get(
+      `${sourceScope}:${product.externalId}`,
+    );
+    const businessFields = productMetadata.internalSourceConnectionId
+      ? extractInternalBusinessFields(product.metadata)
+      : {};
+    const previousMetadata =
+      previous?.metadataJson &&
+      typeof previous.metadataJson === "object" &&
+      !Array.isArray(previous.metadataJson)
+        ? previous.metadataJson
+        : {};
+    const upstreamArchivedAt =
+      typeof productMetadata.upstreamArchivedAt === "string"
+        ? new Date(productMetadata.upstreamArchivedAt)
+        : null;
+    const inheritedArchivedAt =
+      upstreamArchivedAt && !Number.isNaN(upstreamArchivedAt.getTime())
+        ? upstreamArchivedAt
+        : null;
+    const archivedAtUpdate = productMetadata.internalSourceConnectionId
+      ? {
+          archivedAt:
+            inheritedArchivedAt ??
+            ((previousMetadata as any).locallyArchived === true
+              ? (previous?.archivedAt ?? null)
+              : null),
+        }
+      : {};
+    const oldSourcePrice =
+      previous?.sourcePrice != null ? Number(previous.sourcePrice) : null;
+    const resolvedWholesalePrice = resolveSyncedWholesalePrice({
+      sourcePrice: product.price,
+      previousSourcePrice: oldSourcePrice,
+      existingWholesalePrice:
+        previous?.internalSourcePrice != null
+          ? Number(previous.internalSourcePrice)
+          : null,
+    });
+
     const sourceProduct = await prisma.sourceProduct.upsert({
       where: {
         shopId_sourceScope_externalProductId: {
@@ -529,17 +737,35 @@ export async function syncCatalogForShop(
         },
       },
       update: {
+        providerSourceId: productMetadata.providerSourceId || null,
+        internalSourceConnectionId:
+          productMetadata.internalSourceConnectionId || null,
         sourceScope,
+        providerName:
+          productMetadata.sourceProviderName ||
+          shop.providerConfig.providerName,
         sourceName: product.sourceName,
         sourceRawName: product.sourceRawName,
         ...(previous?.sourceDescriptionLocked
           ? {}
           : {
-              sourceDescription:
-                product.description || product.rawDescription,
+              sourceDescription: product.description || product.rawDescription,
             }),
         sourcePrice: toDecimal(product.price),
-        available: product.hidden ? 0 : product.available,
+        ...(resolvedWholesalePrice !== null
+          ? { internalSourcePrice: toDecimal(resolvedWholesalePrice) }
+          : {}),
+        available:
+          product.hidden || product.available == null
+            ? product.hidden
+              ? 0
+              : null
+            : Math.max(0, Math.floor(Number(product.available) || 0)),
+        totalCount:
+          product.available == null
+            ? 0
+            : Math.max(0, Math.floor(Number(product.available) || 0)),
+        ...archivedAtUpdate,
         ...businessFields,
         syncedAt,
         metadataJson: {
@@ -549,6 +775,7 @@ export async function syncCatalogForShop(
             ? product.metadata
             : {}),
           requiresCustomerEmail: product.requiresCustomerEmail,
+          locallyArchived: (previousMetadata as any).locallyArchived === true,
           ...(previous?.metadataJson &&
           typeof previous.metadataJson === "object" &&
           !Array.isArray(previous.metadataJson)
@@ -561,16 +788,32 @@ export async function syncCatalogForShop(
       },
       create: {
         shopId: shop.id,
+        providerSourceId: productMetadata.providerSourceId || null,
+        internalSourceConnectionId:
+          productMetadata.internalSourceConnectionId || null,
         sourceScope,
         externalProductId: product.externalId,
-        providerName: shop.providerConfig.providerName,
+        providerName:
+          productMetadata.sourceProviderName ||
+          shop.providerConfig.providerName,
         sourceName: product.sourceName,
         sourceRawName: product.sourceRawName,
         sourceDescription: product.description || product.rawDescription,
         sourcePrice: toDecimal(product.price),
-        available: product.hidden ? 0 : product.available,
-        totalCount: product.available || 0,
-        internalSourceEnabled: shop.seller?.tier === "ULTRA",
+        available:
+          product.hidden || product.available == null
+            ? product.hidden
+              ? 0
+              : null
+            : Math.max(0, Math.floor(Number(product.available) || 0)),
+        totalCount:
+          product.available == null
+            ? 0
+            : Math.max(0, Math.floor(Number(product.available) || 0)),
+        internalSourceEnabled: false,
+        ...(productMetadata.internalSourceConnectionId
+          ? { archivedAt: inheritedArchivedAt }
+          : {}),
         ...businessFields,
         metadataJson: {
           ...(product.metadata &&
@@ -579,37 +822,33 @@ export async function syncCatalogForShop(
             ? product.metadata
             : {}),
           requiresCustomerEmail: product.requiresCustomerEmail,
+          locallyArchived: false,
         },
         syncedAt,
       },
     });
+
     const markupPercent =
-      shop.providerConfig.priceMarkupPercent != null
-        ? Number(shop.providerConfig.priceMarkupPercent)
-        : null;
-    const oldSourcePrice =
-      previous?.sourcePrice != null ? Number(previous.sourcePrice) : null;
+      productMetadata.sourceMarkupPercent != null
+        ? Number(productMetadata.sourceMarkupPercent)
+        : shop.providerConfig.priceMarkupPercent != null
+          ? Number(shop.providerConfig.priceMarkupPercent)
+          : null;
     const existingSalePrice =
       previous?.overrides?.[0]?.salePrice != null
         ? Number(previous.overrides[0].salePrice)
         : null;
     const salePriceLocked = previous?.overrides?.[0]?.salePriceLocked ?? false;
-    let updatedSalePrice: any;
-    if (!salePriceLocked && markupPercent !== null && markupPercent > 0) {
-      updatedSalePrice = toDecimal(product.price * (1 + markupPercent / 100));
-    } else if (oldSourcePrice !== null && existingSalePrice !== null) {
-      const delta = product.price - oldSourcePrice;
-      updatedSalePrice = toDecimal(
-        salePriceLocked
-          ? Math.max(product.price, existingSalePrice + delta)
-          : Math.max(product.price + 10000, existingSalePrice + delta),
-      );
-    } else if (!salePriceLocked) {
-      updatedSalePrice = toDecimal(
-        product.price +
-          (shop.providerConfig.providerKind === "INTERNAL" ? 30000 : 10000),
-      );
-    }
+    const resolvedSalePrice = resolveSyncedSalePrice({
+      sourcePrice: product.price,
+      previousSourcePrice: oldSourcePrice,
+      existingSalePrice,
+      salePriceLocked,
+      markupPercent,
+    });
+    const updatedSalePrice =
+      resolvedSalePrice == null ? undefined : toDecimal(resolvedSalePrice);
+
     await prisma.sellerProductOverride.upsert({
       where: {
         sellerId_sourceProductId: {
@@ -620,9 +859,7 @@ export async function syncCatalogForShop(
       update: {
         ...(previous?.overrides?.[0]?.displayNameLocked
           ? {}
-          : {
-              displayName: product.sourceRawName || product.sourceName,
-            }),
+          : { displayName: product.sourceRawName || product.sourceName }),
         ...(updatedSalePrice ? { salePrice: updatedSalePrice } : {}),
       },
       create: {
@@ -631,19 +868,29 @@ export async function syncCatalogForShop(
         sourceProductId: sourceProduct.id,
         displayName: product.sourceRawName || product.sourceName,
         salePrice: toDecimal(
-          markupPercent != null && markupPercent > 0
-            ? product.price * (1 + markupPercent / 100)
-            : product.price +
-                (shop.providerConfig.providerKind === "INTERNAL"
-                  ? 30000
-                  : 10000),
+          resolveSyncedSalePrice({
+            sourcePrice: product.price,
+            previousSourcePrice: null,
+            existingSalePrice: null,
+            salePriceLocked: false,
+            markupPercent,
+          }) ?? product.price,
         ),
-        enabled: true,
-        hidden: false,
+        enabled: productMetadata.providerSourceId
+          ? false
+          : true,
+        hidden: productMetadata.providerSourceId
+          ? true
+          : false,
       },
     });
-    // Use the SAME hidden-adjusted value we persist below as the restock baseline.
-    const nextAvailable = product.hidden ? 0 : product.available;
+
+    const nextAvailable =
+      product.hidden || product.available == null
+        ? product.hidden
+          ? 0
+          : null
+        : Math.max(0, Math.floor(Number(product.available) || 0));
     const previousAvailable = previous?.available;
     let addedQuantity = 0;
     if (
@@ -656,7 +903,13 @@ export async function syncCatalogForShop(
         Number(nextAvailable) - Number(previousAvailable),
       );
     }
-    if (addedQuantity > 0 && Number(nextAvailable) > 0) {
+    if (
+      addedQuantity > 0 &&
+      Number(nextAvailable) > 0 &&
+      productMetadata.sourceNotificationSyncEnabled !== false &&
+      (previous?.overrides?.[0]?.enabled ?? true) &&
+      !(previous?.overrides?.[0]?.hidden ?? false)
+    ) {
       const priceForNoti =
         updatedSalePrice != null
           ? Number(updatedSalePrice)
@@ -675,46 +928,45 @@ export async function syncCatalogForShop(
       });
     }
   }
-  // Mark products that disappeared from upstream as out-of-stock
-  if (products.length > 0) {
-    const currentProvName = shop.providerConfig.providerName;
-    const fetchedIdSet = new Set(products.map((p) => p.externalId));
+
+  if (syncedScopes.size > 0) {
+    const fetchedKeys = new Set(
+      products.map((product) => {
+        const metadata =
+          product.metadata &&
+          typeof product.metadata === "object" &&
+          !Array.isArray(product.metadata)
+            ? product.metadata
+            : {};
+        return `${String((metadata as any).sourceScope || "legacy")}:${product.externalId}`;
+      }),
+    );
     const candidates = await prisma.sourceProduct.findMany({
-      where: { shopId: shop.id, providerName: currentProvName },
-      select: { id: true, externalProductId: true, available: true },
+      where: {
+        shopId: shop.id,
+        sourceScope: { in: Array.from(syncedScopes) },
+        providerName: { not: "manual" },
+      },
+      select: {
+        id: true,
+        sourceScope: true,
+        externalProductId: true,
+        available: true,
+      },
     });
     const staleIds = candidates
-      .filter((sp) => !fetchedIdSet.has(sp.externalProductId))
-      .filter((sp) => (sp.available ?? 0) > 0)
-      .map((sp) => sp.id);
+      .filter(
+        (product) =>
+          !fetchedKeys.has(
+            `${product.sourceScope}:${product.externalProductId}`,
+          ),
+      )
+      .filter((product) => (product.available ?? 0) > 0)
+      .map((product) => product.id);
     if (staleIds.length > 0) {
       await prisma.sourceProduct.updateMany({
         where: { id: { in: staleIds } },
         data: { available: 0, syncedAt },
-      });
-    }
-  }
-  // Stale = products NOT in the current internal upstream feed. EXCLUDE "manual".
-  if (shop.providerConfig.providerKind === "INTERNAL" && products.length > 0) {
-    const fetchedIds = new Set(products.map((p) => p.externalId));
-    const staleProducts = await prisma.sourceProduct.findMany({
-      where: {
-        shopId: shop.id,
-        providerName: { notIn: ["internal_pro", "manual"] },
-      },
-      select: { id: true, externalProductId: true },
-    });
-    const allStaleIds = staleProducts
-      .filter((p) => !fetchedIds.has(p.externalProductId))
-      .map((p) => p.id);
-    if (allStaleIds.length > 0) {
-      await prisma.sourceProduct.updateMany({
-        where: { id: { in: allStaleIds } },
-        data: { available: 0 },
-      });
-      await prisma.sellerProductOverride.updateMany({
-        where: { shopId: shop.id, sourceProductId: { in: allStaleIds } },
-        data: { enabled: false, hidden: true },
       });
     }
   }

@@ -104,7 +104,12 @@ export async function processUserbotCampaignJob(
     // delayed jobs and the recovery sweep cannot send the same cycle twice.
     const fresh = await prisma.telegramUserCampaign.findUnique({ where: { id: campaignId } });
     if (!fresh || fresh.status !== "RUNNING") return;
-    if (job.data.runAt && fresh.nextRunAt?.toISOString() !== job.data.runAt) return;
+    if (job.data.runAt) {
+      if (!fresh.nextRunAt) return;
+      const jobTime = new Date(job.data.runAt).getTime();
+      const freshTime = fresh.nextRunAt.getTime();
+      if (Number.isNaN(jobTime) || Math.abs(freshTime - jobTime) > 1000) return;
+    }
     if (fresh.nextRunAt && fresh.nextRunAt.getTime() > Date.now()) return;
     startedAt = new Date();
     const claimed = await prisma.telegramUserCampaign.updateMany({
@@ -123,6 +128,7 @@ export async function processUserbotCampaignJob(
     });
 
     await client.connect();
+    await client.getDialogs({ limit: 100 }).catch(() => undefined);
 
     const targetGroupIds = (Array.isArray(campaign.targetGroupIds)
       ? campaign.targetGroupIds
@@ -166,7 +172,11 @@ export async function processUserbotCampaignJob(
             fromPeer: "me",
           });
         } else {
-          const messageText = parseSpintax(campaign.template.content || "");
+          const rawText = (campaign.template.content && campaign.template.content.trim()) ||
+            (campaign.template.savedMessageText && campaign.template.savedMessageText.trim()) ||
+            (campaign.template.name && campaign.template.name.trim()) ||
+            "";
+          const messageText = parseSpintax(rawText);
           await client.sendMessage(groupIdStr as any, {
             message: messageText,
           });
@@ -274,7 +284,7 @@ export async function processUserbotCampaignJob(
         });
 
         if (scheduled.count && userbotQueue) {
-          const nextJobId = `userbot_campaign_${campaignId}_${nextRunAt.getTime()}`;
+          const nextJobId = getUserbotCampaignJobId(campaignId, nextRunAt.getTime());
           await userbotQueue.add(JOBS.userbotCampaign, { campaignId, runAt: nextRunAt.toISOString() }, {
             delay: repeatMs, jobId: nextJobId, removeOnComplete: 100, removeOnFail: 100,
           }).catch((error: unknown) => console.error("[userbot-worker] Repeat enqueue failed; schedule recovery will retry:", error));

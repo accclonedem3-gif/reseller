@@ -1,8 +1,10 @@
 import type { AxiosError } from "axios";
 import {
   Bell,
+  BookOpen,
   Cable,
   ChevronRight,
+  ExternalLink,
   RefreshCcw,
   Users,
   X,
@@ -435,6 +437,7 @@ type ProviderSource = {
   enabled: boolean;
   connectionStatus: string;
   priceMarkupPercent: number | null;
+  sourceNotificationSyncEnabled?: boolean;
   lastVerifiedAt: string | null;
   lastCatalogSyncAt: string | null;
   productCount: number;
@@ -456,6 +459,8 @@ type InternalSourceOrder = {
   id: string;
   orderCode: string;
   downstreamOrderCode: string | null;
+  providerOrderCode?: string | null;
+  providerOrderId?: string | null;
   status: string;
   quantity: number;
   unitPrice: number;
@@ -532,6 +537,10 @@ export function SourceNetworkPage({
     buyerKey: "",
     priceMarkupPercent: "",
   });
+  const [editingSource, setEditingSource] = useState<ProviderSource | null>(null);
+  const [editLabel, setEditLabel] = useState("");
+  const [editMarkup, setEditMarkup] = useState("");
+  const [editNotificationSync, setEditNotificationSync] = useState(true);
   const disconnectMutation = useMutation({
     mutationFn: async (connectionId: string) =>
       api.delete(`/source/connections/${connectionId}`),
@@ -698,6 +707,42 @@ export function SourceNetworkPage({
           queryKey: ["source-products", "catalog"],
         }),
         queryClient.invalidateQueries({ queryKey: ["orders"] }),
+      ]);
+    },
+    onError: (error) =>
+      showToast({
+        tone: "error",
+        message: getApiErrorMessage(error, t.toastError),
+      }),
+  });
+
+  const updateProviderSourceMutation = useMutation({
+    mutationFn: async ({
+      id,
+      label,
+      priceMarkupPercent,
+      sourceNotificationSyncEnabled,
+    }: {
+      id: string;
+      label?: string;
+      priceMarkupPercent?: number | null;
+      sourceNotificationSyncEnabled?: boolean;
+    }) =>
+      api.patch(`/provider-sources/${id}`, {
+        label,
+        priceMarkupPercent,
+        sourceNotificationSyncEnabled,
+      }),
+    onSuccess: async () => {
+      showToast({ tone: "success", message: "Đã cập nhật nguồn provider." });
+      setEditingSource(null);
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: ["source-network", "provider-sources"],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ["source-products", "catalog"],
+        }),
       ]);
     },
     onError: (error) =>
@@ -1067,6 +1112,10 @@ export function SourceNetworkPage({
                 const providerName = event.target.value;
                 const defaultUrls: Record<string, string> = {
                   canboso: "https://canboso.com",
+                  doicard68: "https://doicard68.com",
+                  haivankhosi: "https://webshop.haivankhosi.site",
+                  dinostore: "https://api.dinos-tore.com",
+                  dinostore_social: "https://api.dinos-tore.com",
                   shopmmo: "https://shopmmo.pro",
                   roboticvn: "https://api.roboticvn.com",
                   zampto: "http://node12.zampto.net:20291",
@@ -1087,6 +1136,10 @@ export function SourceNetworkPage({
               }}
             >
               <option value="canboso">Canboso</option>
+              <option value="doicard68">Doicard68 (Thẻ cào & Thẻ Game)</option>
+              <option value="haivankhosi">HaiVanKhoSi (Shop Bot)</option>
+              <option value="dinostore">Dinostore (Tài khoản & Bản quyền)</option>
+              <option value="dinostore_social">Dinostore Social (Tăng tương tác MXH)</option>
               <option value="shopmmo">ShopMMO</option>
               <option value="roboticvn">RoboticVN</option>
               <option value="zampto">Zampto</option>
@@ -1106,16 +1159,30 @@ export function SourceNetworkPage({
             <Input
               type="password"
               value={providerForm.buyerKey}
-              onChange={(event) =>
+              onChange={(event) => {
+                const buyerKey = event.target.value;
+                const isDino = /^sk_(?:live|test)_/i.test(buyerKey.trim());
                 setProviderForm((current) => ({
                   ...current,
-                  buyerKey: event.target.value,
-                }))
-              }
+                  buyerKey,
+                  ...(isDino && current.providerName === "canboso"
+                    ? {
+                        providerName: "dinostore",
+                        baseUrl: "https://api.dinos-tore.com",
+                      }
+                    : {}),
+                }));
+              }}
               placeholder={
                 providerForm.providerName === "gigapower"
                   ? "username:password"
-                  : "API / buyer key"
+                  : providerForm.providerName === "doicard68"
+                    ? "partner_id|partner_key|wallet_number"
+                    : providerForm.providerName === "haivankhosi"
+                      ? "API Key từ Telegram Bot (/apikey)"
+                      : providerForm.providerName === "dinostore" || providerForm.providerName === "dinostore_social"
+                        ? "sk_live_..."
+                        : "API / buyer key"
               }
             />
             <div className="flex gap-2">
@@ -1207,6 +1274,24 @@ export function SourceNetworkPage({
                     : "Chưa có"}
                 </div>
                 <div className="mt-3 flex flex-wrap gap-2">
+                  <Button
+                    variant="secondary"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      setEditingSource(source);
+                      setEditLabel(source.label);
+                      setEditMarkup(
+                        source.priceMarkupPercent != null
+                          ? String(source.priceMarkupPercent)
+                          : "",
+                      );
+                      setEditNotificationSync(
+                        source.sourceNotificationSyncEnabled ?? true,
+                      );
+                    }}
+                  >
+                    Sửa
+                  </Button>
                   {source.enabled ? (
                     <>
                       <Button
@@ -1296,18 +1381,35 @@ export function SourceNetworkPage({
                 Kết nối nguồn
               </h1>
             </div>
-            <button
-              type="button"
-              onClick={() => refreshSourceMutation.mutate()}
-              disabled={refreshSourceMutation.isPending}
-              className="shrink-0 flex items-center gap-1.5 rounded-xl px-4 py-2 text-[12px] font-black transition hover:opacity-80"
-              style={{ background: "rgb(249,115,22)", color: "#fff" }}
-            >
-              <RefreshCcw className="h-3.5 w-3.5" />
-              {refreshSourceMutation.isPending
-                ? "Đang đồng bộ..."
-                : "Đồng bộ toàn bộ"}
-            </button>
+            <div className="flex items-center gap-2">
+              <a
+                href="https://api.altivoxai.com/api/docs"
+                target="_blank"
+                rel="noreferrer"
+                className="shrink-0 flex items-center gap-1.5 rounded-xl px-3.5 py-2 text-[12px] font-black transition hover:opacity-80"
+                style={{
+                  background: "var(--inp)",
+                  border: "1px solid var(--bd)",
+                  color: "var(--tx)",
+                }}
+              >
+                <BookOpen className="h-3.5 w-3.5 text-orange-400" />
+                <span>Tài liệu API (Swagger)</span>
+                <ExternalLink className="h-3 w-3 opacity-60" />
+              </a>
+              <button
+                type="button"
+                onClick={() => refreshSourceMutation.mutate()}
+                disabled={refreshSourceMutation.isPending}
+                className="shrink-0 flex items-center gap-1.5 rounded-xl px-4 py-2 text-[12px] font-black transition hover:opacity-80"
+                style={{ background: "rgb(249,115,22)", color: "#fff" }}
+              >
+                <RefreshCcw className="h-3.5 w-3.5" />
+                {refreshSourceMutation.isPending
+                  ? "Đang đồng bộ..."
+                  : "Đồng bộ toàn bộ"}
+              </button>
+            </div>
           </div>
 
           {/* 4 stat cards */}
@@ -1569,6 +1671,8 @@ export function SourceNetworkPage({
                     (o) =>
                       (o.orderCode || "").toLowerCase().includes(q) ||
                       (o.downstreamOrderCode || "").toLowerCase().includes(q) ||
+                      (o.providerOrderCode || "").toLowerCase().includes(q) ||
+                      (o.providerOrderId || "").toLowerCase().includes(q) ||
                       (o.product?.sourceName || "").toLowerCase().includes(q) ||
                       (o.endCustomer?.telegramUsername || "")
                         .toLowerCase()
@@ -1724,6 +1828,14 @@ export function SourceNetworkPage({
                                         style={{ color: "var(--tx-f)" }}
                                       >
                                         PRO: {order.downstreamOrderCode}
+                                      </div>
+                                    )}
+                                    {order.providerOrderCode && (
+                                      <div
+                                        className="text-[10px] mt-0.5 font-bold"
+                                        style={{ color: "rgb(249,115,22)" }}
+                                      >
+                                        Ref: {order.providerOrderCode}
                                       </div>
                                     )}
                                   </td>
@@ -1951,21 +2063,38 @@ export function SourceNetworkPage({
       ) : (
         /* PRO view */
         <>
-          <div>
-            <p
-              className="text-[11px] font-black uppercase tracking-widest mb-1"
-              style={{ color: "rgb(249,115,22)" }}
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <p
+                className="text-[11px] font-black uppercase tracking-widest mb-1"
+                style={{ color: "rgb(249,115,22)" }}
+              >
+                Kết nối nguồn
+              </p>
+              <h1
+                className="text-[22px] font-black leading-tight"
+                style={{ color: "rgb(249,115,22)" }}
+              >
+                {currentConnection
+                  ? "Đang kết nối kho ULTRA"
+                  : "Chưa kết nối nguồn"}
+              </h1>
+            </div>
+            <a
+              href="https://api.altivoxai.com/api/docs"
+              target="_blank"
+              rel="noreferrer"
+              className="shrink-0 flex items-center gap-1.5 rounded-xl px-3.5 py-2 text-[12px] font-black transition hover:opacity-80"
+              style={{
+                background: "var(--inp)",
+                border: "1px solid var(--bd)",
+                color: "var(--tx)",
+              }}
             >
-              Kết nối nguồn
-            </p>
-            <h1
-              className="text-[22px] font-black leading-tight"
-              style={{ color: "rgb(249,115,22)" }}
-            >
-              {currentConnection
-                ? "Đang kết nối kho ULTRA"
-                : "Chưa kết nối nguồn"}
-            </h1>
+              <BookOpen className="h-3.5 w-3.5 text-orange-400" />
+              <span>Tài liệu API (Swagger)</span>
+              <ExternalLink className="h-3 w-3 opacity-60" />
+            </a>
           </div>
 
           <div
@@ -2693,6 +2822,155 @@ export function SourceNetworkPage({
           )}
         </>
       )}
+
+      {editingSource &&
+        createPortal(
+          <div
+            className="fixed inset-0 z-[80] flex items-center justify-center p-4"
+            style={{ background: "rgba(0,0,0,0.55)" }}
+            onClick={() => setEditingSource(null)}
+          >
+            <div
+              className="w-full max-w-md rounded-2xl p-6 shadow-2xl space-y-4"
+              style={{
+                background: "var(--surface)",
+                border: "1px solid var(--bd)",
+              }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between">
+                <div>
+                  <p
+                    className="text-[11px] font-black uppercase tracking-widest mb-0.5"
+                    style={{ color: "rgb(249,115,22)" }}
+                  >
+                    Chỉnh sửa nguồn
+                  </p>
+                  <h3
+                    className="text-base font-black"
+                    style={{ color: "var(--tx)" }}
+                  >
+                    {editingSource.providerName}
+                  </h3>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setEditingSource(null)}
+                  className="flex h-8 w-8 items-center justify-center rounded-xl transition hover:opacity-70"
+                  style={{
+                    background: "var(--inp)",
+                    border: "1px solid var(--bd)",
+                    color: "var(--tx-f)",
+                  }}
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+
+              <div className="space-y-3 text-xs">
+                <div>
+                  <label
+                    className="mb-1 block font-semibold"
+                    style={{ color: "var(--tx-m)" }}
+                  >
+                    Tên hiển thị nguồn (Label)
+                  </label>
+                  <Input
+                    value={editLabel}
+                    onChange={(e) => setEditLabel(e.target.value)}
+                    placeholder="VD: RoboticVN, Canboso sỉ, v.v."
+                  />
+                  <p
+                    className="mt-1 text-[11px]"
+                    style={{ color: "var(--tx-f)" }}
+                  >
+                    Tên này hiển thị trong danh mục sản phẩm và quản lý nguồn.
+                  </p>
+                </div>
+
+                <div>
+                  <label
+                    className="mb-1 block font-semibold"
+                    style={{ color: "var(--tx-m)" }}
+                  >
+                    % Lãi mặc định (Markup)
+                  </label>
+                  <Input
+                    type="number"
+                    min={0}
+                    step={1}
+                    value={editMarkup}
+                    onChange={(e) => setEditMarkup(e.target.value)}
+                    placeholder="VD: 20"
+                  />
+                  <p
+                    className="mt-1 text-[11px]"
+                    style={{ color: "var(--tx-f)" }}
+                  >
+                    Để trống nếu muốn giữ nguyên giá sỉ gốc.
+                  </p>
+                </div>
+
+                <div
+                  className="flex items-center justify-between gap-3 rounded-xl p-3"
+                  style={{
+                    background: "var(--inp)",
+                    border: "1px solid var(--bd)",
+                  }}
+                >
+                  <div>
+                    <p
+                      className="font-semibold"
+                      style={{ color: "var(--tx)" }}
+                    >
+                      Đồng bộ thông báo tồn kho
+                    </p>
+                    <p
+                      className="text-[11px]"
+                      style={{ color: "var(--tx-f)" }}
+                    >
+                      Gửi tin thông báo restock về kênh của bot khi nguồn restock.
+                    </p>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={editNotificationSync}
+                    onChange={(e) => setEditNotificationSync(e.target.checked)}
+                    className="h-4 w-4 accent-orange-500 cursor-pointer"
+                  />
+                </div>
+              </div>
+
+              <div className="mt-5 flex justify-end gap-2">
+                <Button
+                  variant="secondary"
+                  onClick={() => setEditingSource(null)}
+                >
+                  Hủy
+                </Button>
+                <Button
+                  disabled={
+                    updateProviderSourceMutation.isPending || !editLabel.trim()
+                  }
+                  onClick={() => {
+                    updateProviderSourceMutation.mutate({
+                      id: editingSource.id,
+                      label: editLabel.trim(),
+                      priceMarkupPercent:
+                        editMarkup.trim() !== "" ? Number(editMarkup) : null,
+                      sourceNotificationSyncEnabled: editNotificationSync,
+                    });
+                  }}
+                >
+                  {updateProviderSourceMutation.isPending
+                    ? "Đang lưu..."
+                    : "Lưu thay đổi"}
+                </Button>
+              </div>
+            </div>
+          </div>,
+          document.body,
+        )}
     </div>
   );
 }

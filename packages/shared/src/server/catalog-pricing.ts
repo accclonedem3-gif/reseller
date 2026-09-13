@@ -60,8 +60,8 @@ export function resolveSyncedSalePrice(input: SyncedSalePriceInput): number | nu
     );
   }
 
-  if (input.markupPercent !== null && input.markupPercent > 0) {
-    return input.sourcePrice * (1 + input.markupPercent / 100);
+  if (input.markupPercent !== null && input.markupPercent >= 0) {
+    return Math.round(input.sourcePrice * (1 + input.markupPercent / 100));
   }
 
   if (input.previousSourcePrice !== null && input.existingSalePrice !== null) {

@@ -22,5 +22,6 @@ export function getPaymentContext(): {
 export * from "./payos";
 export * from "./okx";
 export * from "./trc20";
+export * from "./bep20";
 export * from "./solana";
 export * from "./ton";

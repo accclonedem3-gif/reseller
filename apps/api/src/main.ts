@@ -61,7 +61,12 @@ async function bootstrap() {
     mkdirSync(uploadsDir, { recursive: true });
   }
 
-  app.use(helmet());
+  app.use(
+    helmet({
+      contentSecurityPolicy: false,
+      crossOriginEmbedderPolicy: false,
+    }),
+  );
   // Behind nginx → trust the first proxy hop so req.ip resolves to the real client IP (from
   // X-Forwarded-For) instead of the proxy's. The global ThrottlerGuard keys on req.ip, so without
   // this every request would share nginx's IP and the rate limit would apply to ALL clients at once.
@@ -139,10 +144,39 @@ async function bootstrap() {
       path.startsWith("/internal-source/v1"),
     ),
   );
-  SwaggerModule.setup("api/swagger", app, swaggerDoc, {
-    swaggerOptions: { persistAuthorization: true },
-    customSiteTitle: "Internal Source API Docs",
-  });
+  const isSwaggerDisabled = process.env.DISABLE_SWAGGER === "true";
+
+  if (!isSwaggerDisabled) {
+    const swaggerCustomOpts = {
+      swaggerOptions: {
+        persistAuthorization: true,
+        docExpansion: "list" as const,
+        filter: true,
+      },
+      customSiteTitle: "Altivox Partner API Docs",
+    };
+
+    SwaggerModule.setup("api/docs", app, swaggerDoc, swaggerCustomOpts);
+    SwaggerModule.setup("docs", app, swaggerDoc, swaggerCustomOpts);
+
+    // Convenience redirects for common documentation aliases
+    app.use((req: any, res: any, next: any) => {
+      const fullUrl = String(req.path || req.url || "");
+      const questionIndex = fullUrl.indexOf("?");
+      const pathname = questionIndex >= 0 ? fullUrl.slice(0, questionIndex) : fullUrl;
+      const rawPath = pathname.replace(/\/+$/, "");
+      if (
+        rawPath === "/swagger" ||
+        rawPath === "/api/swagger" ||
+        rawPath === "/api-docs" ||
+        rawPath === "/api/api-docs" ||
+        rawPath === "/docs/partner-api"
+      ) {
+        return res.redirect(301, "/api/docs");
+      }
+      next();
+    });
+  }
 
   await app.listen(config.apiPort, config.apiHost);
   console.log(

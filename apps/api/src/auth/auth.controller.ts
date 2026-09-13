@@ -71,6 +71,11 @@ export class AuthController {
     return this.authService.resetPassword(body.token, body.newPassword);
   }
 
+  @Get("auth/security-config")
+  getSecurityConfig() {
+    return this.authService.getSecurityConfig();
+  }
+
   @Post("auth/register")
   @UseGuards(ThrottlerGuard)
   @Throttle({ default: { ttl: 60000, limit: 5 } })
@@ -87,6 +92,7 @@ export class AuthController {
       body.displayName,
       body.referralCode,
       { signupIp, signupDeviceFingerprint },
+      body.turnstileToken,
     );
   }
 

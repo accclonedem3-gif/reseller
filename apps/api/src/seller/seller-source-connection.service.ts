@@ -811,6 +811,12 @@ export class SellerSourceConnectionService {
           shopId: upstreamShopId,
           internalSourceEnabled: true,
           archivedAt: null,
+          overrides: {
+            some: {
+              enabled: true,
+              hidden: false,
+            },
+          },
         },
         select: { id: true },
       });

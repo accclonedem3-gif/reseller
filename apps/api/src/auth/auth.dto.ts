@@ -50,6 +50,10 @@ export class RegisterSellerDto {
   @IsOptional()
   @IsString()
   referralCode?: string;
+
+  @IsOptional()
+  @IsString()
+  turnstileToken?: string;
 }
 
 export class SetReferralCodeDto {

@@ -668,7 +668,7 @@ export function WalletPage() {
               </div>
             </div>
 
-            <div className="overflow-x-auto">
+            <div className="hidden lg:block overflow-x-auto">
               <table className="w-full" style={{ minWidth: 860 }}>
                 <thead>
                   <tr style={{ borderBottom: "1px solid var(--bd)" }}>
@@ -759,6 +759,137 @@ export function WalletPage() {
                   })}
                 </tbody>
               </table>
+            </div>
+
+            {/* Mobile Customer Cards (visible on mobile, hidden on lg) */}
+            <div className="block lg:hidden divide-y" style={{ borderColor: "var(--bd)" }}>
+              {customerWalletsQuery.isLoading ? (
+                <div className="space-y-3 p-4">
+                  {Array.from({ length: 4 }).map((_, i) => (
+                    <div key={i} className="h-28 animate-pulse rounded-2xl" style={{ background: "var(--inp)" }} />
+                  ))}
+                </div>
+              ) : filtered.length === 0 ? (
+                <div className="py-12 text-center text-[13px]" style={{ color: "var(--tx-f)" }}>
+                  Chưa có khách nào
+                </div>
+              ) : (
+                filtered.map((w) => {
+                  const name = displayName(w);
+                  return (
+                    <div key={w.id} className="p-4 space-y-3 transition-colors hover:bg-[rgba(52,211,153,0.03)]">
+                      {/* Customer Info Header */}
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2.5">
+                          <div
+                            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-[12px] font-black text-white"
+                            style={{ background: avatarColor(w.customerId) }}
+                          >
+                            {avatarInitials(w)}
+                          </div>
+                          <div>
+                            <p className="text-[13px] font-bold" style={{ color: "var(--tx)" }}>{name}</p>
+                            <p className="font-mono text-[11px]" style={{ color: "var(--tx-f)" }}>
+                              ID: {w.telegramChatId}
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-1 flex-wrap justify-end">
+                          {w.isCtv && (
+                            <span
+                              className="flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-black"
+                              style={{ background: "rgba(139,92,246,0.15)", color: "rgb(167,139,250)", border: "1px solid rgba(139,92,246,0.3)" }}
+                            >
+                              <span className="h-1.5 w-1.5 rounded-full bg-purple-400" /> CTV
+                            </span>
+                          )}
+                          {w.blacklisted && (
+                            <span
+                              className="rounded-full px-2 py-0.5 text-[10px] font-black"
+                              style={{ background: "rgba(239,68,68,0.15)", color: "rgb(248,113,113)" }}
+                            >
+                              Blocked
+                            </span>
+                          )}
+                          {w.discountPercent > 0 && (
+                            <span
+                              className="rounded-full px-2 py-0.5 text-[10px] font-black"
+                              style={{ background: "rgba(245,158,11,0.15)", color: "rgb(251,191,36)" }}
+                            >
+                              -{w.discountPercent}%
+                            </span>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Balances Grid */}
+                      <div className="grid grid-cols-3 gap-2 rounded-xl p-2.5" style={{ background: "var(--inp)", border: "1px solid var(--bd)" }}>
+                        <div>
+                          <p className="text-[10px] font-bold uppercase tracking-wider" style={{ color: "var(--tx-f)" }}>Số dư</p>
+                          <p className="mt-0.5 text-[12px] font-black tabular-nums text-emerald-400">
+                            {formatCurrency(w.balance)}
+                          </p>
+                        </div>
+                        <div>
+                          <p className="text-[10px] font-bold uppercase tracking-wider" style={{ color: "var(--tx-f)" }}>Hoa hồng</p>
+                          <p className="mt-0.5 text-[12px] font-black tabular-nums text-amber-400">
+                            {formatCurrency(w.commissionBalance)}
+                          </p>
+                        </div>
+                        <div>
+                          <p className="text-[10px] font-bold uppercase tracking-wider" style={{ color: "var(--tx-f)" }}>Số dư USD</p>
+                          <p className="mt-0.5 text-[12px] font-black tabular-nums text-sky-400">
+                            ${w.balanceUsdt.toFixed(2)}
+                          </p>
+                        </div>
+                      </div>
+
+                      {/* Orders & Total spent */}
+                      <div className="flex items-center justify-between text-[11px] px-1" style={{ color: "var(--tx-f)" }}>
+                        <span>Tổng đơn: <strong style={{ color: "var(--tx)" }}>{w.orderCount ?? 0}</strong></span>
+                        <span>Tổng chi: <strong className="text-emerald-400">{formatCurrency(w.totalSpent ?? 0)}</strong></span>
+                      </div>
+
+                      {/* Mobile Actions - always visible buttons with good touch size */}
+                      <div className="grid grid-cols-4 gap-1.5 pt-1">
+                        <button
+                          type="button"
+                          onClick={() => { setDefaultTopup(true); setSelectedCustomer(w); }}
+                          className="rounded-xl py-2 text-[11px] font-bold text-center transition active:scale-95"
+                          style={{ background: "rgba(56,189,248,0.15)", border: "1px solid rgba(56,189,248,0.3)", color: "rgb(56,189,248)" }}
+                        >
+                          Nạp ví
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => { setDefaultTopup(false); setSelectedCustomer(w); }}
+                          className="rounded-xl py-2 text-[11px] font-bold text-center transition active:scale-95"
+                          style={{ background: "rgba(52,211,153,0.15)", border: "1px solid rgba(52,211,153,0.3)", color: "rgb(52,211,153)" }}
+                        >
+                          Sửa
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setHistoryCustomerId(w.customerId)}
+                          className="rounded-xl py-2 text-[11px] font-bold text-center transition active:scale-95"
+                          style={{ background: "rgba(168,85,247,0.15)", border: "1px solid rgba(168,85,247,0.3)", color: "rgb(168,85,247)" }}
+                        >
+                          Lịch sử
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => { setLedgerOffset(0); setLedgerCustomerId(w.customerId); }}
+                          className="rounded-xl py-2 text-[11px] font-bold text-center transition active:scale-95"
+                          style={{ background: "rgba(245,158,11,0.15)", border: "1px solid rgba(245,158,11,0.3)", color: "rgb(245,158,11)" }}
+                        >
+                          Biến động
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
             </div>
           </div>
         </>

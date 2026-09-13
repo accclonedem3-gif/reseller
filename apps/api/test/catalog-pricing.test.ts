@@ -109,6 +109,18 @@ assert.equal(
 );
 
 assert.equal(
+  resolveSyncedSalePrice({
+    sourcePrice: 9_700,
+    previousSourcePrice: null,
+    existingSalePrice: null,
+    salePriceLocked: false,
+    markupPercent: 0,
+  }),
+  9_700,
+  "0% markup should resolve exactly to source cost price",
+);
+
+assert.equal(
   resolveSyncedWholesalePrice({
     sourcePrice: 110_000,
     previousSourcePrice: 100_000,

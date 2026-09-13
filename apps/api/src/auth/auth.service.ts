@@ -9,6 +9,7 @@ import { JwtService } from "@nestjs/jwt";
 import { SellerTier, UserRole, UserStatus } from "@prisma/client";
 import bcrypt from "bcryptjs";
 import { randomBytes } from "node:crypto";
+import axios from "axios";
 
 import { AppConfigService } from "../config/app-config.service";
 import {
@@ -974,6 +975,52 @@ export class AuthService {
     return user;
   }
 
+  getSecurityConfig() {
+    const isEnabled = Boolean(this.config.turnstileSiteKey && this.config.turnstileSecretKey);
+    return {
+      turnstileEnabled: isEnabled,
+      turnstileSiteKey: isEnabled ? this.config.turnstileSiteKey : null,
+    };
+  }
+
+  async verifyTurnstile(token?: string, remoteIp?: string | null) {
+    if (!this.config.turnstileSecretKey) {
+      // Turnstile is not configured, skip check (backward compatibility)
+      return;
+    }
+
+    if (!token || typeof token !== "string" || !token.trim()) {
+      throw new BadRequestException("Vui lòng hoàn thành xác minh bảo mật (Turnstile).");
+    }
+
+    try {
+      const formData = new URLSearchParams();
+      formData.append("secret", this.config.turnstileSecretKey);
+      formData.append("response", token.trim());
+      if (remoteIp) {
+        formData.append("remoteip", remoteIp);
+      }
+
+      const response = await axios.post(
+        "https://challenges.cloudflare.com/turnstile/v0/siteverify",
+        formData.toString(),
+        {
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          timeout: 10000,
+        },
+      );
+
+      if (!response.data?.success) {
+        throw new BadRequestException("Xác minh bảo mật thất bại hoặc đã hết hạn. Vui lòng thử lại.");
+      }
+    } catch (err: any) {
+      if (err instanceof BadRequestException) {
+        throw err;
+      }
+      throw new BadRequestException("Lỗi xác minh bảo mật hệ thống. Vui lòng thử lại sau.");
+    }
+  }
+
   async register(
     username: string,
     email: string,
@@ -981,7 +1028,10 @@ export class AuthService {
     displayName: string,
     referralCode?: string | null,
     signupMeta?: { signupIp?: string | null; signupDeviceFingerprint?: string | null },
+    turnstileToken?: string,
   ) {
+    await this.verifyTurnstile(turnstileToken, signupMeta?.signupIp);
+
     // Nếu email được cung cấp, lưu thành recoveryEmail để dùng reset mật khẩu
     const created = await this.createSellerAccount({
       username,

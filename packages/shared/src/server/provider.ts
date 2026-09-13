@@ -40,6 +40,32 @@ import {
   purchaseFromGigaPower,
   fetchGigaPowerOrderStatus,
 } from "./gigapower";
+import {
+  isDinostoreBaseUrl,
+  isDinostoreKey,
+  isDinostoreProvider,
+  fetchDinostoreProducts,
+  fetchDinostoreBalance,
+  purchaseFromDinostore,
+  fetchDinostoreOrderStatus,
+} from "./dinostore";
+import {
+  isDoicardBaseUrl,
+  isDoicardProvider,
+  fetchDoicardProducts,
+  fetchDoicardBalance,
+  purchaseFromDoicard,
+  fetchDoicardOrderStatus,
+  parseDoicardCredentials,
+} from "./doicard68";
+import {
+  isHaiVanKhoSiBaseUrl,
+  isHaiVanKhoSiProvider,
+  fetchHaiVanKhoSiProducts,
+  fetchHaiVanKhoSiBalance,
+  purchaseFromHaiVanKhoSi,
+  fetchHaiVanKhoSiOrderStatus,
+} from "./haivankhosi";
 
 export {
   isRoboticvnBaseUrl,
@@ -55,6 +81,20 @@ export {
   isGigaPowerProvider,
   parseGigaPowerCredentials,
 } from "./gigapower";
+export {
+  isDinostoreBaseUrl,
+  isDinostoreKey,
+  isDinostoreProvider,
+} from "./dinostore";
+export {
+  isDoicardBaseUrl,
+  isDoicardProvider,
+  parseDoicardCredentials,
+} from "./doicard68";
+export {
+  isHaiVanKhoSiBaseUrl,
+  isHaiVanKhoSiProvider,
+} from "./haivankhosi";
 
 export interface ProviderCredentials {
   baseUrl?: string;
@@ -144,6 +184,8 @@ export interface ProviderPurchaseInput {
   productId: string;
   quantity: number;
   customerEmail?: string | null;
+  targetLink?: string | null;
+  comments?: string | null;
   slotMonths?: number | null;
   clientOrderCode?: string | null;
 }
@@ -391,6 +433,18 @@ function isOutOfStock(payload: unknown, statusCode?: number) {
 export async function verifyProviderConnection(
   credentials: ProviderCredentials,
 ) {
+  if (isDinostoreProvider(credentials)) {
+    const products = await fetchDinostoreProducts(credentials);
+    return { ok: true, providerName: "dinostore", sampleSize: products.length };
+  }
+  if (isDoicardProvider(credentials)) {
+    const products = await fetchDoicardProducts(credentials);
+    return { ok: true, providerName: "doicard68", sampleSize: products.length };
+  }
+  if (isHaiVanKhoSiProvider(credentials)) {
+    const products = await fetchHaiVanKhoSiProducts(credentials);
+    return { ok: true, providerName: "haivankhosi", sampleSize: products.length };
+  }
   if (isGigaPowerProvider(credentials)) {
     const products = await fetchGigaPowerProducts(credentials);
     return { ok: true, providerName: "gigapower", sampleSize: products.length };
@@ -425,6 +479,15 @@ export async function verifyProviderConnection(
 export async function fetchProviderProducts(
   credentials: ProviderCredentials,
 ): Promise<ProviderProduct[]> {
+  if (isDinostoreProvider(credentials)) {
+    return fetchDinostoreProducts(credentials);
+  }
+  if (isDoicardProvider(credentials)) {
+    return fetchDoicardProducts(credentials);
+  }
+  if (isHaiVanKhoSiProvider(credentials)) {
+    return fetchHaiVanKhoSiProducts(credentials);
+  }
   if (isGigaPowerProvider(credentials)) {
     return fetchGigaPowerProducts(credentials);
   }
@@ -597,6 +660,15 @@ export async function checkProviderVariantAvailability(
 export async function fetchProviderBalance(
   credentials: ProviderCredentials,
 ): Promise<ProviderBalanceResult> {
+  if (isDinostoreProvider(credentials)) {
+    return fetchDinostoreBalance(credentials);
+  }
+  if (isDoicardProvider(credentials)) {
+    return fetchDoicardBalance(credentials);
+  }
+  if (isHaiVanKhoSiProvider(credentials)) {
+    return fetchHaiVanKhoSiBalance(credentials);
+  }
   if (isGigaPowerProvider(credentials)) {
     return fetchGigaPowerBalance(credentials);
   }
@@ -658,6 +730,15 @@ export async function purchaseFromProvider(
   credentials: ProviderCredentials,
   input: ProviderPurchaseInput,
 ): Promise<ProviderPurchaseResult> {
+  if (isDinostoreProvider(credentials)) {
+    return purchaseFromDinostore(credentials, input);
+  }
+  if (isDoicardProvider(credentials)) {
+    return purchaseFromDoicard(credentials, input);
+  }
+  if (isHaiVanKhoSiProvider(credentials)) {
+    return purchaseFromHaiVanKhoSi(credentials, input);
+  }
   if (isGigaPowerProvider(credentials)) {
     return purchaseFromGigaPower(credentials, input);
   }
@@ -742,16 +823,49 @@ export async function purchaseFromProvider(
     const deliveredAccounts =
       delivery?.accounts ?? response.data?.deliveredAccounts;
     const rawDeliveredText = String(
-      delivery?.deliveredText ?? response.data?.deliveredText ?? "",
+      delivery?.deliveredText ??
+        response.data?.deliveredText ??
+        delivery?.text ??
+        "",
     ).trim();
-    const deliveredText = rawDeliveredText
+    let deliveredText = rawDeliveredText
       ? mergeDeliveredText(rawDeliveredText, deliveredAccounts)
       : formatDeliveredAccounts(deliveredAccounts);
+
     const orderStatus = String(order?.status || "")
       .trim()
       .toLowerCase();
+    const productType = String(order?.productType || "").toLowerCase();
+    const fulfillmentStatus = String(
+      order?.fulfillmentStatus || "",
+    ).toLowerCase();
+
+    if (!deliveredText) {
+      const email = String(
+        order?.customerEmail || input.customerEmail || "",
+      ).trim();
+      if (fulfillmentStatus === "invited") {
+        deliveredText = email
+          ? `Đã gửi lời mời kích hoạt tới email: ${email}`
+          : "Đã gửi lời mời kích hoạt.";
+      } else if (fulfillmentStatus === "waiting_seller") {
+        deliveredText = email
+          ? `Đơn hàng đang chờ người bán gửi lời mời kích hoạt tới email: ${email}`
+          : "Đơn hàng đang chờ người bán kích hoạt.";
+      } else if (productType === "slot" || productType === "upgrade_account") {
+        deliveredText = email
+          ? `Đã xác nhận kích hoạt cho email: ${email}`
+          : "Đã xác nhận kích hoạt thành công.";
+      } else if (order?.note || order?.message || response.data?.message) {
+        deliveredText = String(
+          order?.note || order?.message || response.data?.message,
+        ).trim();
+      }
+    }
+
     const pending =
       Boolean(response.data?.pending) ||
+      fulfillmentStatus === "waiting_seller" ||
       ["paid", "pending", "processing", "pending_manual"].includes(orderStatus);
 
     return {
@@ -791,6 +905,7 @@ export async function purchaseFromProvider(
           : String(
               error.response?.data?.message ||
                 error.response?.data?.desc ||
+                error.response?.data?.error ||
                 error.message,
             ) || "Provider purchase failed",
       };
@@ -810,6 +925,15 @@ export async function fetchProviderOrderStatus(
   credentials: ProviderCredentials,
   input: ProviderOrderStatusInput,
 ): Promise<ProviderOrderStatusResult> {
+  if (isDinostoreProvider(credentials)) {
+    return fetchDinostoreOrderStatus(credentials, input);
+  }
+  if (isDoicardProvider(credentials)) {
+    return fetchDoicardOrderStatus(credentials, input);
+  }
+  if (isHaiVanKhoSiProvider(credentials)) {
+    return fetchHaiVanKhoSiOrderStatus(credentials, input);
+  }
   if (isGigaPowerProvider(credentials)) {
     return fetchGigaPowerOrderStatus(credentials, input);
   }

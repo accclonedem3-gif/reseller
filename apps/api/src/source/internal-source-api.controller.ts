@@ -165,11 +165,18 @@ export class InternalSourceApiController {
           { available: null },
           { available: { gt: 0 } },
         ],
+        overrides: {
+          some: {
+            sellerId: apiKey.sellerId,
+            enabled: true,
+            hidden: false,
+          },
+        },
       },
       include: {
         overrides: {
           where: { sellerId: apiKey.sellerId },
-          select: { salePrice: true },
+          select: { salePrice: true, enabled: true, hidden: true },
           take: 1,
         },
       },
@@ -276,18 +283,32 @@ export class InternalSourceApiController {
         shopId: connection.upstreamShopId,
         internalSourceEnabled: true,
         archivedAt: null,
+        overrides: {
+          some: {
+            sellerId: connection.upstreamSellerId,
+            enabled: true,
+            hidden: false,
+          },
+        },
       },
       include: {
         overrides: {
           where: { sellerId: connection.upstreamSellerId },
-          select: { salePrice: true },
+          select: { salePrice: true, enabled: true, hidden: true },
           take: 1,
         },
       },
     });
 
-    if (!product) {
-      throw new NotFoundException("Source product not found or not available.");
+    if (
+      !product ||
+      !product.overrides[0] ||
+      !product.overrides[0].enabled ||
+      product.overrides[0].hidden
+    ) {
+      throw new BadRequestException(
+        "Sản phẩm không tồn tại, chưa được duyệt hoặc đang tạm dừng bán bên nguồn.",
+      );
     }
 
     const quantity = Number(dto.quantity);

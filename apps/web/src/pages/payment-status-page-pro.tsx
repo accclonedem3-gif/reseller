@@ -103,7 +103,10 @@ export function PaymentStatusPage({ mode }: { mode: "success" | "cancel" }) {
           failureReason?: string | null;
         };
 
-        if (data.localOrderStatus === "FAILED" && data.failureReason) {
+        if (
+          (data.localOrderStatus === "FAILED" || data.localOrderStatus === "REFUNDED") &&
+          data.failureReason
+        ) {
           setReconcileState({ loading: false, message: t.failureMsg(data.failureReason) });
           return;
         }

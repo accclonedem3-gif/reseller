@@ -42,10 +42,12 @@ export async function recordInternalSourceOrder(
     sourcePriceSnapshot?: any;
     totalAmount?: any;
     deliveredText?: string | null;
-    deliveredAt: Date;
+    deliveredAt?: Date | null;
     fulfillment: string;
     canbosoProviderOrderId?: string | null;
     canbosoProviderOrderCode?: string | null;
+    status?: string;
+    failureReason?: string | null;
   },
 ) {
   const {
@@ -60,8 +62,11 @@ export async function recordInternalSourceOrder(
     fulfillment,
     canbosoProviderOrderId,
     canbosoProviderOrderCode,
+    status = "DELIVERED",
+    failureReason = null,
   } = params;
   const sourceOrderCode = generateInternalSourceOrderCode(order.orderCode);
+  const isDelivered = status === "DELIVERED";
   const created = await tx.internalSourceOrder.create({
     data: {
       connectionId: connection.id,
@@ -79,9 +84,10 @@ export async function recordInternalSourceOrder(
         Number(sourcePriceSnapshot || 0).toFixed(2),
       ),
       totalAmount: new Prisma.Decimal(Number(totalAmount || 0).toFixed(2)),
-      status: "DELIVERED",
-      deliveredAccountText: deliveredText || null,
-      deliveredAt,
+      status,
+      deliveredAccountText: isDelivered ? deliveredText || null : null,
+      deliveredAt: isDelivered ? deliveredAt || new Date() : null,
+      failureReason,
       metadataJson: {
         fulfilledVia: fulfillment,
         ...(canbosoProviderOrderId ? { canbosoProviderOrderId } : {}),
@@ -94,11 +100,15 @@ export async function recordInternalSourceOrder(
   await tx.internalSourceOrderEvent.create({
     data: {
       orderId: created.id,
-      eventType: "order_delivered_via_downstream_purchase",
+      eventType: isDelivered
+        ? "order_delivered_via_downstream_purchase"
+        : "order_created_pending_manual",
       payloadJson: {
         downstreamOrderCode: order.orderCode,
         fulfillment,
         quantity: order.quantity,
+        status,
+        customerEmail: order.customerEmail || null,
         ...(canbosoProviderOrderId ? { canbosoProviderOrderId } : {}),
       },
     },

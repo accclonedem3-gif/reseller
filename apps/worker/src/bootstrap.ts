@@ -12,11 +12,18 @@ import {
   PAYOS_ORDER_SWEEP_INTERVAL_MS,
   OKX_DEPOSIT_POLL_INTERVAL_MS,
   TON_PAYMENT_SCAN_INTERVAL_MS,
+  BEP20_PAYMENT_SCAN_INTERVAL_MS,
   INTERNAL_SOURCE_ORDER_SWEEP_INTERVAL_MS,
   validateProductionConfig,
+  getEncryptionKey,
 } from "./config/env";
 import { prisma, waitForInfrastructure } from "./infra";
 import { formatError } from "./format/text";
+import { processUserbotCampaignJob } from "./userbot-campaign.worker";
+import {
+  enqueueDueUserbotCampaigns,
+  isUserbotCampaignJob,
+} from "./userbot-campaign-scheduler";
 import {
   syncCatalogForShop,
   releaseCatalogSyncLock,
@@ -37,6 +44,7 @@ import {
   scanSolanaUsdtPayments,
   scanTrc20UsdtPayments,
   scanTonUsdtPayments,
+  scanBep20UsdtPayments,
 } from "./payments";
 import {
   processBroadcast,
@@ -66,6 +74,10 @@ export async function bootstrap(): Promise<void> {
   setPaymentContext({ purchaseQueue, redis });
 
   const broadcastQueue = new Queue(QUEUES.broadcast, {
+    connection: redis,
+  });
+
+  const userbotCampaignQueue = new Queue(QUEUES.userbotCampaign, {
     connection: redis,
   });
 
@@ -115,6 +127,27 @@ export async function bootstrap(): Promise<void> {
     }
   );
 
+  const encryptionKey = getEncryptionKey();
+  const userbotCampaignWorker = new Worker(
+    QUEUES.userbotCampaign,
+    async (job: Job) => {
+      if (isUserbotCampaignJob(job.name)) {
+        return processUserbotCampaignJob(
+          job,
+          prisma,
+          encryptionKey,
+          redis,
+          userbotCampaignQueue
+        );
+      }
+      return null;
+    },
+    {
+      connection: redis,
+      concurrency: 5,
+    }
+  );
+
   syncWorker.on("failed", (job, error) => {
     console.error("[worker] Sync job failed:", job?.id, error);
   });
@@ -134,6 +167,13 @@ export async function bootstrap(): Promise<void> {
   });
   broadcastWorker.on("error", (error) => {
     console.error("[worker] Broadcast worker error:", formatError(error));
+  });
+
+  userbotCampaignWorker.on("failed", (job, error) => {
+    console.error("[worker] Userbot campaign job failed:", job?.id, error);
+  });
+  userbotCampaignWorker.on("error", (error) => {
+    console.error("[worker] Userbot campaign worker error:", formatError(error));
   });
 
   setInterval(() => {
@@ -254,6 +294,20 @@ export async function bootstrap(): Promise<void> {
   }, TON_PAYMENT_SCAN_INTERVAL_MS);
   void scanTonUsdtPayments().catch(() => undefined);
 
+  setInterval(() => {
+    void scanBep20UsdtPayments().catch((error) => {
+      console.error("[worker] BEP20 auto-detect sweep failed:", formatError(error));
+    });
+  }, BEP20_PAYMENT_SCAN_INTERVAL_MS);
+  void scanBep20UsdtPayments().catch(() => undefined);
+
+  setInterval(() => {
+    void enqueueDueUserbotCampaigns(prisma, userbotCampaignQueue, redis).catch((error) => {
+      console.error("[worker] Userbot campaign sweep failed:", formatError(error));
+    });
+  }, 15 * 1000);
+  void enqueueDueUserbotCampaigns(prisma, userbotCampaignQueue, redis).catch(() => undefined);
+
   // Warranty auto-check worker
   let accountCheckHandles: Awaited<ReturnType<typeof setupAccountCheckWorker>> | null = null;
   try {
@@ -317,6 +371,12 @@ export async function bootstrap(): Promise<void> {
     } catch {}
     try {
       tasks.push(broadcastQueue.close().catch(() => undefined));
+    } catch {}
+    try {
+      tasks.push(userbotCampaignWorker.close().catch(() => undefined));
+    } catch {}
+    try {
+      tasks.push(userbotCampaignQueue.close().catch(() => undefined));
     } catch {}
 
     await Promise.race([Promise.all(tasks), new Promise((resolve) => setTimeout(resolve, 3000))]);

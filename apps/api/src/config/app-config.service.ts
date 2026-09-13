@@ -61,6 +61,14 @@ export class AppConfigService {
     return process.env.RESEND_API_KEY || "";
   }
 
+  get turnstileSiteKey() {
+    return process.env.TURNSTILE_SITE_KEY || process.env.CLOUDFLARE_TURNSTILE_SITE_KEY || "";
+  }
+
+  get turnstileSecretKey() {
+    return process.env.TURNSTILE_SECRET_KEY || process.env.CLOUDFLARE_TURNSTILE_SECRET_KEY || "";
+  }
+
   get brevoApiKey() {
     return process.env.BREVO_API_KEY || "";
   }

@@ -19,6 +19,7 @@ export const DEFAULT_SOURCE_WATCH_PROVIDER_NAMES = [
   "zampto",
   "huymai",
   "gigapower",
+  "dinostore",
 ] as const;
 
 export function normalizeSourceProviderName(value: unknown): string {

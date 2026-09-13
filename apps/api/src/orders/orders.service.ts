@@ -67,6 +67,8 @@ type CreateTelegramOrderInput = {
   sourceProductId: string;
   quantity: number;
   customerEmail?: string | null;
+  targetLink?: string | null;
+  comments?: string | null;
   paymentProvider?: PaymentProvider;
 };
 
@@ -198,6 +200,8 @@ export class OrdersService {
                 ProviderKind.EXTERNAL,
           productNameSnapshot: prepared.productNameSnapshot,
           customerEmail: prepared.customerEmail,
+          targetLink: prepared.targetLink,
+          comments: prepared.comments,
           quantity: prepared.quantity,
           salePrice: toDecimal(prepared.salePrice),
           sourcePriceSnapshot: toDecimal(prepared.sourcePrice),
@@ -259,6 +263,8 @@ export class OrdersService {
       bankInfo: payment.bankInfo,
       isManualNoDelivery: prepared.isManual && !prepared.hasAutoDelivery,
       isAddMail: prepared.isAddMail,
+      isSocial: prepared.isSocial,
+      targetLink: prepared.targetLink,
       isPreorder: prepared.isPreorder,
       preorderFeePercent: prepared.preorderFeePercent,
       preorderFeeAmount: prepared.preorderFeeAmount,
@@ -349,6 +355,8 @@ export class OrdersService {
                 ProviderKind.EXTERNAL,
           productNameSnapshot: prepared.productNameSnapshot,
           customerEmail: prepared.customerEmail,
+          targetLink: prepared.targetLink,
+          comments: prepared.comments,
           quantity: prepared.quantity,
           salePrice: toDecimal(prepared.salePrice),
           sourcePriceSnapshot: toDecimal(prepared.sourcePrice),
@@ -448,6 +456,8 @@ export class OrdersService {
       walletBalanceAfter: created.walletBalanceAfter,
       isManualNoDelivery: prepared.isManual && !prepared.hasAutoDelivery,
       isAddMail: prepared.isAddMail,
+      isSocial: prepared.isSocial,
+      targetLink: prepared.targetLink,
       isPreorder: prepared.isPreorder,
       preorderFeePercent: prepared.preorderFeePercent,
       preorderFeeAmount: prepared.preorderFeeAmount,
@@ -489,8 +499,19 @@ export class OrdersService {
       throw new BadRequestException("This payment is not pending.");
     }
 
-    throw new BadRequestException(
-      "Manual crypto confirmation is disabled. The payment must be verified by its provider.",
+    return this.markPaymentCompleted(
+      order.paymentTransaction.externalOrderCode,
+      {
+        source: "manual_crypto_confirm_seller",
+        confirmedByUserId: user.id,
+        confirmedAt: new Date().toISOString(),
+      },
+      {
+        cryptoTxHash:
+          order.paymentTransaction.cryptoTxHash ||
+          `manual_seller_${Date.now()}`,
+        allowManual: true,
+      },
     );
   }
 
@@ -499,6 +520,7 @@ export class OrdersService {
     rawPayload?: unknown,
     options?: {
       cryptoTxHash?: string | null;
+      allowManual?: boolean;
     },
   ) {
     const paymentTransaction = await this.prisma.paymentTransaction.findUnique({
@@ -522,11 +544,13 @@ export class OrdersService {
       return this.getOrderById(paymentTransaction.orderId);
     }
 
-    await this.paymentService.assertCryptoReceiptClaimed(
-      externalOrderCode,
-      paymentTransaction.provider,
-      options?.cryptoTxHash,
-    );
+    if (!options?.allowManual) {
+      await this.paymentService.assertCryptoReceiptClaimed(
+        externalOrderCode,
+        paymentTransaction.provider,
+        options?.cryptoTxHash,
+      );
+    }
 
     const expiredPaymentFailure =
       paymentTransaction.order.status === "FAILED" &&
@@ -534,6 +558,7 @@ export class OrdersService {
         "Don hang het han thanh toan",
       );
     if (
+      !options?.allowManual &&
       paymentTransaction.order.status !== "AWAITING_PAYMENT" &&
       !expiredPaymentFailure
     ) {
@@ -703,7 +728,35 @@ export class OrdersService {
       throw new BadRequestException("Product is not available.");
     }
 
-    if (!Number.isInteger(quantity) || quantity < 1) {
+    const metadata =
+      product.metadataJson &&
+      typeof product.metadataJson === "object" &&
+      !Array.isArray(product.metadataJson)
+        ? (product.metadataJson as Record<string, unknown>)
+        : {};
+
+    const isSocialProduct =
+      metadata.is_social === true ||
+      product.providerName === "dinostore_social" ||
+      String(product.sourceDeliveryMode || "").toLowerCase().includes("social");
+    const minSocialQty = Number(
+      metadata.minimum_order_quantity ?? metadata.min_quantity ?? 1,
+    );
+    const maxSocialQty = Number(
+      metadata.maximum_order_quantity ?? metadata.max_quantity ?? 1000000,
+    );
+
+    if (isSocialProduct) {
+      if (
+        !Number.isInteger(quantity) ||
+        quantity < minSocialQty ||
+        quantity > maxSocialQty
+      ) {
+        throw new BadRequestException(
+          `Số lượng phải là số nguyên từ ${minSocialQty.toLocaleString("vi-VN")} đến ${maxSocialQty.toLocaleString("vi-VN")}.`,
+        );
+      }
+    } else if (!Number.isInteger(quantity) || quantity < 1) {
       throw new BadRequestException("Quantity must be a positive integer.");
     }
 
@@ -784,12 +837,6 @@ export class OrdersService {
         ? decimalToNumber(override.salePriceUsd)
         : null;
 
-    const metadata =
-      product.metadataJson &&
-      typeof product.metadataJson === "object" &&
-      !Array.isArray(product.metadataJson)
-        ? (product.metadataJson as Record<string, unknown>)
-        : {};
     const requiresCustomerEmail =
       product.sourceDeliveryMode === "ADD_MAIL" ||
       metadata.requiresCustomerEmail === true ||
@@ -927,6 +974,15 @@ export class OrdersService {
     ) {
       throw new BadRequestException(
         "Enter one valid, unique customer email per purchased item.",
+      );
+    }
+
+    const targetLink = input.targetLink ? String(input.targetLink).trim() : null;
+    const comments = input.comments ? String(input.comments).trim() : null;
+
+    if (isSocialProduct && !targetLink) {
+      throw new BadRequestException(
+        "Vui lòng cung cấp link bài viết / kênh cần tăng tương tác.",
       );
     }
     const isAddMail = product.sourceDeliveryMode === "ADD_MAIL";
@@ -1067,6 +1123,9 @@ export class OrdersService {
       totalSourceAmount,
       productNameSnapshot: override?.displayName || product.sourceName,
       customerEmail,
+      targetLink,
+      comments,
+      isSocial: isSocialProduct,
       isManual,
       isAddMail,
       hasAutoDelivery,
@@ -2555,6 +2614,8 @@ export class OrdersService {
     warrantyClaimCount?: number;
     productNameSnapshot: string;
     customerEmail?: string | null;
+    targetLink?: string | null;
+    comments?: string | null;
     quantity: number;
     salePrice: Prisma.Decimal;
     sourcePriceSnapshot: Prisma.Decimal;
@@ -2630,6 +2691,8 @@ export class OrdersService {
       warrantyClaimCount: Number(order.warrantyClaimCount || 0),
       productName: order.productNameSnapshot,
       customerEmail: order.customerEmail || null,
+      targetLink: order.targetLink || null,
+      comments: order.comments || null,
       quantity: order.quantity,
       salePrice: decimalToNumber(order.salePrice),
       sourcePrice: decimalToNumber(order.sourcePriceSnapshot),

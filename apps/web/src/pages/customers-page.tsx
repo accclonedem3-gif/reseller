@@ -204,7 +204,8 @@ export function CustomersPage() {
             <p className="mt-1 text-sm" style={{ color: "var(--tx-m)" }}>{t.emptyDesc}</p>
           </div>
         ) : (
-          <div className="overflow-x-auto">
+          <>
+            <div className="hidden lg:block overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr style={{ borderBottom: "1px solid var(--bd)" }}>
@@ -289,7 +290,79 @@ export function CustomersPage() {
               </tbody>
             </table>
           </div>
-        )}
+
+          {/* Mobile Customer Cards (visible on mobile, hidden on lg) */}
+          <div className="block lg:hidden divide-y" style={{ borderColor: "var(--bd)" }}>
+            {filtered.map((customer) => (
+              <div key={customer.id} className="p-4 space-y-3 transition-colors hover:bg-[rgba(255,255,255,0.02)]">
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <p className="font-semibold text-[13px]" style={{ color: "var(--tx)" }}>{customer.displayName}</p>
+                    {customer.username && (
+                      <p className="text-[11px] mt-0.5" style={{ color: "var(--tx-f)" }}>@{customer.username}</p>
+                    )}
+                    <p className="font-mono text-[11px] mt-0.5" style={{ color: "var(--tx-m)" }}>
+                      ID: {customer.telegramChatId}
+                      {customer.connectedBotUsername && ` · @${customer.connectedBotUsername}`}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-1.5 flex-wrap justify-end">
+                    <StudioBadge tone="neutral">{customer.preferredLanguage.toUpperCase()}</StudioBadge>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2 rounded-xl p-2.5" style={{ background: "var(--inp)", border: "1px solid var(--bd)" }}>
+                  <div>
+                    <p className="text-[10px] font-bold uppercase tracking-wider" style={{ color: "var(--tx-f)" }}>{t.colBalance}</p>
+                    <p className="mt-0.5 text-[12px] font-black tabular-nums text-emerald-400">
+                      {formatCurrency(customer.walletBalance)}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-[10px] font-bold uppercase tracking-wider" style={{ color: "var(--tx-f)" }}>Hoa hồng</p>
+                    <p className="mt-0.5 text-[12px] font-black tabular-nums text-amber-400">
+                      {formatCurrency(customer.commissionBalance)}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between text-[11px] px-1" style={{ color: "var(--tx-m)" }}>
+                  <span>{t.colOrders}: <strong style={{ color: "var(--tx)" }}>{customer.orderCount}</strong></span>
+                  <span>Tổng chi: <strong className="text-emerald-400">{formatCurrency(customer.totalSpent ?? 0)}</strong></span>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => ctvMutation.mutate({ id: customer.id, isCtv: !customer.isCtv })}
+                    disabled={ctvMutation.isPending}
+                    className="rounded-xl py-2 text-xs font-semibold text-center transition-all active:scale-95"
+                    style={{
+                      background: customer.isCtv ? "rgba(139,92,246,0.15)" : "var(--inp)",
+                      color: customer.isCtv ? "rgb(167,139,250)" : "var(--tx-f)",
+                      border: customer.isCtv ? "1px solid rgba(139,92,246,0.3)" : "1px solid var(--bd)",
+                    }}
+                  >
+                    {customer.isCtv ? t.ctvOn : t.ctvOff}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setHistoryCustomerId(customer.id)}
+                    className="rounded-xl py-2 text-xs font-semibold text-center transition-all active:scale-95"
+                    style={{
+                      background: "rgba(56,189,248,0.12)",
+                      color: "rgb(56,189,248)",
+                      border: "1px solid rgba(56,189,248,0.3)",
+                    }}
+                  >
+                    🕐 Lịch sử
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
       </div>
 
       {historyCustomerId && (

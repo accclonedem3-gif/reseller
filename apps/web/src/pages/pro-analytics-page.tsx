@@ -281,6 +281,8 @@ type SourceOrderItem = {
   id: string;
   orderCode: string;
   downstreamOrderCode: string | null;
+  providerOrderCode?: string | null;
+  providerOrderId?: string | null;
   downstreamSellerName: string;
   productName: string;
   quantity: number;
@@ -905,6 +907,9 @@ export function ProAnalyticsPage() {
                       <div>{o.orderCode}</div>
                       {o.downstreamOrderCode && (
                         <div className="text-[10px] mt-0.5" style={{ color: "var(--tx-f)" }}>PRO: {o.downstreamOrderCode}</div>
+                      )}
+                      {o.providerOrderCode && (
+                        <div className="text-[10px] mt-0.5 font-bold" style={{ color: "rgb(249,115,22)" }}>Ref: {o.providerOrderCode}</div>
                       )}
                     </td>
                     <td className="px-4 py-3" style={{ color: "var(--tx-m)" }}>{o.downstreamSellerName}</td>
