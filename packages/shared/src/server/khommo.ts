@@ -198,9 +198,16 @@ export async function fetchKhommoProducts(
       });
     };
 
-    // Standard shape: data: [ { id, name, icon, products: [...] } ]
-    if (Array.isArray(data.data)) {
-      for (const cat of data.data as KhommoCategory[]) {
+    // Standard shape: categories: [ { id, name, icon, products: [...] } ]
+    // or fallback to data: [ ... ] / products: [ ... ]
+    const rawCategories = Array.isArray(data.categories)
+      ? data.categories
+      : Array.isArray(data.data)
+        ? data.data
+        : null;
+
+    if (rawCategories) {
+      for (const cat of rawCategories as KhommoCategory[]) {
         if (Array.isArray(cat.products)) {
           for (const p of cat.products) {
             processProduct(p, cat.name);

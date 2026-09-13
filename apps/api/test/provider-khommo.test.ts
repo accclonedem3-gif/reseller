@@ -87,7 +87,7 @@ test("KhoMMO provider maps balance, products, purchase, and orders", async (t) =
           JSON.stringify({
             status: "success",
             msg: "Lấy dữ liệu thành công!",
-            data: [
+            categories: [
               {
                 id: "101",
                 name: "Hotmail/Outlook",
