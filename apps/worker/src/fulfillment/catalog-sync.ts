@@ -239,7 +239,10 @@ export async function notifyCatalogStockUpdates(
     }),
     prisma.shop.findUnique({
       where: { id: shopId },
-      select: { botConfig: { select: { customizationJson: true } } },
+      select: {
+        botConfig: { select: { customizationJson: true } },
+        paymentConfig: { select: { usdtVndRateOverride: true } },
+      },
     }),
   ]);
   const productById = new Map(sourceProducts.map((p) => [p.id, p]));
@@ -317,6 +320,13 @@ export async function notifyCatalogStockUpdates(
     custJson,
     await getAdminTemplateCustomizationCached(),
   );
+  const configuredUsdtVndRate = Number(
+    shop?.paymentConfig?.usdtVndRateOverride ?? NaN,
+  );
+  const usdtVndRate =
+    Number.isFinite(configuredUsdtVndRate) && configuredUsdtVndRate > 0
+      ? configuredUsdtVndRate
+      : DEFAULT_USDT_VND_RATE;
   let sentCount = 0;
   for (const customer of customers) {
     const lang =
@@ -334,6 +344,7 @@ export async function notifyCatalogStockUpdates(
         addedQuantity: item.addedQuantity,
         available: item.available,
         price: item.price ?? null,
+        usdtVndRate,
         productIconCustomEmojiId: product.iconCustomEmojiId ?? null,
         language: lang,
       });
@@ -910,10 +921,16 @@ export async function syncCatalogForShop(
       (previous?.overrides?.[0]?.enabled ?? true) &&
       !(previous?.overrides?.[0]?.hidden ?? false)
     ) {
+      const fallbackPrice =
+        product.price != null &&
+        Number.isFinite(Number(product.price)) &&
+        Number(product.price) > 0
+          ? Number(product.price)
+          : null;
       const priceForNoti =
         updatedSalePrice != null
           ? Number(updatedSalePrice)
-          : (existingSalePrice ?? null);
+          : (existingSalePrice ?? fallbackPrice);
       stockNotifications.push({
         sourceProductId: sourceProduct.id,
         displayName: product.sourceRawName || product.sourceName,

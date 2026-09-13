@@ -16,6 +16,16 @@ const rendered = renderRestockHtml(DEFAULT_RESTOCK_TEMPLATE, {
 
 assert.match(rendered.text, /100\.000₫ \(~3\.70 USDT\)/);
 
+const withDefaultRate = renderRestockHtml(DEFAULT_RESTOCK_TEMPLATE, {
+  productName: "Gói thử nghiệm",
+  addedQuantity: 5,
+  available: 12,
+  price: 100_000,
+  language: "vi",
+});
+
+assert.match(withDefaultRate.text, /100\.000₫ \(~3\.70 USDT\)/);
+
 const withoutValidRate = renderRestockHtml(DEFAULT_RESTOCK_TEMPLATE, {
   productName: "Gói thử nghiệm",
   addedQuantity: 5,

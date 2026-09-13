@@ -13,6 +13,7 @@ import {
   telegramSendVideo,
   isVideoUrl,
   renderRestockHtml,
+  DEFAULT_USDT_VND_RATE,
   type PayOSBankInfo,
 } from "@reseller/shared/server";
 import {
@@ -12677,10 +12678,12 @@ export class TelegramBotService {
       return overrideRate;
     }
 
-    const fallbackRate = Number(this.config.usdtVndRate || 26000);
+    const fallbackRate = Number(
+      this.config.usdtVndRate || DEFAULT_USDT_VND_RATE,
+    );
     return Number.isFinite(fallbackRate) && fallbackRate > 0
       ? fallbackRate
-      : 26000;
+      : DEFAULT_USDT_VND_RATE;
   }
 
   private toUsdtAmount(

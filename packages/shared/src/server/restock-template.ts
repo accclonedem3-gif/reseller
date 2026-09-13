@@ -6,6 +6,8 @@
 // The "Mua ngay" button is already templated via buttonLabels.buyNow, so this only owns the
 // message BODY (header + product line + added/stock lines + footer + custom emoji).
 
+import { DEFAULT_USDT_VND_RATE } from "../constants";
+
 export type RestockLanguage = "vi" | "en" | "th";
 
 export interface RestockCustomEmojiIds {
@@ -76,15 +78,17 @@ function formatUsdtPrice(
   usdtVndRate: number | null | undefined,
 ): string {
   const numericPrice = Number(price);
-  const numericRate = Number(usdtVndRate);
-  if (
-    !Number.isFinite(numericPrice) ||
-    numericPrice < 0 ||
-    !Number.isFinite(numericRate) ||
-    numericRate <= 0
-  ) {
+  if (!Number.isFinite(numericPrice) || numericPrice < 0) {
     return "";
   }
+  // Explicitly 0 disables USDT display
+  if (usdtVndRate === 0) {
+    return "";
+  }
+  const numericRate =
+    Number.isFinite(Number(usdtVndRate)) && Number(usdtVndRate) > 0
+      ? Number(usdtVndRate)
+      : DEFAULT_USDT_VND_RATE;
 
   return (numericPrice / numericRate).toLocaleString("en-US", {
     minimumFractionDigits: 2,
