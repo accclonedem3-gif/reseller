@@ -1132,7 +1132,7 @@ export class WalletService {
       },
       include: {
         user: {
-          select: { id: true, username: true, email: true },
+          select: { id: true, email: true },
         },
       },
     });
@@ -1194,7 +1194,7 @@ export class WalletService {
           ? `Trừ -${dto.amount.toLocaleString("vi-VN")}đ`
           : `Đặt lại số dư = ${dto.amount.toLocaleString("vi-VN")}đ`;
 
-      const adminLabel = adminUser.username || adminUser.email || "admin";
+      const adminLabel = adminUser.email || "admin";
       const note = dto.note?.trim()
         ? `Admin [${adminLabel}] điều chỉnh: ${dto.note.trim()} (${actionText})`
         : `Admin [${adminLabel}] điều chỉnh số dư (${actionText})`;
@@ -1217,7 +1217,8 @@ export class WalletService {
         success: true,
         sellerId: seller.id,
         userId: seller.userId,
-        username: seller.user.username,
+        email: seller.user?.email,
+        displayName: seller.displayName,
         balanceBefore,
         balanceAfter,
         delta,
