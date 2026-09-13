@@ -221,14 +221,10 @@ export async function reconcilePendingTierDeposits(): Promise<void> {
         continue;
       }
       await axios.post(
-        `${baseUrl}/api/v1/webhooks/internal-crypto-confirm/${encodeURIComponent(
+        `${baseUrl}/api/v1/webhooks/payments/reconcile/${encodeURIComponent(
           externalOrderCode
         )}`,
-        {
-          source: "worker_deposit_payos_poll",
-          providerStatus,
-          payos: remoteStatus.providerResponse,
-        },
+        {},
         {
           headers: {
             "x-internal-token": internalToken,
@@ -305,14 +301,10 @@ export async function expireSellerDepositRequests(): Promise<void> {
             Number(remoteStatus.amountPaid || 0) >= Number(remoteStatus.amount || 0));
         if (isPaid) {
           await axios.post(
-            `${baseUrl}/api/v1/webhooks/internal-crypto-confirm/${encodeURIComponent(
+            `${baseUrl}/api/v1/webhooks/payments/reconcile/${encodeURIComponent(
               request.externalOrderCode
             )}`,
-            {
-              source: "worker_deposit_expire_recheck",
-              providerStatus,
-              payos: remoteStatus.providerResponse,
-            },
+            {},
             {
               headers: {
                 "x-internal-token": internalToken,

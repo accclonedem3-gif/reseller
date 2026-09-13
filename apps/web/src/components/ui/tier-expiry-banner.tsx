@@ -80,7 +80,7 @@ export function TierExpiryBanner() {
       </div>
       <button
         type="button"
-        onClick={() => navigate("/tier-pricing")}
+        onClick={() => navigate("/pricing")}
         className="shrink-0 rounded-xl px-3 py-2 text-xs font-black uppercase tracking-wider transition hover:opacity-80"
         style={{ background: color.text, color: "#fff" }}
       >

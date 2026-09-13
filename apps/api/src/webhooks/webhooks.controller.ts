@@ -475,10 +475,14 @@ export class WebhooksController {
     @Param("externalOrderCode") externalOrderCode: string,
     @Body() body: { token?: string } | null,
     @Headers("x-reconcile-token") tokenHeader?: string,
+    @Headers("x-internal-token") internalTokenHeader?: string,
   ) {
+    const isInternal = Boolean(
+      internalTokenHeader && internalTokenHeader === this.config.internalApiToken,
+    );
     const reconcileToken = String(body?.token || tokenHeader || "").trim();
 
-    if (!this.paymentService.isValidPublicReconcileToken(externalOrderCode, reconcileToken)) {
+    if (!isInternal && !this.paymentService.isValidPublicReconcileToken(externalOrderCode, reconcileToken)) {
       throw new NotFoundException("Not found.");
     }
 
@@ -499,7 +503,7 @@ export class WebhooksController {
     }
 
     const completion = await this.processPaymentCompletion(externalOrderCode, {
-      reconciledBy: "signed_public_reconcile",
+      reconciledBy: isInternal ? "worker_internal_reconcile" : "signed_public_reconcile",
       payos: paymentStatus.rawPayload,
     });
 

@@ -301,9 +301,9 @@ function buildBuyerApiUrl(credentials: ProviderCredentials, path: string) {
   return `${baseUrl}/api/v2/telegram-buyer/${normalizedPath}`;
 }
 
-function getTimeout(credentials: ProviderCredentials) {
-  const timeout = Number(credentials.timeoutMs || 10000);
-  return Number.isFinite(timeout) && timeout > 0 ? timeout : 10000;
+function getTimeout(credentials: ProviderCredentials, defaultTimeout = 35_000): number {
+  const timeout = Number(credentials.timeoutMs || defaultTimeout);
+  return Number.isFinite(timeout) && timeout > 0 ? timeout : defaultTimeout;
 }
 
 function normalizeAvailable(value: unknown) {
@@ -433,45 +433,49 @@ function isOutOfStock(payload: unknown, statusCode?: number) {
 export async function verifyProviderConnection(
   credentials: ProviderCredentials,
 ) {
-  if (isDinostoreProvider(credentials)) {
-    const products = await fetchDinostoreProducts(credentials);
+  const creds: ProviderCredentials = {
+    ...credentials,
+    timeoutMs: credentials.timeoutMs || 35_000,
+  };
+  if (isDinostoreProvider(creds)) {
+    const products = await fetchDinostoreProducts(creds);
     return { ok: true, providerName: "dinostore", sampleSize: products.length };
   }
-  if (isDoicardProvider(credentials)) {
-    const products = await fetchDoicardProducts(credentials);
+  if (isDoicardProvider(creds)) {
+    const products = await fetchDoicardProducts(creds);
     return { ok: true, providerName: "doicard68", sampleSize: products.length };
   }
-  if (isHaiVanKhoSiProvider(credentials)) {
-    const products = await fetchHaiVanKhoSiProducts(credentials);
+  if (isHaiVanKhoSiProvider(creds)) {
+    const products = await fetchHaiVanKhoSiProducts(creds);
     return { ok: true, providerName: "haivankhosi", sampleSize: products.length };
   }
-  if (isGigaPowerProvider(credentials)) {
-    const products = await fetchGigaPowerProducts(credentials);
+  if (isGigaPowerProvider(creds)) {
+    const products = await fetchGigaPowerProducts(creds);
     return { ok: true, providerName: "gigapower", sampleSize: products.length };
   }
-  if (isZamptoProvider(credentials)) {
-    const products = await fetchZamptoProducts(credentials);
+  if (isZamptoProvider(creds)) {
+    const products = await fetchZamptoProducts(creds);
     return { ok: true, providerName: "zampto", sampleSize: products.length };
   }
-  if (isHuyMaiProvider(credentials)) {
-    const products = await fetchHuyMaiProducts(credentials);
+  if (isHuyMaiProvider(creds)) {
+    const products = await fetchHuyMaiProducts(creds);
     return { ok: true, providerName: "huymai", sampleSize: products.length };
   }
   // Roboticvn: skip the N+1 detail fan-out of fetchRoboticvnProducts (which trips
   // the provider's per-IP rate limit on rapid re-verify and comes back as 401).
   // A single /products list request is enough to confirm the key + baseUrl work.
-  if (isRoboticvnProvider(credentials)) {
-    const result = await verifyRoboticvnCredentials(credentials);
+  if (isRoboticvnProvider(creds)) {
+    const result = await verifyRoboticvnCredentials(creds);
     return {
       ok: result.ok,
-      providerName: credentials.providerName || "roboticvn",
+      providerName: creds.providerName || "roboticvn",
       sampleSize: result.sampleSize,
     };
   }
-  const products = await fetchProviderProducts(credentials);
+  const products = await fetchProviderProducts(creds);
   return {
     ok: products.length > 0,
-    providerName: credentials.providerName || DEFAULT_PROVIDER_NAME,
+    providerName: creds.providerName || DEFAULT_PROVIDER_NAME,
     sampleSize: products.length,
   };
 }

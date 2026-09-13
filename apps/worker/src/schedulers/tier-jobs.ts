@@ -102,7 +102,7 @@ export async function expireSellerTiers(): Promise<void> {
   const now = new Date();
   const expired = await prisma.seller.findMany({
     where: {
-      tier: "PRO",
+      tier: { in: ["PRO", "ULTRA"] },
       tierExpiresAt: { not: null, lt: now },
     },
     select: { id: true },
@@ -112,7 +112,7 @@ export async function expireSellerTiers(): Promise<void> {
     where: { id: { in: expired.map((s) => s.id) } },
     data: { tier: "FREE" },
   });
-  console.log(`[worker] Expired ${expired.length} PRO seller(s) → FREE.`);
+  console.log(`[worker] Expired ${expired.length} seller(s) → FREE.`);
 }
 
 export async function runTierAutoRenewals(): Promise<void> {

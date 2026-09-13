@@ -143,8 +143,10 @@ export function TierPricingPage() {
           } catch {}
         }
         const { data } = await api.get(`/tiers/quote`);
-        // Check if tier was renewed (tierExpiresAt updated)
-        if (data.currentTierExpiresAt && quote?.currentTierExpiresAt !== data.currentTierExpiresAt) {
+        // Check if tier was renewed (tierExpiresAt updated) or upgraded (tier changed)
+        const tierChanged = quote?.currentTier && quote.currentTier !== data.currentTier;
+        const expiryChanged = data.currentTierExpiresAt && quote?.currentTierExpiresAt !== data.currentTierExpiresAt;
+        if (tierChanged || expiryChanged) {
           queryClient.invalidateQueries({ queryKey: ["tier-quote"] });
           const tier = modalTier;
           closeModal();

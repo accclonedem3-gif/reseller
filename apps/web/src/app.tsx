@@ -162,6 +162,7 @@ export function App() {
           <Route path="/support" element={<SupportPage />} />
           <Route path="/upgrade" element={<UpgradePage />} />
           <Route path="/pricing" element={<TierPricingPage />} />
+          <Route path="/tier-pricing" element={<Navigate to="/pricing" replace />} />
           <Route path="/affiliate" element={<SellerAffiliatePage />} />
           <Route path="/pro-analytics" element={<ProAnalyticsPage />} />
           <Route
