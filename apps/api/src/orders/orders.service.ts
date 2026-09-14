@@ -41,6 +41,7 @@ import { isProductVisibleForBot } from "../lib/source-product-visibility";
 import {
   calculatePreorderCharge,
   calculatePreorderCancellationRefund,
+  getAvailableForNewOrders,
   needsPreorder,
 } from "../lib/preorder";
 import {
@@ -999,7 +1000,22 @@ export class OrdersService {
       isSharedProduct ||
       (Array.isArray(deliveryEntries) && deliveryEntries.length > 0);
 
-    const availableForNewOrder = product.available;
+    const reservations = await this.prisma.order.groupBy({
+      by: ["sourceProductId"],
+      where: {
+        sourceProductId: product.id,
+        isPreorder: true,
+        paymentStatus: "PAID",
+        status: { in: ["PAID", "PROCESSING_PURCHASE", "PAID_WAITING_STOCK"] },
+        preorderCancellationStatus: { not: "REQUESTED" },
+      },
+      _sum: { quantity: true },
+    });
+    const reservedQuantity = Number(reservations[0]?._sum?.quantity || 0);
+    const availableForNewOrder = getAvailableForNewOrders(
+      product.available,
+      reservedQuantity,
+    );
     const isPreorder = needsPreorder(availableForNewOrder, effectiveQuantity);
 
     if (isPreorder && !product.preorderEnabled) {

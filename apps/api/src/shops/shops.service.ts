@@ -79,6 +79,7 @@ import { CacheService } from "../lib/cache.service";
 import { QueueService } from "../lib/queue.service";
 import { PrismaService } from "../db/prisma.service";
 import { isOwnShopProduct } from "../lib/source-product-visibility";
+import { getAvailableForNewOrders } from "../lib/preorder";
 import { OkxPersonalApiService } from "../lib/okx-personal-api.service";
 import {
   decimalToNumber,
@@ -3698,6 +3699,44 @@ export class ShopsService {
     };
   }
 
+  /**
+   * Deduct waiting preorders from product.available so customers in bot
+   * see the real available quantity and cannot take goods reserved for preorders.
+   */
+  private async applyActiveOrderReservations(
+    products: Array<{ id: string; available: number | null }>,
+  ) {
+    const productIds = products
+      .filter((product) => product.available !== null)
+      .map((product) => product.id);
+    if (productIds.length === 0) return;
+
+    const reservations = await this.prisma.order.groupBy({
+      by: ["sourceProductId"],
+      where: {
+        sourceProductId: { in: productIds },
+        isPreorder: true,
+        paymentStatus: "PAID",
+        status: { in: ["PAID", "PROCESSING_PURCHASE", "PAID_WAITING_STOCK"] },
+        preorderCancellationStatus: { not: "REQUESTED" },
+      },
+      _sum: { quantity: true },
+    });
+    const reservedByProduct = new Map(
+      reservations.map((row) => [
+        row.sourceProductId,
+        Number(row._sum.quantity || 0),
+      ]),
+    );
+
+    for (const product of products) {
+      product.available = getAvailableForNewOrders(
+        product.available,
+        reservedByProduct.get(product.id) || 0,
+      );
+    }
+  }
+
   /** One mapped catalog item by id — avoids loading the WHOLE catalog just to show one product. */
   async getCatalogItemForShop(
     shopId: string,
@@ -3724,6 +3763,7 @@ export class ShopsService {
     if (!product) return null;
 
     const mapped = this.mapCatalogProduct(product);
+    await this.applyActiveOrderReservations([mapped]);
     if (
       enforceBotVisibility &&
       providerConfig?.ownProductsOnly &&
@@ -3767,6 +3807,7 @@ export class ShopsService {
     ]);
 
     const mapped = products.map((product) => this.mapCatalogProduct(product));
+    await this.applyActiveOrderReservations(mapped);
     if (applyInheritedTemplate) {
       await this.applyInheritedLayout(shopId, mapped);
     }

@@ -12,6 +12,7 @@ import {
   recordInternalSourceOrder,
   debitConnectionBalance,
 } from "../wallet";
+import { decimalToNumber } from "../money";
 import {
   normalizeLanguage,
   formatLocalizedDateTime,
@@ -506,6 +507,232 @@ export async function enqueuePaidOrder(
   }
 }
 
+function isManualSourceProduct(product: any): boolean {
+  const metadata =
+    product?.metadataJson &&
+    typeof product.metadataJson === "object" &&
+    !Array.isArray(product.metadataJson)
+      ? product.metadataJson
+      : {};
+  return (
+    String(product?.providerName || "").toLowerCase() === "manual" ||
+    metadata.manual === true
+  );
+}
+
+export async function getPreorderAvailableQuantity(product: any): Promise<number> {
+  if (!product) return 0;
+  const metadata =
+    product.metadataJson &&
+    typeof product.metadataJson === "object" &&
+    !Array.isArray(product.metadataJson)
+      ? product.metadataJson
+      : {};
+  if (
+    isManualSourceProduct(product) &&
+    metadata.shared !== true &&
+    product.sourceDeliveryMode !== "ADD_MAIL"
+  ) {
+    return countAvailableManualEntries(prisma, product.id);
+  }
+  if (product.available === null || product.available === undefined)
+    return Number.POSITIVE_INFINITY;
+  return Math.max(0, Number(product.available) || 0);
+}
+
+export async function getPaidPreorderQueue(sourceProductId: string) {
+  return prisma.order.findMany({
+    where: {
+      sourceProductId,
+      isPreorder: true,
+      paymentStatus: "PAID",
+      status: { in: ["PAID", "PROCESSING_PURCHASE", "PAID_WAITING_STOCK"] },
+    },
+    select: {
+      id: true,
+      quantity: true,
+      paidAt: true,
+      createdAt: true,
+      status: true,
+      preorderCancellationStatus: true,
+    },
+    orderBy: [{ paidAt: "asc" }, { createdAt: "asc" }, { id: "asc" }],
+  });
+}
+
+export async function movePreorderToWaiting(
+  order: any,
+  availableQuantity: number
+): Promise<void> {
+  if (!order.sourceProductId) return;
+  const queue = await getPaidPreorderQueue(order.sourceProductId);
+  const queueIndex = queue.findIndex((item) => item.id === order.id);
+  const queuePosition = queueIndex >= 0 ? queueIndex + 1 : 1;
+  const reason =
+    queueIndex > 0
+      ? "Don dat truoc dang cho den luot FIFO."
+      : "Don dat truoc da thanh toan, dang cho hang ve.";
+  const moved = await prisma.order.updateMany({
+    where: { id: order.id, status: "PROCESSING_PURCHASE" },
+    data: { status: "PAID_WAITING_STOCK", failureReason: reason },
+  });
+  if (moved.count === 0) return;
+  await prisma.orderEvent.create({
+    data: {
+      orderId: order.id,
+      eventType: "preorder_waiting_stock",
+      payloadJson: {
+        queuePosition,
+        availableQuantity: Number.isFinite(availableQuantity)
+          ? availableQuantity
+          : null,
+        requestedQuantity: order.quantity,
+      },
+    },
+  });
+  const alreadyNotified = await prisma.orderEvent.findFirst({
+    where: {
+      orderId: order.id,
+      eventType: "preorder_waiting_confirmation_sent",
+    },
+    select: { id: true },
+  });
+  if (alreadyNotified) return;
+  const encryptedToken = order.shop?.botConfig?.telegramBotTokenEncrypted;
+  const chatId = order.customer?.telegramChatId;
+  if (!encryptedToken || !chatId) return;
+  const botToken = decryptSecret(encryptedToken, getEncryptionKey());
+  if (
+    !botToken ||
+    (String(process.env.MOCK_TELEGRAM_MODE || "false") === "true" &&
+      isMockBotToken(botToken))
+  )
+    return;
+  const language: string = normalizeLanguage(order.customer?.preferredLanguage);
+  const formatter = new Intl.NumberFormat(
+    language === "en" ? "en-US" : language === "th" ? "th-TH" : "vi-VN"
+  );
+  const total = `${formatter.format(decimalToNumber(order.totalSaleAmount))}đ`;
+  const fee = `${formatter.format(decimalToNumber(order.preorderFeeAmount))}đ`;
+  const feePercent = decimalToNumber(order.preorderFeePercent);
+  const message =
+    language === "en"
+      ? `🕒 Pre-order payment confirmed\nOrder: ${order.orderCode}\nProduct: ${order.productNameSnapshot}\nQuantity: ${order.quantity}\nPre-order fee (${feePercent}%): ${fee}\nTotal paid: ${total}\nFIFO position: #${queuePosition}\n\nThe bot will deliver and notify you automatically when stock arrives.`
+      : language === "th"
+        ? `🕒 ยืนยันการชำระเงินคำสั่งจองแล้ว\nคำสั่งซื้อ: ${order.orderCode}\nสินค้า: ${order.productNameSnapshot}\nจำนวน: ${order.quantity}\nค่าจอง (${feePercent}%): ${fee}\nยอดชำระ: ${total}\nลำดับ FIFO: #${queuePosition}\n\nบอทจะส่งสินค้าและแจ้งเตือนอัตโนมัติเมื่อมีสินค้า`
+        : `🕒 Đã xác nhận thanh toán đơn đặt trước\nMã đơn: ${order.orderCode}\nSản phẩm: ${order.productNameSnapshot}\nSố lượng: ${order.quantity}\nPhí đặt trước (${feePercent}%): ${fee}\nTổng đã thanh toán: ${total}\nVị trí FIFO: #${queuePosition}\n\nKhi hàng về, bot sẽ tự động giao và thông báo cho bạn.`;
+  const sent = await telegramSendMessage(botToken, chatId, message)
+    .then(() => true)
+    .catch(() => false);
+  if (sent) {
+    await prisma.orderEvent
+      .create({
+        data: {
+          orderId: order.id,
+          eventType: "preorder_waiting_confirmation_sent",
+          payloadJson: { queuePosition },
+        },
+      })
+      .catch(() => undefined);
+  }
+}
+
+export async function enqueueWaitingPreorder(
+  queue: Queue,
+  order: any
+): Promise<boolean> {
+  const claimed = await prisma.order.updateMany({
+    where: {
+      id: order.id,
+      isPreorder: true,
+      paymentStatus: "PAID",
+      status: "PAID_WAITING_STOCK",
+      preorderCancellationStatus: { not: "REQUESTED" },
+    },
+    data: { status: "PROCESSING_PURCHASE", failureReason: null },
+  });
+  if (claimed.count === 0) return false;
+  try {
+    await queue.add(
+      JOBS.purchaseUpstream,
+      { orderId: order.id },
+      {
+        jobId: `preorder-${order.id}-${Date.now()}`,
+        removeOnComplete: 100,
+        removeOnFail: 100,
+      }
+    );
+    await prisma.orderEvent.create({
+      data: {
+        orderId: order.id,
+        eventType: "preorder_fulfillment_enqueued",
+        payloadJson: {
+          note: "Stock is available; queued for FIFO fulfillment.",
+        },
+      },
+    });
+    return true;
+  } catch (error) {
+    await prisma.order
+      .updateMany({
+        where: { id: order.id, status: "PROCESSING_PURCHASE" },
+        data: {
+          status: "PAID_WAITING_STOCK",
+          failureReason:
+            error instanceof Error
+              ? error.message
+              : "Pre-order enqueue failed.",
+        },
+      })
+      .catch(() => undefined);
+    throw error;
+  }
+}
+
+let preorderSweepRunning = false;
+export async function enqueueFulfillablePreorders(queue: Queue): Promise<void> {
+  if (preorderSweepRunning) return;
+  preorderSweepRunning = true;
+  try {
+    const waiting = await prisma.order.findMany({
+      where: {
+        isPreorder: true,
+        paymentStatus: "PAID",
+        status: "PAID_WAITING_STOCK",
+        preorderCancellationStatus: { not: "REQUESTED" },
+      },
+      select: { sourceProductId: true },
+      orderBy: [{ paidAt: "asc" }, { createdAt: "asc" }, { id: "asc" }],
+      take: 200,
+    });
+    const productIds = Array.from(
+      new Set(waiting.map((order) => order.sourceProductId).filter(Boolean))
+    ) as string[];
+    for (const sourceProductId of productIds) {
+      const [product, fifo] = await Promise.all([
+        prisma.sourceProduct.findUnique({ where: { id: sourceProductId } }),
+        getPaidPreorderQueue(sourceProductId),
+      ]);
+      if (!product || fifo.length === 0) continue;
+      let remainingAvailable = await getPreorderAvailableQuantity(product);
+      for (const waitingOrder of fifo) {
+        if (
+          waitingOrder.status !== "PAID_WAITING_STOCK" ||
+          waitingOrder.preorderCancellationStatus === "REQUESTED"
+        )
+          continue;
+        if (remainingAvailable < waitingOrder.quantity) break;
+        const enqueued = await enqueueWaitingPreorder(queue, waitingOrder);
+        if (enqueued) {
+          remainingAvailable -= waitingOrder.quantity;
+        }
+      }
+    }
+  } finally {
+    preorderSweepRunning = false;
+  }
+}
+
 export async function processPurchase(job: Job<{ orderId: string }>): Promise<void> {
   const order = await prisma.order.findUnique({
     where: { id: job.data.orderId },
@@ -586,6 +813,39 @@ export async function processPurchase(job: Job<{ orderId: string }>): Promise<vo
   if (!isManualProduct && !isInternalSource && !providerConfig) {
     return;
   }
+
+  if (order.isPreorder === true) {
+    if (
+      order.status !== "PROCESSING_PURCHASE" ||
+      order.paymentStatus !== "PAID"
+    )
+      return;
+    if (order.preorderCancellationStatus === "REQUESTED") {
+      await prisma.order.updateMany({
+        where: {
+          id: order.id,
+          status: "PROCESSING_PURCHASE",
+          preorderCancellationStatus: "REQUESTED",
+        },
+        data: {
+          status: "PAID_WAITING_STOCK",
+          failureReason:
+            "Khach da yeu cau huy. Don tam khoa giao hang de cho seller duyet.",
+        },
+      });
+      return;
+    }
+    const [preorderQueue, availableQuantity] = await Promise.all([
+      getPaidPreorderQueue(order.sourceProductId!),
+      getPreorderAvailableQuantity(order.sourceProduct),
+    ]);
+    const isFirstInQueue = preorderQueue[0]?.id === order.id;
+    if (!isFirstInQueue || availableQuantity < order.quantity) {
+      await movePreorderToWaiting(order, availableQuantity);
+      return;
+    }
+  }
+
   if (isManualProduct) {
     const botToken = decryptSecret(
       order.shop.botConfig?.telegramBotTokenEncrypted,

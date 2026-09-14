@@ -14,6 +14,7 @@ import {
   TON_PAYMENT_SCAN_INTERVAL_MS,
   BEP20_PAYMENT_SCAN_INTERVAL_MS,
   INTERNAL_SOURCE_ORDER_SWEEP_INTERVAL_MS,
+  PREORDER_FULFILLMENT_SWEEP_INTERVAL_MS,
   validateProductionConfig,
   getEncryptionKey,
 } from "./config/env";
@@ -32,6 +33,7 @@ import {
 } from "./fulfillment/catalog-sync";
 import {
   processPurchase,
+  enqueueFulfillablePreorders,
   reconcilePendingInternalSourceOrders,
   reconcilePendingRoboticvnOrders,
 } from "./fulfillment/purchase";
@@ -212,6 +214,13 @@ export async function bootstrap(): Promise<void> {
       console.error("[worker] Roboticvn order sweep failed:", formatError(error));
     });
   }, INTERNAL_SOURCE_ORDER_SWEEP_INTERVAL_MS);
+
+  setInterval(() => {
+    void enqueueFulfillablePreorders(purchaseQueue).catch((error) => {
+      console.error("[worker] Pre-order sweep failed:", formatError(error));
+    });
+  }, PREORDER_FULFILLMENT_SWEEP_INTERVAL_MS);
+  void enqueueFulfillablePreorders(purchaseQueue).catch(() => undefined);
 
   setInterval(() => {
     void scheduleCatalogSyncJobs(syncQueue, redis).catch((error) => {
