@@ -93,7 +93,7 @@ export async function refreshActiveCatalogShopIds(
         {
           providerConfig: {
             is: {
-              connectionStatus: "VERIFIED",
+              connectionStatus: { not: "DISABLED" },
             },
           },
         },
@@ -101,7 +101,13 @@ export async function refreshActiveCatalogShopIds(
           providerSources: {
             some: {
               enabled: true,
-              connectionStatus: "VERIFIED",
+            },
+          },
+        },
+        {
+          downstreamSourceConnections: {
+            some: {
+              status: "ACTIVE",
             },
           },
         },
