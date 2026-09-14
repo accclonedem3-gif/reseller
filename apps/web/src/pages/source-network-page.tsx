@@ -1115,6 +1115,7 @@ export function SourceNetworkPage({
                   doicard68: "https://doicard68.com",
                   haivankhosi: "https://webshop.haivankhosi.site",
                   khommo: "https://khommo.vn",
+                  qcst: "https://api.qcst.tech",
                   dinostore: "https://api.dinos-tore.com",
                   dinostore_social: "https://api.dinos-tore.com",
                   shopmmo: "https://shopmmo.pro",
@@ -1140,6 +1141,7 @@ export function SourceNetworkPage({
               <option value="doicard68">Doicard68 (Thẻ cào & Thẻ Game)</option>
               <option value="haivankhosi">HaiVanKhoSi (Shop Bot)</option>
               <option value="khommo">KhoMMO (khommo.vn)</option>
+              <option value="qcst">QCST (api.qcst.tech)</option>
               <option value="dinostore">Dinostore (Tài khoản & Bản quyền)</option>
               <option value="dinostore_social">Dinostore Social (Tăng tương tác MXH)</option>
               <option value="shopmmo">ShopMMO</option>
@@ -1164,6 +1166,7 @@ export function SourceNetworkPage({
               onChange={(event) => {
                 const buyerKey = event.target.value;
                 const isDino = /^sk_(?:live|test)_/i.test(buyerKey.trim());
+                const isQcst = /^qcst_(?:live|test)_/i.test(buyerKey.trim());
                 setProviderForm((current) => ({
                   ...current,
                   buyerKey,
@@ -1172,7 +1175,12 @@ export function SourceNetworkPage({
                         providerName: "dinostore",
                         baseUrl: "https://api.dinos-tore.com",
                       }
-                    : {}),
+                    : isQcst && current.providerName === "canboso"
+                      ? {
+                          providerName: "qcst",
+                          baseUrl: "https://api.qcst.tech",
+                        }
+                      : {}),
                 }));
               }}
               placeholder={
@@ -1184,9 +1192,11 @@ export function SourceNetworkPage({
                       ? "API Key từ Telegram Bot (/apikey)"
                       : providerForm.providerName === "khommo"
                         ? "API Key từ khommo.vn/client/document-api"
-                        : providerForm.providerName === "dinostore" || providerForm.providerName === "dinostore_social"
-                          ? "sk_live_..."
-                          : "API / buyer key"
+                        : providerForm.providerName === "qcst"
+                          ? "API Key từ api.qcst.tech (qcst_live_...)"
+                          : providerForm.providerName === "dinostore" || providerForm.providerName === "dinostore_social"
+                            ? "sk_live_..."
+                            : "API / buyer key"
               }
             />
             <div className="flex gap-2">

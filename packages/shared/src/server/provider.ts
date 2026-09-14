@@ -74,6 +74,15 @@ import {
   purchaseFromKhommo,
   fetchKhommoOrderStatus,
 } from "./khommo";
+import {
+  isQcstBaseUrl,
+  isQcstKey,
+  isQcstProvider,
+  fetchQcstProducts,
+  fetchQcstBalance,
+  purchaseFromQcst,
+  fetchQcstOrderStatus,
+} from "./qcst";
 
 export {
   isRoboticvnBaseUrl,
@@ -107,6 +116,11 @@ export {
   isKhommoBaseUrl,
   isKhommoProvider,
 } from "./khommo";
+export {
+  isQcstBaseUrl,
+  isQcstKey,
+  isQcstProvider,
+} from "./qcst";
 
 export interface ProviderCredentials {
   baseUrl?: string;
@@ -465,6 +479,10 @@ export async function verifyProviderConnection(
     const products = await fetchKhommoProducts(creds);
     return { ok: true, providerName: "khommo", sampleSize: products.length };
   }
+  if (isQcstProvider(creds)) {
+    const products = await fetchQcstProducts(creds);
+    return { ok: true, providerName: "qcst", sampleSize: products.length };
+  }
   if (isGigaPowerProvider(creds)) {
     const products = await fetchGigaPowerProducts(creds);
     return { ok: true, providerName: "gigapower", sampleSize: products.length };
@@ -510,6 +528,9 @@ export async function fetchProviderProducts(
   }
   if (isKhommoProvider(credentials)) {
     return fetchKhommoProducts(credentials);
+  }
+  if (isQcstProvider(credentials)) {
+    return fetchQcstProducts(credentials);
   }
   if (isGigaPowerProvider(credentials)) {
     return fetchGigaPowerProducts(credentials);
@@ -695,6 +716,9 @@ export async function fetchProviderBalance(
   if (isKhommoProvider(credentials)) {
     return fetchKhommoBalance(credentials);
   }
+  if (isQcstProvider(credentials)) {
+    return fetchQcstBalance(credentials);
+  }
   if (isGigaPowerProvider(credentials)) {
     return fetchGigaPowerBalance(credentials);
   }
@@ -767,6 +791,9 @@ export async function purchaseFromProvider(
   }
   if (isKhommoProvider(credentials)) {
     return purchaseFromKhommo(credentials, input);
+  }
+  if (isQcstProvider(credentials)) {
+    return purchaseFromQcst(credentials, input);
   }
   if (isGigaPowerProvider(credentials)) {
     return purchaseFromGigaPower(credentials, input);
@@ -965,6 +992,9 @@ export async function fetchProviderOrderStatus(
   }
   if (isKhommoProvider(credentials)) {
     return fetchKhommoOrderStatus(credentials, input);
+  }
+  if (isQcstProvider(credentials)) {
+    return fetchQcstOrderStatus(credentials, input);
   }
   if (isGigaPowerProvider(credentials)) {
     return fetchGigaPowerOrderStatus(credentials, input);

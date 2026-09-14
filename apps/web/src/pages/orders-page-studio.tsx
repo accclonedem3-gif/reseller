@@ -213,6 +213,8 @@ function displayProviderName(value: unknown) {
     haivan: "HaiVanKhoSi",
     khommo: "KhoMMO",
     khommovn: "KhoMMO",
+    qcst: "QCST",
+    qcsttech: "QCST",
     dinostore: "Dinostore",
     dinostore_social: "Dinostore Social",
     shopmmo: "ShopMMO",

@@ -372,6 +372,8 @@ export class CreateProviderSourceDto {
     "haivan",
     "khommo",
     "khommovn",
+    "qcst",
+    "qcsttech",
   ])
   providerName?: string;
 
