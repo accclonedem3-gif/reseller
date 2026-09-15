@@ -300,14 +300,26 @@ export class ProductsService {
         : {};
     const businessFields = { ...classificationFields, ...wholesaleFields };
 
+    // Inherit group custom emoji if groupId is provided and group has custom emoji
+    let targetGroup: { id: string; icon: string | null; iconCustomEmojiId: string | null } | null = null;
+    if (dto.groupId) {
+      targetGroup = await this.prisma.shopCatalogGroup.findFirst({
+        where: { id: dto.groupId, shopId: shop.id },
+      });
+    }
+
     // Inherit admin template defaults by family if seller didn't provide
     const adminDefaults = await this.getAdminTemplateDefaultsByFamily(
       dto.productFamily,
     );
     const inheritedIcon =
-      dto.productIcon?.trim() || adminDefaults?.icon || null;
+      targetGroup?.iconCustomEmojiId && targetGroup.icon
+        ? targetGroup.icon
+        : dto.productIcon?.trim() || adminDefaults?.icon || null;
     const inheritedEmojiId =
-      dto.iconCustomEmojiId?.trim() || adminDefaults?.customEmojiId || null;
+      targetGroup?.iconCustomEmojiId
+        ? targetGroup.iconCustomEmojiId
+        : dto.iconCustomEmojiId?.trim() || adminDefaults?.customEmojiId || null;
     const inheritedImageUrl =
       dto.imageUrl?.trim() ||
       (adminDefaults?.media?.type === "photo" ||
@@ -381,6 +393,7 @@ export class ProductsService {
           sellerId: shop.sellerId,
           shopId: shop.id,
           sourceProductId: product.id,
+          groupId: targetGroup?.id ?? null,
           displayName,
           salePrice: toDecimal(dto.salePrice),
           hidden: dto.hidden ?? false,

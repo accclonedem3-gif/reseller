@@ -3527,29 +3527,49 @@ export class ShopsService {
       sourceProductId: string;
       groupId: string | null;
       position: number;
+      productIcon?: string | null;
+      iconCustomEmojiId?: string | null;
     }[],
   ) {
     const ctx = await this.getInheritedContext(shopId);
     if (!ctx) return;
     const ultraOverrides = await this.prisma.sellerProductOverride.findMany({
       where: { shopId: ctx.upstreamShopId },
-      select: { sourceProductId: true, groupId: true, position: true },
+      select: {
+        sourceProductId: true,
+        groupId: true,
+        position: true,
+        group: { select: { icon: true, iconCustomEmojiId: true } },
+      },
     });
     const layout = new Map<
       string,
-      { groupId: string | null; position: number }
+      {
+        groupId: string | null;
+        position: number;
+        icon: string | null;
+        iconCustomEmojiId: string | null;
+      }
     >();
     for (const o of ultraOverrides) {
       layout.set(o.sourceProductId, {
         groupId: o.groupId,
         position: o.position,
+        icon: o.group?.icon ?? null,
+        iconCustomEmojiId: o.group?.iconCustomEmojiId ?? null,
       });
     }
     const productOv = ctx.overrides.products ?? {};
     for (const m of mapped) {
       const l = layout.get(m.sourceProductId);
       m.groupId = l ? l.groupId : null;
-      if (l) m.position = l.position;
+      if (l) {
+        m.position = l.position;
+        if (l.iconCustomEmojiId) {
+          m.iconCustomEmojiId = l.iconCustomEmojiId;
+          if (l.icon) m.productIcon = l.icon;
+        }
+      }
       // PRO per-product position override on top of the inherited layout.
       const po = productOv[m.id];
       if (po && typeof po.position === "number") m.position = po.position;
@@ -3558,9 +3578,14 @@ export class ShopsService {
 
   /** Map a single SourceProduct (with its overrides) to the catalog-item shape used by bot + UI. */
   private mapCatalogProduct(
-    product: Prisma.SourceProductGetPayload<{ include: { overrides: true } }>,
+    product: Prisma.SourceProductGetPayload<{
+      include: { overrides: { include: { group: true } } };
+    }>,
   ) {
     const override = product.overrides[0];
+    const group = override?.group;
+    const inheritedCustomEmojiId = group?.iconCustomEmojiId?.trim() || null;
+    const inheritedIcon = group?.icon?.trim() || null;
     const metadata =
       product.metadataJson &&
       typeof product.metadataJson === "object" &&
@@ -3638,8 +3663,12 @@ export class ShopsService {
       // UI so the product edit form can prefill the value and show when the clock started.
       accLifetimeDays: (product as any).accLifetimeDays ?? null,
       accBatchStartedAt: (product as any).accBatchStartedAt ?? null,
-      productIcon: product.productIcon || null,
-      iconCustomEmojiId: product.iconCustomEmojiId || null,
+      productIcon:
+        inheritedCustomEmojiId && inheritedIcon
+          ? inheritedIcon
+          : product.productIcon || null,
+      iconCustomEmojiId:
+        inheritedCustomEmojiId ?? product.iconCustomEmojiId ?? null,
       iconOutOfStockEmojiId: product.iconOutOfStockEmojiId || null,
       imageUrl: product.imageUrl || null,
       syncedAt: product.syncedAt,
@@ -3760,7 +3789,11 @@ export class ShopsService {
           providerName: { not: "disconnected_archive" },
           ...(enforceBotVisibility ? { archivedAt: null } : {}),
         },
-        include: { overrides: true },
+        include: {
+          overrides: {
+            include: { group: true },
+          },
+        },
       }),
       enforceBotVisibility
         ? this.prisma.providerConfig.findUnique({
@@ -3798,7 +3831,9 @@ export class ShopsService {
           ...(includeArchived ? {} : { archivedAt: null }),
         },
         include: {
-          overrides: true,
+          overrides: {
+            include: { group: true },
+          },
         },
         orderBy: sortByAvailable
           ? [

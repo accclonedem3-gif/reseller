@@ -62,7 +62,7 @@ export class CatalogGroupsService {
     });
     if (!group) throw new NotFoundException("Group not found.");
 
-    return this.prisma.shopCatalogGroup.update({
+    const updated = await this.prisma.shopCatalogGroup.update({
       where: { id },
       data: {
         ...(dto.name !== undefined ? { name: dto.name } : {}),
@@ -72,6 +72,33 @@ export class CatalogGroupsService {
         ...(dto.iconCustomEmojiId !== undefined ? { iconCustomEmojiId: dto.iconCustomEmojiId || null } : {}),
       },
     });
+
+    const effectiveCustomEmojiId =
+      dto.iconCustomEmojiId !== undefined
+        ? dto.iconCustomEmojiId?.trim() || null
+        : group.iconCustomEmojiId;
+    const effectiveIcon =
+      dto.icon !== undefined ? dto.icon?.trim() || null : group.icon;
+
+    // Khi danh mục đã set custom emoji, tất cả sản phẩm trong danh mục cũng sẽ thừa kế emoji đó
+    if (effectiveCustomEmojiId) {
+      const overrides = await this.prisma.sellerProductOverride.findMany({
+        where: { shopId: shop.id, groupId: id },
+        select: { sourceProductId: true },
+      });
+      const productIds = overrides.map((o) => o.sourceProductId);
+      if (productIds.length > 0) {
+        await this.prisma.sourceProduct.updateMany({
+          where: { id: { in: productIds }, shopId: shop.id },
+          data: {
+            iconCustomEmojiId: effectiveCustomEmojiId,
+            ...(effectiveIcon ? { productIcon: effectiveIcon } : {}),
+          },
+        });
+      }
+    }
+
+    return updated;
   }
 
   async deleteGroup(user: AuthenticatedUser, id: string) {
@@ -113,11 +140,16 @@ export class CatalogGroupsService {
   async bulkAssign(user: AuthenticatedUser, dto: BulkAssignGroupDto) {
     const shop = await this.shopsService.getSellerShop(user.id);
 
+    let targetGroup: {
+      id: string;
+      icon: string | null;
+      iconCustomEmojiId: string | null;
+    } | null = null;
     if (dto.groupId) {
-      const group = await this.prisma.shopCatalogGroup.findFirst({
+      targetGroup = await this.prisma.shopCatalogGroup.findFirst({
         where: { id: dto.groupId, shopId: shop.id },
       });
-      if (!group) throw new NotFoundException("Group not found.");
+      if (!targetGroup) throw new NotFoundException("Group not found.");
     }
 
     // Validate all products belong to this shop
@@ -142,6 +174,20 @@ export class CatalogGroupsService {
       },
       data: { groupId: dto.groupId ?? null },
     });
+
+    // Khi thêm vào danh mục đã set custom emoji, sản phẩm cũng thừa kế emoji đó
+    if (targetGroup?.iconCustomEmojiId) {
+      await this.prisma.sourceProduct.updateMany({
+        where: {
+          id: { in: dto.productIds },
+          shopId: shop.id,
+        },
+        data: {
+          iconCustomEmojiId: targetGroup.iconCustomEmojiId,
+          ...(targetGroup.icon ? { productIcon: targetGroup.icon } : {}),
+        },
+      });
+    }
 
     return { updated: overrides.length };
   }

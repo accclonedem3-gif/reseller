@@ -1917,7 +1917,10 @@ export function ProductsPageStudio({
       iconCustomEmojiId: string;
     }) => api.put(`/catalog-groups/${id}`, { icon, iconCustomEmojiId }),
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["catalog-groups"] });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["catalog-groups"] }),
+        queryClient.invalidateQueries({ queryKey: ["products"] }),
+      ]);
       setIconPickerGroupId(null);
     },
     onError: (error) =>
@@ -5021,13 +5024,29 @@ export function ProductsPageStudio({
                       className="mt-2.5 h-4 w-4 shrink-0 cursor-pointer rounded accent-orange-500"
                     />
                     <div
-                      className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-base"
+                      className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-base overflow-hidden"
                       style={{
                         background: "rgba(249,115,22,0.1)",
                         color: "rgb(249,115,22)",
                       }}
                     >
-                      {product.productIcon || <Package className="h-4 w-4" />}
+                      {(() => {
+                        const matchedIcon = product.iconCustomEmojiId
+                          ? iconCatalog.find(
+                              (i) => i.customEmojiId === product.iconCustomEmojiId,
+                            )
+                          : null;
+                        if (matchedIcon) {
+                          return (
+                            <img
+                              src={matchedIcon.imageUrl}
+                              alt=""
+                              className="h-6 w-6 object-contain"
+                            />
+                          );
+                        }
+                        return product.productIcon || <Package className="h-4 w-4" />;
+                      })()}
                     </div>
                     <div className="min-w-0 flex-1 pt-0.5">
                       <p

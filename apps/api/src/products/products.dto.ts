@@ -361,6 +361,10 @@ export class CreateManualProductDto {
 
   @IsOptional()
   @IsString()
+  groupId?: string | null;
+
+  @IsOptional()
+  @IsString()
   usageInstructions?: string;
 }
 

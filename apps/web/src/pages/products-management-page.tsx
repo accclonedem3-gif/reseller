@@ -461,6 +461,7 @@ type GroupProduct = {
   archivedAt?: string | null;
   imageUrl?: string | null;
   productIcon?: string | null;
+  iconCustomEmojiId?: string | null;
 };
 
 type IconCatalogEntry = {
@@ -561,7 +562,10 @@ function CatalogGroupsPage() {
       iconCustomEmojiId: string;
     }) => api.put(`/catalog-groups/${id}`, { icon, iconCustomEmojiId }),
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["catalog-groups"] });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["catalog-groups"] }),
+        queryClient.invalidateQueries({ queryKey: ["products"] }),
+      ]);
       setIconPickerGroupId(null);
     },
     onError: (err) =>
@@ -1639,16 +1643,32 @@ function CatalogGroupsPage() {
                                     alt=""
                                     className="h-full w-full object-cover"
                                   />
-                                ) : product.productIcon ? (
-                                  <span className="text-lg leading-none">
-                                    {product.productIcon}
-                                  </span>
-                                ) : (
-                                  <Package
-                                    className="h-4 w-4"
-                                    style={{ color: "var(--tx-f)" }}
-                                  />
-                                )}
+                                ) : (() => {
+                                  const matchedIcon = product.iconCustomEmojiId
+                                    ? iconCatalog.find(
+                                        (i) => i.customEmojiId === product.iconCustomEmojiId,
+                                      )
+                                    : null;
+                                  if (matchedIcon) {
+                                    return (
+                                      <img
+                                        src={matchedIcon.imageUrl}
+                                        alt=""
+                                        className="h-6 w-6 object-contain"
+                                      />
+                                    );
+                                  }
+                                  return product.productIcon ? (
+                                    <span className="text-lg leading-none">
+                                      {product.productIcon}
+                                    </span>
+                                  ) : (
+                                    <Package
+                                      className="h-4 w-4"
+                                      style={{ color: "var(--tx-f)" }}
+                                    />
+                                  );
+                                })()}
                               </div>
                               <div className="min-w-0 flex-1">
                                 <p
@@ -1840,16 +1860,32 @@ function CatalogGroupsPage() {
                                     alt=""
                                     className="h-full w-full object-cover"
                                   />
-                                ) : product.productIcon ? (
-                                  <span className="text-lg leading-none">
-                                    {product.productIcon}
-                                  </span>
-                                ) : (
-                                  <Package
-                                    className="h-4 w-4"
-                                    style={{ color: "var(--tx-f)" }}
-                                  />
-                                )}
+                                ) : (() => {
+                                  const matchedIcon = product.iconCustomEmojiId
+                                    ? iconCatalog.find(
+                                        (i) => i.customEmojiId === product.iconCustomEmojiId,
+                                      )
+                                    : null;
+                                  if (matchedIcon) {
+                                    return (
+                                      <img
+                                        src={matchedIcon.imageUrl}
+                                        alt=""
+                                        className="h-6 w-6 object-contain"
+                                      />
+                                    );
+                                  }
+                                  return product.productIcon ? (
+                                    <span className="text-lg leading-none">
+                                      {product.productIcon}
+                                    </span>
+                                  ) : (
+                                    <Package
+                                      className="h-4 w-4"
+                                      style={{ color: "var(--tx-f)" }}
+                                    />
+                                  );
+                                })()}
                               </div>
                               <div className="min-w-0 flex-1">
                                 <p
