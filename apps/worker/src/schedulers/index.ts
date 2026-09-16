@@ -2,6 +2,7 @@ export {
   computeNextRunAt,
   sweepScheduledBroadcasts,
   processBroadcast,
+  cleanStaleBroadcasts,
 } from "./broadcast";
 
 export { pollTelegramBots } from "./telegram-poller";

@@ -50,6 +50,7 @@ import {
 } from "./payments";
 import {
   processBroadcast,
+  cleanStaleBroadcasts,
   pollTelegramBots,
   runTierExpiryReminders,
   expireSellerTiers,
@@ -64,6 +65,11 @@ export async function bootstrap(): Promise<void> {
   validateProductionConfig();
 
   const redis = await waitForInfrastructure();
+
+  // Discard any stuck broadcasts from previous runs before starting workers
+  await cleanStaleBroadcasts().catch((error) => {
+    console.error("[worker] Stale broadcast cleanup failed on startup:", formatError(error));
+  });
 
   const syncQueue = new Queue(QUEUES.syncCatalog, {
     connection: redis,
@@ -125,7 +131,10 @@ export async function bootstrap(): Promise<void> {
     },
     {
       connection: redis,
-      concurrency: 1,
+      concurrency: 2,
+      lockDuration: 300_000,
+      stalledInterval: 60_000,
+      maxStalledCount: 1,
     }
   );
 

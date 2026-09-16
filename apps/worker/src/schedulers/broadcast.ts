@@ -12,17 +12,58 @@ export function computeNextRunAt(
   return computeNextVnRunAt(sendTime, frequency, repeatDay);
 }
 
+export async function cleanStaleBroadcasts(): Promise<void> {
+  const staleThreshold = new Date(Date.now() - 5 * 60 * 1000);
+  try {
+    const result = await prisma.broadcast.updateMany({
+      where: {
+        status: { in: ["QUEUED", "SENDING"] },
+        createdAt: { lte: staleThreshold },
+      },
+      data: {
+        status: "FAILED",
+        sentAt: new Date(),
+      },
+    });
+    if (result.count > 0) {
+      console.log(`[broadcast] Discarded ${result.count} stale QUEUED/SENDING broadcasts from previous runs.`);
+    }
+  } catch (error) {
+    console.error("[broadcast] Failed to clean stale broadcasts:", error);
+  }
+}
+
 export async function sweepScheduledBroadcasts(broadcastQueue: Queue): Promise<void> {
   const now = new Date();
-  // Fire one-time SCHEDULED broadcasts
+  const thirtyMinutesAgo = new Date(now.getTime() - 30 * 60 * 1000);
+  const fifteenMinutesAgo = new Date(now.getTime() - 15 * 60 * 1000);
+  const twentyMinutesAgo = new Date(now.getTime() - 20 * 60 * 1000);
+  const twoMinutesAgo = new Date(now.getTime() - 2 * 60 * 1000);
+
+  // 1. Expire overdue one-time SCHEDULED broadcasts (> 30 mins late -> mark FAILED so we never fire stale broadcasts)
+  await prisma.broadcast.updateMany({
+    where: {
+      status: "SCHEDULED",
+      scheduledAt: { lte: thirtyMinutesAgo },
+    },
+    data: {
+      status: "FAILED",
+      sentAt: now,
+    },
+  });
+
+  // 2. Fire valid due SCHEDULED broadcasts (scheduled within the last 30 minutes)
   const dueBroadcasts = await prisma.broadcast.findMany({
-    where: { status: "SCHEDULED", scheduledAt: { lte: now } },
+    where: {
+      status: "SCHEDULED",
+      scheduledAt: { lte: now, gte: thirtyMinutesAgo },
+    },
   });
   for (const b of dueBroadcasts) {
-    const totalTargets = await prisma.customer.count({ where: { shopId: b.shopId } });
+    const totalTargets = await prisma.customer.count({ where: { shopId: b.shopId, blacklisted: false } });
     await prisma.broadcast.update({
       where: { id: b.id },
-      data: { status: "QUEUED", totalTargets },
+      data: { status: "QUEUED", totalTargets, updatedAt: now },
     });
     await broadcastQueue.add(
       JOBS.broadcast,
@@ -31,30 +72,38 @@ export async function sweepScheduledBroadcasts(broadcastQueue: Queue): Promise<v
     );
     console.log(`[scheduler] Fired scheduled broadcast ${b.id}`);
   }
-  // Fire recurring schedules
+
+  // 3. Fire recurring schedules
   const dueSchedules = await prisma.broadcastSchedule.findMany({
     where: { isActive: true, nextRunAt: { lte: now } },
     include: { shop: { include: { botConfig: true } } },
   });
   for (const sched of dueSchedules) {
-    const totalTargets = await prisma.customer.count({ where: { shopId: sched.shopId } });
-    const broadcast = await prisma.broadcast.create({
-      data: {
-        shopId: sched.shopId,
-        sellerId: sched.sellerId,
-        scheduleId: sched.id,
-        title: sched.title,
-        message: sched.message,
-        imageUrl: sched.imageUrl,
-        status: "QUEUED",
-        totalTargets,
-      },
-    });
-    await broadcastQueue.add(
-      JOBS.broadcast,
-      { broadcastId: broadcast.id },
-      { jobId: `broadcast-${broadcast.id}-${Date.now()}` }
-    );
+    // If schedule is older than 2 hours, do NOT fire an outdated backlog; just advance nextRunAt
+    const isStale = sched.nextRunAt && sched.nextRunAt.getTime() < now.getTime() - 2 * 60 * 60 * 1000;
+    if (!isStale) {
+      const totalTargets = await prisma.customer.count({ where: { shopId: sched.shopId, blacklisted: false } });
+      const broadcast = await prisma.broadcast.create({
+        data: {
+          shopId: sched.shopId,
+          sellerId: sched.sellerId,
+          scheduleId: sched.id,
+          title: sched.title,
+          message: sched.message,
+          imageUrl: sched.imageUrl,
+          status: "QUEUED",
+          totalTargets,
+        },
+      });
+      await broadcastQueue.add(
+        JOBS.broadcast,
+        { broadcastId: broadcast.id },
+        { jobId: `broadcast-${broadcast.id}-${Date.now()}` }
+      );
+      console.log(`[scheduler] Fired recurring schedule ${sched.id} → broadcast ${broadcast.id}`);
+    } else {
+      console.warn(`[scheduler] Recurring schedule ${sched.id} nextRunAt was too far in past, advancing without firing.`);
+    }
     await prisma.broadcastSchedule.update({
       where: { id: sched.id },
       data: {
@@ -62,18 +111,47 @@ export async function sweepScheduledBroadcasts(broadcastQueue: Queue): Promise<v
         nextRunAt: computeNextRunAt(sched.sendTime, sched.frequency, sched.repeatDay),
       },
     });
-    console.log(`[scheduler] Fired recurring schedule ${sched.id} → broadcast ${broadcast.id}`);
   }
 
-  // Rescue stuck QUEUED broadcasts (created >= 2 mins ago and still QUEUED)
+  // 4. Expire old stuck QUEUED broadcasts (> 15 mins -> mark FAILED instead of rescuing endlessly)
+  await prisma.broadcast.updateMany({
+    where: {
+      status: "QUEUED",
+      createdAt: { lte: fifteenMinutesAgo },
+    },
+    data: {
+      status: "FAILED",
+      sentAt: now,
+    },
+  });
+
+  // 5. Expire old stuck SENDING broadcasts (> 20 mins -> mark FAILED)
+  await prisma.broadcast.updateMany({
+    where: {
+      status: "SENDING",
+      updatedAt: { lte: twentyMinutesAgo },
+    },
+    data: {
+      status: "FAILED",
+      sentAt: now,
+    },
+  });
+
+  // 6. Rescue only FRESH stuck QUEUED broadcasts (between 2m and 15m old)
+  // MUST update updatedAt so the same broadcast is NOT rescued on every single tick
   const stuckQueued = await prisma.broadcast.findMany({
     where: {
       status: "QUEUED",
-      createdAt: { lte: new Date(Date.now() - 2 * 60 * 1000) },
+      createdAt: { lte: twoMinutesAgo, gte: fifteenMinutesAgo },
+      updatedAt: { lte: twoMinutesAgo },
     },
   });
   for (const b of stuckQueued) {
     console.log(`[scheduler] Rescuing stuck QUEUED broadcast ${b.id}`);
+    await prisma.broadcast.update({
+      where: { id: b.id },
+      data: { updatedAt: now },
+    });
     await broadcastQueue.add(
       JOBS.broadcast,
       { broadcastId: b.id },
@@ -81,15 +159,19 @@ export async function sweepScheduledBroadcasts(broadcastQueue: Queue): Promise<v
     );
   }
 
-  // Rescue stuck SENDING broadcasts (updated >= 10 mins ago, indicating interrupted worker)
+  // 7. Rescue only FRESH stuck SENDING broadcasts (between 10m and 20m old)
   const stuckSending = await prisma.broadcast.findMany({
     where: {
       status: "SENDING",
-      updatedAt: { lte: new Date(Date.now() - 10 * 60 * 1000) },
+      updatedAt: { lte: new Date(now.getTime() - 10 * 60 * 1000), gte: twentyMinutesAgo },
     },
   });
   for (const b of stuckSending) {
     console.log(`[scheduler] Rescuing stuck SENDING broadcast ${b.id}`);
+    await prisma.broadcast.update({
+      where: { id: b.id },
+      data: { updatedAt: now },
+    });
     await broadcastQueue.add(
       JOBS.broadcast,
       { broadcastId: b.id },
@@ -112,9 +194,30 @@ export async function processBroadcast(job: Job<{ broadcastId: string }>): Promi
   if (!broadcast) {
     return;
   }
+
+  // 1. Skip if already COMPLETED or FAILED
+  if (broadcast.status === "COMPLETED" || broadcast.status === "FAILED") {
+    console.log(`[broadcast] Broadcast ${broadcast.id} is already ${broadcast.status}, skipping.`);
+    return;
+  }
+
+  // 2. Discard if stale (> 20 mins old) — user instructed not to re-run old broadcasts
+  if (Date.now() - broadcast.createdAt.getTime() > 20 * 60 * 1000) {
+    console.warn(`[broadcast] Broadcast ${broadcast.id} is stale (>20m), marking FAILED and discarding.`);
+    await prisma.broadcast.update({
+      where: { id: broadcast.id },
+      data: {
+        status: "FAILED",
+        sentAt: new Date(),
+      },
+    });
+    return;
+  }
+
   const customers = await prisma.customer.findMany({
     where: {
       shopId: broadcast.shopId,
+      blacklisted: false,
     },
   });
   const alreadySentIds = new Set(
@@ -129,10 +232,11 @@ export async function processBroadcast(job: Job<{ broadcastId: string }>): Promi
     where: { id: broadcast.id },
     data: {
       status: "SENDING",
+      updatedAt: new Date(),
     },
   });
 
-  const botToken = decryptSecret(broadcast.shop.botConfig?.telegramBotTokenEncrypted, getEncryptionKey());
+  const botToken = decryptSecret(broadcast.shop?.botConfig?.telegramBotTokenEncrypted, getEncryptionKey());
   if (
     !botToken &&
     !(String(process.env.MOCK_TELEGRAM_MODE || "false") === "true")
@@ -152,8 +256,14 @@ export async function processBroadcast(job: Job<{ broadcastId: string }>): Promi
 
   let sentCount = broadcast.sentCount ?? 0;
   let failedCount = 0;
+  const messageText = broadcast.message.length > 4096
+    ? broadcast.message.slice(0, 4093) + "..."
+    : broadcast.message;
+
   for (const customer of customers) {
     if (alreadySentIds.has(customer.id)) continue;
+    if (!customer.telegramChatId || customer.telegramChatId === "0") continue;
+
     try {
       if (
         botToken &&
@@ -168,21 +278,21 @@ export async function processBroadcast(job: Job<{ broadcastId: string }>): Promi
         if (broadcast.imageUrl) {
           const MAX_CAPTION = 1024;
           try {
-            if (broadcast.message.length <= MAX_CAPTION) {
+            if (messageText.length <= MAX_CAPTION) {
               await telegramSendPhoto(botToken, customer.telegramChatId, broadcast.imageUrl, {
-                caption: broadcast.message,
+                caption: messageText,
               });
             } else {
               await telegramSendPhoto(botToken, customer.telegramChatId, broadcast.imageUrl, {});
-              await telegramSendMessage(botToken, customer.telegramChatId, broadcast.message);
+              await telegramSendMessage(botToken, customer.telegramChatId, messageText);
             }
           } catch (photoError: any) {
             console.warn(`[broadcast] Photo delivery failed for customer ${customer.id}, falling back to text: ${photoError?.message || photoError}`);
             // Fallback to text message so recipients still receive the broadcast if image fails
-            await telegramSendMessage(botToken, customer.telegramChatId, broadcast.message);
+            await telegramSendMessage(botToken, customer.telegramChatId, messageText);
           }
         } else {
-          await telegramSendMessage(botToken, customer.telegramChatId, broadcast.message);
+          await telegramSendMessage(botToken, customer.telegramChatId, messageText);
         }
       }
       sentCount += 1;
