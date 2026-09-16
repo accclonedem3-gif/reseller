@@ -1823,13 +1823,22 @@ export class TelegramBotService {
       } else if (
         data === "wallet:topup:sol" ||
         data === "wallet:topup:ton" ||
-        data === "wallet:topup:bep20"
+        data === "wallet:topup:bep20" ||
+        data === "wallet:topup:binance" ||
+        data === "wallet:topup:binancepay" ||
+        data === "wallet:topup:okx"
       ) {
         const provider = data.endsWith(":ton")
           ? "USDT_TON"
           : data.endsWith(":bep20")
             ? "USDT_BEP20"
-            : "USDT_SOL";
+            : data.endsWith(":sol")
+              ? "USDT_SOL"
+              : data.endsWith(":binancepay")
+                ? "BINANCE_PAY"
+                : data.endsWith(":binance")
+                  ? "BINANCE"
+                  : "OKX";
         await this.clearPendingWalletTopup(shopId, telegramUserId);
         await this.sessions.setPendingSession(
           "pendingWalletTopups",
@@ -4188,7 +4197,10 @@ export class TelegramBotService {
         provider === PaymentProvider.USDT_TRC20 ||
         provider === PaymentProvider.USDT_BEP20 ||
         provider === PaymentProvider.USDT_SOL ||
-        provider === PaymentProvider.USDT_TON,
+        provider === PaymentProvider.USDT_TON ||
+        provider === PaymentProvider.BINANCE ||
+        provider === PaymentProvider.BINANCE_PAY ||
+        provider === PaymentProvider.OKX,
     );
     const hasUsdt = cryptoProviders.length > 0;
     const hasVnd = providers.some(
@@ -4224,7 +4236,10 @@ export class TelegramBotService {
         | "USDT_TRC20"
         | "USDT_BEP20"
         | "USDT_SOL"
-        | "USDT_TON";
+        | "USDT_TON"
+        | "BINANCE"
+        | "BINANCE_PAY"
+        | "OKX";
       await this.sessions.setPendingSession(
         "pendingWalletTopups",
         this.sessions.getPendingQuantityKey(shopId, telegramUserId),
@@ -4299,6 +4314,30 @@ export class TelegramBotService {
       paymentRows.push([
         { text: "🏦 VND (chuyển khoản)", callback_data: "wallet:topup:vnd" },
       ]);
+    if (providers.includes(PaymentProvider.BINANCE_PAY)) {
+      paymentRows.push([
+        {
+          text: this.paymentOptionButtonLabel(PaymentProvider.BINANCE_PAY, language),
+          callback_data: "wallet:topup:binancepay",
+        },
+      ]);
+    }
+    if (providers.includes(PaymentProvider.BINANCE)) {
+      paymentRows.push([
+        {
+          text: this.paymentOptionButtonLabel(PaymentProvider.BINANCE, language),
+          callback_data: "wallet:topup:binance",
+        },
+      ]);
+    }
+    if (providers.includes(PaymentProvider.OKX)) {
+      paymentRows.push([
+        {
+          text: this.paymentOptionButtonLabel(PaymentProvider.OKX, language),
+          callback_data: "wallet:topup:okx",
+        },
+      ]);
+    }
     if (providers.includes(PaymentProvider.USDT_TRC20)) {
       paymentRows.push([
         { text: "💲 USDT (TRC20)", callback_data: "wallet:topup:usd" },
@@ -4353,9 +4392,15 @@ export class TelegramBotService {
       | "USDT_TRC20"
       | "USDT_BEP20"
       | "USDT_SOL"
-      | "USDT_TON" = "USDT_TRC20",
+      | "USDT_TON"
+      | "BINANCE"
+      | "BINANCE_PAY"
+      | "OKX" = "USDT_TRC20",
   ) {
     const isUsdt = currency === "USDT";
+    const isBinance = provider === "BINANCE";
+    const isBinancePay = provider === "BINANCE_PAY";
+    const isOkx = provider === "OKX";
     const networkName =
       provider === "USDT_TON"
         ? "TON"
@@ -4364,26 +4409,50 @@ export class TelegramBotService {
           : provider === "USDT_BEP20"
             ? "BEP20 (BSC)"
             : "TRC20";
+    const cryptoLeadLine = isBinancePay
+      ? language === "en"
+        ? "The bot will create a Binance Pay QR code and payment link."
+        : language === "th"
+          ? "บอทจะสร้าง QR และลิงก์ชำระเงิน Binance Pay"
+          : "Bot sẽ tạo mã QR và link thanh toán Binance Pay."
+      : isBinance
+        ? language === "en"
+          ? "The bot will show the shop's Binance ID to transfer to."
+          : language === "th"
+            ? "บอทจะแสดง Binance ID ของร้านค้าเพื่อโอนเงิน"
+            : "Bot sẽ hiển thị Binance UID của shop để bạn chuyển tới."
+        : isOkx
+          ? language === "en"
+            ? "The bot will show the shop's OKX details to transfer to."
+            : language === "th"
+              ? "บอทจะแสดงข้อมูล OKX ของร้านค้าเพื่อโอนเงิน"
+              : "Bot sẽ hiển thị thông tin OKX của shop để bạn chuyển tới."
+          : language === "en"
+            ? `The bot will show the ${networkName} wallet address to send to.`
+            : language === "th"
+              ? `บอทจะสร้างที่อยู่กระเป๋า ${networkName} ให้โอนไป`
+              : `Bot sẽ hiển thị địa chỉ ví ${networkName} để bạn chuyển tới.`;
+
     const promptText = isUsdt
       ? language === "en"
         ? [
             leadLine || "💲 Enter USDT amount to top up",
             "Example: 10 or 5.5",
             "",
-            `The bot will show the ${networkName} wallet address to send to.`,
+            cryptoLeadLine,
           ].join("\n")
         : language === "th"
           ? [
               leadLine || "💲 ระบุจำนวน USDT ที่ต้องการเติม",
               "ตัวอย่าง: 10 หรือ 5.5",
               "",
-              "บอทจะสร้างที่อยู่กระเป๋า TRC20 ให้โอนไป",
+              cryptoLeadLine,
             ].join("\n")
           : [
               leadLine || "💲 Nhập số USDT muốn nạp vào ví",
               "Ví dụ: 10 hoặc 5.5",
               "",
-              `Bot sẽ hiển thị địa chỉ ví ${networkName} để bạn chuyển tới.`,
+              cryptoLeadLine,
             ].join("\n")
       : language === "en"
         ? [
@@ -8197,7 +8266,17 @@ export class TelegramBotService {
         usdtVndRate,
         created.bankInfo,
         created.manualCrypto,
+        created.binancePay,
       );
+
+      const isBinancePay = pending.provider === "BINANCE_PAY";
+      const isBinance = pending.provider === "BINANCE";
+      const isOkx = pending.provider === "OKX";
+      const isOnchain =
+        pending.provider === "USDT_TRC20" ||
+        pending.provider === "USDT_BEP20" ||
+        pending.provider === "USDT_SOL" ||
+        pending.provider === "USDT_TON";
 
       const replyMarkup = {
         inline_keyboard: [
@@ -8211,7 +8290,47 @@ export class TelegramBotService {
                 ],
               ]
             : []),
-          ...(isUsdt && pending.provider !== "USDT_TON"
+          ...(isBinancePay
+            ? [
+                [
+                  {
+                    text: this.buttonLabel("paid", language),
+                    callback_data: `payment:verify:${created.topup.externalOrderCode}`,
+                  },
+                ],
+              ]
+            : []),
+          ...(isBinance && created.manualCrypto?.hasPersonalApi
+            ? [
+                [
+                  {
+                    text:
+                      language === "en"
+                        ? "✅ I've paid — Send Order ID"
+                        : language === "th"
+                          ? "✅ ชำระแล้ว — ส่ง ID คำสั่ง"
+                          : "✅ Đã chuyển — Gửi ID lệnh",
+                    callback_data: `binance:orderid:prompt:${created.topup.externalOrderCode}`,
+                  },
+                ],
+              ]
+            : []),
+          ...(isOkx && created.manualCrypto?.hasPersonalApi
+            ? [
+                [
+                  {
+                    text:
+                      language === "en"
+                        ? "✅ I've paid — Send TX hash"
+                        : language === "th"
+                          ? "✅ ชำระแล้ว — ส่ง TX hash"
+                          : "✅ Đã chuyển — Gửi TX hash",
+                    callback_data: `okx:tx:prompt:${created.topup.externalOrderCode}`,
+                  },
+                ],
+              ]
+            : []),
+          ...(isOnchain && pending.provider !== "USDT_TON"
             ? [
                 [
                   {
@@ -10870,10 +10989,203 @@ export class TelegramBotService {
         | "USDT_TON";
       network?: "TRC20" | "BEP20" | "SOLANA" | "TON" | null;
       address?: string | null;
+      uid?: string | null;
       usdtAmount: number;
       note: string;
+      hasPersonalApi?: boolean;
+    } | null,
+    binancePay?: {
+      prepayId: string;
+      qrcodeLink: string;
+      deeplink: string;
+      universalUrl: string;
     } | null,
   ) {
+    // Binance Pay auto
+    if (binancePay) {
+      const usdtFormatted = manualCrypto?.usdtAmount
+        ? this.formatUsdt(manualCrypto.usdtAmount)
+        : null;
+      const topupHeader = usdtFormatted
+        ? language === "en"
+          ? `💲 USDT top-up ${usdtFormatted} USDT (≈ ${formatCurrency(amount)})`
+          : language === "th"
+            ? `💲 เติม USDT ${usdtFormatted} USDT (≈ ${formatCurrency(amount)})`
+            : `💲 Nạp USDT ${usdtFormatted} USDT (≈ ${formatCurrency(amount)})`
+        : language === "en"
+          ? `💲 Wallet top-up (≈ ${formatCurrency(amount)})`
+          : language === "th"
+            ? `💲 เติมเงินเข้ากระเป๋า (≈ ${formatCurrency(amount)})`
+            : `💲 Nạp tiền vào ví (≈ ${formatCurrency(amount)})`;
+
+      if (language === "en") {
+        return [
+          topupHeader,
+          `Top-up code: ${externalOrderCode}`,
+          `Payment deadline: ${this.formatDateTime(expiresAt)}`,
+          "",
+          "Payment method: 🟡 Binance Pay (Auto)",
+          "Tap the button below to open Binance Pay checkout.",
+          "The system will credit your wallet automatically after your payment succeeds.",
+          "If you have already paid, tap 'I've paid' below for an immediate check.",
+        ].join("\n");
+      }
+      if (language === "th") {
+        return [
+          topupHeader,
+          `รหัสเติมเงิน: ${externalOrderCode}`,
+          `กำหนดชำระ: ${this.formatDateTime(expiresAt)}`,
+          "",
+          "วิธีชำระเงิน: 🟡 Binance Pay (อัตโนมัติ)",
+          "กดปุ่มด้านล่างเพื่อเปิดหน้าชำระเงิน Binance Pay",
+          "ระบบจะเติมเงินเข้ากระเป๋าอัตโนมัติหลังจากชำระเงินสำเร็จ",
+          "หากชำระแล้ว กด 'ฉันชำระแล้ว' ด้านล่างเพื่อให้ระบบตรวจสอบทันที",
+        ].join("\n");
+      }
+      return [
+        topupHeader,
+        `Mã nạp: ${externalOrderCode}`,
+        `Hạn thanh toán: ${this.formatDateTime(expiresAt)}`,
+        "",
+        "Phương thức: 🟡 Binance Pay (Tự động)",
+        "Nhấn nút bên dưới để mở trang thanh toán Binance Pay.",
+        "Hệ thống sẽ tự động cộng tiền vào ví khi bạn thanh toán thành công.",
+        "Nếu bạn đã thanh toán, bấm 'Tôi đã thanh toán' bên dưới để hệ thống kiểm tra ngay.",
+      ].join("\n");
+    }
+
+    // Binance manual UID / App
+    if (manualCrypto?.provider === "BINANCE") {
+      const usdtFormatted = this.formatUsdt(manualCrypto.usdtAmount);
+      const receiverLine =
+        language === "en"
+          ? `Binance ID (tap to copy):\n<code>${manualCrypto.uid || ""}</code>`
+          : language === "th"
+            ? `Binance ID (แตะเพื่อคัดลอก):\n<code>${manualCrypto.uid || ""}</code>`
+            : `Binance UID (chạm để copy):\n<code>${manualCrypto.uid || ""}</code>`;
+      const followupLine = manualCrypto.hasPersonalApi
+        ? language === "en"
+          ? "After transferring, tap 'I've paid' below and send your Binance Order ID for instant verification."
+          : language === "th"
+            ? "หลังโอนแล้ว กด 'ฉันชำระแล้ว' ด้านล่างแล้วส่ง Order ID เพื่อยืนยันทันที"
+            : "Sau khi chuyển xong, bấm 'Tôi đã chuyển — Gửi ID lệnh' bên dưới để bot tự kiểm tra."
+        : language === "en"
+          ? "Please send the top-up code to the admin if needed."
+          : language === "th"
+            ? "กรุณาส่งรหัสเติมเงินให้แอดมินหากจำเป็น"
+            : "Vui lòng giữ lại mã nạp để đối soát nếu cần.";
+
+      if (language === "en") {
+        return [
+          `💲 USDT top-up ${usdtFormatted} USDT (≈ ${formatCurrency(amount)})`,
+          `Top-up code: ${externalOrderCode}`,
+          `Payment deadline: ${this.formatDateTime(expiresAt)}`,
+          "",
+          "─────────────────",
+          "📤 Transfer details (Binance Pay / UID)",
+          receiverLine,
+          `Amount: <code>${usdtFormatted}</code> USDT`,
+          `Memo / Note: <code>${manualCrypto.note}</code>`,
+          "─────────────────",
+          followupLine,
+        ].join("\n");
+      }
+      if (language === "th") {
+        return [
+          `💲 เติม USDT ${usdtFormatted} USDT (≈ ${formatCurrency(amount)})`,
+          `รหัสเติมเงิน: ${externalOrderCode}`,
+          `กำหนดชำระ: ${this.formatDateTime(expiresAt)}`,
+          "",
+          "─────────────────",
+          "📤 ข้อมูลการโอน (Binance Pay / UID)",
+          receiverLine,
+          `จำนวน: <code>${usdtFormatted}</code> USDT`,
+          `หมายเหตุ: <code>${manualCrypto.note}</code>`,
+          "─────────────────",
+          followupLine,
+        ].join("\n");
+      }
+      return [
+        `💲 Nạp USDT ${usdtFormatted} USDT (≈ ${formatCurrency(amount)})`,
+        `Mã nạp: ${externalOrderCode}`,
+        `Hạn thanh toán: ${this.formatDateTime(expiresAt)}`,
+        "",
+        "─────────────────",
+        "📤 Thông tin chuyển (Binance Pay / UID)",
+        receiverLine,
+        `Số USDT: <code>${usdtFormatted}</code>`,
+        `Nội dung: <code>${manualCrypto.note}</code>`,
+        "─────────────────",
+        followupLine,
+      ].join("\n");
+    }
+
+    // OKX manual UID / App
+    if (manualCrypto?.provider === "OKX") {
+      const usdtFormatted = this.formatUsdt(manualCrypto.usdtAmount);
+      const receiverLine =
+        language === "en"
+          ? `OKX UID (tap to copy):\n<code>${manualCrypto.uid || manualCrypto.address || ""}</code>`
+          : language === "th"
+            ? `OKX UID (แตะเพื่อคัดลอก):\n<code>${manualCrypto.uid || manualCrypto.address || ""}</code>`
+            : `OKX UID (chạm để copy):\n<code>${manualCrypto.uid || manualCrypto.address || ""}</code>`;
+      const followupLine = manualCrypto.hasPersonalApi
+        ? language === "en"
+          ? "After transferring, tap 'I've paid' below and send your transaction hash for instant verification."
+          : language === "th"
+            ? "หลังโอนแล้ว กด 'ฉันชำระแล้ว' ด้านล่างแล้วส่ง TX hash เพื่อยืนยันทันที"
+            : "Sau khi chuyển xong, bấm 'Tôi đã chuyển — Gửi TX hash' bên dưới để bot tự kiểm tra."
+        : language === "en"
+          ? "Please send the top-up code to the admin if needed."
+          : language === "th"
+            ? "กรุณาส่งรหัสเติมเงินให้แอดมินหากจำเป็น"
+            : "Vui lòng giữ lại mã nạp để đối soát nếu cần.";
+
+      if (language === "en") {
+        return [
+          `💲 USDT top-up ${usdtFormatted} USDT (≈ ${formatCurrency(amount)})`,
+          `Top-up code: ${externalOrderCode}`,
+          `Payment deadline: ${this.formatDateTime(expiresAt)}`,
+          "",
+          "─────────────────",
+          "📤 Transfer details (OKX)",
+          receiverLine,
+          `Amount: <code>${usdtFormatted}</code> USDT`,
+          `Memo / Note: <code>${manualCrypto.note}</code>`,
+          "─────────────────",
+          followupLine,
+        ].join("\n");
+      }
+      if (language === "th") {
+        return [
+          `💲 เติม USDT ${usdtFormatted} USDT (≈ ${formatCurrency(amount)})`,
+          `รหัสเติมเงิน: ${externalOrderCode}`,
+          `กำหนดชำระ: ${this.formatDateTime(expiresAt)}`,
+          "",
+          "─────────────────",
+          "📤 ข้อมูลการโอน (OKX)",
+          receiverLine,
+          `จำนวน: <code>${usdtFormatted}</code> USDT`,
+          `หมายเหตุ: <code>${manualCrypto.note}</code>`,
+          "─────────────────",
+          followupLine,
+        ].join("\n");
+      }
+      return [
+        `💲 Nạp USDT ${usdtFormatted} USDT (≈ ${formatCurrency(amount)})`,
+        `Mã nạp: ${externalOrderCode}`,
+        `Hạn thanh toán: ${this.formatDateTime(expiresAt)}`,
+        "",
+        "─────────────────",
+        "📤 Thông tin chuyển (OKX)",
+        receiverLine,
+        `Số USDT: <code>${usdtFormatted}</code>`,
+        `Nội dung: <code>${manualCrypto.note}</code>`,
+        "─────────────────",
+        followupLine,
+      ].join("\n");
+    }
+
     if (
       manualCrypto?.address &&
       (manualCrypto.provider === "USDT_SOL" ||
@@ -11119,17 +11431,154 @@ export class TelegramBotService {
         transaction.provider !== PaymentProvider.BINANCE_PAY &&
         transaction.provider !== PaymentProvider.PAYPAL)
     ) {
-      await this.sendText(
-        token,
-        chatId,
-        language === "en"
-          ? "This payment order is invalid or no longer available."
-          : language === "th"
-            ? "คำสั่งชำระเงินนี้ไม่ถูกต้องหรือไม่พร้อมใช้งานแล้ว"
-            : "Lệnh thanh toán này không hợp lệ hoặc không còn khả dụng.",
-        actions,
-      );
-      return;
+      // Check customerWalletTopup
+      const topup = await this.prisma.customerWalletTopup.findUnique({
+        where: { externalOrderCode },
+        include: { customer: true },
+      });
+
+      if (
+        !topup ||
+        topup.shopId !== shopId ||
+        topup.customer?.telegramUserId !== telegramUserId ||
+        (topup.provider !== PaymentProvider.PAYOS &&
+          topup.provider !== PaymentProvider.BINANCE_PAY &&
+          topup.provider !== PaymentProvider.PAYPAL)
+      ) {
+        await this.sendText(
+          token,
+          chatId,
+          language === "en"
+            ? "This payment order is invalid or no longer available."
+            : language === "th"
+              ? "คำสั่งชำระเงินนี้ไม่ถูกต้องหรือไม่พร้อมใช้งานแล้ว"
+              : "Lệnh thanh toán này không hợp lệ hoặc không còn khả dụng.",
+          actions,
+        );
+        return;
+      }
+
+      if (topup.status === "PAID") {
+        const walletSummary =
+          await this.customerWalletService.getWalletSummaryForTelegram(
+            shopId,
+            telegramUserId,
+          );
+        const alreadyCreditedText =
+          language === "en"
+            ? `✅ Wallet top-up of ${formatCurrency(Number(topup.amount))} has already been credited!\nYour current balance: <b>${formatCurrency(walletSummary.balance)}</b>.`
+            : language === "th"
+              ? `✅ เติมเงินเข้ากระเป๋า ${formatCurrency(Number(topup.amount))} สำเร็จแล้ว!\nยอดเงินปัจจุบัน: <b>${formatCurrency(walletSummary.balance)}</b>`
+              : `✅ Lệnh nạp ví ${formatCurrency(Number(topup.amount))} đã được ghi nhận thành công!\nSố dư ví hiện tại: <b>${formatCurrency(walletSummary.balance)}</b>.`;
+        await this.editOrSend(
+          token,
+          chatId,
+          messageId,
+          alreadyCreditedText,
+          {
+            inline_keyboard: [
+              [
+                {
+                  text:
+                    language === "en"
+                      ? "💳 View wallet"
+                      : language === "th"
+                        ? "💳 ดูกระเป๋าเงิน"
+                        : "💳 Xem ví",
+                  callback_data: "home:wallet",
+                },
+                this.navBtn("home", language, "home:menu"),
+              ],
+            ],
+          },
+          actions,
+        );
+        return;
+      }
+
+      try {
+        const paymentStatus =
+          await this.paymentService.getExternalPaymentStatus(externalOrderCode);
+        const providerStatus = String(
+          paymentStatus.providerStatus || "UNKNOWN",
+        ).toUpperCase();
+        const isPaid =
+          ["PAID", "COMPLETED", "SUCCESS", "SUCCEEDED"].includes(
+            providerStatus,
+          ) ||
+          (Number(paymentStatus.amountPaid || 0) > 0 &&
+            Number(paymentStatus.amount || 0) > 0 &&
+            Number(paymentStatus.amountPaid || 0) >=
+              Number(paymentStatus.amount || 0));
+
+        if (!isPaid) {
+          await this.editOrSend(
+            token,
+            chatId,
+            messageId,
+            language === "en"
+              ? "The system has not matched your payment yet. If you have just transferred, please wait a few seconds and tap 'I've paid' again."
+              : language === "th"
+                ? "ระบบยังไม่พบการชำระเงินของคุณ หากโอนเงินแล้ว กรุณารอสักครู่แล้วกด 'ฉันชำระแล้ว' อีกครั้ง"
+                : "Hệ thống chưa đối soát được giao dịch của bạn. Nếu bạn vừa chuyển khoản xong, hãy đợi vài giây rồi bấm 'Tôi đã thanh toán' lại.",
+            this.buildCheckoutVerifyReplyMarkup(
+              topup.checkoutUrl || "",
+              externalOrderCode,
+              language,
+            ),
+            actions,
+          );
+          return;
+        }
+
+        const paidResult = await this.customerWalletService.markTopupPaid(
+          externalOrderCode,
+          {
+            verifiedBy: "telegram_payment_button",
+            provider: topup.provider,
+            providerStatus,
+            rawPayload: paymentStatus.rawPayload,
+          },
+        );
+
+        if (messageId) {
+          await telegramDeleteMessage(token, chatId, messageId).catch(
+            () => undefined,
+          );
+        }
+
+        await this.sendWalletTopupPaidMessage(
+          shopId,
+          paidResult.topup.amount,
+          paidResult.balanceAfter,
+          String(chatId),
+          externalOrderCode,
+        );
+        return;
+      } catch (error) {
+        this.logger.error(
+          `Failed instant topup verification for shop ${shopId}, topup ${externalOrderCode}`,
+          error instanceof Error ? error.stack : String(error),
+        );
+
+        await this.editOrSend(
+          token,
+          chatId,
+          messageId,
+          language === "en"
+            ? "Unable to check this payment right now. Please try again in a moment."
+            : language === "th"
+              ? "ไม่สามารถตรวจสอบการชำระเงินนี้ได้ในขณะนี้ กรุณาลองใหม่อีกครั้ง"
+              : "Hiện tại chưa thể kiểm tra giao dịch này. Bạn vui lòng thử lại sau ít giây.",
+          this.buildCheckoutVerifyReplyMarkup(
+            topup.checkoutUrl || "",
+            externalOrderCode,
+            language,
+          ),
+          actions,
+        );
+        return;
+      }
     }
 
     if (transaction.status !== "PENDING") {
@@ -11298,23 +11747,39 @@ export class TelegramBotService {
       include: { order: true },
     });
 
-    if (
-      !transaction ||
-      transaction.status !== "PENDING" ||
-      transaction.provider !== "BINANCE" ||
-      transaction.order.shopId !== shopId
-    ) {
-      await this.sendText(
-        token,
-        chatId,
-        language === "en"
-          ? "This payment is no longer pending or is invalid."
-          : language === "th"
-            ? "คำสั่งซื้อนี้ไม่ได้อยู่ในสถานะรอชำระเงินแล้ว"
-            : "Đơn hàng không còn ở trạng thái chờ thanh toán.",
-        actions,
-      );
-      return;
+    let displayCode = transaction?.order?.orderCode;
+    const isOrderPending =
+      transaction &&
+      transaction.status === "PENDING" &&
+      transaction.provider === "BINANCE" &&
+      transaction.order.shopId === shopId;
+
+    if (!isOrderPending) {
+      const topup = await this.prisma.customerWalletTopup.findUnique({
+        where: { externalOrderCode },
+        include: { customer: true },
+      });
+
+      if (
+        !topup ||
+        topup.status !== "PENDING" ||
+        topup.provider !== "BINANCE" ||
+        topup.shopId !== shopId ||
+        topup.customer?.telegramUserId !== telegramUserId
+      ) {
+        await this.sendText(
+          token,
+          chatId,
+          language === "en"
+            ? "This payment is no longer pending or is invalid."
+            : language === "th"
+              ? "คำสั่งซื้อนี้ไม่ได้อยู่ในสถานะรอชำระเงินแล้ว"
+              : "Đơn hàng hoặc lệnh nạp ví không còn ở trạng thái chờ thanh toán.",
+          actions,
+        );
+        return;
+      }
+      displayCode = topup.externalOrderCode;
     }
 
     await this.sessions.setPendingSession(
@@ -11322,7 +11787,7 @@ export class TelegramBotService {
       this.sessions.getPendingQuantityKey(shopId, telegramUserId),
       {
         externalOrderCode,
-        orderCode: transaction.order.orderCode,
+        orderCode: displayCode || externalOrderCode,
         expiresAt: Date.now() + this.sessions.pendingBinanceOrderIdTtlMs,
       },
       this.sessions.pendingBinanceOrderIdTtlMs,
@@ -11332,10 +11797,10 @@ export class TelegramBotService {
       token,
       chatId,
       language === "en"
-        ? `📋 Please send the <b>Order ID</b> (ID lệnh) from your Binance payment confirmation screen for order <b>${transaction.order.orderCode}</b>.\n\nIt is a long numeric string (e.g. <code>429073211632295936</code>).`
+        ? `📋 Please send the <b>Order ID</b> (ID lệnh) from your Binance payment confirmation screen for <b>${displayCode}</b>.\n\nIt is a long numeric string (e.g. <code>429073211632295936</code>).`
         : language === "th"
-          ? `📋 กรุณาส่ง <b>Order ID</b> จากหน้าจอยืนยันการชำระเงิน Binance สำหรับคำสั่งซื้อ <b>${transaction.order.orderCode}</b>\n\nเป็นตัวเลขยาว (เช่น <code>429073211632295936</code>)`
-          : `📋 Vui lòng gửi <b>ID lệnh</b> từ màn hình xác nhận thanh toán Binance cho đơn <b>${transaction.order.orderCode}</b>.\n\nLà dãy số dài (VD: <code>429073211632295936</code>).`,
+          ? `📋 กรุณาส่ง <b>Order ID</b> จากหน้าจอยืนยันการชำระเงิน Binance สำหรับ <b>${displayCode}</b>\n\nเป็นตัวเลขยาว (เช่น <code>429073211632295936</code>)`
+          : `📋 Vui lòng gửi <b>ID lệnh</b> từ màn hình xác nhận thanh toán Binance cho <b>${displayCode}</b>.\n\nLà dãy số dài (VD: <code>429073211632295936</code>).`,
       actions,
       { parse_mode: "HTML" as const },
     );
@@ -11682,6 +12147,10 @@ export class TelegramBotService {
       include: { order: { include: { customer: true } } },
     });
 
+    let topupRecord: any = null;
+    let createdAt = transaction?.createdAt;
+    let rawPayloadJson = transaction?.rawPayloadJson;
+
     if (
       !transaction ||
       transaction.status !== "PENDING" ||
@@ -11689,17 +12158,32 @@ export class TelegramBotService {
       transaction.order.shopId !== shopId ||
       transaction.order.customer?.telegramUserId !== telegramUserId
     ) {
-      await this.sendText(
-        token,
-        chatId,
-        language === "en"
-          ? "This payment is no longer pending or is invalid."
-          : language === "th"
-            ? "คำสั่งซื้อนี้ไม่ได้อยู่ในสถานะรอชำระเงินแล้ว"
-            : "Đơn hàng không còn ở trạng thái chờ thanh toán.",
-        actions,
-      );
-      return;
+      topupRecord = await this.prisma.customerWalletTopup.findUnique({
+        where: { externalOrderCode },
+        include: { customer: true },
+      });
+
+      if (
+        !topupRecord ||
+        topupRecord.status !== "PENDING" ||
+        topupRecord.provider !== "BINANCE" ||
+        topupRecord.shopId !== shopId ||
+        topupRecord.customer?.telegramUserId !== telegramUserId
+      ) {
+        await this.sendText(
+          token,
+          chatId,
+          language === "en"
+            ? "This payment is no longer pending or is invalid."
+            : language === "th"
+              ? "คำสั่งซื้อนี้ไม่ได้อยู่ในสถานะรอชำระเงินแล้ว"
+              : "Đơn hàng hoặc lệnh nạp ví không còn ở trạng thái chờ thanh toán.",
+          actions,
+        );
+        return;
+      }
+      createdAt = topupRecord.createdAt;
+      rawPayloadJson = topupRecord.rawPayloadJson;
     }
 
     const config = await this.prisma.paymentConfig.findUnique({
@@ -11742,12 +12226,12 @@ export class TelegramBotService {
         )?.trim() ?? "";
       const configuredBinanceUid = String(config.binanceUid || "").trim();
       const manualCrypto =
-        (transaction.rawPayloadJson as any)?.manualCrypto || {};
+        (rawPayloadJson as any)?.manualCrypto || {};
       const requiredUsdt = Number(manualCrypto.usdtAmount || 0);
 
       const startTime = Math.max(
         0,
-        transaction.createdAt.getTime() - 10 * 60 * 1000,
+        createdAt!.getTime() - 10 * 60 * 1000,
       );
       const history = await this.binancePayService.queryPersonalPayTransactions(
         apiKey,
@@ -11785,7 +12269,7 @@ export class TelegramBotService {
       if (
         matchCurrency !== "USDT" ||
         !Number.isFinite(transactionAt.getTime()) ||
-        transactionAt.getTime() < transaction.createdAt.getTime() ||
+        transactionAt.getTime() < createdAt!.getTime() ||
         transactionAt.getTime() > Date.now() + 5 * 60 * 1000
       ) {
         await this.sendText(
@@ -11840,35 +12324,63 @@ export class TelegramBotService {
         rawPayload: match,
       });
 
-      await this.ordersService.markPaymentCompleted(
-        externalOrderCode,
-        {
-          provider: "BINANCE",
-          autoVerified: true,
-          verificationMode: "binance_order_id",
-          payeeId: match.payeeId,
-          orderAmount: match.amount ?? match.orderAmount,
-          currency: match.currency,
-          transactionId: match.transactionId,
-          transactionTime: match.transactionTime,
-        },
-        { cryptoTxHash: match.transactionId },
-      );
-      await this.paymentService.markOnchainPaymentReceiptProcessed(
-        receipt.id,
-        match,
-      );
+      if (topupRecord) {
+        const paidResult = await this.customerWalletService.markTopupPaid(
+          externalOrderCode,
+          {
+            provider: "BINANCE",
+            autoVerified: true,
+            verificationMode: "binance_order_id",
+            payeeId: match.payeeId,
+            orderAmount: match.amount ?? match.orderAmount,
+            currency: match.currency,
+            transactionId: match.transactionId,
+            transactionTime: match.transactionTime,
+          },
+          { cryptoTxHash: match.transactionId },
+        );
+        await this.paymentService.markOnchainPaymentReceiptProcessed(
+          receipt.id,
+          match,
+        );
+        await this.sendWalletTopupPaidMessage(
+          shopId,
+          paidResult.topup.amount,
+          paidResult.balanceAfter,
+          String(chatId),
+          externalOrderCode,
+        );
+      } else {
+        await this.ordersService.markPaymentCompleted(
+          externalOrderCode,
+          {
+            provider: "BINANCE",
+            autoVerified: true,
+            verificationMode: "binance_order_id",
+            payeeId: match.payeeId,
+            orderAmount: match.amount ?? match.orderAmount,
+            currency: match.currency,
+            transactionId: match.transactionId,
+            transactionTime: match.transactionTime,
+          },
+          { cryptoTxHash: match.transactionId },
+        );
+        await this.paymentService.markOnchainPaymentReceiptProcessed(
+          receipt.id,
+          match,
+        );
 
-      await this.sendText(
-        token,
-        chatId,
-        language === "en"
-          ? "✅ Payment verified successfully!"
-          : language === "th"
-            ? "✅ ยืนยันการชำระเงินสำเร็จ!"
-            : "✅ Xác minh thanh toán thành công!",
-        actions,
-      );
+        await this.sendText(
+          token,
+          chatId,
+          language === "en"
+            ? "✅ Payment verified successfully!"
+            : language === "th"
+              ? "✅ ยืนยันการชำระเงินสำเร็จ!"
+              : "✅ Xác minh thanh toán thành công!",
+          actions,
+        );
+      }
     } catch (e) {
       this.logger.error(
         `Error verifying Binance order ID for shop ${shopId}:`,
@@ -11908,6 +12420,10 @@ export class TelegramBotService {
       },
     });
 
+    let topupRecord: any = null;
+    let createdAt = transaction?.createdAt;
+    let rawPayloadJson = transaction?.rawPayloadJson;
+
     if (
       !transaction ||
       transaction.status !== "PENDING" ||
@@ -11915,17 +12431,32 @@ export class TelegramBotService {
       transaction.order.shopId !== shopId ||
       transaction.order.customer?.telegramUserId !== telegramUserId
     ) {
-      await this.sendText(
-        token,
-        chatId,
-        language === "en"
-          ? "This payment is no longer pending or is invalid."
-          : language === "th"
-            ? "คำสั่งซื้อนี้ไม่ได้อยู่ในสถานะรอชำระเงินหรือไม่ถูกต้อง"
-            : "Đơn hàng không còn ở trạng thái chờ thanh toán hoặc không hợp lệ.",
-        actions,
-      );
-      return;
+      topupRecord = await this.prisma.customerWalletTopup.findUnique({
+        where: { externalOrderCode },
+        include: { customer: true },
+      });
+
+      if (
+        !topupRecord ||
+        topupRecord.status !== "PENDING" ||
+        topupRecord.provider !== "BINANCE" ||
+        topupRecord.shopId !== shopId ||
+        topupRecord.customer?.telegramUserId !== telegramUserId
+      ) {
+        await this.sendText(
+          token,
+          chatId,
+          language === "en"
+            ? "This payment is no longer pending or is invalid."
+            : language === "th"
+              ? "คำสั่งซื้อนี้ไม่ได้อยู่ในสถานะรอชำระเงินหรือไม่ถูกต้อง"
+              : "Đơn hàng hoặc lệnh nạp ví không còn ở trạng thái chờ thanh toán hoặc không hợp lệ.",
+          actions,
+        );
+        return;
+      }
+      createdAt = topupRecord.createdAt;
+      rawPayloadJson = topupRecord.rawPayloadJson;
     }
 
     const config = await this.prisma.paymentConfig.findUnique({
@@ -11968,7 +12499,7 @@ export class TelegramBotService {
         )?.trim() ?? "";
       const configuredBinanceUid = String(config.binanceUid || "").trim();
       const manualCrypto =
-        (transaction.rawPayloadJson as any)?.manualCrypto || {};
+        (rawPayloadJson as any)?.manualCrypto || {};
       const requiredUsdt = Number(manualCrypto.usdtAmount || 0);
 
       if (!apiKey || !secretKey || !configuredBinanceUid) {
@@ -11981,7 +12512,7 @@ export class TelegramBotService {
 
       const startTime = Math.max(
         0,
-        transaction.createdAt.getTime() - 10 * 60 * 1000,
+        createdAt!.getTime() - 10 * 60 * 1000,
       );
       const history = await this.binancePayService.queryPersonalPayTransactions(
         apiKey,
@@ -12003,7 +12534,7 @@ export class TelegramBotService {
             receiverBinanceId === configuredBinanceUid &&
             currency === "USDT" &&
             amount > 0 &&
-            item.transactionTime >= transaction.createdAt.getTime() &&
+            item.transactionTime >= createdAt!.getTime() &&
             Math.abs(amount - requiredUsdt) < 0.000001
           );
         })
@@ -12022,6 +12553,36 @@ export class TelegramBotService {
           transactionAt: new Date(Number(match.transactionTime)),
           rawPayload: match,
         });
+
+        if (topupRecord) {
+          const paidResult = await this.customerWalletService.markTopupPaid(
+            externalOrderCode,
+            {
+              provider: "BINANCE",
+              autoVerified: true,
+              verificationMode: "binance_personal_api",
+              payeeId: match.payeeId,
+              orderAmount: match.orderAmount,
+              currency: match.currency,
+              transactionId: match.transactionId,
+              transactionTime: match.transactionTime,
+            },
+            { cryptoTxHash: match.transactionId },
+          );
+          await this.paymentService.markOnchainPaymentReceiptProcessed(
+            receipt.id,
+            match,
+          );
+          await this.sendWalletTopupPaidMessage(
+            shopId,
+            paidResult.topup.amount,
+            paidResult.balanceAfter,
+            String(chatId),
+            externalOrderCode,
+          );
+          return;
+        }
+
         await this.ordersService.markPaymentCompleted(
           externalOrderCode,
           {

@@ -195,6 +195,7 @@ export class CustomerWalletService {
       walletBalance: decimalToNumber(wallet.balance),
       bankInfo: payment.bankInfo,
       manualCrypto: payment.manualCrypto,
+      binancePay: payment.binancePay,
     };
   }
 

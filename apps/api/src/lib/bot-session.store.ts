@@ -40,7 +40,14 @@ export type PendingQuantitySelection = {
 
 export type PendingWalletTopupSelection = {
   currency: "VND" | "USDT";
-  provider?: "USDT_TRC20" | "USDT_BEP20" | "USDT_SOL" | "USDT_TON";
+  provider?:
+    | "USDT_TRC20"
+    | "USDT_BEP20"
+    | "USDT_SOL"
+    | "USDT_TON"
+    | "BINANCE"
+    | "BINANCE_PAY"
+    | "OKX";
   expiresAt: number;
 };
 
