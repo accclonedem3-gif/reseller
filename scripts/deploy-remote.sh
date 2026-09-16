@@ -27,12 +27,8 @@ echo '[3.5/4] Apply nginx config (validated with automatic rollback)...'
 bash scripts/apply-nginx-security.sh
 
 echo '[4/4] Restart PM2...'
-if pm2 describe reseller-api > /dev/null 2>&1; then
-  pm2 restart ecosystem.config.cjs
-else
-  pm2 start ecosystem.config.cjs
-  pm2 save
-fi
+pm2 startOrReload ecosystem.config.cjs --update-env
+pm2 save
 
 pm2 status
 echo 'Deploy xong!'

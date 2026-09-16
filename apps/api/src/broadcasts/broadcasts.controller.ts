@@ -100,6 +100,16 @@ export class BroadcastsController {
     return this.broadcastsService.retryBroadcast(user, id);
   }
 
+  @Delete(":id")
+  @UseGuards(SellerCapabilitiesGuard)
+  @RequireSellerCapabilities("broadcast_manage")
+  deleteBroadcast(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param("id") id: string,
+  ) {
+    return this.broadcastsService.deleteBroadcast(user, id);
+  }
+
   @Post("upload-image")
   @UseGuards(SellerCapabilitiesGuard)
   @RequireSellerCapabilities("broadcast_manage")

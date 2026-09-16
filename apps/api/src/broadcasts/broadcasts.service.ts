@@ -214,12 +214,28 @@ export class BroadcastsService {
     if (!broadcast) throw new BadRequestException("Broadcast not found.");
     if (broadcast.status === "SENDING") throw new BadRequestException("Broadcast is already sending.");
 
+    const totalTargets = await this.prisma.customer.count({ where: { shopId: shop.id } });
     await this.prisma.broadcastLog.deleteMany({ where: { broadcastId, status: "FAILED" } });
     await this.prisma.broadcast.update({
       where: { id: broadcastId },
-      data: { status: "QUEUED", failedCount: 0 },
+      data: { status: "QUEUED", failedCount: 0, totalTargets },
     });
     await this.queueService.addBroadcastJob(broadcastId);
+    return { ok: true };
+  }
+
+  async deleteBroadcast(user: AuthenticatedUser, broadcastId: string) {
+    const shop = await this.shopsService.getSellerShop(user.id);
+    const broadcast = await this.prisma.broadcast.findFirst({
+      where: { id: broadcastId, shopId: shop.id },
+    });
+    if (!broadcast) throw new BadRequestException("Broadcast not found.");
+    if (broadcast.status === "SENDING") {
+      throw new BadRequestException("Không thể xoá broadcast đang trong tiến trình gửi.");
+    }
+
+    await this.prisma.broadcastLog.deleteMany({ where: { broadcastId } });
+    await this.prisma.broadcast.delete({ where: { id: broadcastId } });
     return { ok: true };
   }
 

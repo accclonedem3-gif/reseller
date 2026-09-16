@@ -139,7 +139,7 @@ export class QueueService implements OnModuleDestroy {
       JOBS.broadcast,
       { broadcastId },
       {
-        jobId: `broadcast-${broadcastId}`,
+        jobId: `broadcast-${broadcastId}-${Date.now()}`,
         removeOnComplete: 100,
         removeOnFail: 100,
       },

@@ -24,7 +24,11 @@ export async function sweepScheduledBroadcasts(broadcastQueue: Queue): Promise<v
       where: { id: b.id },
       data: { status: "QUEUED", totalTargets },
     });
-    await broadcastQueue.add(JOBS.broadcast, { broadcastId: b.id });
+    await broadcastQueue.add(
+      JOBS.broadcast,
+      { broadcastId: b.id },
+      { jobId: `broadcast-${b.id}-${Date.now()}` }
+    );
     console.log(`[scheduler] Fired scheduled broadcast ${b.id}`);
   }
   // Fire recurring schedules
@@ -46,7 +50,11 @@ export async function sweepScheduledBroadcasts(broadcastQueue: Queue): Promise<v
         totalTargets,
       },
     });
-    await broadcastQueue.add(JOBS.broadcast, { broadcastId: broadcast.id });
+    await broadcastQueue.add(
+      JOBS.broadcast,
+      { broadcastId: broadcast.id },
+      { jobId: `broadcast-${broadcast.id}-${Date.now()}` }
+    );
     await prisma.broadcastSchedule.update({
       where: { id: sched.id },
       data: {
@@ -55,6 +63,38 @@ export async function sweepScheduledBroadcasts(broadcastQueue: Queue): Promise<v
       },
     });
     console.log(`[scheduler] Fired recurring schedule ${sched.id} → broadcast ${broadcast.id}`);
+  }
+
+  // Rescue stuck QUEUED broadcasts (created >= 2 mins ago and still QUEUED)
+  const stuckQueued = await prisma.broadcast.findMany({
+    where: {
+      status: "QUEUED",
+      createdAt: { lte: new Date(Date.now() - 2 * 60 * 1000) },
+    },
+  });
+  for (const b of stuckQueued) {
+    console.log(`[scheduler] Rescuing stuck QUEUED broadcast ${b.id}`);
+    await broadcastQueue.add(
+      JOBS.broadcast,
+      { broadcastId: b.id },
+      { jobId: `broadcast-${b.id}-${Date.now()}` }
+    );
+  }
+
+  // Rescue stuck SENDING broadcasts (updated >= 10 mins ago, indicating interrupted worker)
+  const stuckSending = await prisma.broadcast.findMany({
+    where: {
+      status: "SENDING",
+      updatedAt: { lte: new Date(Date.now() - 10 * 60 * 1000) },
+    },
+  });
+  for (const b of stuckSending) {
+    console.log(`[scheduler] Rescuing stuck SENDING broadcast ${b.id}`);
+    await broadcastQueue.add(
+      JOBS.broadcast,
+      { broadcastId: b.id },
+      { jobId: `broadcast-${b.id}-${Date.now()}` }
+    );
   }
 }
 
@@ -91,7 +131,25 @@ export async function processBroadcast(job: Job<{ broadcastId: string }>): Promi
       status: "SENDING",
     },
   });
+
   const botToken = decryptSecret(broadcast.shop.botConfig?.telegramBotTokenEncrypted, getEncryptionKey());
+  if (
+    !botToken &&
+    !(String(process.env.MOCK_TELEGRAM_MODE || "false") === "true")
+  ) {
+    console.error(`[broadcast] Shop ${broadcast.shopId} has no valid bot token, failing broadcast ${broadcast.id}`);
+    await prisma.broadcast.update({
+      where: { id: broadcast.id },
+      data: {
+        status: "FAILED",
+        failedCount: customers.length,
+        sentCount: 0,
+        sentAt: new Date(),
+      },
+    });
+    return;
+  }
+
   let sentCount = broadcast.sentCount ?? 0;
   let failedCount = 0;
   for (const customer of customers) {
@@ -104,14 +162,23 @@ export async function processBroadcast(job: Job<{ broadcastId: string }>): Promi
           isMockBotToken(botToken)
         )
       ) {
+        // Sleep 35ms between messages to comply with Telegram's 30 msgs/sec broadcast rate limit
+        await new Promise((r) => setTimeout(r, 35));
+
         if (broadcast.imageUrl) {
           const MAX_CAPTION = 1024;
-          if (broadcast.message.length <= MAX_CAPTION) {
-            await telegramSendPhoto(botToken, customer.telegramChatId, broadcast.imageUrl, {
-              caption: broadcast.message,
-            });
-          } else {
-            await telegramSendPhoto(botToken, customer.telegramChatId, broadcast.imageUrl, {});
+          try {
+            if (broadcast.message.length <= MAX_CAPTION) {
+              await telegramSendPhoto(botToken, customer.telegramChatId, broadcast.imageUrl, {
+                caption: broadcast.message,
+              });
+            } else {
+              await telegramSendPhoto(botToken, customer.telegramChatId, broadcast.imageUrl, {});
+              await telegramSendMessage(botToken, customer.telegramChatId, broadcast.message);
+            }
+          } catch (photoError: any) {
+            console.warn(`[broadcast] Photo delivery failed for customer ${customer.id}, falling back to text: ${photoError?.message || photoError}`);
+            // Fallback to text message so recipients still receive the broadcast if image fails
             await telegramSendMessage(botToken, customer.telegramChatId, broadcast.message);
           }
         } else {

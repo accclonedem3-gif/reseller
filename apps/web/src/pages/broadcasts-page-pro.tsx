@@ -129,7 +129,25 @@ function BroadcastPreviewPopup({ item, onClose }: { item: any; onClose: () => vo
   );
 }
 
-function BroadcastCard({ item, onRetry, onResend, onEdit, onCopy, retrying }: { item: any; onRetry: () => void; onResend: () => void; onEdit: () => void; onCopy: () => void; retrying: boolean }) {
+function BroadcastCard({
+  item,
+  onRetry,
+  onResend,
+  onEdit,
+  onCopy,
+  onDelete,
+  retrying,
+  deleting,
+}: {
+  item: any;
+  onRetry: () => void;
+  onResend: () => void;
+  onEdit: () => void;
+  onCopy: () => void;
+  onDelete: () => void;
+  retrying: boolean;
+  deleting: boolean;
+}) {
   const [showFailed, setShowFailed] = useState(false);
   const [showPreview, setShowPreview] = useState(false);
   const chip = statusChip(item.status);
@@ -184,14 +202,19 @@ function BroadcastCard({ item, onRetry, onResend, onEdit, onCopy, retrying }: { 
           <IconBtn title="Xem" onClick={() => setShowPreview(true)}><Eye className="h-3.5 w-3.5" /></IconBtn>
           {isScheduled && <IconBtn title="Sửa" onClick={onEdit}><Pencil className="h-3.5 w-3.5" /></IconBtn>}
           <IconBtn title="Copy (tạo bản mới)" onClick={onCopy}><Copy className="h-3.5 w-3.5" /></IconBtn>
+          {item.status !== "SENDING" && (
+            <IconBtn title="Xoá broadcast" onClick={onDelete} disabled={deleting} color="rgb(248,113,113)">
+              <Trash2 className="h-3.5 w-3.5" />
+            </IconBtn>
+          )}
           {!isScheduled && (
             <button
               type="button"
               disabled={retrying || item.status === "SENDING"}
-              onClick={item.failedCount > 0 ? onRetry : onResend}
+              onClick={item.failedCount > 0 || item.status === "QUEUED" ? onRetry : onResend}
               className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[11px] font-black transition hover:opacity-80 disabled:opacity-40"
               style={{ background: "rgba(52,211,153,0.1)", border: "1px solid rgba(52,211,153,0.25)", color: "rgb(52,211,153)" }}>
-              <RotateCcw className="h-3 w-3" /> {item.failedCount > 0 ? "Gửi lại lỗi" : "Đăng lại"}
+              <RotateCcw className="h-3 w-3" /> {item.failedCount > 0 ? "Gửi lại lỗi" : item.status === "QUEUED" ? "Gửi lại ngay" : "Đăng lại"}
             </button>
           )}
         </div>
@@ -447,6 +470,15 @@ export function BroadcastsPage() {
     mutationFn: async (id: string) => api.delete(`/broadcasts/schedules/${id}`),
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["broadcasts", "schedules"] }),
     onError: (err: any) => showToast({ message: err?.response?.data?.message || "Lỗi", tone: "error" }),
+  });
+
+  const deleteBroadcastMutation = useMutation({
+    mutationFn: async (id: string) => api.delete(`/broadcasts/${id}`),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["broadcasts"] });
+      showToast({ message: "Đã xoá broadcast", tone: "success" });
+    },
+    onError: (err: any) => showToast({ message: err?.response?.data?.message || "Lỗi khi xoá broadcast", tone: "error" }),
   });
 
   const isEditing = Boolean(editing);
@@ -729,7 +761,13 @@ export function BroadcastsPage() {
                 }}
                 onEdit={() => handleEdit(item, "broadcast")}
                 onCopy={() => handleCopy(item, "broadcast")}
+                onDelete={() => {
+                  if (window.confirm("Bạn có chắc chắn muốn xoá broadcast này không?")) {
+                    deleteBroadcastMutation.mutate(item.id);
+                  }
+                }}
                 retrying={retryMutation.isPending}
+                deleting={deleteBroadcastMutation.isPending}
               />
             ))}
           </div>
