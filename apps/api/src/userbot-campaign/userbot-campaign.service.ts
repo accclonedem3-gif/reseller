@@ -460,7 +460,7 @@ export class UserbotCampaignService {
 
     try {
       await client.connect();
-      const dialogs = await client.getDialogs({ limit: 100 });
+      const dialogs = await client.getDialogs({ limit: 200 });
 
       const groupRecords: Array<{
         sessionId: string;
@@ -477,6 +477,16 @@ export class UserbotCampaignService {
         if (dialog.isGroup || dialog.isChannel) {
           const entity = dialog.entity as any;
           if (entity) {
+            // Bỏ qua các nhóm mà tài khoản đã out (left), bị kick hoặc bị chặn truy cập
+            if (
+              entity.left === true ||
+              entity.kicked === true ||
+              entity.className === "ChatForbidden" ||
+              entity.className === "ChannelForbidden"
+            ) {
+              continue;
+            }
+
             const isBroadcastChannel = entity.broadcast === true;
             if (isBroadcastChannel && !entity.creator && !entity.adminRights?.postMessages) {
               continue;
@@ -504,6 +514,7 @@ export class UserbotCampaignService {
 
       await client.disconnect();
 
+      // Cập nhật hoặc thêm các nhóm hợp lệ hiện tại
       for (const rec of groupRecords) {
         await this.prisma.telegramUserGroup.upsert({
           where: {
@@ -519,6 +530,23 @@ export class UserbotCampaignService {
             memberCount: rec.memberCount,
             hasTopics: rec.hasTopics,
             syncedAt: new Date(),
+          },
+        });
+      }
+
+      // Xóa các nhóm cũ mà tài khoản đã out khỏi Telegram (không còn trong groupRecords)
+      const currentChatIds = groupRecords.map((r) => r.telegramChatId);
+      if (currentChatIds.length > 0) {
+        await this.prisma.telegramUserGroup.deleteMany({
+          where: {
+            sessionId: sessionRecord.id,
+            telegramChatId: { notIn: currentChatIds },
+          },
+        });
+      } else {
+        await this.prisma.telegramUserGroup.deleteMany({
+          where: {
+            sessionId: sessionRecord.id,
           },
         });
       }
