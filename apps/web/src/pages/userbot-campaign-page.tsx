@@ -25,6 +25,7 @@ import {
   BookOpenText,
   HelpCircle,
   ExternalLink,
+  Crown,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
@@ -67,12 +68,28 @@ export function UserbotCampaignPage() {
   const [campaignName, setCampaignName] = useState("");
   const [selectedSessionId, setSelectedSessionId] = useState("");
   const [selectedTemplateId, setSelectedTemplateId] = useState("");
+  const [isMemberDmEnabled, setIsMemberDmEnabled] = useState(false);
+  const [sendToGroup, setSendToGroup] = useState(true);
+  const [maxMembersPerRun, setMaxMembersPerRun] = useState(30);
   const [selectedGroupIds, setSelectedGroupIds] = useState<string[]>([]);
+  const [selectedTopics, setSelectedTopics] = useState<Record<string, number>>({});
+  const [topicsCache, setTopicsCache] = useState<Record<string, { loading: boolean; topics: Array<{ id: number; title: string }> }>>({});
   const [delaySeconds, setDelaySeconds] = useState(60);
   const [isScheduled, setIsScheduled] = useState(false);
   const [scheduleTimeInput, setScheduleTimeInput] = useState("");
   const [isRecurring, setIsRecurring] = useState(false);
   const [repeatIntervalHours, setRepeatIntervalHours] = useState(24);
+
+  const fetchTopicsForGroup = async (chatId: string) => {
+    if (!selectedSessionId || topicsCache[chatId]?.topics) return;
+    setTopicsCache((prev) => ({ ...prev, [chatId]: { loading: true, topics: [] } }));
+    try {
+      const res = await api.get(`/userbot-campaign/sessions/${selectedSessionId}/groups/${chatId}/topics`);
+      setTopicsCache((prev) => ({ ...prev, [chatId]: { loading: false, topics: res.data || [] } }));
+    } catch {
+      setTopicsCache((prev) => ({ ...prev, [chatId]: { loading: false, topics: [] } }));
+    }
+  };
 
   // Log View Modal
   const [viewLogCampaignId, setViewLogCampaignId] = useState<string | null>(null);
@@ -291,13 +308,19 @@ export function UserbotCampaignPage() {
   const createCampaignMutation = useMutation({
     mutationFn: async () => {
       const scheduleTime = toUserbotScheduleIso(isScheduled, scheduleTimeInput);
+      const effectiveTargetMode = (licenseStatus?.allowMemberDm && isMemberDmEnabled)
+        ? (sendToGroup ? "BOTH" : "MEMBERS_DM")
+        : "GROUP_ONLY";
 
       return (
         await api.post("/userbot-campaign/campaigns", {
           sessionId: selectedSessionId,
           templateId: selectedTemplateId,
           name: campaignName,
+          targetMode: effectiveTargetMode,
           targetGroupIds: selectedGroupIds,
+          targetTopics: Object.keys(selectedTopics).length > 0 ? selectedTopics : undefined,
+          maxMembersPerRun: effectiveTargetMode !== "GROUP_ONLY" ? Number(maxMembersPerRun) : undefined,
           delaySeconds,
           scheduleTime,
           isRecurring,
@@ -309,6 +332,10 @@ export function UserbotCampaignPage() {
       setAddCampaignModal(false);
       setCampaignName("");
       setSelectedGroupIds([]);
+      setIsMemberDmEnabled(false);
+      setSendToGroup(true);
+      setMaxMembersPerRun(30);
+      setSelectedTopics({});
       setIsScheduled(false);
       setScheduleTimeInput("");
       setIsRecurring(false);
@@ -372,7 +399,13 @@ export function UserbotCampaignPage() {
                 {licenseStatus?.isFreeMode ? (
                   <span className="text-emerald-400 font-extrabold">Miễn Phí (Free Access)</span>
                 ) : licenseStatus?.isActive ? (
-                  <span className="text-purple-400 font-extrabold">{licenseStatus.licenseType}</span>
+                  licenseStatus.licenseType === "ULTRA_UNLIMITED" ? (
+                    <span className="text-transparent bg-clip-text bg-gradient-to-r from-amber-400 via-purple-400 to-indigo-300 font-extrabold flex items-center gap-1">
+                      👑 ULTRA UNLIMITED
+                    </span>
+                  ) : (
+                    <span className="text-purple-400 font-extrabold">{licenseStatus.licenseType}</span>
+                  )
                 ) : (
                   <span className="text-rose-500 font-extrabold">Chưa kích hoạt</span>
                 )}
@@ -383,20 +416,27 @@ export function UserbotCampaignPage() {
                 </span>
               ) : (
                 licenseStatus?.isActive && (
-                  <span className="rounded-full bg-purple-500/10 border border-purple-500/30 px-2.5 py-0.5 text-[10px] font-black uppercase text-purple-400">
-                    Đang hoạt động
-                  </span>
+                  <div className="flex items-center gap-1.5">
+                    <span className="rounded-full bg-purple-500/10 border border-purple-500/30 px-2.5 py-0.5 text-[10px] font-black uppercase text-purple-400">
+                      Đang hoạt động
+                    </span>
+                    {licenseStatus?.allowMemberDm && (
+                      <span className="rounded-full bg-amber-500/10 border border-amber-500/30 px-2.5 py-0.5 text-[10px] font-black uppercase text-amber-300 flex items-center gap-1">
+                        ✦ VIP Member DM
+                      </span>
+                    )}
+                  </div>
                 )
               )}
             </div>
             <p className="text-xs text-[var(--tx-m)] mt-0.5">
               {licenseStatus?.isFreeMode ? (
                 <>
-                  Trạng thái: <strong className="text-emerald-400">Gói Miễn Phí</strong> (Giới hạn: 1 Acc Telegram / 1 Chiến dịch. Nâng cấp Key PRO/UNLIMITED để dùng nhiều hơn)
+                  Trạng thái: <strong className="text-emerald-400">Gói Miễn Phí</strong> (Giới hạn: 1 Acc Telegram / 1 Chiến dịch. Nâng cấp Key PRO/UNLIMITED hoặc ULTRA UNLIMITED để mở khóa gửi tin nhắn riêng cho thành viên)
                 </>
               ) : licenseStatus?.isActive ? (
                 <>
-                  Hạn sử dụng: <strong className="text-[var(--tx)]">{licenseStatus.expiresAt ? new Date(licenseStatus.expiresAt).toLocaleDateString("vi-VN") : "Vĩnh viễn"}</strong> (Giới hạn: {licenseStatus.maxSessions === 9999 ? "Vô hạn" : licenseStatus.maxSessions} Acc / {licenseStatus.maxCampaigns === 9999 ? "Vô hạn" : licenseStatus.maxCampaigns} Chiến dịch)
+                  Hạn sử dụng: <strong className="text-[var(--tx)]">{licenseStatus.expiresAt ? new Date(licenseStatus.expiresAt).toLocaleDateString("vi-VN") : "Vĩnh viễn"}</strong> (Giới hạn: {licenseStatus.maxSessions === 9999 ? "Vô hạn" : licenseStatus.maxSessions} Acc / {licenseStatus.maxCampaigns === 9999 ? "Vô hạn" : licenseStatus.maxCampaigns} Chiến dịch{licenseStatus.allowMemberDm ? " • Đã mở khóa tính năng Member DM" : ""})
                 </>
               ) : (
                 "Bạn cần kích hoạt License Key để khởi tạo và vận hành chiến dịch Telegram Userbot."
@@ -626,7 +666,27 @@ export function UserbotCampaignPage() {
                       item.totalTarget > 0 ? Math.min(100, Math.round((item.sentCount / item.totalTarget) * 100)) : 0;
                     return (
                       <tr key={item.id} className="transition hover:bg-slate-500/5">
-                        <td className="px-4 py-3.5 font-bold text-[var(--tx)]">{item.name}</td>
+                        <td className="px-4 py-3.5">
+                          <div className="font-bold text-[var(--tx)]">{item.name}</div>
+                          <div className="flex items-center gap-1 mt-1">
+                            {item.targetMode === "MEMBERS_DM" ? (
+                              <span className="inline-flex items-center gap-1 rounded-md bg-purple-500/10 border border-purple-500/20 px-1.5 py-0.5 text-[9px] font-black uppercase text-purple-400">
+                                <MessageSquare className="size-2.5" />
+                                DM Mem ({item.maxMembersPerRun || 30})
+                              </span>
+                            ) : item.targetMode === "BOTH" ? (
+                              <span className="inline-flex items-center gap-1 rounded-md bg-blue-500/10 border border-blue-500/20 px-1.5 py-0.5 text-[9px] font-black uppercase text-blue-400">
+                                <Radio className="size-2.5" />
+                                Nhóm + DM ({item.maxMembersPerRun || 30})
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 rounded-md bg-slate-500/10 border border-slate-500/20 px-1.5 py-0.5 text-[9px] font-black uppercase text-[var(--tx-f)]">
+                                <Users className="size-2.5" />
+                                Nhóm
+                              </span>
+                            )}
+                          </div>
+                        </td>
                         <td className="px-4 py-3.5">
                           <span
                             className={cn(
@@ -898,6 +958,11 @@ export function UserbotCampaignPage() {
                       <span className="rounded-full bg-slate-500/10 px-2 py-0.5 text-[9px] font-bold">
                         {g.isSupergroup ? "Supergroup" : "Group"}
                       </span>
+                      {g.hasTopics && (
+                        <span className="ml-1.5 rounded-full bg-purple-500/10 border border-purple-500/30 px-2 py-0.5 text-[9px] font-black uppercase text-purple-400">
+                          Forum Topics
+                        </span>
+                      )}
                     </td>
                     <td className="px-4 py-3 text-xs text-[var(--tx-m)]">
                       {new Date(g.syncedAt).toLocaleString("vi-VN")}
@@ -1388,7 +1453,12 @@ export function UserbotCampaignPage() {
                 <label className="text-xs font-bold uppercase tracking-wider text-[var(--tx-m)]">Chọn tài khoản Telegram gửi tin</label>
                 <select
                   value={selectedSessionId}
-                  onChange={(e) => setSelectedSessionId(e.target.value)}
+                  onChange={(e) => {
+                    setSelectedSessionId(e.target.value);
+                    setSelectedGroupIds([]);
+                    setSelectedTopics({});
+                    setTopicsCache({});
+                  }}
                   className="mt-1.5 w-full rounded-xl border border-[var(--bd)] bg-[var(--bg)] px-4 py-2.5 text-sm font-medium focus:border-orange-500 outline-none"
                 >
                   <option value="">-- Chọn tài khoản --</option>
@@ -1410,6 +1480,160 @@ export function UserbotCampaignPage() {
                     <option key={t.id} value={t.id}>{t.name} [{t.type}]</option>
                   ))}
                 </select>
+              </div>
+
+              {/* VIP Add-on: Gửi tin nhắn riêng cho thành viên nhóm */}
+              <div
+                className={cn(
+                  "rounded-2xl border p-4 transition-all",
+                  licenseStatus?.allowMemberDm
+                    ? isMemberDmEnabled
+                      ? "border-purple-500/50 bg-purple-500/5 shadow-md shadow-purple-500/5"
+                      : "border-[var(--bd)] bg-slate-500/5 hover:border-purple-500/30"
+                    : "border-purple-500/20 bg-purple-950/10"
+                )}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-xs font-black uppercase tracking-wider text-[var(--tx)] flex items-center gap-1.5">
+                        <MessageSquare className="size-4 text-purple-400" />
+                        Gửi tin nhắn riêng cho thành viên (Member DM)
+                      </span>
+                      <span className="inline-flex items-center gap-1 rounded-full bg-gradient-to-r from-purple-500 to-indigo-500 px-2 py-0.5 text-[10px] font-black text-white shadow-sm">
+                        <Crown className="size-3" />
+                        KEY ULTRA UNLIMITED
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-[var(--tx-m)] leading-relaxed">
+                      Tính năng cộng thêm: Tự động quét thành viên trong các nhóm đã chọn, lọc bỏ Admin / Bot / Nick chính và nhắn tin riêng trực tiếp.
+                    </p>
+                  </div>
+
+                  {/* Switch toggle (if unlocked) or Locked badge & Upgrade button (if locked) */}
+                  {licenseStatus?.allowMemberDm ? (
+                    <label className="relative inline-flex items-center cursor-pointer shrink-0 mt-0.5">
+                      <input
+                        type="checkbox"
+                        checked={isMemberDmEnabled}
+                        onChange={(e) => setIsMemberDmEnabled(e.target.checked)}
+                        className="sr-only peer"
+                      />
+                      <div className="w-11 h-6 bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-purple-600"></div>
+                    </label>
+                  ) : (
+                    <div className="flex items-center gap-2 shrink-0">
+                      <span className="inline-flex items-center gap-1 rounded-lg border border-purple-500/30 bg-purple-500/10 px-2 py-1 text-[10px] font-bold text-purple-300">
+                        <Lock className="size-3 text-purple-400" />
+                        Đang khóa
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setActivateLicenseModal(true)}
+                        className="rounded-lg bg-gradient-to-r from-purple-600 to-indigo-600 px-2.5 py-1 text-[10px] font-black text-white hover:brightness-110 shadow-sm transition"
+                      >
+                        Nâng cấp
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                {/* If locked: explanation */}
+                {!licenseStatus?.allowMemberDm && (
+                  <div className="mt-3 rounded-xl border border-dashed border-purple-500/30 bg-purple-500/5 p-2.5 text-[11px] text-purple-200/90 flex items-center justify-between">
+                    <span>Yêu cầu kích hoạt Key <strong>ULTRA UNLIMITED</strong> hoặc tài khoản cấp <strong>ULTRA</strong> để mở khóa tính năng này.</span>
+                  </div>
+                )}
+
+                {/* If unlocked and enabled */}
+                {licenseStatus?.allowMemberDm && isMemberDmEnabled && (
+                  <div className="mt-4 pt-3 border-t border-purple-500/20 space-y-3.5">
+                    {/* Option: Send to group or DM only */}
+                    <div className="space-y-1 rounded-xl bg-[var(--bg)] p-2.5 border border-[var(--bd)]">
+                      <label className="flex items-center gap-2.5 cursor-pointer select-none">
+                        <input
+                          type="checkbox"
+                          checked={sendToGroup}
+                          onChange={(e) => setSendToGroup(e.target.checked)}
+                          className="size-4 rounded accent-purple-500 cursor-pointer"
+                        />
+                        <span className="text-xs font-bold text-[var(--tx)] flex items-center gap-1.5">
+                          <Users className="size-3.5 text-purple-400" />
+                          Đồng thời gửi bài vào Nhóm / Topic
+                        </span>
+                      </label>
+                      <p className="text-[10px] text-[var(--tx-f)] pl-6">
+                        {sendToGroup
+                          ? "Chiến dịch sẽ vừa đăng bài vào nhóm/topic vừa gửi tin nhắn riêng cho các thành viên."
+                          : "Chiến dịch chỉ gửi tin nhắn riêng cho thành viên, không đăng bài vào nhóm."}
+                      </p>
+                    </div>
+
+                    {/* Safe Member Threshold Slider */}
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <label className="text-[11px] font-bold uppercase tracking-wider text-[var(--tx)] flex items-center gap-1.5">
+                          <Shield className="size-3.5 text-purple-400" />
+                          Giới hạn gửi thành viên / nhóm trong 1 phiên:
+                        </label>
+                        <span
+                          className={cn(
+                            "text-xs font-black px-2 py-0.5 rounded-full border",
+                            maxMembersPerRun > 50
+                              ? "bg-rose-500/10 text-rose-500 border-rose-500/30"
+                              : "bg-emerald-500/10 text-emerald-500 border-emerald-500/30"
+                          )}
+                        >
+                          {maxMembersPerRun} người / nhóm
+                        </span>
+                      </div>
+
+                      <div className="flex items-center gap-3">
+                        <input
+                          type="range"
+                          min={5}
+                          max={100}
+                          step={5}
+                          value={maxMembersPerRun}
+                          onChange={(e) => setMaxMembersPerRun(Number(e.target.value))}
+                          className="flex-1 accent-purple-500"
+                        />
+                        <input
+                          type="number"
+                          min={1}
+                          max={100}
+                          value={maxMembersPerRun}
+                          onChange={(e) =>
+                            setMaxMembersPerRun(Math.min(100, Math.max(1, Number(e.target.value) || 1)))
+                          }
+                          className="w-16 rounded-xl border border-[var(--bd)] bg-[var(--bg)] px-2 py-1 text-center text-xs font-bold focus:border-purple-500 outline-none"
+                        />
+                      </div>
+
+                      {maxMembersPerRun > 50 ? (
+                        <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 text-xs text-rose-300 space-y-1">
+                          <div className="flex items-center gap-1.5 font-black uppercase text-[11px] text-rose-400">
+                            <AlertTriangle className="size-4 shrink-0 text-rose-500" />
+                            CẢNH BÁO RỦI RO CAO (&gt; 50 người/phiên)
+                          </div>
+                          <p className="text-[11px] leading-relaxed text-rose-300/90">
+                            Gửi trên 50 tin nhắn riêng cho người lạ trong thời gian ngắn có nguy cơ rất cao bị Telegram gắn cờ <strong>PEER_FLOOD</strong> hoặc tạm khóa tính năng nhắn tin (Mute/SpamBot). Nếu bị hạn chế, hệ thống sẽ tự động tạm dừng chiến dịch để bảo vệ tài khoản của bạn.
+                          </p>
+                        </div>
+                      ) : (
+                        <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-300 space-y-1">
+                          <div className="flex items-center gap-1.5 font-black uppercase text-[11px] text-amber-400">
+                            <AlertTriangle className="size-4 shrink-0 text-amber-400" />
+                            Ngưỡng an toàn khuyến nghị (30 - 50 người)
+                          </div>
+                          <p className="text-[11px] leading-relaxed text-amber-200/80">
+                            Hệ thống tự động lọc bỏ Chủ nhóm, Admin, Bot và tài khoản chính. Khuyến nghị giãn cách độ trễ từ 60 - 120s để tài khoản hoạt động tự nhiên, tránh bị SpamBot quét.
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
 
               <div>
@@ -1503,23 +1727,83 @@ export function UserbotCampaignPage() {
                     </button>
                   </div>
 
-                  <div className="max-h-48 overflow-y-auto rounded-xl border border-[var(--bd)] bg-[var(--bg)] p-3 space-y-2 custom-scrollbar">
+                  <div className="max-h-56 overflow-y-auto rounded-xl border border-[var(--bd)] bg-[var(--bg)] p-3 space-y-3 custom-scrollbar">
                     {groups.map((g: any) => {
                       const isSelected = selectedGroupIds.includes(g.telegramChatId);
+                      const groupTopicData = topicsCache[g.telegramChatId];
                       return (
-                        <label key={g.id} className="flex items-center gap-2.5 text-xs text-[var(--tx)] cursor-pointer">
-                          <input
-                            type="checkbox"
-                            checked={isSelected}
-                            onChange={(e) => {
-                              if (e.target.checked) setSelectedGroupIds([...selectedGroupIds, g.telegramChatId]);
-                              else setSelectedGroupIds(selectedGroupIds.filter((id) => id !== g.telegramChatId));
-                            }}
-                            className="rounded accent-orange-500"
-                          />
-                          <span className="font-bold truncate">{g.title}</span>
-                          <span className="text-[var(--tx-f)] text-[10px]">({g.memberCount || 0} mems)</span>
-                        </label>
+                        <div key={g.id} className="rounded-xl border border-[var(--bd)] bg-[var(--surface)] p-2.5 transition">
+                          <label className="flex items-center gap-2.5 text-xs text-[var(--tx)] cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={isSelected}
+                              onChange={(e) => {
+                                if (e.target.checked) {
+                                  setSelectedGroupIds([...selectedGroupIds, g.telegramChatId]);
+                                  if (g.hasTopics) fetchTopicsForGroup(g.telegramChatId);
+                                } else {
+                                  setSelectedGroupIds(selectedGroupIds.filter((id) => id !== g.telegramChatId));
+                                }
+                              }}
+                              className="rounded accent-orange-500"
+                            />
+                            <span className="font-bold truncate flex-1">{g.title}</span>
+                            <span className="text-[var(--tx-f)] text-[10px]">({g.memberCount || 0} mems)</span>
+                            {g.hasTopics && (
+                              <span className="rounded-full bg-purple-500/10 border border-purple-500/30 px-2 py-0.5 text-[9px] font-black uppercase text-purple-400">
+                                Topics
+                              </span>
+                            )}
+                          </label>
+
+                          {isSelected && g.hasTopics && (
+                            <div className="mt-2.5 ml-6 rounded-lg border border-purple-500/20 bg-purple-500/5 p-2.5 space-y-1.5">
+                              <div className="flex items-center justify-between text-[11px]">
+                                <span className="font-bold text-purple-400 flex items-center gap-1">
+                                  <Sparkles className="size-3" /> Chọn Topic gửi tin:
+                                </span>
+                                {!groupTopicData?.topics && !groupTopicData?.loading && (
+                                  <button
+                                    type="button"
+                                    onClick={() => fetchTopicsForGroup(g.telegramChatId)}
+                                    className="text-[11px] text-purple-400 underline font-bold"
+                                  >
+                                    Tải Topics
+                                  </button>
+                                )}
+                              </div>
+
+                              {groupTopicData?.loading ? (
+                                <p className="text-[11px] text-purple-400 animate-pulse">Đang tải danh sách forum topics...</p>
+                              ) : groupTopicData?.topics && groupTopicData.topics.length > 0 ? (
+                                <select
+                                  value={selectedTopics[g.telegramChatId] || ""}
+                                  onChange={(e) => {
+                                    const val = e.target.value ? Number(e.target.value) : undefined;
+                                    setSelectedTopics((prev) => {
+                                      const next = { ...prev };
+                                      if (val) next[g.telegramChatId] = val;
+                                      else delete next[g.telegramChatId];
+                                      return next;
+                                    });
+                                  }}
+                                  className="w-full rounded-lg border border-[var(--bd)] bg-[var(--bg)] px-2.5 py-1 text-xs font-medium focus:border-purple-500 outline-none"
+                                >
+                                  <option value="">-- Mặc định (General Topic) --</option>
+                                  {groupTopicData.topics.map((top) => (
+                                    <option key={top.id} value={top.id}>
+                                      #{top.id} - {top.title}
+                                    </option>
+                                  ))}
+                                </select>
+                              ) : (
+                                <p className="text-[10px] text-[var(--tx-f)]">
+                                  Nhấn "Tải Topics" để chọn topic con bạn muốn gửi bài.
+                                </p>
+                              )}
+                            </div>
+                          )}
+                        </div>
                       );
                     })}
                   </div>
@@ -1558,14 +1842,29 @@ export function UserbotCampaignPage() {
               ) : (
                 campaignLogs.map((log: any) => (
                   <div key={log.id} className="flex items-start gap-2 border-b border-white/5 pb-2">
-                    <span className="text-slate-500 font-bold">[{new Date(log.sentAt).toLocaleTimeString()}]</span>
+                    <span className="text-slate-500 font-bold shrink-0">[{new Date(log.sentAt).toLocaleTimeString()}]</span>
                     {log.status === "SUCCESS" ? (
-                      <span className="text-emerald-400 font-bold">[SUCCESS]</span>
+                      <span className="text-emerald-400 font-bold shrink-0">[SUCCESS]</span>
+                    ) : log.status === "SKIPPED" ? (
+                      <span className="text-amber-400 font-bold shrink-0">[SKIPPED]</span>
                     ) : (
-                      <span className="text-rose-400 font-bold">[FAILED]</span>
+                      <span className="text-rose-400 font-bold shrink-0">[FAILED]</span>
                     )}
-                    <span className="text-white font-bold">{log.groupTitle}:</span>
-                    <span className="text-slate-300">{log.errorDetail || "Đã phát tin nhắn thành công."}</span>
+                    <span
+                      className={cn(
+                        "rounded px-1.5 py-0.2 text-[9px] font-black uppercase shrink-0",
+                        log.targetType === "MEMBER"
+                          ? "bg-purple-500/20 text-purple-300 border border-purple-500/30"
+                          : "bg-blue-500/20 text-blue-300 border border-blue-500/30"
+                      )}
+                    >
+                      {log.targetType === "MEMBER" ? "Thành viên" : "Nhóm"}
+                    </span>
+                    <span className="text-white font-bold shrink-0">
+                      {log.targetName || log.groupTitle}
+                      {log.topicId ? ` [Topic #${log.topicId}]` : ""}:
+                    </span>
+                    <span className="text-slate-300 break-all">{log.errorDetail || "Đã phát tin nhắn thành công."}</span>
                   </div>
                 ))
               )}
@@ -1634,11 +1933,14 @@ export function UserbotCampaignPage() {
                 />
               </div>
 
-              <div className="rounded-2xl bg-slate-500/5 p-3 text-[11px] text-[var(--tx-m)] space-y-1">
+              <div className="rounded-2xl bg-slate-500/5 p-3.5 text-[11px] text-[var(--tx-m)] space-y-1.5 border border-[var(--bd)]">
                 <p className="font-bold text-[var(--tx)]">Thông tin các gói License:</p>
                 <p>• <strong>Gói PLUS</strong>: 1 tài khoản Telegram, 1 chiến dịch</p>
                 <p>• <strong>Gói PRO</strong>: 3 tài khoản Telegram, 5 chiến dịch</p>
-                <p>• <strong>Gói UNLIMITED</strong>: Không giới hạn tài khoản & chiến dịch</p>
+                <p>• <strong>Gói UNLIMITED</strong>: Không giới hạn tài khoản & chiến dịch (Rải tin nhóm)</p>
+                <p className="text-amber-300 font-bold">
+                  • <strong>Gói ULTRA UNLIMITED</strong>: Không giới hạn + Mở khóa tính năng cộng thêm <em>Gửi tin nhắn riêng cho thành viên nhóm (Member DM)</em>
+                </p>
               </div>
 
               <button

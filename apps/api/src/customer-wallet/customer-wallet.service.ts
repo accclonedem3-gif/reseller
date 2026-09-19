@@ -301,17 +301,15 @@ export class CustomerWalletService {
       }
 
       const balanceBefore = decimalToNumber(currentWallet.balance);
+      const usdtBefore = decimalToNumber(currentWallet.balanceUsdt);
       const topupAmount = decimalToNumber(currentTopup.amount);
       const bonusAmount = currentTopup.bonusAmount ? decimalToNumber(currentTopup.bonusAmount) : 0;
       const balanceAfter = balanceBefore + topupAmount + bonusAmount;
-      const usdtBefore = decimalToNumber(currentWallet.balanceUsdt);
-      const rawPayloadTyped = rawPayload != null && typeof rawPayload === "object" ? rawPayload as Record<string, unknown> : null;
-      const actualAmountUsdt = typeof rawPayloadTyped?.amountUsdt === "number" && Number.isFinite(rawPayloadTyped.amountUsdt as number)
-        ? rawPayloadTyped.amountUsdt as number
-        : null;
-      // Ledger must record the SAME rate the bot showed the customer.
-      const usdtDelta = actualAmountUsdt ?? topupAmount / usdtVndRateForTopup;
-      const usdtAfter = usdtBefore + usdtDelta;
+      const usdtAfter = Math.max(
+        0,
+        Number((balanceAfter / Math.max(1, usdtVndRateForTopup)).toFixed(4)),
+      );
+      const usdtDelta = Number((usdtAfter - usdtBefore).toFixed(4));
 
       const updatedWallet = await tx.customerWallet.update({
         where: {

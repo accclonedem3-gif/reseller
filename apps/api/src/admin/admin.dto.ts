@@ -87,8 +87,8 @@ export class SyncBotCommandsDto {
 }
 
 export class GenerateUserbotLicenseKeyDto {
-  @IsEnum(["PLUS", "PRO", "UNLIMITED"])
-  type!: "PLUS" | "PRO" | "UNLIMITED";
+  @IsEnum(["PLUS", "PRO", "UNLIMITED", "ULTRA_UNLIMITED"])
+  type!: "PLUS" | "PRO" | "UNLIMITED" | "ULTRA_UNLIMITED";
 
   @Type(() => Number)
   @IsInt()

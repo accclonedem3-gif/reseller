@@ -110,9 +110,32 @@ function HomeRoute() {
   return <OverviewPagePrime />;
 }
 
+function RootIndexRoute() {
+  const { ready, session } = useAuth();
+
+  if (!ready) {
+    return (
+      <div className="min-h-screen bg-[#06080e] flex items-center justify-center text-slate-400">
+        Đang tải phiên làm việc...
+      </div>
+    );
+  }
+
+  if (!session) {
+    return <LandingPage />;
+  }
+
+  if (session.user.role === "super_admin") {
+    return <Navigate to="/admin" replace />;
+  }
+
+  return <Navigate to="/dashboard" replace />;
+}
+
 export function App() {
   return (
     <Routes>
+      <Route path="/" element={<RootIndexRoute />} />
       <Route path="/landing" element={<LandingPage />} />
       <Route path="/login" element={<LoginPageStudio />} />
       <Route path="/register" element={<LoginPageStudio />} />
@@ -129,7 +152,7 @@ export function App() {
       <Route path="/bao-hanh" element={<WarrantyClaimPage />} />
       <Route path="/mini-app/settings" element={<MiniAppSettingsPage />} />
       <Route element={<ProtectedLayout />}>
-        <Route path="/" element={<HomeRoute />} />
+        <Route path="/dashboard" element={<HomeRoute />} />
         <Route element={<SellerOnlyLayout />}>
           <Route path="/bot-config" element={<BotConfigPage />} />
           <Route path="/products" element={<ProductsManagementPage />} />

@@ -85,6 +85,17 @@ export class InternalSourceService {
     private readonly stockAlertService: StockAlertService,
   ) {}
 
+  private async getShopUsdtVndRate(shopId: string): Promise<number> {
+    const paymentConfig = await this.prisma.paymentConfig.findUnique({
+      where: { shopId },
+      select: { usdtVndRateOverride: true },
+    });
+    const override = Number(paymentConfig?.usdtVndRateOverride ?? NaN);
+    return Number.isFinite(override) && override > 0
+      ? override
+      : this.config.usdtVndRate;
+  }
+
   async listApiKeys(user: AuthenticatedUser) {
     const shop = await this.getProSellerShopOrThrow(user.id);
     const keys = await this.prisma.internalSourceApiKey.findMany({
@@ -751,6 +762,8 @@ export class InternalSourceService {
       );
     }
 
+    const usdtVndRate = await this.getShopUsdtVndRate(connection.upstreamShopId);
+
     await this.prisma.$transaction(async (tx) => {
       const customer = await tx.customer.findFirst({
         where: {
@@ -795,9 +808,17 @@ export class InternalSourceService {
         balanceAfter = dto.amount;
       }
 
+      const usdtAfter = Math.max(
+        0,
+        Number((balanceAfter / Math.max(1, usdtVndRate)).toFixed(4)),
+      );
+
       await tx.customerWallet.update({
         where: { id: cWallet.id },
-        data: { balance: toDecimal(balanceAfter) },
+        data: {
+          balance: toDecimal(balanceAfter),
+          balanceUsdt: toDecimal(usdtAfter),
+        },
       });
 
       await tx.customerWalletLedger.create({
@@ -1171,9 +1192,19 @@ export class InternalSourceService {
           );
           customerWalletBefore = decimalToNumber(cWallet.balance);
           customerWalletAfter = customerWalletBefore + amount;
+          const usdtVndRate = await this.getShopUsdtVndRate(
+            refreshedConnection.upstreamShopId,
+          );
+          const usdtAfter = Math.max(
+            0,
+            Number((customerWalletAfter / Math.max(1, usdtVndRate)).toFixed(4)),
+          );
           await tx.customerWallet.update({
             where: { id: cWallet.id },
-            data: { balance: toDecimal(customerWalletAfter) },
+            data: {
+              balance: toDecimal(customerWalletAfter),
+              balanceUsdt: toDecimal(usdtAfter),
+            },
           });
           await tx.customerWalletLedger.create({
             data: {
@@ -1656,6 +1687,7 @@ export class InternalSourceService {
       return errorResponse;
     }
     const totalAmount = unitPrice * quantity;
+    const usdtVndRate = await this.getShopUsdtVndRate(connection.upstreamShopId);
     let createdOrderId = "";
 
     try {
@@ -1719,6 +1751,10 @@ export class InternalSourceService {
         );
         const balanceAfter = split.balanceAfter;
         const commissionAfter = split.commissionAfter;
+        const usdtAfter = Math.max(
+          0,
+          Number((balanceAfter / Math.max(1, usdtVndRate)).toFixed(4)),
+        );
         const sourceOrderCode = generateSourceOrderCode(
           payload.client_order_code,
         );
@@ -1749,6 +1785,7 @@ export class InternalSourceService {
           where: { id: customer.wallet.id },
           data: {
             balance: toDecimal(balanceAfter),
+            balanceUsdt: toDecimal(usdtAfter),
             commissionBalance: toDecimal(commissionAfter),
           },
         });
@@ -2692,10 +2729,19 @@ export class InternalSourceService {
           ledgerBalanceBefore = walletBefore + commissionBefore;
           ledgerBalanceAfter = walletAfter + commissionAfter;
 
+          const usdtVndRate = await this.getShopUsdtVndRate(
+            connection.upstreamShopId,
+          );
+          const usdtAfter = Math.max(
+            0,
+            Number((walletAfter / Math.max(1, usdtVndRate)).toFixed(4)),
+          );
+
           await tx.customerWallet.update({
             where: { id: cWallet.id },
             data: {
               balance: toDecimal(walletAfter),
+              balanceUsdt: toDecimal(usdtAfter),
               ...(fromCommission > 0
                 ? { commissionBalance: toDecimal(commissionAfter) }
                 : {}),

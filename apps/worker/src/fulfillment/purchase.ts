@@ -170,6 +170,40 @@ export async function deleteQrMessage(
   );
 }
 
+async function safeDebitConnectionBalance(
+  connectionId: string,
+  amount: number | string,
+  orderId: string,
+): Promise<void> {
+  try {
+    await debitConnectionBalance(connectionId, amount, orderId);
+  } catch (err: unknown) {
+    const errorMsg = err instanceof Error ? err.message : String(err);
+    console.error(
+      `[worker] Failed to debit internal connection balance (connection=${connectionId}, amount=${amount}, order=${orderId}):`,
+      err,
+    );
+    try {
+      await prisma.orderEvent.create({
+        data: {
+          orderId,
+          eventType: "internal_connection_debit_failed",
+          payloadJson: {
+            connectionId,
+            amount: Number(amount),
+            error: errorMsg,
+          },
+        },
+      });
+    } catch (eventErr) {
+      console.error(
+        `[worker] Failed to record internal_connection_debit_failed orderEvent for order ${orderId}:`,
+        eventErr,
+      );
+    }
+  }
+}
+
 export async function refundOutOfStockOrderToCustomerWallet(input: {
   orderId: string;
   botToken?: string | null;
@@ -285,11 +319,19 @@ export async function refundOutOfStockOrderToCustomerWallet(input: {
       const commissionBalanceAfter =
         commissionBalanceBefore + commissionRefund;
 
-      const safeUsdtVndRate = Number(
-        process.env.USDT_VND_RATE || DEFAULT_USDT_VND_RATE
+      const paymentConfig = await tx.paymentConfig.findUnique({
+        where: { shopId: order.shopId },
+        select: { usdtVndRateOverride: true },
+      });
+      const override = Number(paymentConfig?.usdtVndRateOverride ?? NaN);
+      const safeUsdtVndRate =
+        Number.isFinite(override) && override > 0
+          ? override
+          : Number(process.env.USDT_VND_RATE || DEFAULT_USDT_VND_RATE);
+      const balanceUsdtAfter = Math.max(
+        0,
+        Number((balanceAfter / Math.max(1, safeUsdtVndRate)).toFixed(4))
       );
-      const balanceUsdtAfter =
-        balanceUsdtBefore + mainRefund / Math.max(1, safeUsdtVndRate);
 
       await tx.customerWallet.update({
         where: { id: freshWallet.id },
@@ -298,7 +340,7 @@ export async function refundOutOfStockOrderToCustomerWallet(input: {
           commissionBalance: new Prisma.Decimal(
             commissionBalanceAfter.toFixed(2)
           ),
-          balanceUsdt: new Prisma.Decimal(balanceUsdtAfter.toFixed(2)),
+          balanceUsdt: new Prisma.Decimal(balanceUsdtAfter.toFixed(4)),
         },
       });
 
@@ -1417,11 +1459,11 @@ export async function processPurchase(job: Job<{ orderId: string }>): Promise<vo
       const totalSourceAmount =
         txTotalCost > 0 ? txTotalCost : Number(order.totalSourceAmount || 0);
       if (totalSourceAmount > 0) {
-        await debitConnectionBalance(
+        await safeDebitConnectionBalance(
           internalSourceConnId,
           totalSourceAmount,
           order.id
-        ).catch(() => undefined);
+        );
       }
       if (
         botToken &&
@@ -1595,11 +1637,11 @@ export async function processPurchase(job: Job<{ orderId: string }>): Promise<vo
         await creditAffiliateCommission(order.id).catch(() => undefined);
         const totalSourceAmount = Number(order.totalSourceAmount || 0);
         if (totalSourceAmount > 0) {
-          await debitConnectionBalance(
+          await safeDebitConnectionBalance(
             internalSourceConnId,
             totalSourceAmount,
             order.id
-          ).catch(() => undefined);
+          );
         }
         if (
           botToken &&
@@ -1798,11 +1840,11 @@ export async function processPurchase(job: Job<{ orderId: string }>): Promise<vo
 
       const totalSourceAmount = Number(order.totalSourceAmount || 0);
       if (totalSourceAmount > 0) {
-        await debitConnectionBalance(
+        await safeDebitConnectionBalance(
           internalSourceConnId,
           totalSourceAmount,
           order.id
-        ).catch(() => undefined);
+        );
       }
 
       if (
@@ -2068,11 +2110,11 @@ export async function processPurchase(job: Job<{ orderId: string }>): Promise<vo
     ) {
       const totalSourceAmount = Number(order.totalSourceAmount || 0);
       if (totalSourceAmount > 0) {
-        await debitConnectionBalance(
+        await safeDebitConnectionBalance(
           providerConfig.internalSourceConnectionId,
           totalSourceAmount,
           order.id
-        ).catch(() => undefined);
+        );
       }
     }
     if (

@@ -88,6 +88,12 @@ export class CreateTemplateDto {
   savedMessageText?: string;
 }
 
+export enum UserbotTargetModeDto {
+  GROUP_ONLY = "GROUP_ONLY",
+  MEMBERS_DM = "MEMBERS_DM",
+  BOTH = "BOTH",
+}
+
 export class CreateUserbotCampaignDto {
   @IsString()
   @IsNotEmpty()
@@ -101,9 +107,22 @@ export class CreateUserbotCampaignDto {
   @IsNotEmpty()
   name!: string;
 
+  @IsEnum(UserbotTargetModeDto)
+  @IsOptional()
+  targetMode?: UserbotTargetModeDto = UserbotTargetModeDto.GROUP_ONLY;
+
   @IsArray()
   @IsString({ each: true })
   targetGroupIds!: string[];
+
+  @IsOptional()
+  targetTopics?: Record<string, number>;
+
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  @IsOptional()
+  maxMembersPerRun?: number = 30;
 
   @IsInt()
   @Min(10)
@@ -130,6 +149,10 @@ export class UpdateUserbotCampaignDto {
   @IsOptional()
   name?: string;
 
+  @IsEnum(UserbotTargetModeDto)
+  @IsOptional()
+  targetMode?: UserbotTargetModeDto;
+
   @IsString()
   @IsOptional()
   templateId?: string;
@@ -138,6 +161,15 @@ export class UpdateUserbotCampaignDto {
   @IsString({ each: true })
   @IsOptional()
   targetGroupIds?: string[];
+
+  @IsOptional()
+  targetTopics?: Record<string, number>;
+
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  @IsOptional()
+  maxMembersPerRun?: number;
 
   @IsInt()
   @Min(10)

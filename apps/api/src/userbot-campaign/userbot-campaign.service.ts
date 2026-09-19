@@ -94,7 +94,7 @@ export class UserbotCampaignService {
     if (!user.sellerId) throw new BadRequestException("Seller required.");
     const seller = await this.prisma.seller.findUnique({
       where: { id: user.sellerId },
-      select: { userbotLicenseType: true, userbotLicenseExpiresAt: true },
+      select: { userbotLicenseType: true, userbotLicenseExpiresAt: true, tier: true },
     });
     if (!seller) throw new NotFoundException("Seller not found.");
 
@@ -109,22 +109,26 @@ export class UserbotCampaignService {
       seller.userbotLicenseExpiresAt && new Date(seller.userbotLicenseExpiresAt) > now,
     );
 
+    const isPlatformUltra = seller.tier === "ULTRA";
+
     // Free Mode active when no key is redeemed and system license key requirement is not enforced
     if (!isLicenseRequired && !hasRedeemedActiveKey) {
       return {
-        licenseType: "FREE_TIER",
+        licenseType: isPlatformUltra ? "ULTRA_UNLIMITED" : "FREE_TIER",
         expiresAt: null,
         isActive: true,
-        isFreeMode: true,
-        maxSessions: 1,
-        maxCampaigns: 1,
-        minDelaySeconds: 30,
+        isFreeMode: !isPlatformUltra,
+        maxSessions: isPlatformUltra ? 9999 : 1,
+        maxCampaigns: isPlatformUltra ? 9999 : 1,
+        minDelaySeconds: isPlatformUltra ? 15 : 30,
+        allowMemberDm: isPlatformUltra,
       };
     }
 
     let maxSessions = 0;
     let maxCampaigns = 0;
     let minDelaySeconds = 60;
+    let allowMemberDm = isPlatformUltra;
 
     if (hasRedeemedActiveKey && seller.userbotLicenseType) {
       if (seller.userbotLicenseType === "PLUS") {
@@ -139,17 +143,23 @@ export class UserbotCampaignService {
         maxSessions = 9999;
         maxCampaigns = 9999;
         minDelaySeconds = 15;
+      } else if (seller.userbotLicenseType === "ULTRA_UNLIMITED") {
+        maxSessions = 9999;
+        maxCampaigns = 9999;
+        minDelaySeconds = 15;
+        allowMemberDm = true;
       }
     }
 
     return {
-      licenseType: seller.userbotLicenseType || null,
+      licenseType: seller.userbotLicenseType || (isPlatformUltra ? "ULTRA_UNLIMITED" : null),
       expiresAt: seller.userbotLicenseExpiresAt || null,
-      isActive: hasRedeemedActiveKey || !isLicenseRequired,
-      isFreeMode: !isLicenseRequired && !hasRedeemedActiveKey,
-      maxSessions: hasRedeemedActiveKey ? maxSessions : 9999,
-      maxCampaigns: hasRedeemedActiveKey ? maxCampaigns : 9999,
-      minDelaySeconds: hasRedeemedActiveKey ? minDelaySeconds : 15,
+      isActive: hasRedeemedActiveKey || !isLicenseRequired || isPlatformUltra,
+      isFreeMode: !isLicenseRequired && !hasRedeemedActiveKey && !isPlatformUltra,
+      maxSessions: hasRedeemedActiveKey ? maxSessions : (isPlatformUltra ? 9999 : 1),
+      maxCampaigns: hasRedeemedActiveKey ? maxCampaigns : (isPlatformUltra ? 9999 : 1),
+      minDelaySeconds: hasRedeemedActiveKey ? minDelaySeconds : (isPlatformUltra ? 15 : 30),
+      allowMemberDm,
     };
   }
 
@@ -460,6 +470,7 @@ export class UserbotCampaignService {
         memberCount?: number | null;
         canSendMessages: boolean;
         isSupergroup: boolean;
+        hasTopics: boolean;
       }> = [];
 
       for (const dialog of dialogs) {
@@ -485,6 +496,7 @@ export class UserbotCampaignService {
               memberCount,
               canSendMessages: true,
               isSupergroup: Boolean(dialog.isChannel || entity.megagroup),
+              hasTopics: Boolean(entity.forum),
             });
           }
         }
@@ -505,6 +517,7 @@ export class UserbotCampaignService {
             title: rec.title,
             username: rec.username,
             memberCount: rec.memberCount,
+            hasTopics: rec.hasTopics,
             syncedAt: new Date(),
           },
         });
@@ -550,8 +563,57 @@ export class UserbotCampaignService {
       memberCount: g.memberCount,
       canSendMessages: g.canSendMessages,
       isSupergroup: g.isSupergroup,
+      hasTopics: g.hasTopics,
       syncedAt: g.syncedAt,
     }));
+  }
+
+  async getGroupTopics(user: AuthenticatedUser, sessionId: string, chatIdStr: string) {
+    const sessionRecord = await this.prisma.telegramUserSession.findFirst({
+      where: { id: sessionId, sellerId: user.sellerId! },
+    });
+
+    if (!sessionRecord) throw new NotFoundException("Telegram session not found.");
+
+    const rawSession = decryptSecret(sessionRecord.sessionStringEncrypted, this.encryptionKey);
+    const effectiveApiId = sessionRecord.apiId || this.apiId;
+    const effectiveApiHash = sessionRecord.apiHash || this.apiHash;
+    const client = new TelegramClient(new StringSession(rawSession), effectiveApiId, effectiveApiHash, {
+      connectionRetries: 3,
+      proxy: parseGramJsProxy(sessionRecord.proxyUrl),
+    });
+
+    try {
+      await client.connect();
+      const entity = await client.getInputEntity(chatIdStr as any);
+      const result = await client.invoke(
+        new Api.channels.GetForumTopics({
+          channel: entity,
+          offsetDate: 0,
+          offsetId: 0,
+          offsetTopic: 0,
+          limit: 100,
+        }),
+      );
+      await client.disconnect();
+
+      const topics = (result as any)?.topics || [];
+      return topics
+        .filter((t: any) => t && t.id)
+        .map((t: any) => ({
+          id: Number(t.id),
+          title: String(t.title || `Topic #${t.id}`),
+          iconColor: t.iconColor ? Number(t.iconColor) : undefined,
+          closed: Boolean(t.closed),
+          hidden: Boolean(t.hidden),
+        }));
+    } catch (error) {
+      await client.disconnect().catch(() => undefined);
+      this.logger.error(`Get forum topics failed for session ${sessionId}, chat ${chatIdStr}:`, error);
+      throw new BadRequestException(
+        error instanceof Error ? error.message : "Không thể lấy danh sách Topic của nhóm này.",
+      );
+    }
   }
 
   async getSavedMessages(user: AuthenticatedUser, sessionId: string) {
@@ -679,7 +741,10 @@ export class UserbotCampaignService {
       templateId: c.templateId,
       templateName: c.template.name,
       templateType: c.template.type,
+      targetMode: c.targetMode,
       targetGroupIds: c.targetGroupIds,
+      targetTopics: c.targetTopics,
+      maxMembersPerRun: c.maxMembersPerRun,
       delaySeconds: c.delaySeconds,
       totalTarget: c.totalTarget,
       sentCount: c.sentCount,
@@ -756,13 +821,24 @@ export class UserbotCampaignService {
       throw new BadRequestException("Scheduled time must be in the future.");
     }
 
+    const targetMode = (dto.targetMode as any) || "GROUP_ONLY";
+    if ((targetMode === "MEMBERS_DM" || targetMode === "BOTH") && !license.allowMemberDm) {
+      throw new BadRequestException(
+        "Tính năng gửi tin nhắn riêng cho thành viên nhóm (Member DM) là tính năng cộng thêm chỉ dành riêng cho Key License ULTRA UNLIMITED. Vui lòng kích hoạt hoặc nâng cấp Key License ULTRA UNLIMITED để sử dụng.",
+      );
+    }
+    const maxMembersPerRun = Math.min(Math.max(dto.maxMembersPerRun ?? 30, 1), 100);
+
     const campaign = await this.prisma.telegramUserCampaign.create({
       data: {
         sellerId: user.sellerId,
         sessionId: dto.sessionId,
         templateId: dto.templateId,
         name: dto.name,
+        targetMode,
         targetGroupIds: dto.targetGroupIds,
+        targetTopics: (dto.targetTopics as any) ?? undefined,
+        maxMembersPerRun,
         delaySeconds: dto.delaySeconds,
         scheduleTime,
         isRecurring: dto.isRecurring ?? false,
@@ -801,6 +877,12 @@ export class UserbotCampaignService {
     });
 
     if (!campaign) throw new NotFoundException("Campaign not found.");
+
+    if ((campaign.targetMode === "MEMBERS_DM" || campaign.targetMode === "BOTH") && !license.allowMemberDm) {
+      throw new BadRequestException(
+        "Chiến dịch chứa tính năng gửi DM cho thành viên nhóm yêu cầu Key License ULTRA UNLIMITED còn hiệu lực.",
+      );
+    }
 
     const startPlan = planUserbotCampaignStart(
       campaign.scheduleTime,
@@ -887,6 +969,9 @@ export class UserbotCampaignService {
       campaignId: l.campaignId,
       groupTitle: l.groupTitle,
       groupChatId: l.groupChatId.toString(),
+      targetType: l.targetType,
+      targetName: l.targetName,
+      topicId: l.topicId,
       status: l.status,
       errorDetail: l.errorDetail,
       sentAt: l.sentAt,

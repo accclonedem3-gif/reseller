@@ -135,3 +135,96 @@ test("recovery handles missing, waiting, completed and failed jobs without start
   assert.ok(isUserbotCampaignJob("run-userbot-campaign"));
   assert.equal(isUserbotCampaignJob("unrelated"), false);
 });
+
+test("MEMBERS_DM mode fetches participants, excludes admins/bots/self, and respects maxMembersPerRun", async () => {
+  mock.method(TelegramClient.prototype, "connect", async () => true);
+  mock.method(TelegramClient.prototype, "disconnect", async () => {});
+  mock.method(TelegramClient.prototype, "getInputEntity", async () => ({}));
+  mock.method(TelegramClient.prototype, "invoke", async () => ({
+    participants: [
+      { className: "ChannelParticipantCreator", userId: 100 },
+      { className: "ChannelParticipantAdmin", userId: 101 },
+      { className: "ChannelParticipant", userId: 201 },
+      { className: "ChannelParticipant", userId: 202 },
+      { className: "ChannelParticipant", userId: 203 },
+    ],
+    users: [
+      { id: 100, firstName: "Owner", isSelf: false },
+      { id: 101, firstName: "Admin", isSelf: false },
+      { id: 999, firstName: "BotUser", bot: true },
+      { id: 888, firstName: "Deleted", deleted: true },
+      { id: 201, firstName: "UserA", username: "usera" },
+      { id: 202, firstName: "UserB", username: "userb" },
+      { id: 203, firstName: "UserC", username: "userc" },
+    ],
+  }));
+  const send = mock.method(TelegramClient.prototype, "sendMessage", async () => ({}));
+
+  try {
+    const f = fixture({
+      targetMode: "MEMBERS_DM",
+      maxMembersPerRun: 2,
+    });
+    await processUserbotCampaignJob(f.job, f.prisma, key, f.redis, f.queue);
+
+    // Should NOT send to group '1', only DM to 201 and 202 (capped by maxMembersPerRun = 2)
+    assert.equal(send.mock.calls.length, 2);
+    assert.equal(send.mock.calls[0].arguments[0], 201);
+    assert.equal(send.mock.calls[1].arguments[0], 202);
+
+    // Verify logs
+    const memberLogs = f.logs.filter((l) => l.targetType === "MEMBER");
+    assert.equal(memberLogs.length, 2);
+    assert.equal(memberLogs[0].status, "SUCCESS");
+    assert.equal(f.campaign.sentCount, 2);
+  } finally {
+    mock.restoreAll();
+  }
+});
+
+test("PEER_FLOOD during member DM auto-pauses campaign to protect account", async () => {
+  mock.method(TelegramClient.prototype, "connect", async () => true);
+  mock.method(TelegramClient.prototype, "disconnect", async () => {});
+  mock.method(TelegramClient.prototype, "getInputEntity", async () => ({}));
+  mock.method(TelegramClient.prototype, "invoke", async () => ({
+    participants: [{ className: "ChannelParticipant", userId: 301 }],
+    users: [{ id: 301, firstName: "TestUser" }],
+  }));
+  mock.method(TelegramClient.prototype, "sendMessage", async () => {
+    throw new Error("PEER_FLOOD");
+  });
+
+  try {
+    const f = fixture({
+      targetMode: "MEMBERS_DM",
+      maxMembersPerRun: 5,
+    });
+    await processUserbotCampaignJob(f.job, f.prisma, key, f.redis, f.queue);
+
+    assert.equal(f.campaign.status, "PAUSED");
+    assert.equal(f.campaign.failedCount, 1);
+    assert.ok(f.logs.some((l) => l.errorDetail.includes("PEER_FLOOD")));
+  } finally {
+    mock.restoreAll();
+  }
+});
+
+test("group sending with topicId sets replyTo topic", async () => {
+  mock.method(TelegramClient.prototype, "connect", async () => true);
+  mock.method(TelegramClient.prototype, "disconnect", async () => {});
+  const send = mock.method(TelegramClient.prototype, "sendMessage", async () => ({}));
+
+  try {
+    const f = fixture({
+      targetMode: "GROUP_ONLY",
+      targetTopics: { "1": 777 },
+    });
+    await processUserbotCampaignJob(f.job, f.prisma, key, f.redis, f.queue);
+
+    assert.equal(send.mock.calls.length, 1);
+    assert.equal(send.mock.calls[0].arguments[0], "1");
+    assert.equal(send.mock.calls[0].arguments[1].replyTo, 777);
+  } finally {
+    mock.restoreAll();
+  }
+});

@@ -198,7 +198,7 @@ function buildSellerNavGroups(
 ) {
   const L = NAV_LABELS[lang];
   const operations: NavItem[] = [
-    { to: "/", label: L.overview, icon: LayoutDashboard },
+    { to: "/dashboard", label: L.overview, icon: LayoutDashboard },
     { to: "/bot-config", label: L.botConfig, icon: Bot },
     { to: "/products", label: L.products, icon: Package },
   ];

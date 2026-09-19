@@ -110,6 +110,17 @@ export class WarrantyService {
     private readonly affiliateService: AffiliateService,
   ) {}
 
+  private async getShopUsdtVndRate(shopId: string): Promise<number> {
+    const paymentConfig = await this.prisma.paymentConfig.findUnique({
+      where: { shopId },
+      select: { usdtVndRateOverride: true },
+    });
+    const override = Number(paymentConfig?.usdtVndRateOverride ?? NaN);
+    return Number.isFinite(override) && override > 0
+      ? override
+      : this.config.usdtVndRate;
+  }
+
   /**
    * Count warranty claims for an order that "consume a slot" — i.e. anything except
    * REJECTED. A rejected claim (auto or manual) MUST NOT count against the per-order cap,
@@ -2319,7 +2330,7 @@ export class WarrantyService {
         });
         if (!wallet) {
           wallet = await tx.customerWallet.create({
-            data: { customerId: fullOrder.customerId, balance: 0 },
+            data: { customerId: fullOrder.customerId, balance: 0, balanceUsdt: 0 },
           });
         }
         await tx.$queryRaw`SELECT id FROM customer_wallets WHERE id = ${wallet.id} FOR UPDATE`;
@@ -2333,9 +2344,18 @@ export class WarrantyService {
         );
         const balanceAfter = balanceBefore + mainShare;
         const commissionAfter = commissionBefore + commissionShare;
+        const usdtVndRate = await this.getShopUsdtVndRate(fullOrder.shopId);
+        const balanceUsdtAfter = Math.max(
+          0,
+          Number((balanceAfter / Math.max(1, usdtVndRate)).toFixed(4)),
+        );
         await tx.customerWallet.update({
           where: { id: wallet.id },
-          data: { balance: balanceAfter, commissionBalance: commissionAfter },
+          data: {
+            balance: balanceAfter,
+            balanceUsdt: balanceUsdtAfter,
+            commissionBalance: commissionAfter,
+          },
         });
         await tx.customerWalletLedger.create({
           data: {
@@ -2485,7 +2505,7 @@ export class WarrantyService {
   }
 
   private async applyPartialStockRefund(
-    order: { id: string; quantity: number; totalSaleAmount: Prisma.Decimal | number; orderCode: string; customerId: string; deliveredAt: Date | null; sourceProduct: { durationType: string | null; durationTypeOther: string | null } },
+    order: { id: string; shopId: string; quantity: number; totalSaleAmount: Prisma.Decimal | number; orderCode: string; customerId: string; deliveredAt: Date | null; sourceProduct: { durationType: string | null; durationTypeOther: string | null } },
     claimId: string,
     partialRefundCount: number,
   ): Promise<void> {
@@ -2515,7 +2535,7 @@ export class WarrantyService {
 
       let wallet = await tx.customerWallet.findUnique({ where: { customerId: order.customerId } });
       if (!wallet) {
-        wallet = await tx.customerWallet.create({ data: { customerId: order.customerId, balance: 0 } });
+        wallet = await tx.customerWallet.create({ data: { customerId: order.customerId, balance: 0, balanceUsdt: 0 } });
       }
       await tx.$queryRaw`SELECT id FROM customer_wallets WHERE id = ${wallet.id} FOR UPDATE`;
       const fresh = await tx.customerWallet.findUnique({ where: { id: wallet.id } });
@@ -2527,7 +2547,19 @@ export class WarrantyService {
       );
       const balanceAfter = balanceBefore + mainShare;
       const commissionAfter = commissionBefore + commissionShare;
-      await tx.customerWallet.update({ where: { id: wallet.id }, data: { balance: balanceAfter, commissionBalance: commissionAfter } });
+      const usdtVndRate = await this.getShopUsdtVndRate(order.shopId);
+      const balanceUsdtAfter = Math.max(
+        0,
+        Number((balanceAfter / Math.max(1, usdtVndRate)).toFixed(4)),
+      );
+      await tx.customerWallet.update({
+        where: { id: wallet.id },
+        data: {
+          balance: balanceAfter,
+          balanceUsdt: balanceUsdtAfter,
+          commissionBalance: commissionAfter,
+        },
+      });
       await tx.customerWalletLedger.create({
         data: {
           customerId: order.customerId,
@@ -2638,7 +2670,7 @@ export class WarrantyService {
         commissionBefore = decimalToNumber(fresh?.commissionBalance ?? 0);
       } else {
         const created = await tx.customerWallet.create({
-          data: { customerId: customer.id, balance: 0 },
+          data: { customerId: customer.id, balance: 0, balanceUsdt: 0 },
         });
         walletId = created.id;
         balanceBefore = 0;
@@ -2652,9 +2684,18 @@ export class WarrantyService {
       );
       const balanceAfter = balanceBefore + mainShare;
       const commissionAfter = commissionBefore + commissionShare;
+      const usdtVndRate = await this.getShopUsdtVndRate(iso.upstreamShopId);
+      const balanceUsdtAfter = Math.max(
+        0,
+        Number((balanceAfter / Math.max(1, usdtVndRate)).toFixed(4)),
+      );
       await tx.customerWallet.update({
         where: { id: walletId },
-        data: { balance: balanceAfter, commissionBalance: commissionAfter },
+        data: {
+          balance: balanceAfter,
+          balanceUsdt: balanceUsdtAfter,
+          commissionBalance: commissionAfter,
+        },
       });
       await tx.customerWalletLedger.create({
         data: {

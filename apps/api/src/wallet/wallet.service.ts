@@ -801,7 +801,7 @@ export class WalletService {
         const displayName = [c.firstName, c.lastName].filter(Boolean).join(" ").trim() || null;
         const balance = c.wallet ? decimalToNumber(c.wallet.balance) : 0;
         const commissionBalance = c.wallet ? decimalToNumber(c.wallet.commissionBalance) : 0;
-        const balanceUsdt = c.wallet ? decimalToNumber(c.wallet.balanceUsdt) : 0;
+        const balanceUsdt = Number((balance / Math.max(1, usdtVndRate)).toFixed(2));
         const stats = spentByCustomer.get(c.id);
         return {
           id: c.wallet?.id ?? c.id,
@@ -911,7 +911,9 @@ export class WalletService {
       );
 
       const isUsdt = dto.currency === "USDT";
-      const balanceBefore = isUsdt ? decimalToNumber(wallet.balanceUsdt) : decimalToNumber(wallet.balance);
+      const vndBefore = decimalToNumber(wallet.balance);
+      const usdtBefore = decimalToNumber(wallet.balanceUsdt);
+      const balanceBefore = isUsdt ? usdtBefore : vndBefore;
       let delta: number;
       let balanceAfter: number;
 
@@ -929,23 +931,35 @@ export class WalletService {
         balanceAfter = dto.amount;
       }
 
-      // Sync the other currency (topup/deduct only, not set)
-      const syncOther = dto.action === "topup" || dto.action === "deduct";
-      const syncDelta = isUsdt ? delta * usdtVndRate : delta / usdtVndRate;
-      const syncBalanceBefore = isUsdt ? decimalToNumber(wallet.balance) : decimalToNumber(wallet.balanceUsdt);
-      const syncBalanceAfter = Math.max(0, syncBalanceBefore + syncDelta);
+      let vndAfter: number;
+      let usdtAfter: number;
+      let syncDelta: number;
+      let syncBalanceBefore: number;
+      let syncBalanceAfter: number;
+
+      if (isUsdt) {
+        usdtAfter = Math.max(0, balanceAfter);
+        vndAfter = Math.max(0, Math.round(usdtAfter * usdtVndRate));
+        syncBalanceBefore = vndBefore;
+        syncBalanceAfter = vndAfter;
+        syncDelta = syncBalanceAfter - syncBalanceBefore;
+      } else {
+        vndAfter = Math.max(0, balanceAfter);
+        usdtAfter = Math.max(
+          0,
+          Number((vndAfter / Math.max(1, usdtVndRate)).toFixed(4)),
+        );
+        syncBalanceBefore = usdtBefore;
+        syncBalanceAfter = usdtAfter;
+        syncDelta = Number((syncBalanceAfter - syncBalanceBefore).toFixed(4));
+      }
 
       const updatedWallet = await tx.customerWallet.update({
         where: { id: wallet.id },
-        data: isUsdt
-          ? {
-              balanceUsdt: toDecimal(balanceAfter),
-              ...(syncOther ? { balance: toDecimal(syncBalanceAfter) } : {}),
-            }
-          : {
-              balance: toDecimal(balanceAfter),
-              ...(syncOther ? { balanceUsdt: toDecimal(syncBalanceAfter) } : {}),
-            },
+        data: {
+          balance: toDecimal(vndAfter),
+          balanceUsdt: toDecimal(usdtAfter),
+        },
       });
 
       await tx.customerWalletLedger.create({
@@ -963,7 +977,7 @@ export class WalletService {
         },
       });
 
-      if (syncOther) {
+      if (syncDelta !== 0) {
         await tx.customerWalletLedger.create({
           data: {
             customerId,
@@ -986,7 +1000,7 @@ export class WalletService {
         balanceBefore,
         balanceAfter,
         vndDelta: isUsdt ? syncDelta : delta,
-        vndBalanceAfter: isUsdt ? syncBalanceAfter : balanceAfter,
+        vndBalanceAfter: vndAfter,
       };
     });
 
@@ -1059,6 +1073,11 @@ export class WalletService {
       }),
     ]);
 
+    const usdtVndRate = await this.getShopUsdtVndRate(shop.id);
+    const walletBalance = decimalToNumber(customer.wallet?.balance);
+    const commissionBalance = decimalToNumber(customer.wallet?.commissionBalance);
+    const balanceUsdt = Number((walletBalance / Math.max(1, usdtVndRate)).toFixed(2));
+
     return {
       customer: {
         id: customer.id,
@@ -1070,9 +1089,9 @@ export class WalletService {
           customer.telegramChatId,
       },
       wallet: {
-        balance: decimalToNumber(customer.wallet?.balance),
-        commissionBalance: decimalToNumber(customer.wallet?.commissionBalance),
-        balanceUsdt: decimalToNumber(customer.wallet?.balanceUsdt),
+        balance: walletBalance,
+        commissionBalance,
+        balanceUsdt,
         currency: customer.wallet?.currency || "VND",
       },
       items: items.map((item) => ({

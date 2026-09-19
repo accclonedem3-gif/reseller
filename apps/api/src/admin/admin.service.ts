@@ -936,7 +936,11 @@ export class AdminService {
     return { total: results.length, ok, skipped, failed, results };
   }
 
-  async generateUserbotLicenseKeys(type: "PLUS" | "PRO" | "UNLIMITED", durationDays: number, count: number) {
+  async generateUserbotLicenseKeys(
+    type: "PLUS" | "PRO" | "UNLIMITED" | "ULTRA_UNLIMITED",
+    durationDays: number,
+    count: number,
+  ) {
     const keysToCreate = [];
     const characters = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
@@ -945,7 +949,8 @@ export class AdminService {
       for (let j = 0; j < 8; j++) {
         randomPart += characters.charAt(Math.floor(Math.random() * characters.length));
       }
-      const code = `UB-${type}-${randomPart}`;
+      const prefix = type === "ULTRA_UNLIMITED" ? "UB-ULTRA" : `UB-${type}`;
+      const code = `${prefix}-${randomPart}`;
       keysToCreate.push({
         code,
         type,

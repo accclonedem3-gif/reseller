@@ -85,6 +85,15 @@ export class UserbotCampaignController {
     return this.userbotService.listGroups(user, sessionId);
   }
 
+  @Get("sessions/:id/groups/:chatId/topics")
+  getGroupTopics(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param("id") sessionId: string,
+    @Param("chatId") chatId: string,
+  ) {
+    return this.userbotService.getGroupTopics(user, sessionId, chatId);
+  }
+
   @Get("sessions/:id/saved-messages")
   getSavedMessages(@CurrentUser() user: AuthenticatedUser, @Param("id") id: string) {
     return this.userbotService.getSavedMessages(user, id);

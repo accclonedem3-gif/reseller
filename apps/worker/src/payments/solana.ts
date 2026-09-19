@@ -2,6 +2,7 @@ import axios from "axios";
 import type { Queue } from "bullmq";
 import { prisma } from "../infra/prisma";
 import { toDecimal, formatError } from "../format/text";
+import { DEFAULT_USDT_VND_RATE } from "@reseller/shared";
 import { JOBS } from "@reseller/shared/server";
 import { getPaymentContext } from "./index";
 
@@ -370,6 +371,16 @@ export async function scanSolanaUsdtPayments(
                 include: { wallet: true },
               });
               if (topup) {
+                const paymentConfig = await prisma.paymentConfig.findUnique({
+                  where: { shopId: topup.shopId },
+                  select: { usdtVndRateOverride: true },
+                });
+                const override = Number(paymentConfig?.usdtVndRateOverride ?? NaN);
+                const usdtVndRate =
+                  Number.isFinite(override) && override > 0
+                    ? override
+                    : Number(process.env.USDT_VND_RATE || DEFAULT_USDT_VND_RATE);
+
                 await prisma.$transaction(async (tx) => {
                   await tx.customerWalletTopup.update({
                     where: { id: topup.id },
@@ -381,9 +392,16 @@ export async function scanSolanaUsdtPayments(
                   if (wallet) {
                     const balBefore = Number(wallet.balance);
                     const balAfter = balBefore + Number(topup.amount);
+                    const usdtAfter = Math.max(
+                      0,
+                      Number((balAfter / Math.max(1, usdtVndRate)).toFixed(4))
+                    );
                     await tx.customerWallet.update({
                       where: { id: wallet.id },
-                      data: { balance: toDecimal(balAfter) },
+                      data: {
+                        balance: toDecimal(balAfter),
+                        balanceUsdt: toDecimal(usdtAfter),
+                      },
                     });
                     await tx.customerWalletLedger.create({
                       data: {

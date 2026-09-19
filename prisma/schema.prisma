@@ -1577,6 +1577,12 @@ enum UserbotCampaignStatus {
   FAILED
 }
 
+enum UserbotTargetMode {
+  GROUP_ONLY
+  MEMBERS_DM
+  BOTH
+}
+
 enum UserbotLogStatus {
   SUCCESS
   FAILED
@@ -1620,6 +1626,7 @@ model TelegramUserGroup {
   memberCount     Int?     @map("member_count")
   canSendMessages Boolean  @default(true) @map("can_send_messages")
   isSupergroup    Boolean  @default(true) @map("is_supergroup")
+  hasTopics       Boolean  @default(false) @map("has_topics")
   syncedAt        DateTime @default(now()) @map("synced_at")
 
   session TelegramUserSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
@@ -1652,7 +1659,10 @@ model TelegramUserCampaign {
   sessionId           String                @map("session_id")
   templateId          String                @map("template_id")
   name                String
+  targetMode          UserbotTargetMode     @default(GROUP_ONLY) @map("target_mode")
   targetGroupIds      Json                  @map("target_group_ids")
+  targetTopics        Json?                 @map("target_topics")
+  maxMembersPerRun    Int?                  @default(30) @map("max_members_per_run")
   delaySeconds        Int                   @default(60) @map("delay_seconds")
   scheduleTime        DateTime?             @map("schedule_time")
   isRecurring         Boolean               @default(false) @map("is_recurring")
@@ -1679,6 +1689,9 @@ model TelegramUserCampaignLog {
   campaignId  String           @map("campaign_id")
   groupTitle  String           @map("group_title")
   groupChatId BigInt           @map("group_chat_id")
+  targetType  String?          @default("GROUP") @map("target_type")
+  targetName  String?          @map("target_name")
+  topicId     Int?             @map("topic_id")
   status      UserbotLogStatus
   errorDetail String?          @map("error_detail")
   sentAt      DateTime         @default(now()) @map("sent_at")
@@ -1692,6 +1705,7 @@ enum TelegramUserbotLicenseType {
   PLUS
   PRO
   UNLIMITED
+  ULTRA_UNLIMITED
 }
 
 model TelegramUserbotLicenseKey {

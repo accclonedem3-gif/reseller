@@ -127,7 +127,7 @@ export function LoginPageStudio() {
   const [loading, setLoading] = useState(false);
 
   if (session) {
-    return <Navigate to="/" replace />;
+    return <Navigate to="/dashboard" replace />;
   }
 
   async function handleLoginSubmit(event: React.FormEvent<HTMLFormElement>) {

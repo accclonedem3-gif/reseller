@@ -337,8 +337,10 @@ export class OrdersService {
       );
       const balanceAfter = split.balanceAfter;
       const commissionAfter = split.commissionAfter;
-      const usdtBefore = decimalToNumber(currentWallet.balanceUsdt);
-      const usdtAfter = Math.max(0, usdtBefore - split.fromMain / usdtVndRate);
+      const usdtAfter = Math.max(
+        0,
+        Number((balanceAfter / Math.max(1, usdtVndRate)).toFixed(4)),
+      );
 
       const order = await tx.order.create({
         data: {
@@ -1955,8 +1957,10 @@ export class OrdersService {
     const balanceUsdtBefore = decimalToNumber(freshWallet.balanceUsdt);
     const balanceAfter = balanceBefore + mainRefund;
     const commissionBalanceAfter = commissionBalanceBefore + commissionRefund;
-    const balanceUsdtAfter =
-      balanceUsdtBefore + mainRefund / Math.max(1, usdtVndRate);
+    const balanceUsdtAfter = Math.max(
+      0,
+      Number((balanceAfter / Math.max(1, usdtVndRate)).toFixed(4)),
+    );
 
     await tx.customerWallet.update({
       where: { id: freshWallet.id },
@@ -2520,7 +2524,7 @@ export class OrdersService {
     const commissionAfter = split.commissionAfter;
     const walletUsdtAfter = Math.max(
       0,
-      decimalToNumber(wallet.balanceUsdt) - split.fromMain / usdtVndRate,
+      Number((walletAfter / Math.max(1, usdtVndRate)).toFixed(4)),
     );
     await tx.customerWallet.update({
       where: { id: wallet.id },

@@ -30,6 +30,7 @@ import { IsInt, IsNotEmpty, IsOptional, IsString, Min } from "class-validator";
 import type { Request } from "express";
 import { isOrderPriceSafe } from "@reseller/shared/server";
 
+import { AppConfigService } from "../config/app-config.service";
 import { PrismaService } from "../db/prisma.service";
 import { InternalSourceService } from "../internal-source/internal-source.service";
 import {
@@ -102,7 +103,20 @@ export class InternalSourceApiController {
     private readonly prisma: PrismaService,
     @Inject(InternalSourceService)
     private readonly internalSourceService: InternalSourceService,
+    @Inject(AppConfigService)
+    private readonly config: AppConfigService,
   ) {}
+
+  private async getShopUsdtVndRate(shopId: string): Promise<number> {
+    const paymentConfig = await this.prisma.paymentConfig.findUnique({
+      where: { shopId },
+      select: { usdtVndRateOverride: true },
+    });
+    const override = Number(paymentConfig?.usdtVndRateOverride ?? NaN);
+    return Number.isFinite(override) && override > 0
+      ? override
+      : this.config.usdtVndRate;
+  }
 
   @ApiOperation({
     summary: "Register the external bot using this key",
@@ -354,6 +368,7 @@ export class InternalSourceApiController {
     }
     const totalAmount = unitPrice * quantity;
 
+    const usdtVndRate = await this.getShopUsdtVndRate(connection.upstreamShopId);
     let orderId: string;
 
     try {
@@ -406,6 +421,10 @@ export class InternalSourceApiController {
         const split = splitWalletDebit(commissionBefore, balanceBefore, totalAmount);
         const balanceAfter = split.balanceAfter;
         const commissionAfter = split.commissionAfter;
+        const usdtAfter = Math.max(
+          0,
+          Number((balanceAfter / Math.max(1, usdtVndRate)).toFixed(4)),
+        );
         const sourceOrderCode = generateSourceOrderCode(dto.clientOrderCode);
 
         const created = await tx.internalSourceOrder.create({
@@ -432,7 +451,11 @@ export class InternalSourceApiController {
 
         await tx.customerWallet.update({
           where: { id: customer.wallet.id },
-          data: { balance: toDecimal(balanceAfter), commissionBalance: toDecimal(commissionAfter) },
+          data: {
+            balance: toDecimal(balanceAfter),
+            balanceUsdt: toDecimal(usdtAfter),
+            commissionBalance: toDecimal(commissionAfter),
+          },
         });
 
         await tx.customerWalletLedger.create({
