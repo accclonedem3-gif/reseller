@@ -140,7 +140,11 @@ export function UserbotCampaignPage() {
   const { data: campaigns = [], isLoading: loadingCampaigns } = useQuery({
     queryKey: ["userbot-campaigns"],
     queryFn: async () => (await api.get("/userbot-campaign/campaigns")).data,
-    refetchInterval: 5000,
+    refetchInterval: (query) => {
+      const list = query.state.data as any[];
+      const hasRunning = Array.isArray(list) && list.some((c) => c.status === "RUNNING");
+      return hasRunning ? 2000 : 5000;
+    },
   });
 
   const { data: savedMessages = [], isFetching: fetchingSaved } = useQuery({
@@ -159,7 +163,7 @@ export function UserbotCampaignPage() {
       return (await api.get(`/userbot-campaign/campaigns/${viewLogCampaignId}/logs`)).data;
     },
     enabled: Boolean(viewLogCampaignId),
-    refetchInterval: 3000,
+    refetchInterval: 2000,
   });
 
   // --- MUTATIONS ---
@@ -683,6 +687,10 @@ export function UserbotCampaignPage() {
 
                     const groupProgressPct =
                       item.totalTarget > 0 ? Math.min(100, Math.round((sentGroups / item.totalTarget) * 100)) : 0;
+                    const targetMembers = (item.totalTarget || 1) * (item.maxMembersPerRun || 30);
+                    const memberProgressPct =
+                      targetMembers > 0 ? Math.min(100, Math.round((sentMembers / targetMembers) * 100)) : 0;
+                    const isRunning = item.status === "RUNNING";
 
                     return (
                       <tr key={item.id} className="transition hover:bg-slate-500/5">
@@ -729,53 +737,124 @@ export function UserbotCampaignPage() {
                         </td>
                         <td className="px-4 py-3.5 text-xs text-[var(--tx-m)]">{item.sessionPhoneNumber}</td>
                         <td className="px-4 py-3.5 text-xs text-[var(--tx-m)]">{item.templateName}</td>
-                        <td className="px-4 py-3.5 min-w-[150px]">
+                        <td className="px-4 py-3.5 min-w-[185px]">
                           {item.targetMode === "GROUP_ONLY" ? (
-                            <div className="space-y-1">
+                            <div className="space-y-1.5">
                               <div className="flex justify-between text-[10px] font-black text-[var(--tx-f)]">
-                                <span>{groupProgressPct}%</span>
+                                <span className={isRunning ? "text-orange-400 font-bold" : ""}>{groupProgressPct}%</span>
                                 <span>{sentGroups}/{item.totalTarget} Nhóm</span>
                               </div>
-                              <div className="h-1.5 w-full rounded-full bg-slate-500/20 overflow-hidden">
+                              <div className="h-2 w-full rounded-full bg-slate-800/70 border border-orange-500/20 overflow-hidden shadow-inner p-[1px]">
                                 <div
-                                  className="h-full bg-orange-500 transition-all duration-300"
+                                  className="h-full rounded-full bg-gradient-to-r from-orange-600 to-amber-400 transition-all duration-500 ease-out relative"
                                   style={{ width: `${groupProgressPct}%` }}
-                                />
+                                >
+                                  {isRunning && <div className="absolute inset-0 bg-white/20 animate-pulse" />}
+                                </div>
                               </div>
                             </div>
                           ) : item.targetMode === "MEMBERS_DM" ? (
-                            <div className="space-y-1">
-                              <div className="flex justify-between text-[10px] font-black">
-                                <span className="text-purple-400 font-bold flex items-center gap-1">
-                                  <MessageSquare className="size-2.5" />
-                                  {sentMembers} Mem thành công
+                            <div className="space-y-1.5">
+                              <div className="flex items-center justify-between text-[10px]">
+                                <span className="font-bold flex items-center gap-1.5">
+                                  {isRunning ? (
+                                    <span className="relative flex h-2 w-2">
+                                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-purple-400 opacity-75" />
+                                      <span className="relative inline-flex rounded-full h-2 w-2 bg-purple-500" />
+                                    </span>
+                                  ) : (
+                                    <MessageSquare className="size-2.5 text-purple-400" />
+                                  )}
+                                  <span className={isRunning ? "text-purple-400 font-black animate-pulse" : "text-purple-400 font-bold"}>
+                                    {memberProgressPct}%
+                                  </span>
                                 </span>
-                                <span className="text-[var(--tx-f)]">{item.totalTarget} nhóm</span>
+                                <span className="font-mono text-[10px] font-bold text-[var(--tx)]">
+                                  <strong className="text-emerald-400 font-black">{sentMembers}</strong>
+                                  <span className="text-[var(--tx-f)] font-normal">/{targetMembers} người</span>
+                                </span>
                               </div>
-                              <div className="h-1.5 w-full rounded-full bg-slate-500/20 overflow-hidden">
+
+                              {/* Real-time Loading / Progress Bar */}
+                              <div className="relative h-2 w-full rounded-full bg-slate-800/80 border border-purple-500/25 overflow-hidden shadow-inner p-[1px]">
                                 <div
-                                  className="h-full bg-purple-500 transition-all duration-300"
-                                  style={{ width: sentMembers > 0 ? "100%" : "0%" }}
-                                />
+                                  className={cn(
+                                    "h-full rounded-full transition-all duration-500 ease-out relative",
+                                    isRunning
+                                      ? "bg-gradient-to-r from-purple-600 via-fuchsia-500 to-emerald-400 shadow-[0_0_12px_rgba(168,85,247,0.5)]"
+                                      : "bg-gradient-to-r from-purple-600 to-emerald-500"
+                                  )}
+                                  style={{ width: `${memberProgressPct}%` }}
+                                >
+                                  {isRunning && (
+                                    <>
+                                      <div className="absolute inset-0 bg-white/25 animate-pulse" />
+                                      <div className="absolute right-0 top-0 bottom-0 w-2.5 bg-white/80 blur-[1px] rounded-full shadow-[0_0_8px_#34d399]" />
+                                    </>
+                                  )}
+                                </div>
+                              </div>
+
+                              <div className="flex items-center justify-between text-[9px] text-[var(--tx-f)]">
+                                <span>Quét {item.totalTarget} nhóm</span>
+                                {isRunning ? (
+                                  <span className="text-emerald-400 font-bold animate-pulse flex items-center gap-1">
+                                    <span className="size-1 rounded-full bg-emerald-400 animate-ping inline-block" />
+                                    Đang phát tin...
+                                  </span>
+                                ) : item.status === "COMPLETED" ? (
+                                  <span className="text-blue-400 font-semibold">Hoàn tất</span>
+                                ) : null}
                               </div>
                             </div>
                           ) : (
-                            <div className="space-y-1.5">
+                            <div className="space-y-2">
+                              {/* Block 1: Nhóm */}
                               <div className="space-y-1">
-                                <div className="flex justify-between text-[10px] font-black text-[var(--tx-f)]">
+                                <div className="flex justify-between text-[10px] font-bold text-[var(--tx-f)]">
                                   <span>Nhóm: {groupProgressPct}%</span>
-                                  <span>{sentGroups}/{item.totalTarget}</span>
+                                  <span className="font-mono">{sentGroups}/{item.totalTarget}</span>
                                 </div>
-                                <div className="h-1.5 w-full rounded-full bg-slate-500/20 overflow-hidden">
+                                <div className="h-1.5 w-full rounded-full bg-slate-800/80 border border-orange-500/20 overflow-hidden">
                                   <div
-                                    className="h-full bg-orange-500 transition-all duration-300"
+                                    className="h-full bg-gradient-to-r from-orange-600 to-amber-400 transition-all duration-300"
                                     style={{ width: `${groupProgressPct}%` }}
                                   />
                                 </div>
                               </div>
-                              <div className="flex items-center gap-1 text-[10px] font-bold text-purple-400">
-                                <Users className="size-3 text-purple-400 shrink-0" />
-                                <span>DM: <strong className="text-emerald-400">{sentMembers}</strong> Mem OK</span>
+
+                              {/* Block 2: Member DM real-time loading bar */}
+                              <div className="space-y-1">
+                                <div className="flex items-center justify-between text-[10px]">
+                                  <span className="flex items-center gap-1 text-purple-400 font-bold">
+                                    {isRunning && (
+                                      <span className="relative flex h-1.5 w-1.5">
+                                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-purple-400 opacity-75" />
+                                        <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-purple-500" />
+                                      </span>
+                                    )}
+                                    <span>DM Mem: {memberProgressPct}%</span>
+                                  </span>
+                                  <span className="font-mono text-[10px] font-bold text-[var(--tx)]">
+                                    <strong className="text-emerald-400 font-black">{sentMembers}</strong>
+                                    <span className="text-[var(--tx-f)] font-normal">/{targetMembers} người</span>
+                                  </span>
+                                </div>
+                                <div className="relative h-1.5 w-full rounded-full bg-slate-800/80 border border-purple-500/25 overflow-hidden">
+                                  <div
+                                    className={cn(
+                                      "h-full rounded-full transition-all duration-500 ease-out relative",
+                                      isRunning
+                                        ? "bg-gradient-to-r from-purple-500 via-pink-500 to-emerald-400 shadow-[0_0_10px_rgba(236,72,153,0.5)]"
+                                        : "bg-gradient-to-r from-purple-500 to-emerald-400"
+                                    )}
+                                    style={{ width: `${memberProgressPct}%` }}
+                                  >
+                                    {isRunning && (
+                                      <div className="absolute right-0 top-0 bottom-0 w-2 bg-white/90 blur-[1px] shadow-[0_0_6px_#34d399]" />
+                                    )}
+                                  </div>
+                                </div>
                               </div>
                             </div>
                           )}
@@ -1929,6 +2008,99 @@ export function UserbotCampaignPage() {
                 <X className="size-5" />
               </button>
             </div>
+
+            {(() => {
+              const activeCamp = campaigns.find((c: any) => c.id === viewLogCampaignId);
+              if (!activeCamp) return null;
+              const sentG =
+                activeCamp.sentGroupCount ??
+                (activeCamp.targetMode === "GROUP_ONLY"
+                  ? activeCamp.sentCount
+                  : activeCamp.targetMode === "MEMBERS_DM"
+                  ? 0
+                  : Math.min(activeCamp.sentCount, activeCamp.totalTarget));
+              const sentM =
+                activeCamp.sentMemberCount ??
+                (activeCamp.targetMode === "MEMBERS_DM"
+                  ? activeCamp.sentCount
+                  : activeCamp.targetMode === "BOTH"
+                  ? Math.max(0, activeCamp.sentCount - sentG)
+                  : 0);
+              const tM = (activeCamp.totalTarget || 1) * (activeCamp.maxMembersPerRun || 30);
+              const mPct = tM > 0 ? Math.min(100, Math.round((sentM / tM) * 100)) : 0;
+              const gPct =
+                activeCamp.totalTarget > 0
+                  ? Math.min(100, Math.round((sentG / activeCamp.totalTarget) * 100))
+                  : 0;
+              const isCampRunning = activeCamp.status === "RUNNING";
+
+              return (
+                <div className="rounded-2xl border border-purple-500/25 bg-gradient-to-br from-purple-950/40 via-slate-900/60 to-slate-950 p-4 space-y-3 shadow-xl">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <span className="font-black text-sm text-white">{activeCamp.name}</span>
+                      <span
+                        className={cn(
+                          "rounded-full px-2.5 py-0.5 text-[9px] font-black uppercase tracking-wider",
+                          isCampRunning
+                            ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 animate-pulse"
+                            : "bg-slate-700/50 text-slate-300"
+                        )}
+                      >
+                        {activeCamp.status}
+                      </span>
+                    </div>
+
+                    {activeCamp.targetMode === "MEMBERS_DM" || activeCamp.targetMode === "BOTH" ? (
+                      <div className="flex items-center gap-1.5 text-xs font-mono font-bold">
+                        <span className="text-slate-400">Đã gửi:</span>
+                        <strong className="text-emerald-400 text-sm font-black">{sentM}</strong>
+                        <span className="text-slate-400">/{tM} người</span>
+                        <span className="text-purple-400 font-black">({mPct}%)</span>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-1.5 text-xs font-mono font-bold">
+                        <span className="text-slate-400">Nhóm:</span>
+                        <strong className="text-orange-400 text-sm font-black">{sentG}</strong>
+                        <span className="text-slate-400">/{activeCamp.totalTarget} ({gPct}%)</span>
+                      </div>
+                    )}
+                  </div>
+
+                  {(activeCamp.targetMode === "MEMBERS_DM" || activeCamp.targetMode === "BOTH") && (
+                    <div className="space-y-1.5">
+                      <div className="relative h-2.5 w-full rounded-full bg-slate-950 border border-purple-500/30 overflow-hidden shadow-inner p-[1px]">
+                        <div
+                          className={cn(
+                            "h-full rounded-full transition-all duration-500 ease-out relative",
+                            isCampRunning
+                              ? "bg-gradient-to-r from-purple-600 via-fuchsia-500 to-emerald-400 shadow-[0_0_15px_rgba(168,85,247,0.7)]"
+                              : "bg-gradient-to-r from-purple-600 to-emerald-500"
+                          )}
+                          style={{ width: `${mPct}%` }}
+                        >
+                          {isCampRunning && (
+                            <>
+                              <div className="absolute inset-0 bg-white/30 animate-pulse" />
+                              <div className="absolute right-0 top-0 bottom-0 w-3 bg-white/90 blur-[2px] rounded-full shadow-[0_0_10px_#34d399]" />
+                            </>
+                          )}
+                        </div>
+                      </div>
+                      <div className="flex items-center justify-between text-[10px] text-slate-400">
+                        <span>👥 Gửi riêng thành viên nhóm ({activeCamp.maxMembersPerRun || 30} người/nhóm)</span>
+                        {isCampRunning && (
+                          <span className="text-emerald-400 font-bold animate-pulse flex items-center gap-1">
+                            <span className="size-1.5 rounded-full bg-emerald-400 animate-ping inline-block" />
+                            Đang xử lý real-time...
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
 
             <div className="flex-1 overflow-y-auto space-y-2 rounded-xl bg-black/90 p-4 font-mono text-xs text-slate-200 custom-scrollbar">
               {campaignLogs.length === 0 ? (
