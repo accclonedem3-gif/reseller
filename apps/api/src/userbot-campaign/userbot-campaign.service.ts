@@ -460,7 +460,12 @@ export class UserbotCampaignService {
 
     try {
       await client.connect();
-      const dialogs = await client.getDialogs({ limit: 200 });
+      // Quét toàn bộ hộp thoại (tối đa 500) và cả thư mục Lưu Trữ (Archived)
+      const [mainDialogs, archivedDialogs] = await Promise.all([
+        client.getDialogs({ limit: 500 }),
+        client.getDialogs({ folder: 1, limit: 200 }).catch(() => []),
+      ]);
+      const dialogs = [...mainDialogs, ...archivedDialogs];
 
       const groupRecords: Array<{
         sessionId: string;
@@ -473,7 +478,14 @@ export class UserbotCampaignService {
         hasTopics: boolean;
       }> = [];
 
+      const seenChatIds = new Set<string>();
+
       for (const dialog of dialogs) {
+        if (!dialog.id) continue;
+        const idStr = dialog.id.toString();
+        if (seenChatIds.has(idStr)) continue;
+        seenChatIds.add(idStr);
+
         if (dialog.isGroup || dialog.isChannel) {
           const entity = dialog.entity as any;
           if (entity) {
