@@ -732,31 +732,75 @@ export class UserbotCampaignService {
       orderBy: { createdAt: "desc" },
     });
 
-    return campaigns.map((c) => ({
-      id: c.id,
-      name: c.name,
-      status: c.status,
-      sessionId: c.sessionId,
-      sessionPhoneNumber: c.session.phoneNumber,
-      templateId: c.templateId,
-      templateName: c.template.name,
-      templateType: c.template.type,
-      targetMode: c.targetMode,
-      targetGroupIds: c.targetGroupIds,
-      targetTopics: c.targetTopics,
-      maxMembersPerRun: c.maxMembersPerRun,
-      delaySeconds: c.delaySeconds,
-      totalTarget: c.totalTarget,
-      sentCount: c.sentCount,
-      failedCount: c.failedCount,
-      scheduleTime: c.scheduleTime,
-      isRecurring: c.isRecurring,
-      repeatIntervalHours: c.repeatIntervalHours,
-      lastRunAt: c.lastRunAt,
-      nextRunAt: c.nextRunAt,
-      createdAt: c.createdAt,
-      updatedAt: c.updatedAt,
-    }));
+    const campaignIds = campaigns.map((c) => c.id);
+    const logCounts =
+      campaignIds.length > 0
+        ? await this.prisma.telegramUserCampaignLog.groupBy({
+            by: ["campaignId", "targetType", "status"],
+            where: { campaignId: { in: campaignIds } },
+            _count: { _all: true },
+          })
+        : [];
+
+    return campaigns.map((c) => {
+      const campaignLogStats = logCounts.filter((l) => l.campaignId === c.id);
+      let sentGroupCount = 0;
+      let failedGroupCount = 0;
+      let sentMemberCount = 0;
+      let failedMemberCount = 0;
+
+      for (const row of campaignLogStats) {
+        const isMember = row.targetType === "MEMBER";
+        const count = row._count._all;
+        if (row.status === "SUCCESS") {
+          if (isMember) sentMemberCount += count;
+          else sentGroupCount += count;
+        } else if (row.status === "FAILED") {
+          if (isMember) failedMemberCount += count;
+          else failedGroupCount += count;
+        }
+      }
+
+      if (campaignLogStats.length === 0) {
+        if (c.targetMode === "MEMBERS_DM") {
+          sentMemberCount = c.sentCount;
+          failedMemberCount = c.failedCount;
+        } else {
+          sentGroupCount = c.sentCount;
+          failedGroupCount = c.failedCount;
+        }
+      }
+
+      return {
+        id: c.id,
+        name: c.name,
+        status: c.status,
+        sessionId: c.sessionId,
+        sessionPhoneNumber: c.session.phoneNumber,
+        templateId: c.templateId,
+        templateName: c.template.name,
+        templateType: c.template.type,
+        targetMode: c.targetMode,
+        targetGroupIds: c.targetGroupIds,
+        targetTopics: c.targetTopics,
+        maxMembersPerRun: c.maxMembersPerRun,
+        delaySeconds: c.delaySeconds,
+        totalTarget: c.totalTarget,
+        sentCount: c.sentCount,
+        failedCount: c.failedCount,
+        sentGroupCount,
+        failedGroupCount,
+        sentMemberCount,
+        failedMemberCount,
+        scheduleTime: c.scheduleTime,
+        isRecurring: c.isRecurring,
+        repeatIntervalHours: c.repeatIntervalHours,
+        lastRunAt: c.lastRunAt,
+        nextRunAt: c.nextRunAt,
+        createdAt: c.createdAt,
+        updatedAt: c.updatedAt,
+      };
+    });
   }
 
   async createCampaign(user: AuthenticatedUser, dto: CreateUserbotCampaignDto) {

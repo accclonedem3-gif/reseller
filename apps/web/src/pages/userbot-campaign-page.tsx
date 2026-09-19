@@ -646,7 +646,7 @@ export function UserbotCampaignPage() {
                   <th className="px-4 py-3">Trạng thái</th>
                   <th className="px-4 py-3">Tài khoản Telegram</th>
                   <th className="px-4 py-3">Mẫu tin</th>
-                  <th className="px-4 py-3">Tiến độ (nhóm)</th>
+                  <th className="px-4 py-3">Tiến độ phát tin</th>
                   <th className="px-4 py-3">OK / Lỗi</th>
                   <th className="px-4 py-3">Delay</th>
                   <th className="px-4 py-3">Lịch / Vòng lặp</th>
@@ -662,13 +662,33 @@ export function UserbotCampaignPage() {
                   </tr>
                 ) : (
                   campaigns.map((item: any) => {
-                    const progressPct =
-                      item.totalTarget > 0 ? Math.min(100, Math.round((item.sentCount / item.totalTarget) * 100)) : 0;
+                    const sentGroups =
+                      item.sentGroupCount ??
+                      (item.targetMode === "GROUP_ONLY"
+                        ? item.sentCount
+                        : item.targetMode === "MEMBERS_DM"
+                        ? 0
+                        : Math.min(item.sentCount, item.totalTarget));
+                    const failedGroups =
+                      item.failedGroupCount ?? (item.targetMode === "GROUP_ONLY" ? item.failedCount : 0);
+                    const sentMembers =
+                      item.sentMemberCount ??
+                      (item.targetMode === "MEMBERS_DM"
+                        ? item.sentCount
+                        : item.targetMode === "BOTH"
+                        ? Math.max(0, item.sentCount - sentGroups)
+                        : 0);
+                    const failedMembers =
+                      item.failedMemberCount ?? (item.targetMode === "MEMBERS_DM" ? item.failedCount : 0);
+
+                    const groupProgressPct =
+                      item.totalTarget > 0 ? Math.min(100, Math.round((sentGroups / item.totalTarget) * 100)) : 0;
+
                     return (
                       <tr key={item.id} className="transition hover:bg-slate-500/5">
                         <td className="px-4 py-3.5">
                           <div className="font-bold text-[var(--tx)]">{item.name}</div>
-                          <div className="flex items-center gap-1 mt-1">
+                          <div className="flex items-center gap-1.5 mt-1 flex-wrap">
                             {item.targetMode === "MEMBERS_DM" ? (
                               <span className="inline-flex items-center gap-1 rounded-md bg-purple-500/10 border border-purple-500/20 px-1.5 py-0.5 text-[9px] font-black uppercase text-purple-400">
                                 <MessageSquare className="size-2.5" />
@@ -683,6 +703,12 @@ export function UserbotCampaignPage() {
                               <span className="inline-flex items-center gap-1 rounded-md bg-slate-500/10 border border-slate-500/20 px-1.5 py-0.5 text-[9px] font-black uppercase text-[var(--tx-f)]">
                                 <Users className="size-2.5" />
                                 Nhóm
+                              </span>
+                            )}
+                            {sentMembers > 0 && (
+                              <span className="inline-flex items-center gap-1 rounded-md bg-emerald-500/10 border border-emerald-500/30 px-1.5 py-0.5 text-[9px] font-black uppercase text-emerald-400">
+                                <CheckCircle2 className="size-2.5" />
+                                {sentMembers} Mem OK
                               </span>
                             )}
                           </div>
@@ -703,23 +729,91 @@ export function UserbotCampaignPage() {
                         </td>
                         <td className="px-4 py-3.5 text-xs text-[var(--tx-m)]">{item.sessionPhoneNumber}</td>
                         <td className="px-4 py-3.5 text-xs text-[var(--tx-m)]">{item.templateName}</td>
-                        <td className="px-4 py-3.5 min-w-[140px]">
-                          <div className="space-y-1">
-                            <div className="flex justify-between text-[10px] font-black text-[var(--tx-f)]">
-                              <span>{progressPct}%</span>
-                              <span>{item.sentCount}/{item.totalTarget}</span>
+                        <td className="px-4 py-3.5 min-w-[150px]">
+                          {item.targetMode === "GROUP_ONLY" ? (
+                            <div className="space-y-1">
+                              <div className="flex justify-between text-[10px] font-black text-[var(--tx-f)]">
+                                <span>{groupProgressPct}%</span>
+                                <span>{sentGroups}/{item.totalTarget} Nhóm</span>
+                              </div>
+                              <div className="h-1.5 w-full rounded-full bg-slate-500/20 overflow-hidden">
+                                <div
+                                  className="h-full bg-orange-500 transition-all duration-300"
+                                  style={{ width: `${groupProgressPct}%` }}
+                                />
+                              </div>
                             </div>
-                            <div className="h-1.5 w-full rounded-full bg-slate-500/20 overflow-hidden">
-                              <div
-                                className="h-full bg-orange-500 transition-all duration-300"
-                                style={{ width: `${progressPct}%` }}
-                              />
+                          ) : item.targetMode === "MEMBERS_DM" ? (
+                            <div className="space-y-1">
+                              <div className="flex justify-between text-[10px] font-black">
+                                <span className="text-purple-400 font-bold flex items-center gap-1">
+                                  <MessageSquare className="size-2.5" />
+                                  {sentMembers} Mem thành công
+                                </span>
+                                <span className="text-[var(--tx-f)]">{item.totalTarget} nhóm</span>
+                              </div>
+                              <div className="h-1.5 w-full rounded-full bg-slate-500/20 overflow-hidden">
+                                <div
+                                  className="h-full bg-purple-500 transition-all duration-300"
+                                  style={{ width: sentMembers > 0 ? "100%" : "0%" }}
+                                />
+                              </div>
                             </div>
-                          </div>
+                          ) : (
+                            <div className="space-y-1.5">
+                              <div className="space-y-1">
+                                <div className="flex justify-between text-[10px] font-black text-[var(--tx-f)]">
+                                  <span>Nhóm: {groupProgressPct}%</span>
+                                  <span>{sentGroups}/{item.totalTarget}</span>
+                                </div>
+                                <div className="h-1.5 w-full rounded-full bg-slate-500/20 overflow-hidden">
+                                  <div
+                                    className="h-full bg-orange-500 transition-all duration-300"
+                                    style={{ width: `${groupProgressPct}%` }}
+                                  />
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-1 text-[10px] font-bold text-purple-400">
+                                <Users className="size-3 text-purple-400 shrink-0" />
+                                <span>DM: <strong className="text-emerald-400">{sentMembers}</strong> Mem OK</span>
+                              </div>
+                            </div>
+                          )}
                         </td>
                         <td className="px-4 py-3.5 text-xs font-bold">
-                          <span className="text-emerald-500">{item.sentCount}</span> /{" "}
-                          <span className="text-rose-500">{item.failedCount}</span>
+                          {item.targetMode === "GROUP_ONLY" ? (
+                            <div>
+                              <span className="text-emerald-500">{sentGroups}</span> /{" "}
+                              <span className="text-rose-500">{failedGroups}</span>
+                            </div>
+                          ) : item.targetMode === "MEMBERS_DM" ? (
+                            <div className="space-y-0.5">
+                              <div className="text-emerald-400">
+                                <span className="font-black">{sentMembers}</span>{" "}
+                                <span className="text-[10px] text-[var(--tx-m)] font-normal">mem OK</span>
+                              </div>
+                              {failedMembers > 0 && (
+                                <div className="text-rose-500 text-[10px]">
+                                  {failedMembers} lỗi
+                                </div>
+                              )}
+                            </div>
+                          ) : (
+                            <div className="space-y-1">
+                              <div className="flex items-center gap-1.5">
+                                <span className="text-[9px] uppercase font-bold text-[var(--tx-f)]">Nhóm:</span>
+                                <span className="text-emerald-500">{sentGroups}</span> /{" "}
+                                <span className="text-rose-500">{failedGroups}</span>
+                              </div>
+                              <div className="flex items-center gap-1.5">
+                                <span className="text-[9px] uppercase font-bold text-purple-400">Mem:</span>
+                                <span className="text-emerald-400 font-bold">{sentMembers} OK</span>
+                                {failedMembers > 0 && (
+                                  <span className="text-rose-500 text-[10px]">/ {failedMembers} lỗi</span>
+                                )}
+                              </div>
+                            </div>
+                          )}
                         </td>
                         <td className="px-4 py-3.5 text-xs text-[var(--tx-m)]">{item.delaySeconds}s</td>
                         <td className="px-4 py-3.5 text-xs text-[var(--tx-m)]">
