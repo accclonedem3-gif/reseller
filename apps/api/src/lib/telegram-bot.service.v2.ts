@@ -57,6 +57,7 @@ import {
 } from "./bot-session.store";
 import { BotRenderHelpers, BotLanguage } from "./bot-render.helpers";
 import { CacheService } from "./cache.service";
+import { BotTranslationService } from "./bot-translation.service";
 import {
   hasValidCustomerEmailList,
   parseCustomerEmailList,
@@ -352,6 +353,8 @@ export class TelegramBotService {
     private readonly render: BotRenderHelpers,
     @Inject(CacheService)
     private readonly cache: CacheService,
+    @Inject(BotTranslationService)
+    private readonly translation: BotTranslationService,
   ) {}
 
   // Anti-abuse flood control thresholds (per shop+Telegram user, Redis fixed windows).
@@ -3152,7 +3155,11 @@ export class TelegramBotService {
     const lines = [`📁 ${group.name}`];
     const groupDescription = group.description?.trim();
     if (groupDescription) {
-      lines.push("", groupDescription);
+      const translatedGroupDesc = await this.translation.translateText(
+        groupDescription,
+        language,
+      );
+      lines.push("", translatedGroupDesc);
     }
     lines.push(
       "",
@@ -3160,7 +3167,9 @@ export class TelegramBotService {
         ? "Choose a product to view details."
         : language === "th"
           ? "เลือกสินค้าเพื่อดูรายละเอียด"
-          : "Chọn sản phẩm để xem chi tiết.",
+          : language === "zh"
+            ? "选择商品以查看详情。"
+            : "Chọn sản phẩm để xem chi tiết.",
     );
 
     const customGroupRefreshRow = [
@@ -8891,13 +8900,56 @@ export class TelegramBotService {
       cust?.buttonEmojiIds && typeof cust.buttonEmojiIds === "object"
         ? (cust.buttonEmojiIds as Record<string, string>)
         : {};
-    const productNoteRaw =
-      productNoteMap[language]?.trim() || productNoteMap["vi"]?.trim() || "";
+    const sellerDescription = selection.description?.trim() || "";
+    const sourceDescription = selection.providerDescription?.trim() || "";
+    const regularDescriptionRaw =
+      selection.sourceDescriptionLocked || !sourceDescription
+        ? sellerDescription
+        : "";
+    const providerDescriptionRaw = selection.sourceDescriptionLocked
+      ? ""
+      : sourceDescription;
+    const deliveryFormatHintRaw =
+      (selection as any).deliveryFormatHint?.trim() || "";
+
+    const userNoteRaw = productNoteMap[language]?.trim() || "";
+    const fallbackNoteRaw = productNoteMap["vi"]?.trim() || "";
+    const noteNeedsTranslation =
+      !userNoteRaw && !!fallbackNoteRaw && language !== "vi";
+    const noteToTranslate = noteNeedsTranslation
+      ? fallbackNoteRaw
+      : userNoteRaw || fallbackNoteRaw;
+
+    const [
+      regularDescription,
+      providerDescription,
+      deliveryFormatHint,
+      finalProductNoteRaw,
+      translatedTitle,
+    ] = await Promise.all([
+      regularDescriptionRaw
+        ? this.translation.translateText(regularDescriptionRaw, language)
+        : Promise.resolve(""),
+      providerDescriptionRaw
+        ? this.translation.translateText(providerDescriptionRaw, language)
+        : Promise.resolve(""),
+      deliveryFormatHintRaw
+        ? this.translation.translateText(deliveryFormatHintRaw, language)
+        : Promise.resolve(""),
+      noteNeedsTranslation
+        ? this.translation.translateText(noteToTranslate, language)
+        : Promise.resolve(noteToTranslate),
+      language !== "vi" && selection.displayName?.trim()
+        ? this.translation.translateText(selection.displayName.trim(), language)
+        : Promise.resolve(""),
+    ]);
+
     const productNoteEmojiIdRaw = msgEmojiIds["productNote"]?.trim() || "";
     const productNoteEmojiId = /^\d+$/.test(productNoteEmojiIdRaw)
       ? productNoteEmojiIdRaw
       : "";
-    const safeProductNote = this.render.sanitizeTelegramHtml(productNoteRaw);
+    const safeProductNote =
+      this.render.sanitizeTelegramHtml(finalProductNoteRaw);
     const productNote = safeProductNote
       ? productNoteEmojiId
         ? `<tg-emoji emoji-id="${productNoteEmojiId}">💬</tg-emoji> ${safeProductNote}`
@@ -8912,10 +8964,9 @@ export class TelegramBotService {
     const staticEmojiChar =
       customEmoji?.char ||
       this.resolveProductEmoji(selection.displayName, selection.sourceName);
-    const localizedName = this.localizeProductName(
-      selection.displayName,
-      language,
-    );
+    const localizedName =
+      translatedTitle ||
+      this.localizeProductName(selection.displayName, language);
     const priceStr = this.formatBotMoneyWithUsdOverride(
       selection.salePrice,
       (selection as any).salePriceUsd,
@@ -8927,7 +8978,9 @@ export class TelegramBotService {
         ? `Pre-order (+${selection.preorderFeePercent ?? 0}% fee)`
         : language === "th"
           ? `สั่งจองล่วงหน้า (+${selection.preorderFeePercent ?? 0}%)`
-          : `Đặt trước (+${selection.preorderFeePercent ?? 0}% phí)`
+          : language === "zh"
+            ? `预订 (+${selection.preorderFeePercent ?? 0}% 费用)`
+            : `Đặt trước (+${selection.preorderFeePercent ?? 0}% phí)`
       : selection.available === null
         ? "∞"
         : String(Math.max(0, selection.available));
@@ -8988,7 +9041,9 @@ export class TelegramBotService {
         ? `🕒 This item is out of stock. Enter the quantity to pre-order. A ${selection.preorderFeePercent ?? 0}% fee applies; paid orders are delivered automatically in FIFO order when stock arrives.`
         : language === "th"
           ? `🕒 สินค้าหมด กรุณาระบุจำนวนที่ต้องการจอง มีค่าจอง ${selection.preorderFeePercent ?? 0}% และบอทจะจัดส่งอัตโนมัติตามลำดับ FIFO เมื่อมีสินค้า`
-          : `🕒 Sản phẩm đang hết hàng. Nhập số lượng muốn đặt trước. Phí đặt trước ${selection.preorderFeePercent ?? 0}%; đơn đã thanh toán sẽ được bot tự giao theo thứ tự FIFO khi có hàng.`
+          : language === "zh"
+            ? `🕒 该商品缺货。请输入您要预订的数量。预订费为 ${selection.preorderFeePercent ?? 0}%；已付款的订单将在有货时按先进先出（FIFO）顺序自动发货。`
+            : `🕒 Sản phẩm đang hết hàng. Nhập số lượng muốn đặt trước. Phí đặt trước ${selection.preorderFeePercent ?? 0}%; đơn đã thanh toán sẽ được bot tự giao theo thứ tự FIFO khi có hàng.`
       : "";
     const nextStepPromptBase = selection.requiresCustomerEmail
       ? this.buildCustomerEmailPromptText(selection.maxQuantity, language)
@@ -9001,18 +9056,6 @@ export class TelegramBotService {
     const hasLabelEmojis = Object.values(labelEmojiIds).some((v) =>
       /^\d+$/.test(v?.trim() || ""),
     );
-    const sellerDescription = selection.description?.trim() || "";
-    const sourceDescription = selection.providerDescription?.trim() || "";
-    // Once a reseller explicitly edits (or clears) the description, their choice is
-    // authoritative. Otherwise show the provider copy, falling back to sourceDescription
-    // for providers that do not expose a separate providerDescription metadata field.
-    const regularDescription =
-      selection.sourceDescriptionLocked || !sourceDescription
-        ? sellerDescription
-        : "";
-    const providerDescription = selection.sourceDescriptionLocked
-      ? ""
-      : sourceDescription;
     // Force HTML mode when a description exists so Telegram formatting renders safely.
     const useHtml = !!(
       dbEmojiId ||
@@ -9043,33 +9086,53 @@ export class TelegramBotService {
       }
 
       const priceLabel =
-        language === "en" ? "Price" : language === "th" ? "ราคา" : "Giá";
+        language === "en"
+          ? "Price"
+          : language === "th"
+            ? "ราคา"
+            : language === "zh"
+              ? "价格"
+              : "Giá";
       const stockLabelText =
         language === "en"
           ? "In stock"
           : language === "th"
             ? "ในคลัง"
-            : "Tồn kho";
+            : language === "zh"
+              ? "库存"
+              : "Tồn kho";
       const soldLabel =
-        language === "en" ? "Sold" : language === "th" ? "ขายแล้ว" : "Đã bán";
+        language === "en"
+          ? "Sold"
+          : language === "th"
+            ? "ขายแล้ว"
+            : language === "zh"
+              ? "已售"
+              : "Đã bán";
       const descLabel =
         language === "en"
           ? "Description"
           : language === "th"
             ? "รายละเอียด"
-            : "Mô tả";
+            : language === "zh"
+              ? "描述"
+              : "Mô tả";
       const unitLabel =
         language === "en"
           ? "accounts"
           : language === "th"
             ? "บัญชี"
-            : "tài khoản";
+            : language === "zh"
+              ? "个账号"
+              : "tài khoản";
       const formatLabel =
         language === "en"
           ? "Format"
           : language === "th"
             ? "รูปแบบ"
-            : "Định dạng";
+            : language === "zh"
+              ? "格式"
+              : "Định dạng";
 
       const escFn = useHtml
         ? (s: string) => this.escapeHtml(s)
@@ -9084,10 +9147,10 @@ export class TelegramBotService {
         `${mkLabel("sold", "📊")} ${soldLabel}: ${selection.soldCount ?? 0} ${unitLabel}`,
       );
 
-      if ((selection as any).deliveryFormatHint?.trim()) {
+      if (deliveryFormatHint) {
         lines.push(
           ``,
-          `${mkLabel("format", "🔑")} ${formatLabel}: ${escFn((selection as any).deliveryFormatHint.trim())}`,
+          `${mkLabel("format", "🔑")} ${formatLabel}: ${escFn(deliveryFormatHint)}`,
         );
       }
       if (regularDescription) {
@@ -9176,33 +9239,53 @@ export class TelegramBotService {
     } else {
       // Full-detail text message (no photo)
       const priceLabel =
-        language === "en" ? "Price" : language === "th" ? "ราคา" : "Giá";
+        language === "en"
+          ? "Price"
+          : language === "th"
+            ? "ราคา"
+            : language === "zh"
+              ? "价格"
+              : "Giá";
       const stockLabelText =
         language === "en"
           ? "In stock"
           : language === "th"
             ? "ในคลัง"
-            : "Tồn kho";
+            : language === "zh"
+              ? "库存"
+              : "Tồn kho";
       const soldLabel =
-        language === "en" ? "Sold" : language === "th" ? "ขายแล้ว" : "Đã bán";
+        language === "en"
+          ? "Sold"
+          : language === "th"
+            ? "ขายแล้ว"
+            : language === "zh"
+              ? "已售"
+              : "Đã bán";
       const descLabel =
         language === "en"
           ? "Description"
           : language === "th"
             ? "รายละเอียด"
-            : "Mô tả";
+            : language === "zh"
+              ? "描述"
+              : "Mô tả";
       const unitLabel =
         language === "en"
           ? "accounts"
           : language === "th"
             ? "บัญชี"
-            : "tài khoản";
+            : language === "zh"
+              ? "个账号"
+              : "tài khoản";
       const formatLabel =
         language === "en"
           ? "Format"
           : language === "th"
             ? "รูปแบบ"
-            : "Định dạng";
+            : language === "zh"
+              ? "格式"
+              : "Định dạng";
 
       const escFn = useHtml
         ? (s: string) => this.escapeHtml(s)
@@ -9232,10 +9315,10 @@ export class TelegramBotService {
         `${mkLabel("sold", "📊")} ${soldLabel}: ${selection.soldCount ?? 0} ${unitLabel}`,
       );
 
-      if ((selection as any).deliveryFormatHint?.trim()) {
+      if (deliveryFormatHint) {
         textLines.push(
           ``,
-          `${mkLabel("format", "🔑")} ${formatLabel}: ${escFn((selection as any).deliveryFormatHint.trim())}`,
+          `${mkLabel("format", "🔑")} ${formatLabel}: ${escFn(deliveryFormatHint)}`,
         );
       }
       if (regularDescription) {
@@ -9384,7 +9467,9 @@ export class TelegramBotService {
           ? "… (truncated)"
           : language === "th"
             ? "… (ย่อ)"
-            : "… (đã rút gọn)";
+            : language === "zh"
+              ? "… (已截断)"
+              : "… (đã rút gọn)";
       descLines.push(escFn(more));
     }
     return `<blockquote>${descLines.join("\n")}</blockquote>`;

@@ -45,6 +45,7 @@ import { TelegramBotService } from "./lib/telegram-bot.service.v2";
 import { TelegramClientService } from "./lib/telegram-client.service";
 import { BotSessionStore } from "./lib/bot-session.store";
 import { BotRenderHelpers } from "./lib/bot-render.helpers";
+import { BotTranslationService } from "./lib/bot-translation.service";
 import { OrdersController } from "./orders/orders.controller";
 import { OrdersService } from "./orders/orders.service";
 import { ProductsController } from "./products/products.controller";
@@ -187,6 +188,7 @@ const globalRateLimitStorage = new RedisThrottlerStorage(
     TelegramClientService,
     BotSessionStore,
     BotRenderHelpers,
+    BotTranslationService,
     TelegramBotService,
     AuthService,
     ShopsService,
