@@ -180,6 +180,126 @@ export async function sweepScheduledBroadcasts(broadcastQueue: Queue): Promise<v
   }
 }
 
+export class TelegramBroadcastRateLimiter {
+  private tokens: number;
+  private readonly maxTokens: number;
+  private readonly refillRatePerMs: number;
+  private lastRefill: number;
+  private queue: Array<() => void> = [];
+  private timer: NodeJS.Timeout | null = null;
+  private penaltyUntil: number = 0;
+
+  constructor(messagesPerSecond: number = 25) {
+    this.maxTokens = messagesPerSecond;
+    this.tokens = messagesPerSecond;
+    this.refillRatePerMs = messagesPerSecond / 1000;
+    this.lastRefill = Date.now();
+  }
+
+  private refill() {
+    const now = Date.now();
+    if (now < this.penaltyUntil) {
+      return;
+    }
+    const effectiveStart = Math.max(this.lastRefill, this.penaltyUntil);
+    const elapsed = now - effectiveStart;
+    if (elapsed > 0) {
+      this.tokens = Math.min(this.maxTokens, this.tokens + elapsed * this.refillRatePerMs);
+      this.lastRefill = now;
+    }
+  }
+
+  penalize(durationMs: number) {
+    const now = Date.now();
+    this.penaltyUntil = Math.max(this.penaltyUntil, now + durationMs);
+    this.tokens = 0;
+    this.lastRefill = this.penaltyUntil;
+  }
+
+  async acquire(): Promise<void> {
+    this.refill();
+    const now = Date.now();
+    if (now >= this.penaltyUntil && this.tokens >= 1) {
+      this.tokens -= 1;
+      return;
+    }
+
+    return new Promise<void>((resolve) => {
+      this.queue.push(resolve);
+      this.schedule();
+    });
+  }
+
+  private schedule() {
+    if (this.timer || this.queue.length === 0) return;
+    const now = Date.now();
+    this.refill();
+    if (now >= this.penaltyUntil && this.tokens >= 1) {
+      this.tokens -= 1;
+      const next = this.queue.shift();
+      if (next) next();
+      if (this.queue.length > 0) {
+        this.schedule();
+      }
+      return;
+    }
+
+    let waitMs = 20;
+    if (now < this.penaltyUntil) {
+      waitMs = Math.max(20, this.penaltyUntil - now);
+    } else {
+      waitMs = Math.max(20, Math.ceil((1 - this.tokens) / this.refillRatePerMs));
+    }
+
+    this.timer = setTimeout(() => {
+      this.timer = null;
+      this.schedule();
+    }, waitMs);
+  }
+}
+
+interface BroadcastLogBufferItem {
+  customerId: string;
+  status: "SENT" | "FAILED";
+  errorMessage?: string;
+  sentAt: Date;
+}
+
+async function flushBroadcastLogs(
+  broadcastId: string,
+  logs: BroadcastLogBufferItem[]
+): Promise<void> {
+  if (logs.length === 0) return;
+  try {
+    await prisma.$transaction(
+      logs.map((item) =>
+        prisma.broadcastLog.upsert({
+          where: {
+            broadcastId_customerId: {
+              broadcastId,
+              customerId: item.customerId,
+            },
+          },
+          update: {
+            status: item.status,
+            errorMessage: item.errorMessage || null,
+            sentAt: item.sentAt,
+          },
+          create: {
+            broadcastId,
+            customerId: item.customerId,
+            status: item.status,
+            errorMessage: item.errorMessage || null,
+            sentAt: item.sentAt,
+          },
+        })
+      )
+    );
+  } catch (err) {
+    console.error(`[broadcast] Failed to flush ${logs.length} logs for broadcast ${broadcastId}:`, err);
+  }
+}
+
 export async function processBroadcast(job: Job<{ broadcastId: string }>): Promise<void> {
   const broadcast = await prisma.broadcast.findUnique({
     where: { id: job.data.broadcastId },
@@ -254,95 +374,183 @@ export async function processBroadcast(job: Job<{ broadcastId: string }>): Promi
     return;
   }
 
-  let sentCount = broadcast.sentCount ?? 0;
-  let failedCount = 0;
   const messageText = broadcast.message.length > 4096
     ? broadcast.message.slice(0, 4093) + "..."
     : broadcast.message;
 
-  for (const customer of customers) {
-    if (alreadySentIds.has(customer.id)) continue;
-    if (!customer.telegramChatId || customer.telegramChatId === "0") continue;
+  const targetCustomers = customers.filter(
+    (c) => !alreadySentIds.has(c.id) && c.telegramChatId && c.telegramChatId !== "0"
+  );
+
+  if (targetCustomers.length === 0) {
+    console.log(`[broadcast] Broadcast ${broadcast.id} has no pending customers to send.`);
+    await prisma.broadcast.update({
+      where: { id: broadcast.id },
+      data: {
+        status: "COMPLETED",
+        sentAt: new Date(),
+        updatedAt: new Date(),
+      },
+    });
+    return;
+  }
+
+  const broadcastId = broadcast.id;
+  const broadcastImageUrl = broadcast.imageUrl;
+  const rateLimiter = new TelegramBroadcastRateLimiter(25);
+  const CONCURRENCY = Math.min(8, targetCustomers.length);
+
+  let sentDelta = 0;
+  let failedDelta = 0;
+  let sharedIndex = 0;
+  const logBuffer: BroadcastLogBufferItem[] = [];
+  let isFlushing = false;
+  let lastHeartbeatTime = Date.now();
+
+  const maybeFlush = async (force: boolean = false) => {
+    if (isFlushing) return;
+    const shouldFlush =
+      force ||
+      logBuffer.length >= 50 ||
+      (Date.now() - lastHeartbeatTime >= 4000 && logBuffer.length > 0);
+
+    if (!shouldFlush) return;
+
+    isFlushing = true;
+    const batch = logBuffer.splice(0, logBuffer.length);
+    const currSent = sentDelta;
+    const currFailed = failedDelta;
+    sentDelta = 0;
+    failedDelta = 0;
 
     try {
-      if (
-        botToken &&
-        !(
-          String(process.env.MOCK_TELEGRAM_MODE || "false") === "true" &&
-          isMockBotToken(botToken)
-        )
-      ) {
-        // Sleep 35ms between messages to comply with Telegram's 30 msgs/sec broadcast rate limit
-        await new Promise((r) => setTimeout(r, 35));
+      await flushBroadcastLogs(broadcastId, batch);
+      lastHeartbeatTime = Date.now();
+      await prisma.broadcast.update({
+        where: { id: broadcastId },
+        data: {
+          sentCount: { increment: currSent },
+          failedCount: { increment: currFailed },
+          updatedAt: new Date(),
+        },
+      });
+    } catch (e) {
+      console.error(`[broadcast] Heartbeat update error:`, e);
+      // Re-add deltas on error so counts don't get lost
+      sentDelta += currSent;
+      failedDelta += currFailed;
+    } finally {
+      isFlushing = false;
+    }
+  };
 
-        if (broadcast.imageUrl) {
-          const MAX_CAPTION = 1024;
-          try {
-            if (messageText.length <= MAX_CAPTION) {
-              await telegramSendPhoto(botToken, customer.telegramChatId, broadcast.imageUrl, {
-                caption: messageText,
-              });
-            } else {
-              await telegramSendPhoto(botToken, customer.telegramChatId, broadcast.imageUrl, {});
+  async function runWorker() {
+    while (true) {
+      const idx = sharedIndex++;
+      if (idx >= targetCustomers.length) break;
+      const customer = targetCustomers[idx];
+      if (!customer || !customer.telegramChatId) continue;
+
+      await rateLimiter.acquire();
+
+      try {
+        if (
+          botToken &&
+          !(
+            String(process.env.MOCK_TELEGRAM_MODE || "false") === "true" &&
+            isMockBotToken(botToken)
+          )
+        ) {
+          if (broadcastImageUrl) {
+            const MAX_CAPTION = 1024;
+            try {
+              if (messageText.length <= MAX_CAPTION) {
+                await telegramSendPhoto(botToken, customer.telegramChatId, broadcastImageUrl, {
+                  caption: messageText,
+                });
+              } else {
+                await telegramSendPhoto(botToken, customer.telegramChatId, broadcastImageUrl, {});
+                await telegramSendMessage(botToken, customer.telegramChatId, messageText);
+              }
+            } catch (photoError: any) {
+              const msg = photoError?.message || String(photoError);
+              if (msg.includes("retry_after") || msg.includes("429")) {
+                rateLimiter.penalize(3000);
+              }
+              console.warn(`[broadcast] Photo delivery failed for customer ${customer.id}, falling back to text: ${msg}`);
               await telegramSendMessage(botToken, customer.telegramChatId, messageText);
             }
-          } catch (photoError: any) {
-            console.warn(`[broadcast] Photo delivery failed for customer ${customer.id}, falling back to text: ${photoError?.message || photoError}`);
-            // Fallback to text message so recipients still receive the broadcast if image fails
+          } else {
             await telegramSendMessage(botToken, customer.telegramChatId, messageText);
           }
-        } else {
-          await telegramSendMessage(botToken, customer.telegramChatId, messageText);
         }
+
+        sentDelta += 1;
+        logBuffer.push({
+          customerId: customer.id,
+          status: "SENT",
+          sentAt: new Date(),
+        });
+      } catch (error: any) {
+        const errMsg = error instanceof Error ? error.message : String(error);
+        if (errMsg.includes("retry_after") || errMsg.includes("429")) {
+          rateLimiter.penalize(3000);
+        }
+        failedDelta += 1;
+        logBuffer.push({
+          customerId: customer.id,
+          status: "FAILED",
+          errorMessage: errMsg,
+          sentAt: new Date(),
+        });
       }
-      sentCount += 1;
-      await prisma.broadcastLog.upsert({
-        where: {
-          broadcastId_customerId: {
-            broadcastId: broadcast.id,
-            customerId: customer.id,
-          },
-        },
-        update: {
-          status: "SENT",
-          sentAt: new Date(),
-        },
-        create: {
-          broadcastId: broadcast.id,
-          customerId: customer.id,
-          status: "SENT",
-          sentAt: new Date(),
-        },
-      });
-    } catch (error) {
-      failedCount += 1;
-      await prisma.broadcastLog.upsert({
-        where: {
-          broadcastId_customerId: {
-            broadcastId: broadcast.id,
-            customerId: customer.id,
-          },
-        },
-        update: {
-          status: "FAILED",
-          errorMessage: error instanceof Error ? error.message : "Broadcast send failed.",
-        },
-        create: {
-          broadcastId: broadcast.id,
-          customerId: customer.id,
-          status: "FAILED",
-          errorMessage: error instanceof Error ? error.message : "Broadcast send failed.",
-        },
-      });
+
+      await maybeFlush(false);
     }
   }
+
+  // Execute all workers concurrently
+  await Promise.all(
+    Array.from({ length: CONCURRENCY }, () => runWorker())
+  );
+
+  // Final drain and flush
+  while (logBuffer.length > 0 || isFlushing) {
+    await maybeFlush(true);
+    if (logBuffer.length > 0) {
+      await new Promise((r) => setTimeout(r, 80));
+    }
+  }
+
+  if (sentDelta > 0 || failedDelta > 0) {
+    await prisma.broadcast.update({
+      where: { id: broadcast.id },
+      data: {
+        sentCount: { increment: sentDelta },
+        failedCount: { increment: failedDelta },
+        updatedAt: new Date(),
+      },
+    });
+    sentDelta = 0;
+    failedDelta = 0;
+  }
+
+  const finalRecord = await prisma.broadcast.findUnique({
+    where: { id: broadcast.id },
+    select: { sentCount: true, failedCount: true },
+  });
+
+  const totalSent = finalRecord?.sentCount ?? 0;
+  const totalFailed = finalRecord?.failedCount ?? 0;
+
   await prisma.broadcast.update({
     where: { id: broadcast.id },
     data: {
-      status: failedCount > 0 && sentCount === (broadcast.sentCount ?? 0) ? "FAILED" : "COMPLETED",
-      sentCount,
-      failedCount,
+      status: totalFailed > 0 && totalSent === 0 ? "FAILED" : "COMPLETED",
       sentAt: new Date(),
+      updatedAt: new Date(),
     },
   });
+
+  console.log(`[broadcast] Finished broadcast ${broadcast.id}: sent=${totalSent}, failed=${totalFailed}`);
 }

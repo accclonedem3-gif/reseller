@@ -8775,79 +8775,92 @@ export class TelegramBotService {
 
       if (customers.length === 0) break;
 
-      for (const customer of customers) {
-        for (const update of claimedUpdates) {
-          const product = productByExternalId.get(update.externalProductId);
+      const concurrency = Math.min(5, customers.length);
+      let customerIndex = 0;
+      const processCustomerNotifications = async () => {
+        while (true) {
+          const idx = customerIndex++;
+          if (idx >= customers.length) break;
+          const customer = customers[idx];
+          if (!customer) continue;
 
-          const customerLang = this.normalizeLanguage(
-            customer.preferredLanguage,
-          );
+          for (const update of claimedUpdates) {
+            const product = productByExternalId.get(update.externalProductId);
 
-          if (!product || product.hidden || !product.enabled) {
-            continue;
-          }
+            const customerLang = this.normalizeLanguage(
+              customer.preferredLanguage,
+            );
 
-          if (customerLang === "vi" && product.hiddenVi) continue;
-          if (customerLang === "en" && product.hiddenEn) continue;
+            if (!product || product.hidden || !product.enabled) {
+              continue;
+            }
 
-          const productName = this.localizeProductName(
-            product.displayName || update.displayName,
-            customerLang,
-          );
-          // Prefer the caller-provided snapshot (matches the price at the moment the restock
-          // event happened). Fall back to the current catalog salePrice only if the caller
-          // did not supply one — this covers manual-upload paths that don't have the
-          // per-product override handy at the time they call this method.
-          let priceForRender: number | null = null;
-          if (
-            update.price != null &&
-            Number.isFinite(update.price) &&
-            update.price > 0
-          ) {
-            priceForRender = Number(update.price);
-          } else {
-            const catalogPrice = Number((product as any)?.salePrice);
-            priceForRender =
-              Number.isFinite(catalogPrice) && catalogPrice > 0
-                ? catalogPrice
-                : null;
-          }
-          const rendered = renderRestockHtml(restockTemplate, {
-            productName,
-            addedQuantity: update.addedQuantity,
-            available: update.available,
-            price: priceForRender,
-            usdtVndRate: restockUsdtVndRate,
-            productIcon: product.productIcon ?? null,
-            productIconCustomEmojiId: product.iconCustomEmojiId ?? null,
-            language: customerLang === "zh" ? "en" : customerLang,
-          });
+            if (customerLang === "vi" && product.hiddenVi) continue;
+            if (customerLang === "en" && product.hiddenEn) continue;
 
-          await this.sendText(
-            token,
-            customer.telegramChatId,
-            rendered.text,
-            [],
-            {
-              inline_keyboard: [
-                [
-                  this.buildNavTextBtn(
-                    custDataNotif,
-                    "buyNow",
-                    "buyNow",
-                    `buy:${product.id}`,
-                    customerLang,
-                    canBlingNotif,
-                  ),
+            const productName = this.localizeProductName(
+              product.displayName || update.displayName,
+              customerLang,
+            );
+            // Prefer the caller-provided snapshot (matches the price at the moment the restock
+            // event happened). Fall back to the current catalog salePrice only if the caller
+            // did not supply one — this covers manual-upload paths that don't have the
+            // per-product override handy at the time they call this method.
+            let priceForRender: number | null = null;
+            if (
+              update.price != null &&
+              Number.isFinite(update.price) &&
+              update.price > 0
+            ) {
+              priceForRender = Number(update.price);
+            } else {
+              const catalogPrice = Number((product as any)?.salePrice);
+              priceForRender =
+                Number.isFinite(catalogPrice) && catalogPrice > 0
+                  ? catalogPrice
+                  : null;
+            }
+            const rendered = renderRestockHtml(restockTemplate, {
+              productName,
+              addedQuantity: update.addedQuantity,
+              available: update.available,
+              price: priceForRender,
+              usdtVndRate: restockUsdtVndRate,
+              productIcon: product.productIcon ?? null,
+              productIconCustomEmojiId: product.iconCustomEmojiId ?? null,
+              language: customerLang === "zh" ? "en" : customerLang,
+            });
+
+            await this.sendText(
+              token,
+              customer.telegramChatId,
+              rendered.text,
+              [],
+              {
+                inline_keyboard: [
+                  [
+                    this.buildNavTextBtn(
+                      custDataNotif,
+                      "buyNow",
+                      "buyNow",
+                      `buy:${product.id}`,
+                      customerLang,
+                      canBlingNotif,
+                    ),
+                  ],
                 ],
-              ],
-            },
-            rendered.hasHtml ? "HTML" : undefined,
-          ).catch(() => undefined);
+              },
+              rendered.hasHtml ? "HTML" : undefined,
+            ).catch(() => undefined);
 
-          sentCount += 1;
+            sentCount += 1;
+          }
         }
-      }
+      };
+
+      await Promise.all(
+        Array.from({ length: concurrency }, () => processCustomerNotifications()),
+      );
 
       if (customers.length < CHUNK) break;
       const last = customers[customers.length - 1];

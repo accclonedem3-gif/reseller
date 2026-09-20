@@ -131,8 +131,8 @@ export async function bootstrap(): Promise<void> {
     },
     {
       connection: redis,
-      concurrency: 2,
-      lockDuration: 300_000,
+      concurrency: 5,
+      lockDuration: 600_000,
       stalledInterval: 60_000,
       maxStalledCount: 1,
     }
