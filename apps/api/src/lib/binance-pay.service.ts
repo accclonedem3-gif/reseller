@@ -285,11 +285,15 @@ export class BinancePayService {
     currency: string;
     transactionTime: number;
     receipt?: string;
+    note?: string;
+    uid?: number | string;
     payerInfo: any;
     receiverInfo?: any;
   }[]> {
-    const timestamp = Date.now();
-    let queryString = `timestamp=${timestamp}&limit=100`;
+    // Offset by 1000ms to ensure timestamp is never ahead of Binance server time,
+    // and pass recvWindow=60000 to prevent error [-1021] Timestamp outside recvWindow
+    const timestamp = Date.now() - 1000;
+    let queryString = `recvWindow=60000&timestamp=${timestamp}&limit=100`;
 
     if (startTime) {
       queryString += `&startTime=${startTime}`;

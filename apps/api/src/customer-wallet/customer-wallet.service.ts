@@ -153,11 +153,15 @@ export class CustomerWalletService {
     });
 
     const externalOrderCode = generateExternalPaymentCode();
-    const isOnchain = input.providerOverride === PaymentProvider.USDT_TRC20
-      || input.providerOverride === PaymentProvider.USDT_BEP20
-      || input.providerOverride === PaymentProvider.USDT_SOL
-      || input.providerOverride === PaymentProvider.USDT_TON;
-    const expiresAt = new Date(Date.now() + (isOnchain ? TOPUP_EXPIRY_ONCHAIN_MS : TOPUP_EXPIRY_MS));
+    const isCrypto =
+      input.providerOverride === PaymentProvider.USDT_TRC20 ||
+      input.providerOverride === PaymentProvider.USDT_BEP20 ||
+      input.providerOverride === PaymentProvider.USDT_SOL ||
+      input.providerOverride === PaymentProvider.USDT_TON ||
+      input.providerOverride === PaymentProvider.BINANCE ||
+      input.providerOverride === PaymentProvider.BINANCE_PAY ||
+      input.providerOverride === PaymentProvider.OKX;
+    const expiresAt = new Date(Date.now() + (isCrypto ? TOPUP_EXPIRY_ONCHAIN_MS : TOPUP_EXPIRY_MS));
     const payment = await this.paymentService.createPaymentLink({
       shopId: input.shopId,
       externalOrderCode,

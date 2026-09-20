@@ -78,6 +78,50 @@ function testVisibilityHelper() {
   assert.ok(visibleBinancePay.includes(PaymentProvider.BINANCE_PAY));
 }
 
+function testBinanceIdCleaningAndValidation() {
+  function cleanBinanceId(text: string): string {
+    let clean = String(text || "").trim();
+    clean = clean.replace(
+      /^(order\s*id|transaction\s*id|txid|id\s*lệnh|mã\s*gd|mã\s*giao\s*dịch|mã\s*đơn|id)[\s:#=-]+/i,
+      "",
+    );
+    clean = clean.replace(/^[#`'"]+|[`'"]+$/g, "").trim();
+    return clean;
+  }
+
+  function isValidBinanceId(text: string): boolean {
+    const clean = cleanBinanceId(text);
+    return (
+      /^\d{15,25}$/.test(clean) ||
+      /^P_[A-Za-z0-9]{8,32}$/i.test(clean) ||
+      /^[A-Za-z0-9]{15,32}$/.test(clean)
+    );
+  }
+
+  // Valid Order IDs
+  assert.equal(cleanBinanceId("455414383483920384"), "455414383483920384");
+  assert.equal(isValidBinanceId("455414383483920384"), true);
+  assert.equal(cleanBinanceId("Order ID: 455414383483920384"), "455414383483920384");
+  assert.equal(isValidBinanceId("Order ID: 455414383483920384"), true);
+  assert.equal(cleanBinanceId("ID lệnh: 455414383483920384"), "455414383483920384");
+  assert.equal(isValidBinanceId("ID lệnh: 455414383483920384"), true);
+
+  // Valid Transaction IDs (starting with P_)
+  assert.equal(cleanBinanceId("P_A24H6BX6CEN71114"), "P_A24H6BX6CEN71114");
+  assert.equal(isValidBinanceId("P_A24H6BX6CEN71114"), true);
+  assert.equal(cleanBinanceId("Mã GD: P_A24H6BX6CEN71114"), "P_A24H6BX6CEN71114");
+  assert.equal(isValidBinanceId("Mã GD: P_A24H6BX6CEN71114"), true);
+  assert.equal(cleanBinanceId("`P_A24H6BX6CEN71114`"), "P_A24H6BX6CEN71114");
+  assert.equal(isValidBinanceId("`P_A24H6BX6CEN71114`"), true);
+
+  // Invalid IDs
+  assert.equal(isValidBinanceId("hello bot"), false);
+  assert.equal(isValidBinanceId("/start"), false);
+  assert.equal(isValidBinanceId("123"), false);
+}
+
 testCryptoProvidersFilter();
 testVisibilityHelper();
+testBinanceIdCleaningAndValidation();
 console.log("All wallet topup Binance tests passed!");
+

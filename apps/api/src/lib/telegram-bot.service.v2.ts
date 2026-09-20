@@ -11817,6 +11817,58 @@ export class TelegramBotService {
     );
   }
 
+  private cleanBinanceId(text: string): string {
+    let clean = String(text || "").trim();
+    // Strip common labels/prefixes
+    clean = clean.replace(
+      /^(order\s*id|transaction\s*id|txid|id\s*lệnh|mã\s*gd|mã\s*giao\s*dịch|mã\s*đơn|id)[\s:#=-]+/i,
+      "",
+    );
+    clean = clean.replace(/^[#`'"]+|[`'"]+$/g, "").trim();
+    return clean;
+  }
+
+  private isValidBinanceId(text: string): boolean {
+    const clean = this.cleanBinanceId(text);
+    return (
+      /^\d{15,25}$/.test(clean) ||
+      /^P_[A-Za-z0-9]{8,32}$/i.test(clean) ||
+      /^[A-Za-z0-9]{15,32}$/.test(clean)
+    );
+  }
+
+  private async findRecentBinanceExternalOrderCode(
+    shopId: string,
+    telegramUserId: string,
+  ): Promise<string | null> {
+    const pendingOrder = await this.prisma.paymentTransaction.findFirst({
+      where: {
+        provider: PaymentProvider.BINANCE,
+        status: "PENDING",
+        order: {
+          shopId,
+          customer: { telegramUserId },
+        },
+      },
+      orderBy: { createdAt: "desc" },
+      select: { externalOrderCode: true },
+    });
+    if (pendingOrder) return pendingOrder.externalOrderCode;
+
+    const topup = await this.prisma.customerWalletTopup.findFirst({
+      where: {
+        shopId,
+        provider: PaymentProvider.BINANCE,
+        customer: { telegramUserId },
+        createdAt: { gte: new Date(Date.now() - 2 * 60 * 60 * 1000) },
+        status: { in: ["PENDING", "CANCELED"] },
+      },
+      orderBy: { createdAt: "desc" },
+      select: { externalOrderCode: true },
+    });
+    return topup?.externalOrderCode || null;
+  }
+
   private async handleBinanceOrderIdPrompt(
     shopId: string,
     token: string,
@@ -11845,13 +11897,16 @@ export class TelegramBotService {
         include: { customer: true },
       });
 
-      if (
-        !topup ||
-        topup.status !== "PENDING" ||
-        topup.provider !== "BINANCE" ||
-        topup.shopId !== shopId ||
-        topup.customer?.telegramUserId !== telegramUserId
-      ) {
+      const isTopupValid =
+        topup &&
+        topup.provider === "BINANCE" &&
+        topup.shopId === shopId &&
+        topup.customer?.telegramUserId === telegramUserId &&
+        (topup.status === "PENDING" ||
+          (topup.status === "CANCELED" &&
+            Date.now() - topup.createdAt.getTime() <= 2 * 60 * 60 * 1000));
+
+      if (!isTopupValid) {
         await this.sendText(
           token,
           chatId,
@@ -11882,10 +11937,10 @@ export class TelegramBotService {
       token,
       chatId,
       language === "en"
-        ? `📋 Please send the <b>Order ID</b> (ID lệnh) from your Binance payment confirmation screen for <b>${displayCode}</b>.\n\nIt is a long numeric string (e.g. <code>429073211632295936</code>).`
+        ? `📋 Please send the <b>Order ID</b> or <b>Transaction ID</b> from your Binance payment confirmation screen for <b>${displayCode}</b>.\n\n• Order ID (e.g. <code>429073211632295936</code>)\n• Or Transaction ID (e.g. <code>P_A24H6BX6CEN71114</code>)`
         : language === "th"
-          ? `📋 กรุณาส่ง <b>Order ID</b> จากหน้าจอยืนยันการชำระเงิน Binance สำหรับ <b>${displayCode}</b>\n\nเป็นตัวเลขยาว (เช่น <code>429073211632295936</code>)`
-          : `📋 Vui lòng gửi <b>ID lệnh</b> từ màn hình xác nhận thanh toán Binance cho <b>${displayCode}</b>.\n\nLà dãy số dài (VD: <code>429073211632295936</code>).`,
+          ? `📋 กรุณาส่ง <b>Order ID</b> หรือ <b>Transaction ID</b> จากหน้าจอยืนยันการชำระเงิน Binance สำหรับ <b>${displayCode}</b>\n\n• Order ID (เช่น <code>429073211632295936</code>)\n• หรือ Transaction ID (เช่น <code>P_A24H6BX6CEN71114</code>)`
+          : `📋 Vui lòng gửi <b>ID lệnh</b> hoặc <b>Mã giao dịch</b> từ màn hình xác nhận thanh toán Binance cho <b>${displayCode}</b>.\n\n• ID lệnh (VD: <code>429073211632295936</code>)\n• Hoặc Mã giao dịch (VD: <code>P_A24H6BX6CEN71114</code>)`,
       actions,
       { parse_mode: "HTML" as const },
     );
@@ -11903,23 +11958,62 @@ export class TelegramBotService {
       shopId,
       telegramUserId,
     );
-    if (!pending) return false;
+    const rawText = String(message.text || "").trim();
+    const cleanId = this.cleanBinanceId(rawText);
 
-    const msgText = String(message.text || "").trim();
-    if (!/^\d{15,22}$/.test(msgText)) return false;
+    if (pending) {
+      if (!this.isValidBinanceId(cleanId)) {
+        await this.sendText(
+          token,
+          message.chat.id,
+          language === "en"
+            ? "❌ Invalid format. Please send your Binance Order ID (15-22 digits) or Transaction ID (e.g. <code>P_A24...</code>)."
+            : language === "th"
+              ? "❌ รูปแบบไม่ถูกต้อง กรุณาส่ง Order ID ของ Binance (ตัวเลข 15-22 หลัก) หรือ Transaction ID (เช่น <code>P_A24...</code>)"
+              : "❌ Định dạng không hợp lệ. Vui lòng gửi ID lệnh (dãy số 15-22 chữ số) hoặc Mã giao dịch (bắt đầu bằng <code>P_...</code>) từ Binance.",
+          actions,
+          { parse_mode: "HTML" as const },
+        );
+        return true;
+      }
 
-    await this.clearPendingBinanceOrderIdSubmission(shopId, telegramUserId);
-    await this.handleBinanceVerifyByOrderId(
-      shopId,
-      token,
-      message.chat.id,
-      telegramUserId,
-      pending.externalOrderCode,
-      msgText,
-      actions,
-      language,
-    );
-    return true;
+      await this.clearPendingBinanceOrderIdSubmission(shopId, telegramUserId);
+      await this.handleBinanceVerifyByOrderId(
+        shopId,
+        token,
+        message.chat.id,
+        telegramUserId,
+        pending.externalOrderCode,
+        cleanId,
+        actions,
+        language,
+      );
+      return true;
+    }
+
+    // Unprompted check: if user sends a message that looks like a Binance ID,
+    // check if they have a pending/recently canceled Binance transaction
+    if (this.isValidBinanceId(cleanId)) {
+      const recentCode = await this.findRecentBinanceExternalOrderCode(
+        shopId,
+        telegramUserId,
+      );
+      if (recentCode) {
+        await this.handleBinanceVerifyByOrderId(
+          shopId,
+          token,
+          message.chat.id,
+          telegramUserId,
+          recentCode,
+          cleanId,
+          actions,
+          language,
+        );
+        return true;
+      }
+    }
+
+    return false;
   }
 
   // ────────────────────────────────────────────────────────────────────
@@ -12248,13 +12342,16 @@ export class TelegramBotService {
         include: { customer: true },
       });
 
-      if (
-        !topupRecord ||
-        topupRecord.status !== "PENDING" ||
-        topupRecord.provider !== "BINANCE" ||
-        topupRecord.shopId !== shopId ||
-        topupRecord.customer?.telegramUserId !== telegramUserId
-      ) {
+      const isTopupValid =
+        topupRecord &&
+        topupRecord.provider === "BINANCE" &&
+        topupRecord.shopId === shopId &&
+        topupRecord.customer?.telegramUserId === telegramUserId &&
+        (topupRecord.status === "PENDING" ||
+          (topupRecord.status === "CANCELED" &&
+            Date.now() - topupRecord.createdAt.getTime() <= 2 * 60 * 60 * 1000));
+
+      if (!isTopupValid) {
         await this.sendText(
           token,
           chatId,
@@ -12324,9 +12421,18 @@ export class TelegramBotService {
         startTime,
       );
 
-      const match = history.find(
-        (item) => String(item.orderId || "") === binanceOrderId,
-      );
+      const cleanInput = this.cleanBinanceId(binanceOrderId);
+      const match = history.find((item) => {
+        const itemOrderId = String(item.orderId || "").trim();
+        const itemTxId = String(item.transactionId || "").trim().toUpperCase();
+        const itemNote = String(item.note || "").trim();
+        const target = cleanInput.toUpperCase();
+        return (
+          itemOrderId === cleanInput ||
+          itemTxId === target ||
+          (itemNote && itemNote === externalOrderCode)
+        );
+      });
 
       if (!match) {
         await this.sendText(
@@ -12343,7 +12449,7 @@ export class TelegramBotService {
       }
 
       const receiverBinanceId = String(
-        match.receiverInfo?.binanceId || match.payeeId || "",
+        match.receiverInfo?.binanceId || match.payeeId || match.uid || "",
       ).trim();
       const matchAmount = Number(match.amount ?? match.orderAmount ?? 0);
       const transactionAt = new Date(Number(match.transactionTime));
@@ -12351,11 +12457,14 @@ export class TelegramBotService {
         .trim()
         .toUpperCase();
 
+      const minValidTime = createdAt!.getTime() - 10 * 60 * 1000;
+      const maxValidTime = Date.now() + 5 * 60 * 1000;
+
       if (
         matchCurrency !== "USDT" ||
         !Number.isFinite(transactionAt.getTime()) ||
-        transactionAt.getTime() < createdAt!.getTime() ||
-        transactionAt.getTime() > Date.now() + 5 * 60 * 1000
+        transactionAt.getTime() < minValidTime ||
+        transactionAt.getTime() > maxValidTime
       ) {
         await this.sendText(
           token,
@@ -12422,7 +12531,10 @@ export class TelegramBotService {
             transactionId: match.transactionId,
             transactionTime: match.transactionTime,
           },
-          { cryptoTxHash: match.transactionId },
+          {
+            cryptoTxHash: String(match.transactionId || match.orderId || "").trim(),
+            confirmedExternalPayment: true,
+          },
         );
         await this.paymentService.markOnchainPaymentReceiptProcessed(
           receipt.id,
@@ -12448,7 +12560,9 @@ export class TelegramBotService {
             transactionId: match.transactionId,
             transactionTime: match.transactionTime,
           },
-          { cryptoTxHash: match.transactionId },
+          {
+            cryptoTxHash: String(match.transactionId || match.orderId || "").trim(),
+          },
         );
         await this.paymentService.markOnchainPaymentReceiptProcessed(
           receipt.id,
@@ -12521,13 +12635,16 @@ export class TelegramBotService {
         include: { customer: true },
       });
 
-      if (
-        !topupRecord ||
-        topupRecord.status !== "PENDING" ||
-        topupRecord.provider !== "BINANCE" ||
-        topupRecord.shopId !== shopId ||
-        topupRecord.customer?.telegramUserId !== telegramUserId
-      ) {
+      const isTopupValid =
+        topupRecord &&
+        topupRecord.provider === "BINANCE" &&
+        topupRecord.shopId === shopId &&
+        topupRecord.customer?.telegramUserId === telegramUserId &&
+        (topupRecord.status === "PENDING" ||
+          (topupRecord.status === "CANCELED" &&
+            Date.now() - topupRecord.createdAt.getTime() <= 2 * 60 * 60 * 1000));
+
+      if (!isTopupValid) {
         await this.sendText(
           token,
           chatId,
@@ -12608,19 +12725,21 @@ export class TelegramBotService {
       const match = history
         .filter((item) => {
           const receiverBinanceId = String(
-            item.receiverInfo?.binanceId || item.payeeId || "",
+            item.receiverInfo?.binanceId || item.payeeId || item.uid || "",
           ).trim();
           const currency = String(item.currency || "")
             .trim()
             .toUpperCase();
           const amount = Number(item.amount ?? item.orderAmount ?? 0);
+          const minValidTime = createdAt!.getTime() - 10 * 60 * 1000;
+          const isNoteMatch = item.note && String(item.note).trim() === externalOrderCode;
 
           return (
             receiverBinanceId === configuredBinanceUid &&
             currency === "USDT" &&
             amount > 0 &&
-            item.transactionTime >= createdAt!.getTime() &&
-            Math.abs(amount - requiredUsdt) < 0.000001
+            item.transactionTime >= minValidTime &&
+            (isNoteMatch || isBinanceAmountWithinTolerance(amount, requiredUsdt))
           );
         })
         .sort((left, right) => left.transactionTime - right.transactionTime)[0];
@@ -12633,7 +12752,7 @@ export class TelegramBotService {
           externalOrderCode,
           amountUsdt: matchAmount,
           destination: String(
-            match.receiverInfo?.binanceId || match.payeeId || "",
+            match.receiverInfo?.binanceId || match.payeeId || match.uid || "",
           ).trim(),
           transactionAt: new Date(Number(match.transactionTime)),
           rawPayload: match,
@@ -12652,7 +12771,10 @@ export class TelegramBotService {
               transactionId: match.transactionId,
               transactionTime: match.transactionTime,
             },
-            { cryptoTxHash: match.transactionId },
+            {
+              cryptoTxHash: String(match.transactionId || match.orderId || "").trim(),
+              confirmedExternalPayment: true,
+            },
           );
           await this.paymentService.markOnchainPaymentReceiptProcessed(
             receipt.id,
