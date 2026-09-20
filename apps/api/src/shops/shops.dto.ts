@@ -346,6 +346,20 @@ export class UpdateBotConfigDto {
   @IsOptional()
   @IsBoolean()
   showOutOfStock?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  forceJoinChannelEnabled?: boolean;
+
+  @IsOptional()
+  @ValidateIf((o) => o.forceJoinChannelUrl != null)
+  @IsString()
+  forceJoinChannelUrl?: string | null;
+
+  @IsOptional()
+  @ValidateIf((o) => o.forceJoinChatId != null)
+  @IsString()
+  forceJoinChatId?: string | null;
 }
 
 export class CreateProviderSourceDto {

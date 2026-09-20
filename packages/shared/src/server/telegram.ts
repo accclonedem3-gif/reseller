@@ -123,6 +123,28 @@ export async function telegramSetCommands(
   });
 }
 
+export interface TelegramChatMember {
+  status: "creator" | "administrator" | "member" | "restricted" | "left" | "kicked";
+  is_member?: boolean;
+  user?: {
+    id: number;
+    is_bot: boolean;
+    first_name: string;
+    username?: string;
+  };
+}
+
+export async function telegramGetChatMember(
+  token: string,
+  chatId: string | number,
+  userId: string | number,
+): Promise<TelegramChatMember> {
+  return callTelegramApi<TelegramChatMember>(token, "getChatMember", {
+    chat_id: chatId,
+    user_id: Number(userId),
+  });
+}
+
 export async function telegramSendMessage(
   token: string,
   chatId: string | number,

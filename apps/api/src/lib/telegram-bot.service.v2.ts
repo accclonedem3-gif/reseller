@@ -7,6 +7,7 @@ import {
   telegramAnswerCallbackQuery,
   telegramDeleteMessage,
   telegramEditMessageText,
+  telegramGetChatMember,
   telegramSendMessage,
   telegramSendPhoto,
   telegramSendPhotoBuffer,
@@ -670,6 +671,163 @@ export class TelegramBotService {
       });
       if (customerRecord?.blacklisted) {
         return { ok: true, actions };
+      }
+    }
+
+    // ── Force-Join Channel/Group Gatekeeper ────────────────────────────
+    const botCust =
+      (shop.botConfig?.customizationJson as Record<string, any>) ?? {};
+    const forceJoinEnabled = botCust.forceJoinChannelEnabled === true;
+    const forceJoinUrl = String(botCust.forceJoinChannelUrl || "").trim();
+    let forceJoinChatId = String(botCust.forceJoinChatId || "").trim();
+
+    if (!forceJoinChatId && forceJoinUrl) {
+      const match = forceJoinUrl.match(
+        /(?:t\.me|telegram\.me)\/([a-zA-Z0-9_]{4,})/,
+      );
+      if (
+        match &&
+        match[1] &&
+        !match[1].startsWith("+") &&
+        match[1] !== "joinchat"
+      ) {
+        forceJoinChatId = `@${match[1]}`;
+      }
+    }
+
+    const isBotOwner = Boolean(
+      shop.botConfig?.ownerTelegramUserId &&
+        String(shop.botConfig.ownerTelegramUserId).trim() ===
+          visitorTelegramUserId,
+    );
+
+    if (
+      forceJoinEnabled &&
+      (forceJoinChatId || forceJoinUrl) &&
+      !isBotOwner &&
+      visitorTelegramUserId
+    ) {
+      const userChatId = message?.chat?.id ?? callbackQuery?.message?.chat?.id;
+      if (userChatId) {
+        const forceJoinCacheKey = `bot:force_join_verified:${shopId}:${visitorTelegramUserId}`;
+        const isAlreadyVerified =
+          await this.cache.get<boolean>(forceJoinCacheKey);
+
+        const targetChatId = forceJoinChatId || forceJoinUrl;
+        const normalizedUrl =
+          forceJoinUrl.startsWith("http://") ||
+          forceJoinUrl.startsWith("https://")
+            ? forceJoinUrl
+            : `https://t.me/${forceJoinUrl.replace(/^@/, "")}`;
+
+        // 1. If user clicked the "Verify" callback button
+        if (callbackQuery?.data === "force_join:verify") {
+          const checkResult = await this.checkUserChatMembership(
+            outboundToken,
+            targetChatId,
+            visitorTelegramUserId,
+          );
+
+          const customerLang = await this.getCustomerLanguage(
+            shopId,
+            visitorTelegramUserId,
+          );
+
+          if (checkResult.isMember) {
+            // Cache verified for 24 hours (86,400 seconds)
+            await this.cache
+              .set(forceJoinCacheKey, true, 86400)
+              .catch(() => undefined);
+
+            const successText =
+              customerLang === "en"
+                ? "✅ Verification successful! Welcome."
+                : customerLang === "th"
+                  ? "✅ ยืนยันสำเร็จ! ยินดีต้อนรับ"
+                  : customerLang === "zh"
+                    ? "✅ 验证成功！欢迎使用。"
+                    : "✅ Xác minh thành công! Cảm ơn bạn đã tham gia.";
+
+            if (callbackQuery.id) {
+              await telegramAnswerCallbackQuery(
+                outboundToken,
+                callbackQuery.id,
+                successText,
+                { showAlert: false },
+              ).catch(() => undefined);
+            }
+
+            // Delete the force-join message if possible
+            if (callbackQuery.message?.message_id) {
+              await telegramDeleteMessage(
+                outboundToken,
+                userChatId,
+                callbackQuery.message.message_id,
+              ).catch(() => undefined);
+            }
+
+            // Open the start / language onboarding menu
+            await this.renderLanguageMenu(
+              outboundToken,
+              userChatId,
+              undefined,
+              customerLang,
+              actions,
+              "onboarding",
+            );
+            return { ok: true, actions };
+          } else {
+            const failAlert =
+              customerLang === "en"
+                ? "❌ You haven't joined the channel/group yet! Please click 'Join Channel' first."
+                : customerLang === "th"
+                  ? "❌ คุณยังไม่ได้เข้าร่วมช่อง/กลุ่ม กรุณากด 'เข้าร่วมช่อง' ก่อนยืนยัน"
+                  : customerLang === "zh"
+                    ? "❌ 您尚未加入频道/群组！请先加入后再点击验证。"
+                    : "❌ Bạn chưa tham gia kênh/nhóm! Vui lòng bấm 'Tham gia kênh' trước khi bấm xác minh.";
+
+            if (callbackQuery.id) {
+              await telegramAnswerCallbackQuery(
+                outboundToken,
+                callbackQuery.id,
+                failAlert,
+                { showAlert: true },
+              ).catch(() => undefined);
+            }
+            return { ok: true, actions };
+          }
+        }
+
+        // 2. If not already cached as verified, check if they are already in the channel
+        if (!isAlreadyVerified) {
+          const initialCheck = await this.checkUserChatMembership(
+            outboundToken,
+            targetChatId,
+            visitorTelegramUserId,
+          );
+
+          if (initialCheck.isMember) {
+            // User is already in the channel! Cache verified so this check won't run again for 24h
+            await this.cache
+              .set(forceJoinCacheKey, true, 86400)
+              .catch(() => undefined);
+            // Proceed normally without showing the force-join message!
+          } else {
+            // User is NOT a member yet -> Show force join prompt with 2 buttons
+            const customerLang = await this.getCustomerLanguage(
+              shopId,
+              visitorTelegramUserId,
+            );
+            await this.sendForceJoinPrompt(
+              outboundToken,
+              userChatId,
+              normalizedUrl,
+              customerLang,
+              actions,
+            );
+            return { ok: true, actions };
+          }
+        }
       }
     }
 
@@ -11828,6 +11986,92 @@ export class TelegramBotService {
       "pendingBinanceOrderIdSubmissions",
       this.sessions.getPendingQuantityKey(shopId, telegramUserId),
     );
+  }
+
+  private async checkUserChatMembership(
+    token: string,
+    chatId: string,
+    userId: string | number,
+  ): Promise<{ isMember: boolean; error?: string }> {
+    if (
+      String(process.env.MOCK_TELEGRAM_MODE || "false") === "true" ||
+      isMockBotToken(token)
+    ) {
+      return { isMember: true };
+    }
+
+    try {
+      const cleanChatId = chatId.trim();
+      const member = await telegramGetChatMember(token, cleanChatId, userId);
+      const isMember =
+        member &&
+        (member.status === "creator" ||
+          member.status === "administrator" ||
+          member.status === "member" ||
+          (member.status === "restricted" && member.is_member !== false));
+      return { isMember: Boolean(isMember) };
+    } catch (err: any) {
+      const msg = err?.message || String(err);
+      this.logger.warn(
+        `[force-join] getChatMember failed for chat ${chatId}, user ${userId}: ${msg}`,
+      );
+      return { isMember: false, error: msg };
+    }
+  }
+
+  private async sendForceJoinPrompt(
+    token: string,
+    chatId: string | number,
+    channelUrl: string,
+    language: BotLanguage | string,
+    actions: unknown[],
+  ) {
+    const isEn = language === "en";
+    const isTh = language === "th";
+    const isZh = language === "zh";
+
+    const text = isEn
+      ? "📢 <b>Channel/Group Membership Required</b>\n\nTo use this bot, please join our official channel/group below:\n\n1️⃣ Click <b>'📢 Join Channel'</b> below\n2️⃣ After joining, click <b>'✅ Verify'</b> to start!"
+      : isTh
+        ? "📢 <b>กรุณาเข้าร่วมช่อง/กลุ่ม</b>\n\nเพื่อใช้งานบอท กรุณาเข้าร่วมช่อง/กลุ่มทางการของเราด้านล่าง:\n\n1️⃣ กดปุ่ม <b>'📢 เข้าร่วมช่อง'</b>\n2️⃣ หลังจากเข้าร่วมแล้ว กดปุ่ม <b>'✅ ยืนยัน'</b> เพื่อเริ่มต้นใช้งาน!"
+        : isZh
+          ? "📢 <b>需要加入频道/群组</b>\n\n要使用此机器人，请先加入我们的官方频道/群组：\n\n1️⃣ 点击下方的 <b>'📢 加入频道'</b>\n2️⃣ 加入后，点击 <b>'✅ 验证'</b> 开始使用！"
+          : "📢 <b>Yêu cầu tham gia Kênh/Nhóm</b>\n\nĐể tiếp tục sử dụng bot, bạn vui lòng tham gia kênh/nhóm chính thức của chúng tôi:\n\n1️⃣ Bấm nút <b>'📢 Tham gia kênh'</b> bên dưới\n2️⃣ Sau khi tham gia, bấm <b>'✅ Xác minh'</b> để bắt đầu sử dụng!";
+
+    const joinBtnText = isEn
+      ? "📢 Join Channel"
+      : isTh
+        ? "📢 เข้าร่วมช่อง"
+        : isZh
+          ? "📢 加入频道"
+          : "📢 Tham gia kênh";
+
+    const verifyBtnText = isEn
+      ? "✅ Verify"
+      : isTh
+        ? "✅ ยืนยัน"
+        : isZh
+          ? "✅ 验证"
+          : "✅ Xác minh";
+
+    const replyMarkup = {
+      inline_keyboard: [
+        [
+          {
+            text: joinBtnText,
+            url: channelUrl,
+          },
+        ],
+        [
+          {
+            text: verifyBtnText,
+            callback_data: "force_join:verify",
+          },
+        ],
+      ],
+    };
+
+    await this.sendText(token, chatId, text, actions, replyMarkup, "HTML");
   }
 
   private cleanBinanceId(text: string): string {

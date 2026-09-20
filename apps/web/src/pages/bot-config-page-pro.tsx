@@ -14,6 +14,7 @@ import {
   ShieldCheck,
   Store,
   Trash2,
+  Users,
   Wallet,
 } from "lucide-react";
 
@@ -131,6 +132,15 @@ const T = {
       `Ví dụ: Giới thiệu bạn bè — nhận ${pct || "X"}% hoa hồng mỗi đơn thành công. Hoa hồng tích lũy không giới hạn.`,
     affiliateSaving: "Đang lưu...",
     affiliateSave: "Lưu cấu hình",
+    forceJoinTitle: "Bắt buộc tham gia Kênh/Nhóm",
+    forceJoinDesc:
+      "Yêu cầu người dùng phải tham gia kênh hoặc nhóm Telegram chỉ định mới được sử dụng bot.",
+    fieldForceJoinUrl: "Link Kênh hoặc Nhóm Telegram",
+    phForceJoinUrl: "https://t.me/ten_kenh_cua_ban",
+    fieldForceJoinChatId: "Chat ID hoặc Username (Tùy chọn nếu link công khai)",
+    phForceJoinChatId: "@ten_kenh hoặc -100xxxxxxxxxx",
+    forceJoinHint:
+      "Lưu ý quan trọng: Bạn BẮT BUỘC phải thêm Bot vào Kênh/Nhóm này làm Quản trị viên (Admin) để Bot có quyền kiểm tra thành viên.",
   },
   en: {
     eyebrow: "Auto Setup",
@@ -234,6 +244,15 @@ const T = {
       `e.g. Refer friends — earn ${pct || "X"}% commission per successful order. Unlimited accumulation.`,
     affiliateSaving: "Saving...",
     affiliateSave: "Save Config",
+    forceJoinTitle: "Force Join Channel/Group",
+    forceJoinDesc:
+      "Require users to join a specified Telegram channel or group before using the bot.",
+    fieldForceJoinUrl: "Telegram Channel or Group Link",
+    phForceJoinUrl: "https://t.me/your_channel_name",
+    fieldForceJoinChatId: "Chat ID or Username (Optional if public link)",
+    phForceJoinChatId: "@your_channel or -100xxxxxxxxxx",
+    forceJoinHint:
+      "Important note: You MUST add your Bot as an Administrator to this Channel/Group so it has permission to verify membership.",
   },
   th: {
     eyebrow: "ตั้งค่าอัตโนมัติ",
@@ -332,6 +351,15 @@ const T = {
       `เช่น แนะนำเพื่อน — รับ ${pct || "X"}% ค่าคอมมิชชันทุกคำสั่งที่สำเร็จ สะสมไม่จำกัด`,
     affiliateSaving: "กำลังบันทึก...",
     affiliateSave: "บันทึกการตั้งค่า",
+    forceJoinTitle: "บังคับเข้าร่วมช่อง/กลุ่ม",
+    forceJoinDesc:
+      "กำหนดให้ผู้ใช้ต้องเข้าร่วมช่องหรือกลุ่ม Telegram ที่ระบุก่อนจึงจะใช้บอทได้",
+    fieldForceJoinUrl: "ลิงก์ช่องหรือกลุ่ม Telegram",
+    phForceJoinUrl: "https://t.me/your_channel_name",
+    fieldForceJoinChatId: "Chat ID หรือ Username (ไม่บังคับถ้าเป็นลิงก์สาธารณะ)",
+    phForceJoinChatId: "@your_channel หรือ -100xxxxxxxxxx",
+    forceJoinHint:
+      "ข้อควรจำ: คุณต้องเพิ่มบอทเป็นผู้ดูแลระบบ (Admin) ในช่อง/กลุ่มนี้ เพื่อให้บอทสามารถตรวจสอบสมาชิกได้",
   },
 };
 
@@ -391,6 +419,9 @@ type BotConfigForm = {
   okxPersonalApiEnabled: boolean;
   usdtBep20Address: string;
   usdtBep20Enabled: boolean;
+  forceJoinChannelEnabled: boolean;
+  forceJoinChannelUrl: string;
+  forceJoinChatId: string;
 };
 
 type ConnectedInternalSource = {
@@ -474,6 +505,7 @@ function buildBotConfigPayload(form: BotConfigForm) {
         | "usdtSolanaEnabled"
         | "usdtTonEnabled"
         | "priceMarkupPercent"
+        | "forceJoinChannelEnabled"
       >,
       string,
     ]
@@ -520,12 +552,15 @@ function buildBotConfigPayload(form: BotConfigForm) {
     ["okxPersonalSecretKey", "okxPersonalSecretKey"],
     ["okxPersonalPassphrase", "okxPersonalPassphrase"],
     ["usdtBep20Address", "usdtBep20Address"],
+    ["forceJoinChannelUrl", "forceJoinChannelUrl"],
+    ["forceJoinChatId", "forceJoinChatId"],
   ];
 
   for (const [formKey, payloadKey] of fields) {
     payload[payloadKey] = normalizeOptionalValue(form[formKey] as string);
   }
 
+  payload.forceJoinChannelEnabled = form.forceJoinChannelEnabled;
   payload.binancePayEnabled = form.binancePayEnabled;
   payload.okxPersonalApiEnabled = form.okxPersonalApiEnabled;
   payload.paypalEnabled = form.paypalEnabled;
@@ -607,6 +642,9 @@ function getInitialForm(): BotConfigForm {
     okxPersonalApiEnabled: false,
     usdtBep20Address: "",
     usdtBep20Enabled: false,
+    forceJoinChannelEnabled: false,
+    forceJoinChannelUrl: "",
+    forceJoinChatId: "",
   };
 }
 
@@ -749,6 +787,12 @@ export function BotConfigPage() {
         (configQuery.data as any).okxPersonalApiEnabled ?? false,
       usdtBep20Address: (configQuery.data as any).usdtBep20Address || "",
       usdtBep20Enabled: (configQuery.data as any).usdtBep20Enabled ?? false,
+      forceJoinChannelEnabled:
+        (configQuery.data as any).forceJoinChannelEnabled ?? false,
+      forceJoinChannelUrl:
+        (configQuery.data as any).forceJoinChannelUrl || "",
+      forceJoinChatId:
+        (configQuery.data as any).forceJoinChatId || "",
     });
   }, [configQuery.data]);
 
@@ -1730,6 +1774,135 @@ export function BotConfigPage() {
                       : t.toggleOff}
                   </span>
                 </button>
+              </div>
+
+              {/* Bắt buộc tham gia Kênh/Nhóm (Force Join) */}
+              <div
+                className="overflow-hidden rounded-2xl"
+                style={{
+                  background: "var(--inp)",
+                  border: "1px solid var(--bd)",
+                }}
+              >
+                <div className="flex flex-col gap-4 px-4 py-4 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="flex items-center gap-3">
+                    <div
+                      className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl"
+                      style={{
+                        background: form.forceJoinChannelEnabled
+                          ? "rgba(249,115,22,0.12)"
+                          : "var(--surface)",
+                        color: form.forceJoinChannelEnabled
+                          ? "rgb(249,115,22)"
+                          : "var(--tx-f)",
+                      }}
+                    >
+                      <Users className="h-5 w-5" />
+                    </div>
+                    <div>
+                      <p className="font-semibold" style={{ color: "var(--tx)" }}>
+                        {t.forceJoinTitle}
+                      </p>
+                      <p className="mt-1 text-sm" style={{ color: "var(--tx-f)" }}>
+                        {t.forceJoinDesc}
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={form.forceJoinChannelEnabled}
+                    onClick={() =>
+                      setForm((c) => ({
+                        ...c,
+                        forceJoinChannelEnabled: !c.forceJoinChannelEnabled,
+                      }))
+                    }
+                    className="inline-flex h-12 w-full shrink-0 items-between justify-between gap-3 rounded-2xl border px-3 text-sm font-semibold transition disabled:opacity-55 sm:w-[164px]"
+                    style={
+                      form.forceJoinChannelEnabled
+                        ? {
+                            borderColor: "rgba(249,115,22,0.3)",
+                            background: "rgba(249,115,22,0.08)",
+                            color: "var(--tx)",
+                          }
+                        : {
+                            borderColor: "var(--bd)",
+                            background: "var(--surface)",
+                            color: "var(--tx-m)",
+                          }
+                    }
+                  >
+                    <span
+                      className="flex h-8 w-8 items-center justify-center rounded-xl transition"
+                      style={
+                        form.forceJoinChannelEnabled
+                          ? { background: "rgb(249,115,22)", color: "white" }
+                          : { background: "var(--inp)", color: "var(--tx-f)" }
+                      }
+                    >
+                      <Users className="h-4 w-4" />
+                    </span>
+                    <span>
+                      {form.forceJoinChannelEnabled ? t.toggleOn : t.toggleOff}
+                    </span>
+                  </button>
+                </div>
+
+                {form.forceJoinChannelEnabled && (
+                  <div
+                    className="space-y-4 px-4 pb-4 pt-2"
+                    style={{ borderTop: "1px solid var(--bd)" }}
+                  >
+                    <div
+                      className="flex items-start gap-2.5 rounded-xl p-3 text-xs"
+                      style={{
+                        background: "rgba(234,179,8,0.1)",
+                        border: "1px solid rgba(234,179,8,0.25)",
+                        color: "#eab308",
+                      }}
+                    >
+                      <ShieldCheck className="h-4 w-4 shrink-0 mt-0.5 text-amber-500" />
+                      <p>{t.forceJoinHint}</p>
+                    </div>
+
+                    <div className="grid gap-4 sm:grid-cols-2">
+                      <Field
+                        label={t.fieldForceJoinUrl}
+                        hint="Bắt buộc"
+                        description="Link mời hoặc link công khai của Kênh hoặc Nhóm Telegram."
+                      >
+                        <Input
+                          value={form.forceJoinChannelUrl}
+                          onChange={(e) =>
+                            setForm((c) => ({
+                              ...c,
+                              forceJoinChannelUrl: e.target.value,
+                            }))
+                          }
+                          placeholder={t.phForceJoinUrl}
+                        />
+                      </Field>
+
+                      <Field
+                        label={t.fieldForceJoinChatId}
+                        hint="Tùy chọn"
+                        description="Nếu Kênh/Nhóm là riêng tư (link joinchat hoặc t.me/+...), nhập Chat ID (ví dụ: -1001234567890). Nếu là Kênh công khai (@username), có thể để trống."
+                      >
+                        <Input
+                          value={form.forceJoinChatId}
+                          onChange={(e) =>
+                            setForm((c) => ({
+                              ...c,
+                              forceJoinChatId: e.target.value,
+                            }))
+                          }
+                          placeholder={t.phForceJoinChatId}
+                        />
+                      </Field>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
             <div className="mt-6 flex justify-end">

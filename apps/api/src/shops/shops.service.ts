@@ -456,6 +456,19 @@ export class ShopsService {
       showOutOfStock:
         (botConfig?.customizationJson as Record<string, unknown> | null)
           ?.showOutOfStock === true,
+      forceJoinChannelEnabled:
+        (botConfig?.customizationJson as Record<string, unknown> | null)
+          ?.forceJoinChannelEnabled === true,
+      forceJoinChannelUrl:
+        String(
+          (botConfig?.customizationJson as Record<string, unknown> | null)
+            ?.forceJoinChannelUrl || "",
+        ).trim() || null,
+      forceJoinChatId:
+        String(
+          (botConfig?.customizationJson as Record<string, unknown> | null)
+            ?.forceJoinChatId || "",
+        ).trim() || null,
     };
   }
 
@@ -650,6 +663,31 @@ export class ShopsService {
       const custPatch: Record<string, unknown> = {};
       if (dto.showOutOfStock !== undefined)
         custPatch.showOutOfStock = dto.showOutOfStock;
+      if (dto.forceJoinChannelEnabled !== undefined) {
+        custPatch.forceJoinChannelEnabled = dto.forceJoinChannelEnabled;
+      }
+      if (dto.forceJoinChannelUrl !== undefined) {
+        const rawUrl = dto.forceJoinChannelUrl?.trim() || null;
+        custPatch.forceJoinChannelUrl = rawUrl;
+        if (rawUrl && !dto.forceJoinChatId && !existingCust.forceJoinChatId) {
+          const match = rawUrl.match(/(?:t\.me|telegram\.me)\/([a-zA-Z0-9_]{4,})/);
+          if (match && match[1] && !match[1].startsWith("+") && match[1] !== "joinchat") {
+            custPatch.forceJoinChatId = `@${match[1]}`;
+          }
+        }
+      }
+      if (dto.forceJoinChatId !== undefined) {
+        let rawChatId = dto.forceJoinChatId?.trim() || null;
+        if (rawChatId) {
+          const match = rawChatId.match(/(?:t\.me|telegram\.me)\/([a-zA-Z0-9_]{4,})/);
+          if (match && match[1] && !match[1].startsWith("+") && match[1] !== "joinchat") {
+            rawChatId = `@${match[1]}`;
+          } else if (/^[a-zA-Z0-9_]{4,}$/.test(rawChatId)) {
+            rawChatId = `@${rawChatId}`;
+          }
+        }
+        custPatch.forceJoinChatId = rawChatId;
+      }
       const mergedCust =
         Object.keys(custPatch).length > 0
           ? { ...existingCust, ...custPatch }
