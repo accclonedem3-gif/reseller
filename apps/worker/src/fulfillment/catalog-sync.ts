@@ -18,6 +18,8 @@ import {
   resolveSyncedWholesalePrice,
   resolveSyncedSalePrice,
   resolveInternalCatalogSourcePrice,
+  TelegramRateLimiter,
+  stripRestockCustomEmojiHtml,
 } from "@reseller/shared/server";
 import { prisma } from "../infra/prisma";
 import {
@@ -333,14 +335,24 @@ export async function notifyCatalogStockUpdates(
     Number.isFinite(configuredUsdtVndRate) && configuredUsdtVndRate > 0
       ? configuredUsdtVndRate
       : DEFAULT_USDT_VND_RATE;
-  let sentCount = 0;
+  interface RestockTask {
+    chatId: string;
+    text: string;
+    hasHtml: boolean;
+    cbData: string;
+    lang: string;
+  }
+
+  const tasks: RestockTask[] = [];
   for (const customer of customers) {
+    if (!customer.telegramChatId || customer.telegramChatId === "0") continue;
     const lang =
       customer.preferredLanguage === "en"
         ? "en"
         : customer.preferredLanguage === "th"
           ? "th"
           : "vi";
+
     for (const item of freshNotifications) {
       const product = productById.get(item.sourceProductId);
       if (!product) continue;
@@ -354,32 +366,87 @@ export async function notifyCatalogStockUpdates(
         productIconCustomEmojiId: product.iconCustomEmojiId ?? null,
         language: lang,
       });
-      await telegramSendMessage(
-        token,
-        customer.telegramChatId,
-        rendered.text,
-        {
-          parse_mode: rendered.hasHtml ? "HTML" : undefined,
-          reply_markup: {
-            inline_keyboard: [
-              [
-                buildBtn(
-                  "buyNow",
-                  "🛒",
-                  "Mua ngay",
-                  "Buy now",
-                  "ซื้อเลย",
-                  cbData,
-                  lang,
-                ),
-              ],
-            ],
-          },
-        },
-      ).catch(() => undefined);
-      sentCount += 1;
+
+      tasks.push({
+        chatId: customer.telegramChatId,
+        text: rendered.text,
+        hasHtml: rendered.hasHtml,
+        cbData,
+        lang,
+      });
     }
   }
+
+  if (tasks.length === 0) {
+    return 0;
+  }
+
+  const rateLimiter = new TelegramRateLimiter(25);
+  const CONCURRENCY = Math.min(8, tasks.length);
+  let sharedIndex = 0;
+  let sentCount = 0;
+
+  async function runWorker() {
+    while (true) {
+      const idx = sharedIndex++;
+      if (idx >= tasks.length) break;
+      const task = tasks[idx];
+      if (!task || !task.chatId) continue;
+
+      await rateLimiter.acquire();
+
+      const sendOptions = {
+        parse_mode: task.hasHtml ? "HTML" : undefined,
+        reply_markup: {
+          inline_keyboard: [
+            [
+              buildBtn(
+                "buyNow",
+                "🛒",
+                "Mua ngay",
+                "Buy now",
+                "ซื้อเลย",
+                task.cbData,
+                task.lang,
+              ),
+            ],
+          ],
+        },
+      };
+
+      try {
+        await telegramSendMessage(
+          token,
+          task.chatId,
+          task.text,
+          sendOptions,
+        );
+        sentCount += 1;
+      } catch (err: any) {
+        if (err?.response?.status === 429 || String(err?.message || "").includes("429")) {
+          rateLimiter.penalize(3000);
+        }
+        if (task.hasHtml) {
+          try {
+            await telegramSendMessage(
+              token,
+              task.chatId,
+              stripRestockCustomEmojiHtml(task.text),
+              sendOptions,
+            );
+            sentCount += 1;
+          } catch {
+            // ignore fallback failure
+          }
+        }
+      }
+    }
+  }
+
+  await Promise.all(
+    Array.from({ length: CONCURRENCY }, () => runWorker()),
+  );
+
   return sentCount;
 }
 

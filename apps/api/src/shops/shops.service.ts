@@ -70,6 +70,7 @@ import {
   telegramSendMessage,
   telegramSetCommands,
   telegramSetWebhook,
+  TelegramRateLimiter,
   verifyProviderConnection,
 } from "@reseller/shared/server";
 import type {
@@ -2961,7 +2962,17 @@ export class ShopsService {
         ? configuredUsdtVndRate
         : this.config.usdtVndRate;
 
+    interface RestockTask {
+      chatId: string;
+      text: string;
+      hasHtml: boolean;
+      cbData: string;
+      lang: string;
+    }
+
+    const tasks: RestockTask[] = [];
     for (const customer of customers) {
+      if (!customer.telegramChatId || customer.telegramChatId === "0") continue;
       const lang =
         customer.preferredLanguage === "en"
           ? "en"
@@ -2983,8 +2994,36 @@ export class ShopsService {
           language: lang,
         });
 
+        tasks.push({
+          chatId: customer.telegramChatId,
+          text: rendered.text,
+          hasHtml: rendered.hasHtml,
+          cbData,
+          lang,
+        });
+      }
+    }
+
+    if (tasks.length === 0) {
+      return 0;
+    }
+
+    const rateLimiter = new TelegramRateLimiter(25);
+    const CONCURRENCY = Math.min(8, tasks.length);
+    let sharedIndex = 0;
+    let sentCount = 0;
+
+    const runWorker = async () => {
+      while (true) {
+        const idx = sharedIndex++;
+        if (idx >= tasks.length) break;
+        const task = tasks[idx];
+        if (!task || !task.chatId) continue;
+
+        await rateLimiter.acquire();
+
         const sendOptions = {
-          parse_mode: rendered.hasHtml ? "HTML" : undefined,
+          parse_mode: task.hasHtml ? "HTML" : undefined,
           reply_markup: {
             inline_keyboard: [
               [
@@ -2994,30 +3033,35 @@ export class ShopsService {
                   "Mua ngay",
                   "Buy now",
                   "ซื้อเลย",
-                  cbData,
-                  lang,
+                  task.cbData,
+                  task.lang,
                 ),
               ],
             ],
           },
         };
+
         try {
           await telegramSendMessage(
             token,
-            customer.telegramChatId,
-            rendered.text,
+            task.chatId,
+            task.text,
             sendOptions,
           );
-        } catch (error) {
-          if (rendered.hasHtml) {
+          sentCount += 1;
+        } catch (error: any) {
+          if (error?.response?.status === 429 || String(error?.message || "").includes("429")) {
+            rateLimiter.penalize(3000);
+          }
+          if (task.hasHtml) {
             try {
               await telegramSendMessage(
                 token,
-                customer.telegramChatId,
-                stripRestockCustomEmojiHtml(rendered.text),
+                task.chatId,
+                stripRestockCustomEmojiHtml(task.text),
                 sendOptions,
               );
-              continue;
+              sentCount += 1;
             } catch (fallbackError) {
               this.logger.warn(
                 `Restock Telegram fallback failed for shop=${shopId}: ${fallbackError instanceof Error ? fallbackError.message : String(fallbackError)}`,
@@ -3030,9 +3074,13 @@ export class ShopsService {
           }
         }
       }
-    }
+    };
 
-    return freshNotifications.length * customers.length;
+    await Promise.all(
+      Array.from({ length: CONCURRENCY }, () => runWorker()),
+    );
+
+    return sentCount;
   }
 
   private normalizeSourceWebhookProducts(body: Record<string, unknown>) {
