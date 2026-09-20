@@ -683,7 +683,7 @@ export class TelegramBotService {
 
     if (!forceJoinChatId && forceJoinUrl) {
       const match = forceJoinUrl.match(
-        /(?:t\.me|telegram\.me)\/([a-zA-Z0-9_]{4,})/,
+        /(?:t\.me|telegram\.me)\/([a-zA-Z0-9_]{3,})/,
       );
       if (
         match &&
@@ -713,7 +713,17 @@ export class TelegramBotService {
         const isAlreadyVerified =
           await this.cache.get<boolean>(forceJoinCacheKey);
 
-        const targetChatId = forceJoinChatId || forceJoinUrl;
+        let targetChatId = (forceJoinChatId || forceJoinUrl).trim();
+        if (
+          targetChatId &&
+          !targetChatId.startsWith("@") &&
+          !targetChatId.startsWith("-") &&
+          !targetChatId.startsWith("+") &&
+          !targetChatId.includes("/")
+        ) {
+          targetChatId = `@${targetChatId}`;
+        }
+
         const normalizedUrl =
           forceJoinUrl.startsWith("http://") ||
           forceJoinUrl.startsWith("https://")
@@ -814,6 +824,12 @@ export class TelegramBotService {
             // Proceed normally without showing the force-join message!
           } else {
             // User is NOT a member yet -> Show force join prompt with 2 buttons
+            if (callbackQuery?.id) {
+              await telegramAnswerCallbackQuery(
+                outboundToken,
+                callbackQuery.id,
+              ).catch(() => undefined);
+            }
             const customerLang = await this.getCustomerLanguage(
               shopId,
               visitorTelegramUserId,
