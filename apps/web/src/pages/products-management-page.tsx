@@ -1,5 +1,4 @@
 import {
-  Boxes,
   Check,
   Eye,
   EyeOff,
@@ -19,8 +18,6 @@ import { useState } from "react";
 import { createPortal } from "react-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { useAuth } from "@/auth/auth-provider";
-import { hasSellerCapability } from "@/lib/seller-access";
 import { useLang } from "@/lib/lang";
 import { api } from "@/lib/api";
 import { useToast } from "@/components/ui/toast";
@@ -30,12 +27,10 @@ import {
   StudioTextArea,
 } from "@/components/studio/studio-ui";
 import { ProductsPageStudio } from "./products-page-studio";
-import { SourceProductsPage } from "./source-products-page-pro";
 
 const T = {
   vi: {
     tabProducts: "Sản phẩm",
-    tabSource: "Sản phẩm nguồn",
     tabCatalog: "Danh mục",
     addProduct: "Thêm sản phẩm",
     catTitle: "Quản lý danh mục",
@@ -82,7 +77,6 @@ const T = {
   },
   en: {
     tabProducts: "Products",
-    tabSource: "Source products",
     tabCatalog: "Catalog",
     addProduct: "Add product",
     catTitle: "Catalog management",
@@ -129,7 +123,6 @@ const T = {
   },
   th: {
     tabProducts: "สินค้า",
-    tabSource: "สินค้าต้นทาง",
     tabCatalog: "หมวดหมู่",
     addProduct: "เพิ่มสินค้า",
     catTitle: "จัดการหมวดหมู่",
@@ -176,13 +169,11 @@ const T = {
   },
 };
 
-type Tab = "products" | "source" | "catalog";
+type Tab = "products" | "catalog";
 
 export function ProductsManagementPage() {
-  const { session } = useAuth();
   const { lang } = useLang();
   const t = T[lang];
-  const isUltra = hasSellerCapability(session, "source_internal_manage");
   const [activeTab, setActiveTab] = useState<Tab>("products");
   const [createPending, setCreatePending] = useState(false);
   const queryClient = useQueryClient();
@@ -240,7 +231,7 @@ export function ProductsManagementPage() {
     <div className="space-y-4 sm:space-y-5">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div
-          className={`grid w-full gap-1 rounded-[16px] p-1.5 sm:flex sm:w-fit ${isUltra ? "grid-cols-3" : "grid-cols-2"}`}
+          className="grid w-full grid-cols-2 gap-1 rounded-[16px] p-1.5 sm:flex sm:w-fit"
           style={{
             backgroundColor: "var(--surface)",
             border: "1px solid var(--bd)",
@@ -252,15 +243,6 @@ export function ProductsManagementPage() {
             icon={<Package className="h-3.5 w-3.5" />}
             label={t.tabProducts}
           />
-          {isUltra && (
-            <TabButton
-              active={activeTab === "source"}
-              onClick={() => setActiveTab("source")}
-              icon={<Boxes className="h-3.5 w-3.5" />}
-              label={t.tabSource}
-              accent="violet"
-            />
-          )}
           <TabButton
             active={activeTab === "catalog"}
             onClick={() => setActiveTab("catalog")}
@@ -390,12 +372,6 @@ export function ProductsManagementPage() {
       <div>
         {activeTab === "products" && (
           <ProductsPageStudio
-            openCreate={createPending}
-            onCreateOpened={() => setCreatePending(false)}
-          />
-        )}
-        {activeTab === "source" && isUltra && (
-          <SourceProductsPage
             openCreate={createPending}
             onCreateOpened={() => setCreatePending(false)}
           />
