@@ -477,6 +477,9 @@ export class ShopsService {
       channelBroadcastNotificationEnabled:
         (botConfig?.customizationJson as Record<string, unknown> | null)
           ?.channelBroadcastNotificationEnabled === true,
+      ownerOrderNotificationEnabled:
+        (botConfig?.customizationJson as Record<string, unknown> | null)
+          ?.ownerOrderNotificationEnabled !== false,
     };
   }
 
@@ -704,6 +707,10 @@ export class ShopsService {
       if (dto.channelBroadcastNotificationEnabled !== undefined) {
         custPatch.channelBroadcastNotificationEnabled =
           dto.channelBroadcastNotificationEnabled;
+      }
+      if (dto.ownerOrderNotificationEnabled !== undefined) {
+        custPatch.ownerOrderNotificationEnabled =
+          dto.ownerOrderNotificationEnabled;
       }
       const mergedCust =
 

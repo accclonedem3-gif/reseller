@@ -526,7 +526,8 @@ export class TelegramBotService {
     if (
       callbackQuery?.id &&
       callbackQuery.message?.chat?.id &&
-      !String(callbackQuery.data || "").startsWith("catalog:custom:")
+      !String(callbackQuery.data || "").startsWith("catalog:custom:") &&
+      !String(callbackQuery.data || "").startsWith("owner_order:")
     ) {
       await this.answerCallback(outboundToken, callbackQuery.id, actions);
     }
@@ -2277,6 +2278,21 @@ export class TelegramBotService {
           actions,
           callbackLanguage,
           messageId,
+        );
+      } else if (
+        data.startsWith("owner_order:complete:") ||
+        data.startsWith("owner_order:cancel:")
+      ) {
+        await this.handleOwnerOrderAction(
+          shopId,
+          outboundToken,
+          chatId,
+          telegramUserId,
+          messageId,
+          callbackQuery.id,
+          callbackQuery.message?.text,
+          data,
+          actions,
         );
       } else if (data.startsWith("payment:verify:")) {
         await this.handleCheckoutPaymentVerify(
@@ -11697,6 +11713,199 @@ export class TelegramBotService {
     ]);
 
     return { inline_keyboard: inlineKeyboard };
+  }
+
+  private async handleOwnerOrderAction(
+    shopId: string,
+    outboundToken: string,
+    chatId: number | string | undefined,
+    telegramUserId: string,
+    messageId: number | undefined,
+    callbackQueryId: string | undefined,
+    originalText: string | undefined,
+    data: string,
+    actions: unknown[],
+  ) {
+    const isComplete = data.startsWith("owner_order:complete:");
+    const orderId = data.replace(/^owner_order:(complete|cancel):/, "").trim();
+
+    const shop = await this.shopsService.getSellerShopByShopId(shopId);
+    const configuredOwnerId = String(
+      shop.botConfig?.ownerTelegramUserId || "",
+    ).trim();
+
+    if (
+      !configuredOwnerId ||
+      configuredOwnerId !== String(telegramUserId).trim()
+    ) {
+      if (callbackQueryId) {
+        await telegramAnswerCallbackQuery(
+          outboundToken,
+          callbackQueryId,
+          "❌ Bạn không có quyền thao tác trên đơn hàng này.",
+          { showAlert: true },
+        ).catch(() => {});
+      }
+      return;
+    }
+
+    const order = await this.prisma.order.findFirst({
+      where: { id: orderId, shopId },
+      select: {
+        id: true,
+        orderCode: true,
+        status: true,
+        productNameSnapshot: true,
+        customerEmail: true,
+      },
+    });
+
+    if (!order) {
+      if (callbackQueryId) {
+        await telegramAnswerCallbackQuery(
+          outboundToken,
+          callbackQueryId,
+          "⚠️ Không tìm thấy thông tin đơn hàng này.",
+          { showAlert: true },
+        ).catch(() => {});
+      }
+      return;
+    }
+
+    if (order.status !== OrderStatus.PAID_WAITING_STOCK) {
+      const statusLabel =
+        order.status === OrderStatus.DELIVERED
+          ? "ĐÃ HOÀN TẤT"
+          : order.status === OrderStatus.FAILED
+            ? "ĐÃ HỦY"
+            : order.status;
+      if (callbackQueryId) {
+        await telegramAnswerCallbackQuery(
+          outboundToken,
+          callbackQueryId,
+          `⚠️ Đơn #${order.orderCode} đã ở trạng thái ${statusLabel} trước đó rồi.`,
+          { showAlert: true },
+        ).catch(() => {});
+      }
+      if (chatId && messageId && originalText) {
+        const updatedText = `${originalText}\n\n📌 <b>Trạng thái:</b> ${statusLabel}`;
+        await telegramEditMessageText(
+          outboundToken,
+          chatId,
+          messageId,
+          updatedText,
+          {
+            parse_mode: "HTML",
+            reply_markup: { inline_keyboard: [] },
+          },
+        ).catch(() => {});
+      }
+      return;
+    }
+
+    const timeStr = new Intl.DateTimeFormat("vi-VN", {
+      timeZone: "Asia/Ho_Chi_Minh",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    }).format(new Date());
+
+    if (isComplete) {
+      try {
+        await this.ordersService.completePendingManualOrderByShop(
+          shopId,
+          orderId,
+        );
+
+        if (callbackQueryId) {
+          await telegramAnswerCallbackQuery(
+            outboundToken,
+            callbackQueryId,
+            `✅ Đã hoàn tất đơn #${order.orderCode} và gửi thông báo tới khách hàng!`,
+            { showAlert: true },
+          ).catch(() => {});
+        }
+
+        if (chatId && messageId) {
+          const updatedText = originalText
+            ? `${originalText}\n\n✅ <b>TRẠNG THÁI: ĐÃ HOÀN TẤT BỞI OWNER (${timeStr} GMT+7)</b>`
+            : `✅ <b>ĐƠN HÀNG #${order.orderCode} ĐÃ HOÀN TẤT BỞI OWNER</b>\nThời gian: ${timeStr} (GMT+7)`;
+
+          await telegramEditMessageText(
+            outboundToken,
+            chatId,
+            messageId,
+            updatedText,
+            {
+              parse_mode: "HTML",
+              reply_markup: { inline_keyboard: [] },
+            },
+          ).catch(() => {});
+        }
+      } catch (error: any) {
+        this.logger.error(
+          `Failed to complete manual order ${orderId} via bot for shop ${shopId}: ${error?.message}`,
+          error?.stack,
+        );
+        if (callbackQueryId) {
+          await telegramAnswerCallbackQuery(
+            outboundToken,
+            callbackQueryId,
+            `❌ Lỗi: ${error?.message || "Không thể hoàn tất đơn"}`,
+            { showAlert: true },
+          ).catch(() => {});
+        }
+      }
+    } else {
+      try {
+        await this.ordersService.cancelPendingManualOrderByShop(
+          shopId,
+          orderId,
+        );
+
+        if (callbackQueryId) {
+          await telegramAnswerCallbackQuery(
+            outboundToken,
+            callbackQueryId,
+            `❌ Đã hủy đơn #${order.orderCode} và gửi thông báo tới khách hàng.`,
+            { showAlert: true },
+          ).catch(() => {});
+        }
+
+        if (chatId && messageId) {
+          const updatedText = originalText
+            ? `${originalText}\n\n❌ <b>TRẠNG THÁI: ĐÃ HỦY ĐƠN BỞI OWNER (${timeStr} GMT+7)</b>`
+            : `❌ <b>ĐƠN HÀNG #${order.orderCode} ĐÃ HỦY BỞI OWNER</b>\nThời gian: ${timeStr} (GMT+7)`;
+
+          await telegramEditMessageText(
+            outboundToken,
+            chatId,
+            messageId,
+            updatedText,
+            {
+              parse_mode: "HTML",
+              reply_markup: { inline_keyboard: [] },
+            },
+          ).catch(() => {});
+        }
+      } catch (error: any) {
+        this.logger.error(
+          `Failed to cancel manual order ${orderId} via bot for shop ${shopId}: ${error?.message}`,
+          error?.stack,
+        );
+        if (callbackQueryId) {
+          await telegramAnswerCallbackQuery(
+            outboundToken,
+            callbackQueryId,
+            `❌ Lỗi: ${error?.message || "Không thể hủy đơn"}`,
+            { showAlert: true },
+          ).catch(() => {});
+        }
+      }
+    }
   }
 
   private async handleCheckoutPaymentVerify(

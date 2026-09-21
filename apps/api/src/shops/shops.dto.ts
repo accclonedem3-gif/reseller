@@ -368,6 +368,10 @@ export class UpdateBotConfigDto {
   @IsOptional()
   @IsBoolean()
   channelBroadcastNotificationEnabled?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  ownerOrderNotificationEnabled?: boolean;
 }
 
 

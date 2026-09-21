@@ -147,6 +147,9 @@ const T = {
     channelBroadcastTitle: "Thông báo Broadcast",
     channelBroadcastDesc:
       "Tự động gửi kèm các bản tin Broadcast vào Kênh/Nhóm song song với gửi cho khách hàng.",
+    ownerOrderNotificationTitle: "Thông báo Đơn hàng mới (Owner)",
+    ownerOrderNotificationDesc:
+      "Gửi tin nhắn thông báo về Telegram của chủ shop (OWNER_TELEGRAM_USER_ID) khi có đơn thanh toán thành công. Đơn Add Mail có sẵn nút Hoàn tất / Hủy ngay trên bot.",
     fieldForceJoinUrl: "Link Kênh hoặc Nhóm Telegram",
     phForceJoinUrl: "https://t.me/ten_kenh_cua_ban",
     fieldForceJoinChatId: "Chat ID hoặc Username (Tùy chọn nếu link công khai)",
@@ -268,6 +271,9 @@ const T = {
     channelBroadcastTitle: "Broadcast Notifications",
     channelBroadcastDesc:
       "Automatically post broadcast campaigns to the Channel/Group alongside individual customers.",
+    ownerOrderNotificationTitle: "New Order Notification (Owner)",
+    ownerOrderNotificationDesc:
+      "Send alert to shop owner's Telegram (OWNER_TELEGRAM_USER_ID) when an order is paid. Add Mail orders include Complete / Cancel buttons on bot.",
     fieldForceJoinUrl: "Telegram Channel or Group Link",
     phForceJoinUrl: "https://t.me/your_channel_name",
     fieldForceJoinChatId: "Chat ID or Username (Optional if public link)",
@@ -384,6 +390,9 @@ const T = {
     channelBroadcastTitle: "การแจ้งเตือนบรอดแคสต์",
     channelBroadcastDesc:
       "ส่งข้อความบรอดแคสต์ไปยังช่อง/กลุ่มควบคู่ไปกับลูกค้าทั่วไปโดยอัตโนมัติ",
+    ownerOrderNotificationTitle: "แจ้งเตือนคำสั่งซื้อใหม่ (เจ้าของ)",
+    ownerOrderNotificationDesc:
+      "ส่งการแจ้งเตือนไปยัง Telegram ของเจ้าของร้าน (OWNER_TELEGRAM_USER_ID) เมื่อชำระเงินสำเร็จ รองรับปุ่มเสร็จสิ้น/ยกเลิกบน Telegram สำหรับคำสั่งซื้อ Add Mail",
     fieldForceJoinUrl: "ลิงก์ช่องหรือกลุ่ม Telegram",
     phForceJoinUrl: "https://t.me/your_channel_name",
     fieldForceJoinChatId: "Chat ID หรือ Username (ไม่บังคับถ้าเป็นลิงก์สาธารณะ)",
@@ -454,6 +463,7 @@ type BotConfigForm = {
   forceJoinChatId: string;
   channelRestockNotificationEnabled: boolean;
   channelBroadcastNotificationEnabled: boolean;
+  ownerOrderNotificationEnabled: boolean;
 };
 
 
@@ -596,6 +606,7 @@ function buildBotConfigPayload(form: BotConfigForm) {
   payload.forceJoinChannelEnabled = form.forceJoinChannelEnabled;
   payload.channelRestockNotificationEnabled = form.channelRestockNotificationEnabled;
   payload.channelBroadcastNotificationEnabled = form.channelBroadcastNotificationEnabled;
+  payload.ownerOrderNotificationEnabled = form.ownerOrderNotificationEnabled;
   payload.binancePayEnabled = form.binancePayEnabled;
   payload.okxPersonalApiEnabled = form.okxPersonalApiEnabled;
   payload.paypalEnabled = form.paypalEnabled;
@@ -682,6 +693,7 @@ function getInitialForm(): BotConfigForm {
     forceJoinChatId: "",
     channelRestockNotificationEnabled: false,
     channelBroadcastNotificationEnabled: false,
+    ownerOrderNotificationEnabled: true,
   };
 }
 
@@ -835,6 +847,8 @@ export function BotConfigPage() {
         (configQuery.data as any).channelRestockNotificationEnabled ?? false,
       channelBroadcastNotificationEnabled:
         (configQuery.data as any).channelBroadcastNotificationEnabled ?? false,
+      ownerOrderNotificationEnabled:
+        (configQuery.data as any).ownerOrderNotificationEnabled ?? true,
     });
   }, [configQuery.data]);
 
@@ -2037,6 +2051,51 @@ export function BotConfigPage() {
                         }
                       >
                         <span>{form.channelBroadcastNotificationEnabled ? t.toggleOn : t.toggleOff}</span>
+                      </button>
+                    </div>
+
+                    {/* Toggle 4: Owner Order Notification */}
+                    <div
+                      className="flex flex-col gap-3 rounded-xl p-3.5 transition sm:flex-row sm:items-center sm:justify-between"
+                      style={{ background: "var(--surface)", border: "1px solid var(--bd)" }}
+                    >
+                      <div className="flex items-start gap-3">
+                        <div
+                          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg mt-0.5"
+                          style={{
+                            background: form.ownerOrderNotificationEnabled ? "rgba(168,85,247,0.15)" : "var(--inp)",
+                            color: form.ownerOrderNotificationEnabled ? "rgb(168,85,247)" : "var(--tx-f)",
+                          }}
+                        >
+                          <BellRing className="h-4 w-4" />
+                        </div>
+                        <div>
+                          <p className="text-sm font-semibold" style={{ color: "var(--tx)" }}>
+                            {t.ownerOrderNotificationTitle}
+                          </p>
+                          <p className="text-xs" style={{ color: "var(--tx-f)" }}>
+                            {t.ownerOrderNotificationDesc}
+                          </p>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={form.ownerOrderNotificationEnabled}
+                        onClick={() =>
+                          setForm((c) => ({
+                            ...c,
+                            ownerOrderNotificationEnabled: !c.ownerOrderNotificationEnabled,
+                          }))
+                        }
+                        className="inline-flex h-9 shrink-0 items-center justify-between gap-2.5 rounded-xl border px-3 text-xs font-bold transition sm:w-[130px]"
+                        style={
+                          form.ownerOrderNotificationEnabled
+                            ? { borderColor: "rgba(168,85,247,0.4)", background: "rgba(168,85,247,0.12)", color: "var(--tx)" }
+                            : { borderColor: "var(--bd)", background: "var(--inp)", color: "var(--tx-m)" }
+                        }
+                      >
+                        <span>{form.ownerOrderNotificationEnabled ? t.toggleOn : t.toggleOff}</span>
                       </button>
                     </div>
                   </div>

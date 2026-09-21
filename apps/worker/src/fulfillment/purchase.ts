@@ -53,6 +53,166 @@ export function splitDeliveredAccountList(deliveredText?: string | null): string
   return raw.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
 }
 
+export async function notifyOwnerNewOrder(input: {
+  botToken?: string | null;
+  shop: {
+    id: string;
+    name?: string | null;
+    botConfig?: {
+      ownerTelegramUserId?: string | null;
+      customizationJson?: any;
+    } | null;
+  };
+  order: {
+    id?: string | null;
+    orderCode: string;
+    productNameSnapshot: string;
+    quantity: number;
+    totalSaleAmount: any;
+    customerEmail?: string | null;
+    targetLink?: string | null;
+    comments?: string | null;
+    customer?: {
+      telegramUsername?: string | null;
+      telegramUserId?: string | null;
+      name?: string | null;
+    } | null;
+  };
+  type: "AUTO_DELIVERED" | "ADD_MAIL" | "MANUAL_PENDING";
+}): Promise<void> {
+  const botToken = input.botToken;
+  if (
+    !botToken ||
+    (String(process.env.MOCK_TELEGRAM_MODE || "false") === "true" &&
+      isMockBotToken(botToken))
+  ) {
+    return;
+  }
+
+  const ownerTelegramUserId = String(
+    input.shop.botConfig?.ownerTelegramUserId || ""
+  ).trim();
+  if (!ownerTelegramUserId) return;
+
+  const custJson = input.shop.botConfig?.customizationJson;
+  if (custJson && typeof custJson === "object") {
+    if (custJson.ownerOrderNotificationEnabled === false) return;
+  }
+
+  const formattedAmount = formatVndMoney(input.order.totalSaleAmount, "vi");
+  const customerHandle = input.order.customer?.telegramUsername
+    ? `@${input.order.customer.telegramUsername}`
+    : input.order.customer?.name || "Khách hàng";
+  const customerIdStr = input.order.customer?.telegramUserId
+    ? `(ID: ${input.order.customer.telegramUserId})`
+    : "";
+  const customerDisplay = [customerHandle, customerIdStr].filter(Boolean).join(" ");
+  const dateTimeText = `${formatLocalizedDateTime(new Date(), "vi")} (GMT+7)`;
+
+  let messageText = "";
+  let replyMarkup: any = undefined;
+
+  if (input.type === "ADD_MAIL") {
+    messageText = [
+      "⚡ <b>ĐƠN HÀNG MỚI CẦN XỬ LÝ (ADD MAIL)</b>",
+      "━━━━━━━━━━━━━━━━━━━━",
+      `📦 Mã đơn: <b>#${input.order.orderCode}</b>`,
+      `🛍️ Sản phẩm: <b>${input.order.productNameSnapshot}</b>`,
+      `🔢 Số lượng: <b>x${input.order.quantity}</b>`,
+      `💰 Doanh thu: <b>${formattedAmount}</b>`,
+      `👤 Khách hàng: <b>${customerDisplay}</b>`,
+      `⏰ Thời gian: ${dateTimeText}`,
+      "",
+      "📧 <b>Email khách cần add:</b>",
+      `<code>${input.order.customerEmail || "Không có email"}</code>`,
+      "<i>(Chạm vào email trên để sao chép nhanh)</i>",
+      input.order.targetLink ? `🔗 <b>Target / Link:</b> ${input.order.targetLink}` : null,
+      input.order.comments ? `📝 <b>Ghi chú:</b> ${input.order.comments}` : null,
+      "",
+      "👉 <i>Sau khi đã add mail xong, vui lòng bấm nút bên dưới để hoàn tất:</i>",
+    ]
+      .filter((l): l is string => l !== null)
+      .join("\n");
+
+    if (input.order.id) {
+      replyMarkup = {
+        inline_keyboard: [
+          [
+            {
+              text: "✅ Đã hoàn tất",
+              callback_data: `owner_order:complete:${input.order.id}`,
+            },
+            {
+              text: "❌ Hủy đơn",
+              callback_data: `owner_order:cancel:${input.order.id}`,
+            },
+          ],
+        ],
+      };
+    }
+  } else if (input.type === "MANUAL_PENDING") {
+    messageText = [
+      "⏳ <b>ĐƠN HÀNG MỚI CHỜ XỬ LÝ (THỦ CÔNG)</b>",
+      "━━━━━━━━━━━━━━━━━━━━",
+      `📦 Mã đơn: <b>#${input.order.orderCode}</b>`,
+      `🛍️ Sản phẩm: <b>${input.order.productNameSnapshot}</b>`,
+      `🔢 Số lượng: <b>x${input.order.quantity}</b>`,
+      `💰 Doanh thu: <b>${formattedAmount}</b>`,
+      `👤 Khách hàng: <b>${customerDisplay}</b>`,
+      `⏰ Thời gian: ${dateTimeText}`,
+      input.order.customerEmail
+        ? `📧 <b>Email:</b> <code>${input.order.customerEmail}</code>\n<i>(Chạm vào email trên để sao chép nhanh)</i>`
+        : null,
+      input.order.targetLink ? `🔗 <b>Target / Link:</b> ${input.order.targetLink}` : null,
+      input.order.comments ? `📝 <b>Ghi chú:</b> ${input.order.comments}` : null,
+      "",
+      "👉 <i>Sau khi đã xử lý xong đơn hàng, vui lòng bấm nút bên dưới:</i>",
+    ]
+      .filter((l): l is string => l !== null)
+      .join("\n");
+
+    if (input.order.id) {
+      replyMarkup = {
+        inline_keyboard: [
+          [
+            {
+              text: "✅ Đã hoàn tất",
+              callback_data: `owner_order:complete:${input.order.id}`,
+            },
+            {
+              text: "❌ Hủy đơn",
+              callback_data: `owner_order:cancel:${input.order.id}`,
+            },
+          ],
+        ],
+      };
+    }
+  } else {
+    // AUTO_DELIVERED
+    messageText = [
+      "🎉 <b>ĐƠN HÀNG MỚI (Tự động hoàn tất)</b>",
+      "━━━━━━━━━━━━━━━━━━━━",
+      `📦 Mã đơn: <b>#${input.order.orderCode}</b>`,
+      `🛍️ Sản phẩm: <b>${input.order.productNameSnapshot}</b>`,
+      `🔢 Số lượng: <b>x${input.order.quantity}</b>`,
+      `💰 Doanh thu: <b>${formattedAmount}</b>`,
+      `👤 Khách hàng: <b>${customerDisplay}</b>`,
+      `⏰ Thời gian: ${dateTimeText}`,
+      "✅ <b>Trạng thái:</b> Bot đã tự động xuất kho giao hàng cho khách.",
+    ].join("\n");
+  }
+
+  await telegramSendMessage(botToken, ownerTelegramUserId, messageText, {
+    parse_mode: "HTML",
+    reply_markup: replyMarkup,
+  }).catch((err) => {
+    console.warn(
+      `[notifyOwnerNewOrder] failed to send to owner=${ownerTelegramUserId}:`,
+      err?.message || err
+    );
+  });
+}
+
 export async function sendDeliveredOrderMessages(input: {
   botToken: string;
   chatId: string;
@@ -79,19 +239,27 @@ export async function sendDeliveredOrderMessages(input: {
   let shopCust: any = null;
   let shopName = input.shopName || null;
   let cusidEmitOk = true;
+  let ownerTelegramUserId: string | null = null;
   if (input.shopId) {
     try {
       const shopCfg = await prisma.shop.findUnique({
         where: { id: input.shopId },
         select: {
           name: true,
-          botConfig: { select: { customizationJson: true, cusidEmitOk: true } },
+          botConfig: {
+            select: {
+              customizationJson: true,
+              cusidEmitOk: true,
+              ownerTelegramUserId: true,
+            },
+          },
         },
       });
       if (shopCfg) {
         shopCust = shopCfg.botConfig?.customizationJson || null;
         if (shopCfg.botConfig?.cusidEmitOk === false) cusidEmitOk = false;
         if (!shopName) shopName = shopCfg.name || null;
+        ownerTelegramUserId = shopCfg.botConfig?.ownerTelegramUserId || null;
       }
     } catch {
       /* ignore */
@@ -150,6 +318,30 @@ export async function sendDeliveredOrderMessages(input: {
       template: usageTpl,
       instructionsText: usageInstructions.trim(),
       canEmitCusid: cusidEmitOk,
+    }).catch(() => undefined);
+  }
+
+  if (ownerTelegramUserId && input.shopId) {
+    await notifyOwnerNewOrder({
+      botToken: input.botToken,
+      shop: {
+        id: input.shopId,
+        name: shopName,
+        botConfig: {
+          ownerTelegramUserId,
+          customizationJson: shopCust,
+        },
+      },
+      order: {
+        orderCode: input.orderCode,
+        productNameSnapshot: input.productName,
+        quantity: input.quantity,
+        totalSaleAmount: input.amount,
+        customer: {
+          name: input.customerName || null,
+        },
+      },
+      type: "AUTO_DELIVERED",
     }).catch(() => undefined);
   }
 }
@@ -1197,6 +1389,24 @@ export async function processPurchase(job: Job<{ orderId: string }>): Promise<vo
           })
         ).catch(() => undefined);
       }
+
+      await notifyOwnerNewOrder({
+        botToken,
+        shop: order.shop,
+        order: {
+          id: order.id,
+          orderCode: order.orderCode,
+          productNameSnapshot: order.productNameSnapshot,
+          quantity: order.quantity,
+          totalSaleAmount: order.totalSaleAmount,
+          customerEmail: order.customerEmail,
+          targetLink: order.targetLink,
+          comments: order.comments,
+          customer: order.customer,
+        },
+        type: "MANUAL_PENDING",
+      }).catch(() => undefined);
+
       return;
     }
 
@@ -1270,6 +1480,29 @@ export async function processPurchase(job: Job<{ orderId: string }>): Promise<vo
         })
       ).catch(() => undefined);
     }
+
+    const isAddMailType =
+      order.sourceProduct?.sourceDeliveryMode === "ADD_MAIL" ||
+      sourceMetadata.requiresCustomerEmail === true ||
+      Boolean(order.customerEmail);
+
+    await notifyOwnerNewOrder({
+      botToken,
+      shop: order.shop,
+      order: {
+        id: order.id,
+        orderCode: order.orderCode,
+        productNameSnapshot: order.productNameSnapshot,
+        quantity: order.quantity,
+        totalSaleAmount: order.totalSaleAmount,
+        customerEmail: order.customerEmail,
+        targetLink: order.targetLink,
+        comments: order.comments,
+        customer: order.customer,
+      },
+      type: isAddMailType ? "ADD_MAIL" : "MANUAL_PENDING",
+    }).catch(() => undefined);
+
     return;
   }
 

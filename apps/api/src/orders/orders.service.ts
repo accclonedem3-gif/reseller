@@ -1584,6 +1584,18 @@ export class OrdersService {
     return this.getOrderById(order.id);
   }
 
+  async completePendingManualOrderByShop(shopId: string, orderId: string) {
+    const shop = await this.prisma.shop.findUnique({
+      where: { id: shopId },
+      select: { sellerId: true },
+    });
+    if (!shop) throw new NotFoundException("Shop not found.");
+    return this.completePendingManualOrder(
+      { id: shop.sellerId } as AuthenticatedUser,
+      orderId,
+    );
+  }
+
   async cancelPendingOrder(shopId: string, telegramUserId: string, orderId: string) {
     const order = await this.prisma.order.findFirst({
       where: {
@@ -2040,6 +2052,18 @@ export class OrdersService {
     await this.sendSellerResolvedMessage(order, "canceled");
 
     return this.getOrderById(order.id);
+  }
+
+  async cancelPendingManualOrderByShop(shopId: string, orderId: string) {
+    const shop = await this.prisma.shop.findUnique({
+      where: { id: shopId },
+      select: { sellerId: true },
+    });
+    if (!shop) throw new NotFoundException("Shop not found.");
+    return this.cancelPendingManualOrder(
+      { id: shop.sellerId } as AuthenticatedUser,
+      orderId,
+    );
   }
 
   async markOrderFailed(
