@@ -66,6 +66,7 @@ import {
   roundMarkupSalePrice,
   resolveRestockTemplate,
   resolveTelegramChannelTarget,
+  resolveTelegramChannelTargetWithThread,
   stripRestockCustomEmojiHtml,
   telegramDeleteWebhook,
   telegramGetMe,
@@ -2944,9 +2945,11 @@ export class ShopsService {
     const channelRestockEnabled =
       custJson.channelRestockNotificationEnabled === true;
     const channelTarget = channelRestockEnabled
-      ? resolveTelegramChannelTarget(
+      ? resolveTelegramChannelTargetWithThread(
           custJson.forceJoinChatId as string,
           custJson.forceJoinChannelUrl as string,
+          custJson.forceJoinTopicId as string,
+          shop?.botConfig?.telegramBotUsername,
         )
       : null;
 
@@ -3029,6 +3032,7 @@ export class ShopsService {
 
     interface RestockTask {
       chatId: string;
+      messageThreadId?: number;
       text: string;
       hasHtml: boolean;
       cbData?: string;
@@ -3055,7 +3059,8 @@ export class ShopsService {
         });
 
         tasks.push({
-          chatId: channelTarget,
+          chatId: channelTarget.chatId,
+          messageThreadId: channelTarget.messageThreadId,
           text: rendered.text,
           hasHtml: rendered.hasHtml,
           url: botUsername
@@ -3131,11 +3136,12 @@ export class ShopsService {
               task.lang,
             );
 
-        const sendOptions = {
+        const sendOptions: Record<string, unknown> = {
           parse_mode: task.hasHtml ? "HTML" : undefined,
           reply_markup: {
             inline_keyboard: [[button]],
           },
+          ...(task.messageThreadId ? { message_thread_id: task.messageThreadId } : {}),
         };
 
 

@@ -107,4 +107,24 @@ import {
   assert.deepEqual(res, { chatId: "-1001234567890", messageThreadId: 5 });
 }
 
+// 8. Test group without topic: direct numeric Chat ID
+{
+  const res = resolveTelegramChannelTargetWithThread("-1001234567890");
+  assert.deepEqual(res, { chatId: "-1001234567890" });
+  assert.equal(res?.messageThreadId, undefined);
+}
+
+// 9. Test private group with invite link + Chat ID (no topic)
+{
+  const res = resolveTelegramChannelTargetWithThread("-1001234567890", "https://t.me/+lo_T-U-7s41iOWQ1");
+  assert.deepEqual(res, { chatId: "-1001234567890" });
+  assert.equal(res?.messageThreadId, undefined);
+}
+
+// 10. Test private group with ONLY invite link (no Chat ID provided) -> should return null
+{
+  const res = resolveTelegramChannelTargetWithThread(null, "https://t.me/+lo_T-U-7s41iOWQ1");
+  assert.equal(res, null, "Private invite link cannot be resolved without Chat ID");
+}
+
 console.log("All channel topic tests passed successfully!");
