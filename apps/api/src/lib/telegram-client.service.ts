@@ -197,6 +197,7 @@ export class TelegramClientService {
     // Called when the send only succeeded AFTER stripping custom-emoji ids — i.e. this bot can't emit
     // them (used to self-learn that the owner isn't premium so we fall back to text icons).
     onCusidStripped?: () => void | Promise<void>,
+    options?: { message_thread_id?: number },
   ) {
     if (this.isMockOrSimulation(token)) {
       const mockResult = { message_id: actions.length + 1 };
@@ -206,6 +207,9 @@ export class TelegramClientService {
         text,
         replyMarkup,
         parseMode,
+        ...(options?.message_thread_id
+          ? { message_thread_id: options.message_thread_id }
+          : {}),
       });
       return mockResult;
     }
@@ -216,6 +220,9 @@ export class TelegramClientService {
       reply_markup: replyMarkup,
       ...(parseMode ? { parse_mode: parseMode } : {}),
       ...(entities && entities.length > 0 ? { entities } : {}),
+      ...(options?.message_thread_id
+        ? { message_thread_id: options.message_thread_id }
+        : {}),
     }).catch(async (err: unknown) => {
       const isMarkupTooLong = this.isMarkupTooLongError(err);
       if (isMarkupTooLong) {
@@ -225,6 +232,9 @@ export class TelegramClientService {
             reply_markup: safeMarkup,
             ...(parseMode ? { parse_mode: parseMode } : {}),
             ...(entities && entities.length > 0 ? { entities } : {}),
+            ...(options?.message_thread_id
+              ? { message_thread_id: options.message_thread_id }
+              : {}),
           });
           await onCusidStripped?.();
           return res;
@@ -241,6 +251,9 @@ export class TelegramClientService {
             this.stripAllHtml(text),
             {
               reply_markup: plainMarkup,
+              ...(options?.message_thread_id
+                ? { message_thread_id: options.message_thread_id }
+                : {}),
             },
           );
           await onCusidStripped?.();
@@ -261,6 +274,9 @@ export class TelegramClientService {
           reply_markup: replyMarkup,
           ...(parseMode ? { parse_mode: parseMode } : {}),
           ...(entities && entities.length > 0 ? { entities } : {}),
+          ...(options?.message_thread_id
+            ? { message_thread_id: options.message_thread_id }
+            : {}),
         });
       } catch {
         if (hasTextEmojiIds) {
@@ -273,6 +289,9 @@ export class TelegramClientService {
                 {
                   reply_markup: replyMarkup,
                   ...(parseMode ? { parse_mode: parseMode } : {}),
+                  ...(options?.message_thread_id
+                    ? { message_thread_id: options.message_thread_id }
+                    : {}),
                 },
               );
             } catch {
@@ -290,6 +309,9 @@ export class TelegramClientService {
               reply_markup: plainMarkup,
               ...(parseMode ? { parse_mode: parseMode } : {}),
               ...(entities && entities.length > 0 ? { entities } : {}),
+              ...(options?.message_thread_id
+                ? { message_thread_id: options.message_thread_id }
+                : {}),
             });
             await onCusidStripped?.();
             return res;
@@ -306,6 +328,9 @@ export class TelegramClientService {
             {
               reply_markup: plainMarkup,
               ...(parseMode ? { parse_mode: parseMode } : {}),
+              ...(options?.message_thread_id
+                ? { message_thread_id: options.message_thread_id }
+                : {}),
             },
           );
           await onCusidStripped?.();
@@ -318,6 +343,9 @@ export class TelegramClientService {
               this.stripAllHtml(text),
               {
                 reply_markup: plainMarkup,
+                ...(options?.message_thread_id
+                  ? { message_thread_id: options.message_thread_id }
+                  : {}),
               },
             );
             await onCusidStripped?.();

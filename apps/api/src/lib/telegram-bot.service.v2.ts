@@ -544,6 +544,42 @@ export class TelegramBotService {
       const botUsername = String(shop.botConfig?.telegramBotUsername || "")
         .trim()
         .replace(/^@/, "");
+
+      // Check if this update in the group is actually addressed to this bot:
+      // 1. User clicked an inline button (callbackQuery)
+      // 2. User typed a slash command (/start, /help, /buy, /menu...)
+      // 3. User tagged the bot (@botusername)
+      const text = String(message?.text || message?.caption || "").trim();
+      let isDirectedToThisBot = Boolean(callbackQuery);
+
+      if (!isDirectedToThisBot && text.startsWith("/")) {
+        const commandPart = text.split(/\s+/)[0] || "";
+        const atIndex = commandPart.indexOf("@");
+        if (atIndex !== -1) {
+          const targetBot = commandPart.slice(atIndex + 1).toLowerCase();
+          if (botUsername && targetBot === botUsername.toLowerCase()) {
+            isDirectedToThisBot = true;
+          }
+        } else {
+          // General command without explicit @bot: directed to this bot
+          isDirectedToThisBot = true;
+        }
+      } else if (
+        !isDirectedToThisBot &&
+        botUsername &&
+        text.toLowerCase().includes(`@${botUsername.toLowerCase()}`)
+      ) {
+        isDirectedToThisBot = true;
+      }
+
+      // If it's just ordinary chatting between group members, silently ignore and never spam!
+      if (!isDirectedToThisBot) {
+        return { ok: true, actions };
+      }
+
+      const messageThreadId =
+        message?.message_thread_id || callbackQuery?.message?.message_thread_id;
+
       await this.sendText(
         outboundToken,
         incomingChat.id,
@@ -566,6 +602,9 @@ export class TelegramBotService {
               ],
             }
           : undefined,
+        undefined,
+        undefined,
+        messageThreadId ? { message_thread_id: messageThreadId } : undefined,
       );
       return { ok: true, actions };
     }
@@ -14364,6 +14403,7 @@ export class TelegramBotService {
       length: number;
       custom_emoji_id?: string;
     }>,
+    options?: { message_thread_id?: number },
   ) {
     return this.tg.sendText(
       token,
@@ -14373,6 +14413,8 @@ export class TelegramBotService {
       replyMarkup,
       parseMode,
       entities,
+      undefined,
+      options,
     );
   }
 
