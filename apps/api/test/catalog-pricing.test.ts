@@ -4,7 +4,18 @@ import {
   resolveInternalCatalogSourcePrice,
   resolveSyncedSalePrice,
   resolveSyncedWholesalePrice,
+  roundMarkupSalePrice,
 } from "@reseller/shared/server";
+
+// Unit tests for roundMarkupSalePrice: >= 500 rounds UP, < 500 rounds DOWN
+assert.equal(roundMarkupSalePrice(13_500), 14_000, "13,500 must round up to 14,000");
+assert.equal(roundMarkupSalePrice(13_499), 13_000, "13,499 must round down to 13,000");
+assert.equal(roundMarkupSalePrice(13_530), 14_000, "13,530 must round up to 14,000");
+assert.equal(roundMarkupSalePrice(13_200), 13_000, "13,200 must round down to 13,000");
+assert.equal(roundMarkupSalePrice(20_500), 21_000, "20,500 must round up to 21,000");
+assert.equal(roundMarkupSalePrice(20_499), 20_000, "20,499 must round down to 20,000");
+assert.equal(roundMarkupSalePrice(499), 1_000, "499 should not drop to 0, minimum 1,000");
+assert.equal(roundMarkupSalePrice(0), 0, "0 should stay 0");
 
 assert.equal(
   resolveInternalCatalogSourcePrice({
@@ -116,8 +127,44 @@ assert.equal(
     salePriceLocked: false,
     markupPercent: 0,
   }),
-  9_700,
-  "0% markup should resolve exactly to source cost price",
+  10_000,
+  "0% markup should round 9,700 up to 10,000 (>= 500 rounds up)",
+);
+
+assert.equal(
+  resolveSyncedSalePrice({
+    sourcePrice: 12_300,
+    previousSourcePrice: null,
+    existingSalePrice: null,
+    salePriceLocked: false,
+    markupPercent: 10,
+  }),
+  14_000,
+  "12,300 with 10% markup (13,530) must round up to 14,000",
+);
+
+assert.equal(
+  resolveSyncedSalePrice({
+    sourcePrice: 12_000,
+    previousSourcePrice: null,
+    existingSalePrice: null,
+    salePriceLocked: false,
+    markupPercent: 2,
+  }),
+  12_000,
+  "12,000 with 2% markup (12,240) must round down to 12,000",
+);
+
+assert.equal(
+  resolveSyncedSalePrice({
+    sourcePrice: 110_000,
+    previousSourcePrice: 100_000,
+    existingSalePrice: 123_456,
+    salePriceLocked: true,
+    markupPercent: 20,
+  }),
+  133_456,
+  "seller manually set odd price (123,456) must remain untouched and not rounded",
 );
 
 assert.equal(

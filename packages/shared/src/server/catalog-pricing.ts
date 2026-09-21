@@ -33,6 +33,18 @@ export function resolveInternalCatalogSourcePrice(input: {
 }
 
 /**
+ * Round a markup-calculated sale price to the nearest 1,000 VND:
+ * - From 500đ and above: round UP (+1,000đ)
+ * - Under 500đ: round DOWN (+0đ)
+ * Ensures a positive price never rounds down to 0 (minimum 1,000đ).
+ */
+export function roundMarkupSalePrice(rawPrice: number): number {
+  if (rawPrice <= 0) return 0;
+  const integerPrice = Math.round(rawPrice);
+  return Math.max(1000, Math.round(integerPrice / 1000) * 1000);
+}
+
+/**
  * Resolve the downstream sale price for a catalog sync.
  *
  * A manually configured price locks its absolute margin over the source cost.
@@ -61,7 +73,8 @@ export function resolveSyncedSalePrice(input: SyncedSalePriceInput): number | nu
   }
 
   if (input.markupPercent !== null && input.markupPercent >= 0) {
-    return Math.round(input.sourcePrice * (1 + input.markupPercent / 100));
+    const rawPrice = input.sourcePrice * (1 + input.markupPercent / 100);
+    return roundMarkupSalePrice(rawPrice);
   }
 
   if (input.previousSourcePrice !== null && input.existingSalePrice !== null) {

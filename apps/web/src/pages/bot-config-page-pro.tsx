@@ -102,7 +102,7 @@ const T = {
     toggleOff: "Đang tắt",
     markupLabel: "% tăng giá so với nguồn",
     markupDesc:
-      "Giá bán = giá nguồn × (1 + %/100). Để trống = giá nguồn + 10.000đ.",
+      "Giá bán = giá nguồn × (1 + %/100), làm tròn đến 1.000đ (từ 500đ làm tròn lên, dưới 500đ làm tròn xuống). Để trống = giá nguồn + 10.000đ.",
     markupPlaceholder: "VD: 15 (tức +15%)",
     cardPayment: "Cài đặt thanh toán",
     payosDesc: "Tạo link thanh toán VNĐ tự động. Lấy key tại dashboard PayOS.",
@@ -225,7 +225,7 @@ const T = {
     toggleOff: "Off",
     markupLabel: "Price markup % vs source",
     markupDesc:
-      "Sale price = source price × (1 + %/100). Leave empty = source + 10,000₫.",
+      "Sale price = source price × (1 + %/100), rounded to nearest 1,000₫ (≥ 500₫ rounds up, < 500₫ rounds down). Leave empty = source + 10,000₫.",
     markupPlaceholder: "e.g. 15 (= +15%)",
     cardPayment: "Payment Settings",
     payosDesc:

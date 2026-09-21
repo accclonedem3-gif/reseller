@@ -63,6 +63,7 @@ import {
   resolveInternalCatalogSourcePrice,
   resolveSyncedSalePrice,
   resolveSyncedWholesalePrice,
+  roundMarkupSalePrice,
   resolveRestockTemplate,
   resolveTelegramChannelTarget,
   stripRestockCustomEmojiHtml,
@@ -2681,9 +2682,12 @@ export class ShopsService {
           sourceProductId: sourceProduct.id,
           displayName: product.sourceRawName || product.sourceName,
           salePrice: toDecimal(
-            markupPercent != null && markupPercent > 0
-              ? product.price * (1 + markupPercent / 100)
-              : product.price + 10000,
+            resolvedSalePrice ??
+              (markupPercent != null && markupPercent >= 0
+                ? roundMarkupSalePrice(
+                    product.price * (1 + markupPercent / 100),
+                  )
+                : product.price + 10000),
           ),
           enabled: providerSource ? false : true,
           hidden: providerSource ? true : false,
