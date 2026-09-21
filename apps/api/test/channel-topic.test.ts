@@ -29,6 +29,21 @@ import {
   );
 }
 
+// 2b. Test user error case: user enters an extraneous personal username into chatId when public group URL exists
+{
+  const res = resolveTelegramChannelTargetWithThread(
+    "@huymmo1711",
+    "https://t.me/hoctiengem/5",
+    null,
+    "taogiongai_bot",
+  );
+  assert.deepEqual(
+    res,
+    { chatId: "@hoctiengem", messageThreadId: 5 },
+    "Must preserve @hoctiengem from URL and not be overridden by extraneous @huymmo1711",
+  );
+}
+
 // 3. Test private group topic link: https://t.me/c/1829384756/42
 {
   const res = resolveTelegramChannelTargetWithThread(

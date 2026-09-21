@@ -433,8 +433,10 @@ export function resolveTelegramChannelTargetWithThread(
     } else if (!isSelfBot(cleanId)) {
       // If not the bot's own username
       if (cleanId.startsWith("@")) {
-        // If we didn't already have a valid channelUrl or if cleanId is explicitly different from bot
-        targetChatId = cleanId;
+        // Only take cleanId if channelUrl did not already resolve a group username
+        if (!targetChatId) {
+          targetChatId = cleanId;
+        }
       } else {
         const match = cleanId.match(/(?:t\.me|telegram\.me)\/([a-zA-Z0-9_]{4,})(?:\/(\d+))?/);
         if (match && match[1] && !match[1].startsWith("+") && match[1] !== "joinchat" && match[1] !== "c") {
@@ -443,7 +445,9 @@ export function resolveTelegramChannelTargetWithThread(
             targetThreadId = Number(match[2]);
           }
         } else if (/^[a-zA-Z0-9_]{4,}$/.test(cleanId)) {
-          targetChatId = `@${cleanId}`;
+          if (!targetChatId) {
+            targetChatId = `@${cleanId}`;
+          }
         } else if (!targetChatId) {
           targetChatId = cleanId;
         }
