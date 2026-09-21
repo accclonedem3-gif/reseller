@@ -10,7 +10,10 @@ import {
   ChevronDown,
   Handshake,
   ImageUp,
+  Layers,
+  Radio,
   ScanSearch,
+  Send,
   ShieldCheck,
   Store,
   Trash2,
@@ -135,12 +138,21 @@ const T = {
     forceJoinTitle: "Bắt buộc tham gia Kênh/Nhóm",
     forceJoinDesc:
       "Yêu cầu người dùng phải tham gia kênh hoặc nhóm Telegram chỉ định mới được sử dụng bot.",
+    channelNotificationTitle: "Kênh / Nhóm Telegram & Thông báo",
+    channelNotificationDesc:
+      "Cấu hình Kênh hoặc Nhóm Telegram chính thức của Shop để kiểm tra thành viên và tự động gửi thông báo.",
+    channelRestockTitle: "Thông báo Hàng về (Tồn kho)",
+    channelRestockDesc:
+      "Tự động gửi thông báo sản phẩm mới về kho kèm nút 'Mua ngay' trực tiếp vào Kênh/Nhóm.",
+    channelBroadcastTitle: "Thông báo Broadcast",
+    channelBroadcastDesc:
+      "Tự động gửi kèm các bản tin Broadcast vào Kênh/Nhóm song song với gửi cho khách hàng.",
     fieldForceJoinUrl: "Link Kênh hoặc Nhóm Telegram",
     phForceJoinUrl: "https://t.me/ten_kenh_cua_ban",
     fieldForceJoinChatId: "Chat ID hoặc Username (Tùy chọn nếu link công khai)",
     phForceJoinChatId: "@ten_kenh hoặc -100xxxxxxxxxx",
     forceJoinHint:
-      "Lưu ý quan trọng: Bạn BẮT BUỘC phải thêm Bot vào Kênh/Nhóm này làm Quản trị viên (Admin) để Bot có quyền kiểm tra thành viên.",
+      "Lưu ý quan trọng: Bạn BẮT BUỘC phải thêm Bot vào Kênh/Nhóm này làm Quản trị viên (Admin) để Bot có quyền kiểm tra thành viên và gửi tin.",
   },
   en: {
     eyebrow: "Auto Setup",
@@ -247,12 +259,21 @@ const T = {
     forceJoinTitle: "Force Join Channel/Group",
     forceJoinDesc:
       "Require users to join a specified Telegram channel or group before using the bot.",
+    channelNotificationTitle: "Telegram Channel / Group & Notifications",
+    channelNotificationDesc:
+      "Configure your official Telegram channel or group for member verification and automated announcements.",
+    channelRestockTitle: "Restock Notifications",
+    channelRestockDesc:
+      "Automatically post restock alerts with a 'Buy Now' button to the Channel/Group whenever items are restocked.",
+    channelBroadcastTitle: "Broadcast Notifications",
+    channelBroadcastDesc:
+      "Automatically post broadcast campaigns to the Channel/Group alongside individual customers.",
     fieldForceJoinUrl: "Telegram Channel or Group Link",
     phForceJoinUrl: "https://t.me/your_channel_name",
     fieldForceJoinChatId: "Chat ID or Username (Optional if public link)",
     phForceJoinChatId: "@your_channel or -100xxxxxxxxxx",
     forceJoinHint:
-      "Important note: You MUST add your Bot as an Administrator to this Channel/Group so it has permission to verify membership.",
+      "Important note: You MUST add your Bot as an Administrator to this Channel/Group so it has permission to verify membership and post messages.",
   },
   th: {
     eyebrow: "ตั้งค่าอัตโนมัติ",
@@ -354,12 +375,21 @@ const T = {
     forceJoinTitle: "บังคับเข้าร่วมช่อง/กลุ่ม",
     forceJoinDesc:
       "กำหนดให้ผู้ใช้ต้องเข้าร่วมช่องหรือกลุ่ม Telegram ที่ระบุก่อนจึงจะใช้บอทได้",
+    channelNotificationTitle: "ช่อง/กลุ่ม Telegram และการแจ้งเตือน",
+    channelNotificationDesc:
+      "กำหนดค่าช่องหรือกลุ่ม Telegram ทางการของร้านค้าเพื่อตรวจสอบสมาชิกและส่งการแจ้งเตือนอัตโนมัติ",
+    channelRestockTitle: "การแจ้งเตือนสินค้าเข้าคลัง",
+    channelRestockDesc:
+      "โพสต์แจ้งเตือนสินค้าเข้าคลังพร้อมปุ่ม 'ซื้อเลย' ไปยังช่อง/กลุ่มโดยอัตโนมัติ",
+    channelBroadcastTitle: "การแจ้งเตือนบรอดแคสต์",
+    channelBroadcastDesc:
+      "ส่งข้อความบรอดแคสต์ไปยังช่อง/กลุ่มควบคู่ไปกับลูกค้าทั่วไปโดยอัตโนมัติ",
     fieldForceJoinUrl: "ลิงก์ช่องหรือกลุ่ม Telegram",
     phForceJoinUrl: "https://t.me/your_channel_name",
     fieldForceJoinChatId: "Chat ID หรือ Username (ไม่บังคับถ้าเป็นลิงก์สาธารณะ)",
     phForceJoinChatId: "@your_channel หรือ -100xxxxxxxxxx",
     forceJoinHint:
-      "ข้อควรจำ: คุณต้องเพิ่มบอทเป็นผู้ดูแลระบบ (Admin) ในช่อง/กลุ่มนี้ เพื่อให้บอทสามารถตรวจสอบสมาชิกได้",
+      "ข้อควรจำ: คุณต้องเพิ่มบอทเป็นผู้ดูแลระบบ (Admin) ในช่อง/กลุ่มนี้ เพื่อให้บอทสามารถตรวจสอบสมาชิกและโพสต์ข้อความได้",
   },
 };
 
@@ -422,7 +452,10 @@ type BotConfigForm = {
   forceJoinChannelEnabled: boolean;
   forceJoinChannelUrl: string;
   forceJoinChatId: string;
+  channelRestockNotificationEnabled: boolean;
+  channelBroadcastNotificationEnabled: boolean;
 };
+
 
 type ConnectedInternalSource = {
   id: string;
@@ -561,6 +594,8 @@ function buildBotConfigPayload(form: BotConfigForm) {
   }
 
   payload.forceJoinChannelEnabled = form.forceJoinChannelEnabled;
+  payload.channelRestockNotificationEnabled = form.channelRestockNotificationEnabled;
+  payload.channelBroadcastNotificationEnabled = form.channelBroadcastNotificationEnabled;
   payload.binancePayEnabled = form.binancePayEnabled;
   payload.okxPersonalApiEnabled = form.okxPersonalApiEnabled;
   payload.paypalEnabled = form.paypalEnabled;
@@ -645,8 +680,11 @@ function getInitialForm(): BotConfigForm {
     forceJoinChannelEnabled: false,
     forceJoinChannelUrl: "",
     forceJoinChatId: "",
+    channelRestockNotificationEnabled: false,
+    channelBroadcastNotificationEnabled: false,
   };
 }
+
 
 function toneByStatus(value?: string | null) {
   const normalized = String(value || "").toLowerCase();
@@ -793,8 +831,13 @@ export function BotConfigPage() {
         (configQuery.data as any).forceJoinChannelUrl || "",
       forceJoinChatId:
         (configQuery.data as any).forceJoinChatId || "",
+      channelRestockNotificationEnabled:
+        (configQuery.data as any).channelRestockNotificationEnabled ?? false,
+      channelBroadcastNotificationEnabled:
+        (configQuery.data as any).channelBroadcastNotificationEnabled ?? false,
     });
   }, [configQuery.data]);
+
 
   const saveMutation = useMutation({
     mutationFn: async () => {
@@ -1784,126 +1827,222 @@ export function BotConfigPage() {
                   border: "1px solid var(--bd)",
                 }}
               >
-                <div className="flex flex-col gap-4 px-4 py-4 sm:flex-row sm:items-center sm:justify-between">
-                  <div className="flex items-center gap-3">
-                    <div
-                      className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl"
-                      style={{
-                        background: form.forceJoinChannelEnabled
-                          ? "rgba(249,115,22,0.12)"
-                          : "var(--surface)",
-                        color: form.forceJoinChannelEnabled
-                          ? "rgb(249,115,22)"
-                          : "var(--tx-f)",
-                      }}
-                    >
-                      <Users className="h-5 w-5" />
-                    </div>
-                    <div>
-                      <p className="font-semibold" style={{ color: "var(--tx)" }}>
-                        {t.forceJoinTitle}
-                      </p>
-                      <p className="mt-1 text-sm" style={{ color: "var(--tx-f)" }}>
-                        {t.forceJoinDesc}
-                      </p>
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    role="switch"
-                    aria-checked={form.forceJoinChannelEnabled}
-                    onClick={() =>
-                      setForm((c) => ({
-                        ...c,
-                        forceJoinChannelEnabled: !c.forceJoinChannelEnabled,
-                      }))
-                    }
-                    className="inline-flex h-12 w-full shrink-0 items-between justify-between gap-3 rounded-2xl border px-3 text-sm font-semibold transition disabled:opacity-55 sm:w-[164px]"
-                    style={
-                      form.forceJoinChannelEnabled
-                        ? {
-                            borderColor: "rgba(249,115,22,0.3)",
-                            background: "rgba(249,115,22,0.08)",
-                            color: "var(--tx)",
-                          }
-                        : {
-                            borderColor: "var(--bd)",
-                            background: "var(--surface)",
-                            color: "var(--tx-m)",
-                          }
-                    }
+                <div className="flex items-center gap-3 px-4 py-4">
+                  <div
+                    className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl"
+                    style={{
+                      background: "rgba(249,115,22,0.12)",
+                      color: "rgb(249,115,22)",
+                    }}
                   >
-                    <span
-                      className="flex h-8 w-8 items-center justify-center rounded-xl transition"
-                      style={
-                        form.forceJoinChannelEnabled
-                          ? { background: "rgb(249,115,22)", color: "white" }
-                          : { background: "var(--inp)", color: "var(--tx-f)" }
-                      }
-                    >
-                      <Users className="h-4 w-4" />
-                    </span>
-                    <span>
-                      {form.forceJoinChannelEnabled ? t.toggleOn : t.toggleOff}
-                    </span>
-                  </button>
+                    <Radio className="h-5 w-5" />
+                  </div>
+                  <div>
+                    <p className="font-semibold" style={{ color: "var(--tx)" }}>
+                      {t.channelNotificationTitle}
+                    </p>
+                    <p className="mt-1 text-sm" style={{ color: "var(--tx-f)" }}>
+                      {t.channelNotificationDesc}
+                    </p>
+                  </div>
                 </div>
 
-                {form.forceJoinChannelEnabled && (
+                <div
+                  className="space-y-4 px-4 pb-4 pt-2"
+                  style={{ borderTop: "1px solid var(--bd)" }}
+                >
                   <div
-                    className="space-y-4 px-4 pb-4 pt-2"
-                    style={{ borderTop: "1px solid var(--bd)" }}
+                    className="flex items-start gap-2.5 rounded-xl p-3 text-xs"
+                    style={{
+                      background: "rgba(234,179,8,0.1)",
+                      border: "1px solid rgba(234,179,8,0.25)",
+                      color: "#eab308",
+                    }}
                   >
-                    <div
-                      className="flex items-start gap-2.5 rounded-xl p-3 text-xs"
-                      style={{
-                        background: "rgba(234,179,8,0.1)",
-                        border: "1px solid rgba(234,179,8,0.25)",
-                        color: "#eab308",
-                      }}
+                    <ShieldCheck className="h-4 w-4 shrink-0 mt-0.5 text-amber-500" />
+                    <p>{t.forceJoinHint}</p>
+                  </div>
+
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <Field
+                      label={t.fieldForceJoinUrl}
+                      hint="Kênh hoặc Nhóm"
+                      description="Link mời hoặc link công khai của Kênh hoặc Nhóm Telegram."
                     >
-                      <ShieldCheck className="h-4 w-4 shrink-0 mt-0.5 text-amber-500" />
-                      <p>{t.forceJoinHint}</p>
+                      <Input
+                        value={form.forceJoinChannelUrl}
+                        onChange={(e) =>
+                          setForm((c) => ({
+                            ...c,
+                            forceJoinChannelUrl: e.target.value,
+                          }))
+                        }
+                        placeholder={t.phForceJoinUrl}
+                      />
+                    </Field>
+
+                    <Field
+                      label={t.fieldForceJoinChatId}
+                      hint="Tùy chọn"
+                      description="Nếu Kênh/Nhóm là riêng tư (link joinchat hoặc t.me/+...), nhập Chat ID (ví dụ: -1001234567890). Nếu là Kênh công khai (@username), có thể để trống."
+                    >
+                      <Input
+                        value={form.forceJoinChatId}
+                        onChange={(e) =>
+                          setForm((c) => ({
+                            ...c,
+                            forceJoinChatId: e.target.value,
+                          }))
+                        }
+                        placeholder={t.phForceJoinChatId}
+                      />
+                    </Field>
+                  </div>
+
+                  {/* Feature Toggles */}
+                  <div className="space-y-3 pt-2">
+                    <p className="text-xs font-bold uppercase tracking-wider" style={{ color: "var(--tx-m)" }}>
+                      Tùy chọn thông báo & quyền hạn
+                    </p>
+
+                    {/* Toggle 1: Force Join */}
+                    <div
+                      className="flex flex-col gap-3 rounded-xl p-3.5 transition sm:flex-row sm:items-center sm:justify-between"
+                      style={{ background: "var(--surface)", border: "1px solid var(--bd)" }}
+                    >
+                      <div className="flex items-start gap-3">
+                        <div
+                          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg mt-0.5"
+                          style={{
+                            background: form.forceJoinChannelEnabled ? "rgba(249,115,22,0.15)" : "var(--inp)",
+                            color: form.forceJoinChannelEnabled ? "rgb(249,115,22)" : "var(--tx-f)",
+                          }}
+                        >
+                          <Users className="h-4 w-4" />
+                        </div>
+                        <div>
+                          <p className="text-sm font-semibold" style={{ color: "var(--tx)" }}>
+                            {t.forceJoinTitle}
+                          </p>
+                          <p className="text-xs" style={{ color: "var(--tx-f)" }}>
+                            {t.forceJoinDesc}
+                          </p>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={form.forceJoinChannelEnabled}
+                        onClick={() =>
+                          setForm((c) => ({
+                            ...c,
+                            forceJoinChannelEnabled: !c.forceJoinChannelEnabled,
+                          }))
+                        }
+                        className="inline-flex h-9 shrink-0 items-center justify-between gap-2.5 rounded-xl border px-3 text-xs font-bold transition sm:w-[130px]"
+                        style={
+                          form.forceJoinChannelEnabled
+                            ? { borderColor: "rgba(249,115,22,0.4)", background: "rgba(249,115,22,0.12)", color: "var(--tx)" }
+                            : { borderColor: "var(--bd)", background: "var(--inp)", color: "var(--tx-m)" }
+                        }
+                      >
+                        <span>{form.forceJoinChannelEnabled ? t.toggleOn : t.toggleOff}</span>
+                      </button>
                     </div>
 
-                    <div className="grid gap-4 sm:grid-cols-2">
-                      <Field
-                        label={t.fieldForceJoinUrl}
-                        hint="Bắt buộc"
-                        description="Link mời hoặc link công khai của Kênh hoặc Nhóm Telegram."
+                    {/* Toggle 2: Channel Restock Notification */}
+                    <div
+                      className="flex flex-col gap-3 rounded-xl p-3.5 transition sm:flex-row sm:items-center sm:justify-between"
+                      style={{ background: "var(--surface)", border: "1px solid var(--bd)" }}
+                    >
+                      <div className="flex items-start gap-3">
+                        <div
+                          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg mt-0.5"
+                          style={{
+                            background: form.channelRestockNotificationEnabled ? "rgba(34,197,94,0.15)" : "var(--inp)",
+                            color: form.channelRestockNotificationEnabled ? "rgb(34,197,94)" : "var(--tx-f)",
+                          }}
+                        >
+                          <Layers className="h-4 w-4" />
+                        </div>
+                        <div>
+                          <p className="text-sm font-semibold" style={{ color: "var(--tx)" }}>
+                            {t.channelRestockTitle}
+                          </p>
+                          <p className="text-xs" style={{ color: "var(--tx-f)" }}>
+                            {t.channelRestockDesc}
+                          </p>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={form.channelRestockNotificationEnabled}
+                        onClick={() =>
+                          setForm((c) => ({
+                            ...c,
+                            channelRestockNotificationEnabled: !c.channelRestockNotificationEnabled,
+                          }))
+                        }
+                        className="inline-flex h-9 shrink-0 items-center justify-between gap-2.5 rounded-xl border px-3 text-xs font-bold transition sm:w-[130px]"
+                        style={
+                          form.channelRestockNotificationEnabled
+                            ? { borderColor: "rgba(34,197,94,0.4)", background: "rgba(34,197,94,0.12)", color: "var(--tx)" }
+                            : { borderColor: "var(--bd)", background: "var(--inp)", color: "var(--tx-m)" }
+                        }
                       >
-                        <Input
-                          value={form.forceJoinChannelUrl}
-                          onChange={(e) =>
-                            setForm((c) => ({
-                              ...c,
-                              forceJoinChannelUrl: e.target.value,
-                            }))
-                          }
-                          placeholder={t.phForceJoinUrl}
-                        />
-                      </Field>
+                        <span>{form.channelRestockNotificationEnabled ? t.toggleOn : t.toggleOff}</span>
+                      </button>
+                    </div>
 
-                      <Field
-                        label={t.fieldForceJoinChatId}
-                        hint="Tùy chọn"
-                        description="Nếu Kênh/Nhóm là riêng tư (link joinchat hoặc t.me/+...), nhập Chat ID (ví dụ: -1001234567890). Nếu là Kênh công khai (@username), có thể để trống."
+                    {/* Toggle 3: Channel Broadcast Notification */}
+                    <div
+                      className="flex flex-col gap-3 rounded-xl p-3.5 transition sm:flex-row sm:items-center sm:justify-between"
+                      style={{ background: "var(--surface)", border: "1px solid var(--bd)" }}
+                    >
+                      <div className="flex items-start gap-3">
+                        <div
+                          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg mt-0.5"
+                          style={{
+                            background: form.channelBroadcastNotificationEnabled ? "rgba(56,189,248,0.15)" : "var(--inp)",
+                            color: form.channelBroadcastNotificationEnabled ? "rgb(56,189,248)" : "var(--tx-f)",
+                          }}
+                        >
+                          <Send className="h-4 w-4" />
+                        </div>
+                        <div>
+                          <p className="text-sm font-semibold" style={{ color: "var(--tx)" }}>
+                            {t.channelBroadcastTitle}
+                          </p>
+                          <p className="text-xs" style={{ color: "var(--tx-f)" }}>
+                            {t.channelBroadcastDesc}
+                          </p>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={form.channelBroadcastNotificationEnabled}
+                        onClick={() =>
+                          setForm((c) => ({
+                            ...c,
+                            channelBroadcastNotificationEnabled: !c.channelBroadcastNotificationEnabled,
+                          }))
+                        }
+                        className="inline-flex h-9 shrink-0 items-center justify-between gap-2.5 rounded-xl border px-3 text-xs font-bold transition sm:w-[130px]"
+                        style={
+                          form.channelBroadcastNotificationEnabled
+                            ? { borderColor: "rgba(56,189,248,0.4)", background: "rgba(56,189,248,0.12)", color: "var(--tx)" }
+                            : { borderColor: "var(--bd)", background: "var(--inp)", color: "var(--tx-m)" }
+                        }
                       >
-                        <Input
-                          value={form.forceJoinChatId}
-                          onChange={(e) =>
-                            setForm((c) => ({
-                              ...c,
-                              forceJoinChatId: e.target.value,
-                            }))
-                          }
-                          placeholder={t.phForceJoinChatId}
-                        />
-                      </Field>
+                        <span>{form.channelBroadcastNotificationEnabled ? t.toggleOn : t.toggleOff}</span>
+                      </button>
                     </div>
                   </div>
-                )}
+                </div>
               </div>
+
             </div>
             <div className="mt-6 flex justify-end">
               <button

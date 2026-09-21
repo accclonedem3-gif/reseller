@@ -64,6 +64,7 @@ import {
   resolveSyncedSalePrice,
   resolveSyncedWholesalePrice,
   resolveRestockTemplate,
+  resolveTelegramChannelTarget,
   stripRestockCustomEmojiHtml,
   telegramDeleteWebhook,
   telegramGetMe,
@@ -470,8 +471,15 @@ export class ShopsService {
           (botConfig?.customizationJson as Record<string, unknown> | null)
             ?.forceJoinChatId || "",
         ).trim() || null,
+      channelRestockNotificationEnabled:
+        (botConfig?.customizationJson as Record<string, unknown> | null)
+          ?.channelRestockNotificationEnabled === true,
+      channelBroadcastNotificationEnabled:
+        (botConfig?.customizationJson as Record<string, unknown> | null)
+          ?.channelBroadcastNotificationEnabled === true,
     };
   }
+
 
   async uploadShopBanner(
     user: AuthenticatedUser,
@@ -689,7 +697,16 @@ export class ShopsService {
         }
         custPatch.forceJoinChatId = rawChatId;
       }
+      if (dto.channelRestockNotificationEnabled !== undefined) {
+        custPatch.channelRestockNotificationEnabled =
+          dto.channelRestockNotificationEnabled;
+      }
+      if (dto.channelBroadcastNotificationEnabled !== undefined) {
+        custPatch.channelBroadcastNotificationEnabled =
+          dto.channelBroadcastNotificationEnabled;
+      }
       const mergedCust =
+
         Object.keys(custPatch).length > 0
           ? { ...existingCust, ...custPatch }
           : undefined;
@@ -2871,16 +2888,14 @@ export class ShopsService {
       this.prisma.shop.findUnique({
         where: { id: shopId },
         select: {
-          botConfig: { select: { customizationJson: true } },
+          botConfig: {
+            select: { customizationJson: true, telegramBotUsername: true },
+          },
           providerConfig: { select: { ownProductsOnly: true } },
           paymentConfig: { select: { usdtVndRateOverride: true } },
         },
       }),
     ]);
-
-    if (customers.length === 0) {
-      return 0;
-    }
 
     const productById = new Map(sourceProducts.map((p) => [p.id, p]));
     const rawCust = shop?.botConfig?.customizationJson;
@@ -2888,6 +2903,18 @@ export class ShopsService {
       rawCust && typeof rawCust === "object" && !Array.isArray(rawCust)
         ? (rawCust as Record<string, unknown>)
         : {};
+    const channelRestockEnabled =
+      custJson.channelRestockNotificationEnabled === true;
+    const channelTarget = channelRestockEnabled
+      ? resolveTelegramChannelTarget(
+          custJson.forceJoinChatId as string,
+          custJson.forceJoinChannelUrl as string,
+        )
+      : null;
+
+    if (customers.length === 0 && !channelTarget) {
+      return 0;
+    }
     const custEmojis =
       custJson["buttonEmojis"] && typeof custJson["buttonEmojis"] === "object"
         ? (custJson["buttonEmojis"] as Record<string, string>)
@@ -2966,11 +2993,43 @@ export class ShopsService {
       chatId: string;
       text: string;
       hasHtml: boolean;
-      cbData: string;
+      cbData?: string;
+      url?: string;
       lang: string;
     }
 
     const tasks: RestockTask[] = [];
+    const botUsername = shop?.botConfig?.telegramBotUsername;
+
+    // 1. Channel task (if enabled and channel target resolved)
+    if (channelTarget) {
+      for (const item of freshNotifications) {
+        const product = productById.get(item.sourceProductId);
+        const rendered = renderRestockHtml(restockTemplate, {
+          productName: item.displayName,
+          addedQuantity: item.addedQuantity,
+          available: item.available,
+          price: item.price ?? null,
+          usdtVndRate,
+          productIcon: product?.productIcon ?? null,
+          productIconCustomEmojiId: product?.iconCustomEmojiId ?? null,
+          language: "vi",
+        });
+
+        tasks.push({
+          chatId: channelTarget,
+          text: rendered.text,
+          hasHtml: rendered.hasHtml,
+          url: botUsername
+            ? `https://t.me/${botUsername}?start=buy_${item.sourceProductId}`
+            : undefined,
+          cbData: `buy:${item.sourceProductId}`,
+          lang: "vi",
+        });
+      }
+    }
+
+    // 2. Customer individual tasks
     for (const customer of customers) {
       if (!customer.telegramChatId || customer.telegramChatId === "0") continue;
       const lang =
@@ -3022,24 +3081,25 @@ export class ShopsService {
 
         await rateLimiter.acquire();
 
+        const button = task.url
+          ? { text: "🛒 Mua ngay", url: task.url }
+          : buildBtn(
+              "buyNow",
+              "🛒",
+              "Mua ngay",
+              "Buy now",
+              "ซื้อเลย",
+              task.cbData || "",
+              task.lang,
+            );
+
         const sendOptions = {
           parse_mode: task.hasHtml ? "HTML" : undefined,
           reply_markup: {
-            inline_keyboard: [
-              [
-                buildBtn(
-                  "buyNow",
-                  "🛒",
-                  "Mua ngay",
-                  "Buy now",
-                  "ซื้อเลย",
-                  task.cbData,
-                  task.lang,
-                ),
-              ],
-            ],
+            inline_keyboard: [[button]],
           },
         };
+
 
         try {
           await telegramSendMessage(

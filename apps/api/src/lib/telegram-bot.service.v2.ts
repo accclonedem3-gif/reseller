@@ -1235,7 +1235,33 @@ export class TelegramBotService {
           },
           referrerId,
         );
+      } else if (startParam.startsWith("buy_") && message.from?.id) {
+        const sourceProductId = startParam.slice("buy_".length).trim();
+        if (sourceProductId) {
+          try {
+            await this.promptQuantitySelection(
+              shopId,
+              outboundToken,
+              sourceProductId,
+              {
+                telegramUserId: String(message.from.id),
+                telegramChatId: String(message.chat.id),
+                telegramUsername: message.from.username || null,
+                firstName: message.from.first_name || null,
+                lastName: message.from.last_name || null,
+              },
+              actions,
+              messageLanguage,
+            );
+            return { ok: true, actions };
+          } catch (err: any) {
+            this.logger.warn(
+              `[telegram-bot] Failed to prompt quantity for buy_${sourceProductId}: ${err?.message || err}`,
+            );
+          }
+        }
       }
+
 
       await this.renderLanguageMenu(
         outboundToken,

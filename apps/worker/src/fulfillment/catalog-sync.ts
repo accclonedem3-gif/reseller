@@ -19,6 +19,7 @@ import {
   resolveSyncedSalePrice,
   resolveInternalCatalogSourcePrice,
   TelegramRateLimiter,
+  resolveTelegramChannelTarget,
   stripRestockCustomEmojiHtml,
 } from "@reseller/shared/server";
 import { prisma } from "../infra/prisma";
@@ -248,7 +249,9 @@ export async function notifyCatalogStockUpdates(
     prisma.shop.findUnique({
       where: { id: shopId },
       select: {
-        botConfig: { select: { customizationJson: true } },
+        botConfig: {
+          select: { customizationJson: true, telegramBotUsername: true },
+        },
         paymentConfig: { select: { usdtVndRateOverride: true } },
       },
     }),
@@ -339,11 +342,51 @@ export async function notifyCatalogStockUpdates(
     chatId: string;
     text: string;
     hasHtml: boolean;
-    cbData: string;
+    cbData?: string;
+    url?: string;
     lang: string;
   }
 
   const tasks: RestockTask[] = [];
+  const botUsername = shop?.botConfig?.telegramBotUsername;
+  const channelRestockEnabled =
+    custJson.channelRestockNotificationEnabled === true;
+  const channelTarget = channelRestockEnabled
+    ? resolveTelegramChannelTarget(
+        custJson.forceJoinChatId as string,
+        custJson.forceJoinChannelUrl as string,
+      )
+    : null;
+
+  // 1. Channel task (if enabled and channel target resolved)
+  if (channelTarget) {
+    for (const item of freshNotifications) {
+      const product = productById.get(item.sourceProductId);
+      if (!product) continue;
+      const rendered = renderRestockHtml(restockTemplate, {
+        productName: item.displayName || "",
+        addedQuantity: item.addedQuantity,
+        available: item.available,
+        price: item.price ?? null,
+        usdtVndRate,
+        productIconCustomEmojiId: product.iconCustomEmojiId ?? null,
+        language: "vi",
+      });
+
+      tasks.push({
+        chatId: channelTarget,
+        text: rendered.text,
+        hasHtml: rendered.hasHtml,
+        url: botUsername
+          ? `https://t.me/${botUsername}?start=buy_${item.sourceProductId}`
+          : undefined,
+        cbData: `buy:${item.sourceProductId}`,
+        lang: "vi",
+      });
+    }
+  }
+
+  // 2. Customer individual tasks
   for (const customer of customers) {
     if (!customer.telegramChatId || customer.telegramChatId === "0") continue;
     const lang =
@@ -395,24 +438,25 @@ export async function notifyCatalogStockUpdates(
 
       await rateLimiter.acquire();
 
+      const button = task.url
+        ? { text: "🛒 Mua ngay", url: task.url }
+        : buildBtn(
+            "buyNow",
+            "🛒",
+            "Mua ngay",
+            "Buy now",
+            "ซื้อเลย",
+            task.cbData || "",
+            task.lang,
+          );
+
       const sendOptions = {
         parse_mode: task.hasHtml ? "HTML" : undefined,
         reply_markup: {
-          inline_keyboard: [
-            [
-              buildBtn(
-                "buyNow",
-                "🛒",
-                "Mua ngay",
-                "Buy now",
-                "ซื้อเลย",
-                task.cbData,
-                task.lang,
-              ),
-            ],
-          ],
+          inline_keyboard: [[button]],
         },
       };
+
 
       try {
         await telegramSendMessage(

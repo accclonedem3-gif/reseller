@@ -1,5 +1,5 @@
 import { Queue, Job } from "bullmq";
-import { JOBS, computeNextVnRunAt, decryptSecret, isMockBotToken, telegramSendPhoto, telegramSendMessage, TelegramBroadcastRateLimiter } from "@reseller/shared/server";
+import { JOBS, computeNextVnRunAt, decryptSecret, isMockBotToken, telegramSendPhoto, telegramSendMessage, TelegramBroadcastRateLimiter, resolveTelegramChannelTarget } from "@reseller/shared/server";
 import { prisma } from "../infra";
 import { getEncryptionKey } from "../config/env";
 
@@ -301,6 +301,51 @@ export async function processBroadcast(job: Job<{ broadcastId: string }>): Promi
   const messageText = broadcast.message.length > 4096
     ? broadcast.message.slice(0, 4093) + "..."
     : broadcast.message;
+
+  // Send to Channel/Group if enabled in bot config
+  const rawCust = broadcast.shop?.botConfig?.customizationJson;
+  const custJson =
+    rawCust && typeof rawCust === "object" && !Array.isArray(rawCust)
+      ? (rawCust as Record<string, any>)
+      : {};
+  const channelBroadcastEnabled =
+    custJson.channelBroadcastNotificationEnabled === true;
+  const channelTarget = channelBroadcastEnabled
+    ? resolveTelegramChannelTarget(
+        custJson.forceJoinChatId as string,
+        custJson.forceJoinChannelUrl as string,
+      )
+    : null;
+
+  if (
+    channelTarget &&
+    botToken &&
+    !(
+      String(process.env.MOCK_TELEGRAM_MODE || "false") === "true" &&
+      isMockBotToken(botToken)
+    )
+  ) {
+    try {
+      if (broadcast.imageUrl) {
+        const MAX_CAPTION = 1024;
+        if (messageText.length <= MAX_CAPTION) {
+          await telegramSendPhoto(botToken, channelTarget, broadcast.imageUrl, {
+            caption: messageText,
+          });
+        } else {
+          await telegramSendPhoto(botToken, channelTarget, broadcast.imageUrl, {});
+          await telegramSendMessage(botToken, channelTarget, messageText);
+        }
+      } else {
+        await telegramSendMessage(botToken, channelTarget, messageText);
+      }
+      console.log(`[broadcast] Successfully delivered broadcast ${broadcast.id} to channel ${channelTarget}`);
+    } catch (channelError: any) {
+      console.warn(
+        `[broadcast] Failed to deliver broadcast ${broadcast.id} to channel ${channelTarget}: ${channelError?.message || channelError}`,
+      );
+    }
+  }
 
   const targetCustomers = customers.filter(
     (c) => !alreadySentIds.has(c.id) && c.telegramChatId && c.telegramChatId !== "0"

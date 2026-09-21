@@ -343,3 +343,48 @@ export async function telegramGetUpdates(
     allowed_updates: ["message", "callback_query"],
   });
 }
+
+/**
+ * Normalizes a target Telegram channel/group identifier from either
+ * a direct chat ID/username or an invite/public link.
+ *
+ * Examples:
+ * - "@my_channel" -> "@my_channel"
+ * - "my_channel" -> "@my_channel"
+ * - "-1001234567890" -> "-1001234567890"
+ * - "https://t.me/my_channel" -> "@my_channel"
+ * - "t.me/my_channel" -> "@my_channel"
+ */
+export function resolveTelegramChannelTarget(
+  chatIdOrUsername?: string | null,
+  channelUrl?: string | null,
+): string | null {
+  const cleanId = String(chatIdOrUsername || "").trim();
+  if (cleanId) {
+    if (cleanId.startsWith("-")) {
+      return cleanId;
+    }
+    if (cleanId.startsWith("@")) {
+      return cleanId;
+    }
+    const match = cleanId.match(/(?:t\.me|telegram\.me)\/([a-zA-Z0-9_]{4,})/);
+    if (match && match[1] && !match[1].startsWith("+") && match[1] !== "joinchat") {
+      return `@${match[1]}`;
+    }
+    if (/^[a-zA-Z0-9_]{4,}$/.test(cleanId)) {
+      return `@${cleanId}`;
+    }
+    return cleanId;
+  }
+
+  const cleanUrl = String(channelUrl || "").trim();
+  if (cleanUrl) {
+    const match = cleanUrl.match(/(?:t\.me|telegram\.me)\/([a-zA-Z0-9_]{4,})/);
+    if (match && match[1] && !match[1].startsWith("+") && match[1] !== "joinchat") {
+      return `@${match[1]}`;
+    }
+  }
+
+  return null;
+}
+

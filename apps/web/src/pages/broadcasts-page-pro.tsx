@@ -1,7 +1,7 @@
 import { useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Calendar, Copy, Eye, Image as ImageIcon, Pencil, RefreshCw, RotateCcw, Send, Trash2, X } from "lucide-react";
+import { Calendar, Copy, Eye, Image as ImageIcon, Pencil, Radio, RefreshCw, RotateCcw, Send, Trash2, X } from "lucide-react";
 
 import { api } from "@/lib/api";
 import { useToast } from "@/components/ui/toast";
@@ -341,6 +341,10 @@ export function BroadcastsPage() {
     queryFn: async () => (await api.get("/broadcasts/schedules")).data,
     refetchInterval: 30000,
   });
+  const botConfigQuery = useQuery({
+    queryKey: ["bot-config"],
+    queryFn: async () => (await api.get("/bot-config")).data,
+  });
 
   const broadcasts: any[] = broadcastsQuery.data || [];
   const schedules: any[] = schedulesQuery.data || [];
@@ -544,6 +548,20 @@ export function BroadcastsPage() {
             </div>
             <h2 className="text-base font-black" style={{ color: "var(--tx)" }}>Soạn & gửi broadcast</h2>
           </div>
+
+          {/* Channel Broadcast Delivery Info */}
+          {botConfigQuery.data?.channelBroadcastNotificationEnabled && (botConfigQuery.data?.forceJoinChatId || botConfigQuery.data?.forceJoinChannelUrl) && (
+            <div className="mb-4 flex items-center gap-2.5 rounded-xl px-3.5 py-2.5 text-xs" style={{ background: "rgba(56,189,248,0.08)", border: "1px solid rgba(56,189,248,0.25)", color: "#38bdf8" }}>
+              <Radio className="h-4 w-4 shrink-0 text-sky-400" />
+              <span>
+                Broadcast sẽ được tự động gửi kèm vào Kênh/Nhóm:{" "}
+                <strong className="font-bold underline">
+                  {botConfigQuery.data.forceJoinChatId || botConfigQuery.data.forceJoinChannelUrl}
+                </strong>
+              </span>
+            </div>
+          )}
+
 
           {/* Editing banner */}
           {isEditing && (

@@ -360,7 +360,16 @@ export class UpdateBotConfigDto {
   @ValidateIf((o) => o.forceJoinChatId != null)
   @IsString()
   forceJoinChatId?: string | null;
+
+  @IsOptional()
+  @IsBoolean()
+  channelRestockNotificationEnabled?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  channelBroadcastNotificationEnabled?: boolean;
 }
+
 
 export class CreateProviderSourceDto {
   @Transform(emptyStringToUndefined)
