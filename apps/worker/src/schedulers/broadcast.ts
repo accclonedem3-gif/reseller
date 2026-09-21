@@ -1,5 +1,5 @@
-import { Queue, Job } from "bullmq";
-import { JOBS, computeNextVnRunAt, decryptSecret, isMockBotToken, telegramSendPhoto, telegramSendMessage, TelegramBroadcastRateLimiter, resolveTelegramChannelTarget } from "@reseller/shared/server";
+import type { Queue, Job } from "bullmq";
+import { JOBS, computeNextVnRunAt, decryptSecret, isMockBotToken, telegramSendPhoto, telegramSendMessage, TelegramBroadcastRateLimiter, resolveTelegramChannelTarget, resolveTelegramChannelTargetWithThread } from "@reseller/shared/server";
 import { prisma } from "../infra";
 import { getEncryptionKey } from "../config/env";
 
@@ -310,10 +310,13 @@ export async function processBroadcast(job: Job<{ broadcastId: string }>): Promi
       : {};
   const channelBroadcastEnabled =
     custJson.channelBroadcastNotificationEnabled === true;
+  const botUsername = broadcast.shop?.botConfig?.telegramBotUsername;
   const channelTarget = channelBroadcastEnabled
-    ? resolveTelegramChannelTarget(
+    ? resolveTelegramChannelTargetWithThread(
         custJson.forceJoinChatId as string,
         custJson.forceJoinChannelUrl as string,
+        custJson.forceJoinTopicId as string,
+        botUsername,
       )
     : null;
 
@@ -325,24 +328,30 @@ export async function processBroadcast(job: Job<{ broadcastId: string }>): Promi
       isMockBotToken(botToken)
     )
   ) {
+    const threadOptions = channelTarget.messageThreadId
+      ? { message_thread_id: channelTarget.messageThreadId }
+      : {};
     try {
       if (broadcast.imageUrl) {
         const MAX_CAPTION = 1024;
         if (messageText.length <= MAX_CAPTION) {
-          await telegramSendPhoto(botToken, channelTarget, broadcast.imageUrl, {
+          await telegramSendPhoto(botToken, channelTarget.chatId, broadcast.imageUrl, {
             caption: messageText,
+            ...threadOptions,
           });
         } else {
-          await telegramSendPhoto(botToken, channelTarget, broadcast.imageUrl, {});
-          await telegramSendMessage(botToken, channelTarget, messageText);
+          await telegramSendPhoto(botToken, channelTarget.chatId, broadcast.imageUrl, {
+            ...threadOptions,
+          });
+          await telegramSendMessage(botToken, channelTarget.chatId, messageText, threadOptions);
         }
       } else {
-        await telegramSendMessage(botToken, channelTarget, messageText);
+        await telegramSendMessage(botToken, channelTarget.chatId, messageText, threadOptions);
       }
-      console.log(`[broadcast] Successfully delivered broadcast ${broadcast.id} to channel ${channelTarget}`);
+      console.log(`[broadcast] Successfully delivered broadcast ${broadcast.id} to channel ${channelTarget.chatId}${channelTarget.messageThreadId ? ` (topic: ${channelTarget.messageThreadId})` : ""}`);
     } catch (channelError: any) {
       console.warn(
-        `[broadcast] Failed to deliver broadcast ${broadcast.id} to channel ${channelTarget}: ${channelError?.message || channelError}`,
+        `[broadcast] Failed to deliver broadcast ${broadcast.id} to channel ${channelTarget.chatId}: ${channelError?.message || channelError}`,
       );
     }
   }

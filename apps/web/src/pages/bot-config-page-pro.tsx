@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import {
+  AlertCircle,
   BellOff,
   BellRing,
   Bot,
@@ -154,6 +155,12 @@ const T = {
     phForceJoinUrl: "https://t.me/ten_kenh_cua_ban",
     fieldForceJoinChatId: "Chat ID hoặc Username (Tùy chọn nếu link công khai)",
     phForceJoinChatId: "@ten_kenh hoặc -100xxxxxxxxxx",
+    fieldForceJoinTopicId: "ID Chủ đề / Topic ID (Tùy chọn)",
+    phForceJoinTopicId: "VD: 5",
+    descForceJoinTopicId:
+      "Nếu nhóm có nhiều Chủ đề (Topic), nhập ID Topic để bot gửi vào đúng topic đó (hoặc dán link nhóm có đuôi /số, VD: /5).",
+    botUsernameSelfWarning:
+      "Lưu ý: Bạn đang nhập username của con Bot vào ô Chat ID. Nếu là nhóm công khai, hãy ĐỂ TRỐNG ô này!",
     forceJoinHint:
       "Lưu ý quan trọng: Bạn BẮT BUỘC phải thêm Bot vào Kênh/Nhóm này làm Quản trị viên (Admin) để Bot có quyền kiểm tra thành viên và gửi tin.",
   },
@@ -278,6 +285,12 @@ const T = {
     phForceJoinUrl: "https://t.me/your_channel_name",
     fieldForceJoinChatId: "Chat ID or Username (Optional if public link)",
     phForceJoinChatId: "@your_channel or -100xxxxxxxxxx",
+    fieldForceJoinTopicId: "Topic ID (Optional)",
+    phForceJoinTopicId: "e.g. 5",
+    descForceJoinTopicId:
+      "If the group has multiple Topics, enter the Topic ID so the bot posts in that specific topic (or paste a link ending with /number, e.g. /5).",
+    botUsernameSelfWarning:
+      "Notice: You entered the Bot's username in the Chat ID field. For public groups, please leave this field blank!",
     forceJoinHint:
       "Important note: You MUST add your Bot as an Administrator to this Channel/Group so it has permission to verify membership and post messages.",
   },
@@ -397,6 +410,12 @@ const T = {
     phForceJoinUrl: "https://t.me/your_channel_name",
     fieldForceJoinChatId: "Chat ID หรือ Username (ไม่บังคับถ้าเป็นลิงก์สาธารณะ)",
     phForceJoinChatId: "@your_channel หรือ -100xxxxxxxxxx",
+    fieldForceJoinTopicId: "Topic ID (ไม่บังคับ)",
+    phForceJoinTopicId: "เช่น 5",
+    descForceJoinTopicId:
+      "หากกลุ่มมีหลายหัวข้อ ให้ใส่ Topic ID เพื่อให้บอทส่งข้อความไปยังหัวข้อนั้น (หรือใส่ลิงก์ที่มี /ตัวเลข)",
+    botUsernameSelfWarning:
+      "ข้อควรระวัง: คุณใส่ชื่อผู้ใช้ของบอทในช่อง Chat ID หากเป็นกลุ่มสาธารณะ โปรดเว้นว่างไว้!",
     forceJoinHint:
       "ข้อควรจำ: คุณต้องเพิ่มบอทเป็นผู้ดูแลระบบ (Admin) ในช่อง/กลุ่มนี้ เพื่อให้บอทสามารถตรวจสอบสมาชิกและโพสต์ข้อความได้",
   },
@@ -461,6 +480,7 @@ type BotConfigForm = {
   forceJoinChannelEnabled: boolean;
   forceJoinChannelUrl: string;
   forceJoinChatId: string;
+  forceJoinTopicId: string;
   channelRestockNotificationEnabled: boolean;
   channelBroadcastNotificationEnabled: boolean;
   ownerOrderNotificationEnabled: boolean;
@@ -597,6 +617,7 @@ function buildBotConfigPayload(form: BotConfigForm) {
     ["usdtBep20Address", "usdtBep20Address"],
     ["forceJoinChannelUrl", "forceJoinChannelUrl"],
     ["forceJoinChatId", "forceJoinChatId"],
+    ["forceJoinTopicId", "forceJoinTopicId"],
   ];
 
   for (const [formKey, payloadKey] of fields) {
@@ -691,6 +712,7 @@ function getInitialForm(): BotConfigForm {
     forceJoinChannelEnabled: false,
     forceJoinChannelUrl: "",
     forceJoinChatId: "",
+    forceJoinTopicId: "",
     channelRestockNotificationEnabled: false,
     channelBroadcastNotificationEnabled: false,
     ownerOrderNotificationEnabled: true,
@@ -843,6 +865,8 @@ export function BotConfigPage() {
         (configQuery.data as any).forceJoinChannelUrl || "",
       forceJoinChatId:
         (configQuery.data as any).forceJoinChatId || "",
+      forceJoinTopicId:
+        (configQuery.data as any).forceJoinTopicId || "",
       channelRestockNotificationEnabled:
         (configQuery.data as any).channelRestockNotificationEnabled ?? false,
       channelBroadcastNotificationEnabled:
@@ -1881,24 +1905,46 @@ export function BotConfigPage() {
                     <Field
                       label={t.fieldForceJoinUrl}
                       hint="Kênh hoặc Nhóm"
-                      description="Link mời hoặc link công khai của Kênh hoặc Nhóm Telegram."
+                      description="Hỗ trợ cả link Kênh, Nhóm hoặc link Topic cụ thể (ví dụ: https://t.me/hoctiengem/5)."
                     >
                       <Input
                         value={form.forceJoinChannelUrl}
-                        onChange={(e) =>
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          const topicMatch = val.match(/(?:t\.me|telegram\.me)\/(?:c\/\d+|[a-zA-Z0-9_]{4,})\/(\d+)/);
                           setForm((c) => ({
                             ...c,
-                            forceJoinChannelUrl: e.target.value,
-                          }))
-                        }
+                            forceJoinChannelUrl: val,
+                            ...(topicMatch && topicMatch[1] && !c.forceJoinTopicId ? { forceJoinTopicId: topicMatch[1] } : {}),
+                          }));
+                        }}
                         placeholder={t.phForceJoinUrl}
                       />
                     </Field>
 
                     <Field
+                      label={t.fieldForceJoinTopicId}
+                      hint="Tùy chọn"
+                      description={t.descForceJoinTopicId}
+                    >
+                      <Input
+                        value={form.forceJoinTopicId}
+                        onChange={(e) =>
+                          setForm((c) => ({
+                            ...c,
+                            forceJoinTopicId: e.target.value,
+                          }))
+                        }
+                        placeholder={t.phForceJoinTopicId}
+                      />
+                    </Field>
+                  </div>
+
+                  <div>
+                    <Field
                       label={t.fieldForceJoinChatId}
                       hint="Tùy chọn"
-                      description="Nếu Kênh/Nhóm là riêng tư (link joinchat hoặc t.me/+...), nhập Chat ID (ví dụ: -1001234567890). Nếu là Kênh công khai (@username), có thể để trống."
+                      description="Nếu Kênh/Nhóm là riêng tư (link joinchat hoặc t.me/+...), nhập Chat ID (ví dụ: -1001234567890). Nếu là Kênh/Nhóm công khai, HÃY ĐỂ TRỐNG (không điền tên Bot vào đây)."
                     >
                       <Input
                         value={form.forceJoinChatId}
@@ -1911,6 +1957,25 @@ export function BotConfigPage() {
                         placeholder={t.phForceJoinChatId}
                       />
                     </Field>
+
+                    {Boolean(
+                      form.forceJoinChatId &&
+                      configQuery.data?.telegramBotUsername &&
+                      form.forceJoinChatId.replace(/^@/, "").trim().toLowerCase() ===
+                        configQuery.data.telegramBotUsername.replace(/^@/, "").trim().toLowerCase()
+                    ) && (
+                      <div
+                        className="mt-2 flex items-center gap-2 rounded-xl p-3 text-xs font-medium"
+                        style={{
+                          background: "rgba(239, 68, 68, 0.12)",
+                          color: "#ef4444",
+                          border: "1px solid rgba(239, 68, 68, 0.25)",
+                        }}
+                      >
+                        <AlertCircle className="h-4 w-4 shrink-0" />
+                        <span>{t.botUsernameSelfWarning}</span>
+                      </div>
+                    )}
                   </div>
 
                   {/* Feature Toggles */}

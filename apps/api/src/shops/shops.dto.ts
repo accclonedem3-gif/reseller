@@ -362,6 +362,11 @@ export class UpdateBotConfigDto {
   forceJoinChatId?: string | null;
 
   @IsOptional()
+  @ValidateIf((o) => o.forceJoinTopicId != null)
+  @IsString()
+  forceJoinTopicId?: string | null;
+
+  @IsOptional()
   @IsBoolean()
   channelRestockNotificationEnabled?: boolean;
 

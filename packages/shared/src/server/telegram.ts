@@ -344,47 +344,139 @@ export async function telegramGetUpdates(
   });
 }
 
+export interface TelegramChannelTarget {
+  chatId: string;
+  messageThreadId?: number;
+}
+
+/**
+ * Normalizes a target Telegram channel/group identifier and optional topic ID (message_thread_id)
+ * from either a direct chat ID/username, an invite/public link, or a topic link.
+ *
+ * Supported link formats:
+ * - Public group with topic: "https://t.me/mygroup/5" -> chatId: "@mygroup", messageThreadId: 5
+ * - Public group with topic & msg: "https://t.me/mygroup/5/123" -> chatId: "@mygroup", messageThreadId: 5
+ * - Private group with topic: "https://t.me/c/1829384756/42" -> chatId: "-1001829384756", messageThreadId: 42
+ * - Public group: "https://t.me/mygroup" -> chatId: "@mygroup"
+ * - Direct ID with topic: "-1001234567890/5" or "-1001234567890_5" -> chatId: "-1001234567890", messageThreadId: 5
+ * - If chatId is mistakenly filled with the bot's own username, it falls back to the group/channel URL.
+ */
+export function resolveTelegramChannelTargetWithThread(
+  chatIdOrUsername?: string | null,
+  channelUrl?: string | null,
+  topicId?: string | number | null,
+  botUsername?: string | null,
+): TelegramChannelTarget | null {
+  let targetChatId: string | null = null;
+  let targetThreadId: number | undefined = undefined;
+
+  // 1. Check explicit topicId parameter
+  if (topicId !== undefined && topicId !== null) {
+    const parsed = Number(String(topicId).trim());
+    if (Number.isInteger(parsed) && parsed > 0) {
+      targetThreadId = parsed;
+    }
+  }
+
+  // Helper to normalize username / bot check
+  const cleanBot = String(botUsername || "").replace(/^@/, "").trim().toLowerCase();
+  const isSelfBot = (val: string) => {
+    if (!val) return false;
+    const clean = val.replace(/^@/, "").trim().toLowerCase();
+    if (cleanBot && clean === cleanBot) return true;
+    return false;
+  };
+
+  // 2. Parse from channelUrl if present
+  const cleanUrl = String(channelUrl || "").trim();
+  if (cleanUrl) {
+    // Check private group topic link: /c/(\d+)(?:/(\d+))?
+    const privateMatch = cleanUrl.match(/(?:t\.me|telegram\.me)\/c\/(\d+)(?:\/(\d+))?/);
+    if (privateMatch && privateMatch[1]) {
+      targetChatId = `-100${privateMatch[1]}`;
+      if (privateMatch[2] && targetThreadId === undefined) {
+        targetThreadId = Number(privateMatch[2]);
+      }
+    } else {
+      // Check public group / channel: /([a-zA-Z0-9_]{4,})(?:\/(\d+))?
+      const publicMatch = cleanUrl.match(/(?:t\.me|telegram\.me)\/([a-zA-Z0-9_]{4,})(?:\/(\d+))?/);
+      if (
+        publicMatch &&
+        publicMatch[1] &&
+        !publicMatch[1].startsWith("+") &&
+        publicMatch[1] !== "joinchat" &&
+        publicMatch[1] !== "c"
+      ) {
+        targetChatId = `@${publicMatch[1]}`;
+        if (publicMatch[2] && targetThreadId === undefined) {
+          targetThreadId = Number(publicMatch[2]);
+        }
+      }
+    }
+  }
+
+  // 3. Inspect chatIdOrUsername
+  let cleanId = String(chatIdOrUsername || "").trim();
+  if (cleanId) {
+    // If cleanId has a slash or underscore with topic, e.g. -100123/5 or -100123_5
+    const idTopicMatch = cleanId.match(/^([@\-]?[a-zA-Z0-9_]+)[\/_](\d+)$/);
+    if (idTopicMatch && idTopicMatch[1]) {
+      cleanId = idTopicMatch[1];
+      if (targetThreadId === undefined && idTopicMatch[2]) {
+        targetThreadId = Number(idTopicMatch[2]);
+      }
+    }
+
+    // If cleanId is numeric chat ID (-100... or -...), this is authoritative
+    if (cleanId.startsWith("-")) {
+      targetChatId = cleanId;
+    } else if (!isSelfBot(cleanId)) {
+      // If not the bot's own username
+      if (cleanId.startsWith("@")) {
+        // If we didn't already have a valid channelUrl or if cleanId is explicitly different from bot
+        targetChatId = cleanId;
+      } else {
+        const match = cleanId.match(/(?:t\.me|telegram\.me)\/([a-zA-Z0-9_]{4,})(?:\/(\d+))?/);
+        if (match && match[1] && !match[1].startsWith("+") && match[1] !== "joinchat" && match[1] !== "c") {
+          targetChatId = `@${match[1]}`;
+          if (match[2] && targetThreadId === undefined) {
+            targetThreadId = Number(match[2]);
+          }
+        } else if (/^[a-zA-Z0-9_]{4,}$/.test(cleanId)) {
+          targetChatId = `@${cleanId}`;
+        } else if (!targetChatId) {
+          targetChatId = cleanId;
+        }
+      }
+    }
+  }
+
+  if (!targetChatId) return null;
+
+  return {
+    chatId: targetChatId,
+    ...(targetThreadId !== undefined && targetThreadId > 0
+      ? { messageThreadId: targetThreadId }
+      : {}),
+  };
+}
+
 /**
  * Normalizes a target Telegram channel/group identifier from either
  * a direct chat ID/username or an invite/public link.
- *
- * Examples:
- * - "@my_channel" -> "@my_channel"
- * - "my_channel" -> "@my_channel"
- * - "-1001234567890" -> "-1001234567890"
- * - "https://t.me/my_channel" -> "@my_channel"
- * - "t.me/my_channel" -> "@my_channel"
  */
 export function resolveTelegramChannelTarget(
   chatIdOrUsername?: string | null,
   channelUrl?: string | null,
+  topicId?: string | number | null,
+  botUsername?: string | null,
 ): string | null {
-  const cleanId = String(chatIdOrUsername || "").trim();
-  if (cleanId) {
-    if (cleanId.startsWith("-")) {
-      return cleanId;
-    }
-    if (cleanId.startsWith("@")) {
-      return cleanId;
-    }
-    const match = cleanId.match(/(?:t\.me|telegram\.me)\/([a-zA-Z0-9_]{4,})/);
-    if (match && match[1] && !match[1].startsWith("+") && match[1] !== "joinchat") {
-      return `@${match[1]}`;
-    }
-    if (/^[a-zA-Z0-9_]{4,}$/.test(cleanId)) {
-      return `@${cleanId}`;
-    }
-    return cleanId;
-  }
-
-  const cleanUrl = String(channelUrl || "").trim();
-  if (cleanUrl) {
-    const match = cleanUrl.match(/(?:t\.me|telegram\.me)\/([a-zA-Z0-9_]{4,})/);
-    if (match && match[1] && !match[1].startsWith("+") && match[1] !== "joinchat") {
-      return `@${match[1]}`;
-    }
-  }
-
-  return null;
+  const resolved = resolveTelegramChannelTargetWithThread(
+    chatIdOrUsername,
+    channelUrl,
+    topicId,
+    botUsername,
+  );
+  return resolved ? resolved.chatId : null;
 }
 

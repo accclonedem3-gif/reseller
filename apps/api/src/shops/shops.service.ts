@@ -472,6 +472,11 @@ export class ShopsService {
           (botConfig?.customizationJson as Record<string, unknown> | null)
             ?.forceJoinChatId || "",
         ).trim() || null,
+      forceJoinTopicId:
+        String(
+          (botConfig?.customizationJson as Record<string, unknown> | null)
+            ?.forceJoinTopicId || "",
+        ).trim() || null,
       channelRestockNotificationEnabled:
         (botConfig?.customizationJson as Record<string, unknown> | null)
           ?.channelRestockNotificationEnabled === true,
@@ -682,24 +687,46 @@ export class ShopsService {
       if (dto.forceJoinChannelUrl !== undefined) {
         const rawUrl = dto.forceJoinChannelUrl?.trim() || null;
         custPatch.forceJoinChannelUrl = rawUrl;
-        if (rawUrl && !dto.forceJoinChatId && !existingCust.forceJoinChatId) {
-          const match = rawUrl.match(/(?:t\.me|telegram\.me)\/([a-zA-Z0-9_]{4,})/);
-          if (match && match[1] && !match[1].startsWith("+") && match[1] !== "joinchat") {
-            custPatch.forceJoinChatId = `@${match[1]}`;
+        if (rawUrl) {
+          const topicMatch = rawUrl.match(/(?:t\.me|telegram\.me)\/(?:c\/\d+|[a-zA-Z0-9_]{4,})\/(\d+)/);
+          if (topicMatch && topicMatch[1] && dto.forceJoinTopicId === undefined && !existingCust.forceJoinTopicId) {
+            custPatch.forceJoinTopicId = topicMatch[1];
+          }
+          if (!dto.forceJoinChatId && !existingCust.forceJoinChatId) {
+            const match = rawUrl.match(/(?:t\.me|telegram\.me)\/([a-zA-Z0-9_]{4,})/);
+            if (match && match[1] && !match[1].startsWith("+") && match[1] !== "joinchat" && match[1] !== "c") {
+              custPatch.forceJoinChatId = `@${match[1]}`;
+            }
           }
         }
       }
       if (dto.forceJoinChatId !== undefined) {
         let rawChatId = dto.forceJoinChatId?.trim() || null;
         if (rawChatId) {
-          const match = rawChatId.match(/(?:t\.me|telegram\.me)\/([a-zA-Z0-9_]{4,})/);
-          if (match && match[1] && !match[1].startsWith("+") && match[1] !== "joinchat") {
-            rawChatId = `@${match[1]}`;
-          } else if (/^[a-zA-Z0-9_]{4,}$/.test(rawChatId)) {
-            rawChatId = `@${rawChatId}`;
+          const botUsername = String(shop.botConfig?.telegramBotUsername || "").replace(/^@/, "").toLowerCase();
+          const cleanInput = rawChatId.replace(/^@/, "").toLowerCase();
+          if (botUsername && cleanInput === botUsername) {
+            rawChatId = null;
+            const u = String(custPatch.forceJoinChannelUrl || existingCust.forceJoinChannelUrl || "");
+            if (u) {
+              const match = u.match(/(?:t\.me|telegram\.me)\/([a-zA-Z0-9_]{4,})/);
+              if (match && match[1] && !match[1].startsWith("+") && match[1] !== "joinchat" && match[1] !== "c") {
+                rawChatId = `@${match[1]}`;
+              }
+            }
+          } else {
+            const match = rawChatId.match(/(?:t\.me|telegram\.me)\/([a-zA-Z0-9_]{4,})/);
+            if (match && match[1] && !match[1].startsWith("+") && match[1] !== "joinchat" && match[1] !== "c") {
+              rawChatId = `@${match[1]}`;
+            } else if (/^[a-zA-Z0-9_]{4,}$/.test(rawChatId)) {
+              rawChatId = `@${rawChatId}`;
+            }
           }
         }
         custPatch.forceJoinChatId = rawChatId;
+      }
+      if (dto.forceJoinTopicId !== undefined) {
+        custPatch.forceJoinTopicId = dto.forceJoinTopicId?.trim() || null;
       }
       if (dto.channelRestockNotificationEnabled !== undefined) {
         custPatch.channelRestockNotificationEnabled =
