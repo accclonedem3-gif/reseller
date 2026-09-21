@@ -77,4 +77,53 @@ const render = new BotRenderHelpers();
   console.log("✓ Test 6 passed: buildSupportText preserves rich supportNote");
 }
 
+// Test 7: Drops orphaned / duplicate closing tags (Topcard24h_bot exact bug)
+{
+  const input = `<tg-emoji emoji-id="5461151367559141950">🎉</tg-emoji></tg-emoji><b>AI TOOLS</b>`;
+  const output = render.sanitizeTelegramHtml(input);
+  assert.equal(
+    output,
+    `<tg-emoji emoji-id="5461151367559141950">🎉</tg-emoji><b>AI TOOLS</b>`,
+    "Should drop duplicate </tg-emoji> closing tag",
+  );
+  console.log("✓ Test 7 passed: Drops duplicate closing tag");
+}
+
+// Test 8: Automatically closes unclosed opening tags
+{
+  const input = `<b>Chữ đậm chưa đóng <i>nghiêng`;
+  const output = render.sanitizeTelegramHtml(input);
+  assert.equal(
+    output,
+    `<b>Chữ đậm chưa đóng <i>nghiêng</i></b>`,
+    "Should auto-close unclosed tags in reverse order",
+  );
+  console.log("✓ Test 8 passed: Auto-closes unclosed tags");
+}
+
+// Test 9: Safely fixes mis-nested tags
+{
+  const input = `<b>Bold <i>Italic</b> text</i>`;
+  const output = render.sanitizeTelegramHtml(input);
+  assert.equal(
+    output,
+    `<b>Bold <i>Italic</i></b> text`,
+    "Should fix mis-nested tags and drop orphaned closing tag",
+  );
+  console.log("✓ Test 9 passed: Fixes mis-nested tags");
+}
+
+// Test 10: Drops isolated stray closing tags
+{
+  const input = `Chữ thường </b> </i> </tg-emoji>`;
+  const output = render.sanitizeTelegramHtml(input);
+  assert.equal(
+    output,
+    `Chữ thường   `,
+    "Should drop isolated stray closing tags",
+  );
+  console.log("✓ Test 10 passed: Drops isolated stray closing tags");
+}
+
 console.log("ALL SANITIZE TESTS PASSED SUCCESSFULLY! ✅");
+

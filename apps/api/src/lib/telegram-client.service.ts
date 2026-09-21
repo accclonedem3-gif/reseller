@@ -232,6 +232,23 @@ export class TelegramClientService {
           // fall through to text cusid stripping or further retry below
         }
       }
+      if (this.isEntityParseError(err)) {
+        try {
+          const plainMarkup = this.stripInlineEmojiIds(replyMarkup);
+          const res = await telegramSendMessage(
+            token,
+            chatId,
+            this.stripAllHtml(text),
+            {
+              reply_markup: plainMarkup,
+            },
+          );
+          await onCusidStripped?.();
+          return res;
+        } catch {
+          // fall through to further retry below
+        }
+      }
       const hasInlineEmojiIds = !!(
         replyMarkup && this.hasInlineEmojiIds(replyMarkup)
       );
@@ -281,17 +298,33 @@ export class TelegramClientService {
           }
         }
 
-        const res = await telegramSendMessage(
-          token,
-          chatId,
-          this.stripTextEmojiIds(text),
-          {
-            reply_markup: plainMarkup,
-            ...(parseMode ? { parse_mode: parseMode } : {}),
-          },
-        );
-        await onCusidStripped?.();
-        return res;
+        try {
+          const res = await telegramSendMessage(
+            token,
+            chatId,
+            this.stripTextEmojiIds(text),
+            {
+              reply_markup: plainMarkup,
+              ...(parseMode ? { parse_mode: parseMode } : {}),
+            },
+          );
+          await onCusidStripped?.();
+          return res;
+        } catch (finalErr) {
+          if (this.isEntityParseError(finalErr)) {
+            const res = await telegramSendMessage(
+              token,
+              chatId,
+              this.stripAllHtml(text),
+              {
+                reply_markup: plainMarkup,
+              },
+            );
+            await onCusidStripped?.();
+            return res;
+          }
+          throw finalErr;
+        }
       }
     });
   }
@@ -407,6 +440,20 @@ export class TelegramClientService {
           // fall through to resend below
         }
       }
+      if (this.isEntityParseError(err)) {
+        const plainMarkup =
+          this.stripInlineEmojiIds(replyMarkup) ?? replyMarkup;
+        const plainText = this.stripAllHtml(text);
+        try {
+          await telegramEditMessageText(token, chatId, messageId, plainText, {
+            reply_markup: plainMarkup,
+          });
+          await onCusidStripped?.();
+          return;
+        } catch {
+          // fall through to resend below
+        }
+      }
       if (!resendOnFailure) {
         const plainMarkup =
           this.stripInlineEmojiIds(replyMarkup) ?? replyMarkup;
@@ -438,6 +485,16 @@ export class TelegramClientService {
         if (this.isMarkupTooLongError(err2)) {
           const safeMarkup = this.makeMarkupSafe(replyMarkup);
           await telegramSendMessage(token, chatId, text, opts(safeMarkup));
+          await onCusidStripped?.();
+          return;
+        }
+        if (this.isEntityParseError(err2)) {
+          const plainMarkup =
+            this.stripInlineEmojiIds(replyMarkup) ?? replyMarkup;
+          const plainText = this.stripAllHtml(text);
+          await telegramSendMessage(token, chatId, plainText, {
+            reply_markup: plainMarkup,
+          });
           await onCusidStripped?.();
           return;
         }
@@ -491,7 +548,9 @@ export class TelegramClientService {
       }
 
       const plainMarkup = this.stripInlineEmojiIds(replyMarkup) ?? replyMarkup;
-      const plainCaption = this.stripTextEmojiIds(caption);
+      const plainCaption = this.isEntityParseError(error)
+        ? this.stripAllHtml(caption)
+        : this.stripTextEmojiIds(caption);
       try {
         await telegramEditMessageCaption(
           token,
@@ -500,7 +559,9 @@ export class TelegramClientService {
           plainCaption,
           {
             reply_markup: plainMarkup,
-            ...(parseMode ? { parse_mode: parseMode } : {}),
+            ...(!this.isEntityParseError(error) && parseMode
+              ? { parse_mode: parseMode }
+              : {}),
           },
         );
         if (plainMarkup !== replyMarkup || plainCaption !== caption) {
@@ -533,6 +594,28 @@ export class TelegramClientService {
       msg.includes("reply markup is too long") ||
       msg.includes("button_row_too_long")
     );
+  }
+
+  isEntityParseError(err: unknown): boolean {
+    const msg = String((err as Error)?.message || "").toLowerCase();
+    return (
+      msg.includes("can't parse entities") ||
+      msg.includes("cant parse entities") ||
+      msg.includes("unexpected end tag") ||
+      msg.includes("is not closed") ||
+      msg.includes("parse entities")
+    );
+  }
+
+  stripAllHtml(text: string): string {
+    return text
+      .replace(/<tg-emoji\b[^>]*>([\s\S]*?)<\/tg-emoji>/gi, "$1")
+      .replace(/<[^>]+>/g, "")
+      .replace(/&amp;/g, "&")
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">")
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'");
   }
 
   makeMarkupSafe(

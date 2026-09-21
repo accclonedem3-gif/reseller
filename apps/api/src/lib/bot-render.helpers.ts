@@ -72,6 +72,8 @@ export class BotRenderHelpers {
   /**
    * Preserves valid Telegram HTML tags (<b>, <i>, <u>, <s>, <a>, <code>, <pre>, <blockquote>, <tg-spoiler>, <tg-emoji>)
    * while safely escaping raw characters (&, <, >) that are not part of valid tags.
+   * Also enforces balanced tags: safely discards orphaned closing tags (preventing 'unexpected end tag' crashes)
+   * and automatically closes any unclosed opening tags at the end of the text.
    */
   sanitizeTelegramHtml(value: string): string {
     if (!value) return "";
@@ -82,19 +84,104 @@ export class BotRenderHelpers {
     const parts: string[] = [];
     let lastIndex = 0;
     let match: RegExpExecArray | null;
+    const openTags: Array<{ canonical: string; closeTag: string }> = [];
+
+    const parseTagInfo = (tag: string) => {
+      const isClosing = tag.startsWith("</");
+      const inner = isClosing
+        ? tag.slice(2, -1).trim()
+        : tag.slice(1, -1).trim();
+      const tagName = (inner.split(/[\s>]/)[0] || "").toLowerCase();
+      switch (tagName) {
+        case "b":
+        case "strong":
+          return { isClosing, canonical: "b", closeTag: "</b>" };
+        case "i":
+        case "em":
+          return { isClosing, canonical: "i", closeTag: "</i>" };
+        case "u":
+        case "ins":
+          return { isClosing, canonical: "u", closeTag: "</u>" };
+        case "s":
+        case "strike":
+          return { isClosing, canonical: "s", closeTag: "</s>" };
+        case "del":
+          return { isClosing, canonical: "s", closeTag: "</del>" };
+        case "code":
+          return { isClosing, canonical: "code", closeTag: "</code>" };
+        case "pre":
+          return { isClosing, canonical: "pre", closeTag: "</pre>" };
+        case "blockquote":
+          return { isClosing, canonical: "blockquote", closeTag: "</blockquote>" };
+        case "tg-spoiler":
+          return { isClosing, canonical: "tg-spoiler", closeTag: "</tg-spoiler>" };
+        case "span":
+          return { isClosing, canonical: "tg-spoiler", closeTag: "</span>" };
+        case "a":
+          return { isClosing, canonical: "a", closeTag: "</a>" };
+        case "tg-emoji":
+          return { isClosing, canonical: "tg-emoji", closeTag: "</tg-emoji>" };
+        default:
+          return null;
+      }
+    };
 
     while ((match = validTagRegex.exec(raw)) !== null) {
       const textBefore = raw.substring(lastIndex, match.index);
       if (textBefore) {
         parts.push(this.escapeHtmlText(textBefore));
       }
-      parts.push(match[0]);
+
+      const tag = match[0];
+      const tagInfo = parseTagInfo(tag);
+
+      if (!tagInfo) {
+        parts.push(this.escapeHtmlText(tag));
+      } else if (!tagInfo.isClosing) {
+        parts.push(tag);
+        openTags.push({
+          canonical: tagInfo.canonical,
+          closeTag: tagInfo.closeTag,
+        });
+      } else {
+        // Closing tag: check if matching open tag exists in stack
+        let matchIdx = -1;
+        for (let i = openTags.length - 1; i >= 0; i--) {
+          const entry = openTags[i];
+          if (entry && entry.canonical === tagInfo.canonical) {
+            matchIdx = i;
+            break;
+          }
+        }
+
+        if (matchIdx === -1) {
+          // Orphaned closing tag without open tag -> safely drop it to prevent Telegram parse error
+          lastIndex = validTagRegex.lastIndex;
+          continue;
+        }
+
+        // Close any tags opened after the matched tag to maintain valid XML nesting
+        while (openTags.length - 1 > matchIdx) {
+          const unclosed = openTags.pop()!;
+          parts.push(unclosed.closeTag);
+        }
+
+        openTags.pop();
+        parts.push(tag);
+      }
+
       lastIndex = validTagRegex.lastIndex;
     }
 
     const remaining = raw.substring(lastIndex);
     if (remaining) {
       parts.push(this.escapeHtmlText(remaining));
+    }
+
+    // Auto-close any unclosed tags
+    while (openTags.length > 0) {
+      const unclosed = openTags.pop()!;
+      parts.push(unclosed.closeTag);
     }
 
     return parts.join("");
