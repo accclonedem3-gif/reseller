@@ -2820,16 +2820,24 @@ export class ShopsService {
         .catch(() => undefined);
     }
 
-    // Stock persistence is the hot path. Telegram fan-out can take minutes for a large shop,
-    // so enqueue it on a dedicated queue instead of holding the catalog sync mutex/job open.
-    const notified =
+    const rawCust = shop?.botConfig?.customizationJson;
+    const custJson =
+      rawCust && typeof rawCust === "object" && !Array.isArray(rawCust)
+        ? (rawCust as Record<string, unknown>)
+        : {};
+    const channelRestockEnabled =
+      custJson.channelRestockNotificationEnabled === true;
+    const shouldNotify =
       (providerSource?.sourceNotificationSyncEnabled ??
-      shop.providerConfig.sourceNotificationSyncEnabled)
-        ? await this.queue.addRestockNotificationJobs(
-            shop.id,
-            stockNotifications,
-          )
-        : 0;
+        shop.providerConfig.sourceNotificationSyncEnabled) ||
+      channelRestockEnabled;
+
+    const notified = shouldNotify
+      ? await this.queue.addRestockNotificationJobs(
+          shop.id,
+          stockNotifications,
+        )
+      : 0;
 
     return {
       synced: normalizedProducts.length,
@@ -2930,7 +2938,12 @@ export class ShopsService {
           botConfig: {
             select: { customizationJson: true, telegramBotUsername: true },
           },
-          providerConfig: { select: { ownProductsOnly: true } },
+          providerConfig: {
+            select: {
+              ownProductsOnly: true,
+              sourceNotificationSyncEnabled: true,
+            },
+          },
           paymentConfig: { select: { usdtVndRateOverride: true } },
         },
       }),
@@ -3073,36 +3086,41 @@ export class ShopsService {
     }
 
     // 2. Customer individual tasks
-    for (const customer of customers) {
-      if (!customer.telegramChatId || customer.telegramChatId === "0") continue;
-      const lang =
-        customer.preferredLanguage === "en"
-          ? "en"
-          : customer.preferredLanguage === "th"
-            ? "th"
-            : "vi";
+    const shouldNotifyCustomers =
+      shop?.providerConfig?.sourceNotificationSyncEnabled ?? true;
 
-      for (const item of freshNotifications) {
-        const product = productById.get(item.sourceProductId);
-        const cbData = `buy:${item.sourceProductId}`;
-        const rendered = renderRestockHtml(restockTemplate, {
-          productName: item.displayName,
-          addedQuantity: item.addedQuantity,
-          available: item.available,
-          price: item.price ?? null,
-          usdtVndRate,
-          productIcon: product?.productIcon ?? null,
-          productIconCustomEmojiId: product?.iconCustomEmojiId ?? null,
-          language: lang,
-        });
+    if (shouldNotifyCustomers) {
+      for (const customer of customers) {
+        if (!customer.telegramChatId || customer.telegramChatId === "0") continue;
+        const lang =
+          customer.preferredLanguage === "en"
+            ? "en"
+            : customer.preferredLanguage === "th"
+              ? "th"
+              : "vi";
 
-        tasks.push({
-          chatId: customer.telegramChatId,
-          text: rendered.text,
-          hasHtml: rendered.hasHtml,
-          cbData,
-          lang,
-        });
+        for (const item of freshNotifications) {
+          const product = productById.get(item.sourceProductId);
+          const cbData = `buy:${item.sourceProductId}`;
+          const rendered = renderRestockHtml(restockTemplate, {
+            productName: item.displayName,
+            addedQuantity: item.addedQuantity,
+            available: item.available,
+            price: item.price ?? null,
+            usdtVndRate,
+            productIcon: product?.productIcon ?? null,
+            productIconCustomEmojiId: product?.iconCustomEmojiId ?? null,
+            language: lang,
+          });
+
+          tasks.push({
+            chatId: customer.telegramChatId,
+            text: rendered.text,
+            hasHtml: rendered.hasHtml,
+            cbData,
+            lang,
+          });
+        }
       }
     }
 
@@ -3974,9 +3992,12 @@ export class ShopsService {
     const [product, providerConfig] = await Promise.all([
       this.prisma.sourceProduct.findFirst({
         where: {
-          id: sourceProductId,
           shopId,
           providerName: { not: "disconnected_archive" },
+          OR: [
+            { id: sourceProductId },
+            { externalProductId: sourceProductId },
+          ],
           ...(enforceBotVisibility ? { archivedAt: null } : {}),
         },
         include: {

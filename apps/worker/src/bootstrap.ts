@@ -17,6 +17,7 @@ import {
   PREORDER_FULFILLMENT_SWEEP_INTERVAL_MS,
   validateProductionConfig,
   getEncryptionKey,
+  RESTOCK_NOTIFICATION_CONCURRENCY,
 } from "./config/env";
 import { prisma, waitForInfrastructure } from "./infra";
 import { formatError } from "./format/text";
@@ -30,6 +31,7 @@ import {
   releaseCatalogSyncLock,
   scheduleCatalogSyncJobs,
   setCatalogSyncContext,
+  notifyCatalogStockUpdates,
 } from "./fulfillment/catalog-sync";
 import {
   processPurchase,
@@ -159,6 +161,34 @@ export async function bootstrap(): Promise<void> {
     }
   );
 
+  const restockWorker = new Worker(
+    QUEUES.restockNotification,
+    async (job: Job) => {
+      if (job.name === JOBS.restockNotification) {
+        const { shopId, notification } = job.data;
+        if (!shopId || !notification) return null;
+        const shop = await prisma.shop.findUnique({
+          where: { id: shopId },
+          select: {
+            botConfig: { select: { telegramBotTokenEncrypted: true } },
+          },
+        });
+        if (!shop?.botConfig?.telegramBotTokenEncrypted) return null;
+        return notifyCatalogStockUpdates(
+          shopId,
+          shop.botConfig.telegramBotTokenEncrypted,
+          [notification],
+          redis,
+        );
+      }
+      return null;
+    },
+    {
+      connection: redis,
+      concurrency: Math.max(1, Math.floor(RESTOCK_NOTIFICATION_CONCURRENCY)),
+    },
+  );
+
   syncWorker.on("failed", (job, error) => {
     console.error("[worker] Sync job failed:", job?.id, error);
   });
@@ -185,6 +215,13 @@ export async function bootstrap(): Promise<void> {
   });
   userbotCampaignWorker.on("error", (error) => {
     console.error("[worker] Userbot campaign worker error:", formatError(error));
+  });
+
+  restockWorker.on("failed", (job, error) => {
+    console.error("[worker] Restock notification job failed:", job?.id, error);
+  });
+  restockWorker.on("error", (error) => {
+    console.error("[worker] Restock notification worker error:", formatError(error));
   });
 
   setInterval(() => {
@@ -395,6 +432,9 @@ export async function bootstrap(): Promise<void> {
     } catch {}
     try {
       tasks.push(userbotCampaignQueue.close().catch(() => undefined));
+    } catch {}
+    try {
+      tasks.push(restockWorker.close().catch(() => undefined));
     } catch {}
 
     await Promise.race([Promise.all(tasks), new Promise((resolve) => setTimeout(resolve, 3000))]);

@@ -942,10 +942,18 @@ export class ProductsService {
       this.triggerDownstreamSync(shop.id).catch(() => {});
     }
 
+    const rawCust = shop.botConfig?.customizationJson;
+    const custJson =
+      rawCust && typeof rawCust === "object" && !Array.isArray(rawCust)
+        ? (rawCust as Record<string, unknown>)
+        : {};
+    const channelRestockEnabled =
+      custJson.channelRestockNotificationEnabled === true;
+
     if (
       newAvailable != null &&
       product.available != null &&
-      shop.providerConfig?.sourceNotificationSyncEnabled &&
+      (shop.providerConfig?.sourceNotificationSyncEnabled || channelRestockEnabled) &&
       shop.botConfig?.telegramBotTokenEncrypted
     ) {
       const addedQty = Math.max(0, newAvailable - Number(product.available));

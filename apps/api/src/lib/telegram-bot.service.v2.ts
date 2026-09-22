@@ -15,6 +15,8 @@ import {
   isVideoUrl,
   renderRestockHtml,
   DEFAULT_USDT_VND_RATE,
+  resolveTelegramChannelTargetWithThread,
+  stripRestockCustomEmojiHtml,
   type PayOSBankInfo,
 } from "@reseller/shared/server";
 import {
@@ -8978,21 +8980,24 @@ export class TelegramBotService {
     );
     // Bling (cusid) is gated on the shop OWNER's premium — same for every recipient of this broadcast.
     const canBlingNotif = await this.resolveCanBling(shopId);
-    const productByExternalId = new Map(
-      catalog.map((item) => [item.sourceProductId, item]),
-    );
+    const productByExternalId = new Map<string, (typeof catalog)[0]>();
+    for (const item of catalog) {
+      if (item.sourceProductId) productByExternalId.set(item.sourceProductId, item);
+      if (item.id) productByExternalId.set(item.id, item);
+    }
 
-    // De-dup: claim each (product, available) restock once per window — keyed by sourceProductId
+    // De-dup: claim each (product, available) restock once per window — keyed by product.id
     // (shared with the worker + sync notify paths) so a restock already broadcast by another path
     // isn't re-sent here. Collapses the "Thông báo nhập kho" burst.
     const claimedUpdates: typeof updates = [];
     for (const update of updates) {
       const product = productByExternalId.get(update.externalProductId);
       if (!product) continue;
+      const dedupId = product.id || product.sourceProductId || update.externalProductId;
       if (
         await this.shopsService.claimRestockNotification(
           shopId,
-          product.sourceProductId,
+          dedupId,
           update.available,
         )
       ) {
@@ -9003,13 +9008,116 @@ export class TelegramBotService {
       return 0;
     }
 
+    const rawCust = shopData.botConfig?.customizationJson;
+    const custJson =
+      rawCust && typeof rawCust === "object" && !Array.isArray(rawCust)
+        ? (rawCust as Record<string, unknown>)
+        : {};
+    const channelRestockEnabled =
+      custJson.channelRestockNotificationEnabled === true;
+    const botUsername = shopData.botConfig?.telegramBotUsername;
+    const channelTarget = channelRestockEnabled
+      ? resolveTelegramChannelTargetWithThread(
+          custJson.forceJoinChatId as string,
+          custJson.forceJoinChannelUrl as string,
+          custJson.forceJoinTopicId as string,
+          botUsername,
+        )
+      : null;
+
+    let sentCount = 0;
+
+    // 1. Channel restock notification (if enabled and channel target resolved)
+    if (channelTarget) {
+      for (const update of claimedUpdates) {
+        const product = productByExternalId.get(update.externalProductId);
+        if (!product || product.hidden || !product.enabled) continue;
+
+        const productName = this.localizeProductName(
+          product.displayName || update.displayName,
+          "vi",
+        );
+        let priceForRender: number | null = null;
+        if (
+          update.price != null &&
+          Number.isFinite(update.price) &&
+          update.price > 0
+        ) {
+          priceForRender = Number(update.price);
+        } else {
+          const catalogPrice = Number((product as any)?.salePrice);
+          priceForRender =
+            Number.isFinite(catalogPrice) && catalogPrice > 0
+              ? catalogPrice
+              : null;
+        }
+
+        const rendered = renderRestockHtml(restockTemplate, {
+          productName,
+          addedQuantity: update.addedQuantity,
+          available: update.available,
+          price: priceForRender,
+          usdtVndRate: restockUsdtVndRate,
+          productIcon: product.productIcon ?? null,
+          productIconCustomEmojiId: product.iconCustomEmojiId ?? null,
+          language: "vi",
+        });
+
+        const buyUrl = botUsername
+          ? `https://t.me/${botUsername}?start=buy_${product.id}`
+          : undefined;
+
+        const sendOptions: Record<string, unknown> = {
+          parse_mode: rendered.hasHtml ? "HTML" : undefined,
+          reply_markup: {
+            inline_keyboard: [
+              [
+                buyUrl
+                  ? { text: "🛒 Mua ngay", url: buyUrl }
+                  : { text: "🛒 Mua ngay", callback_data: `buy:${product.id}` },
+              ],
+            ],
+          },
+          ...(channelTarget.messageThreadId
+            ? { message_thread_id: channelTarget.messageThreadId }
+            : {}),
+        };
+
+        try {
+          await telegramSendMessage(
+            token,
+            channelTarget.chatId,
+            rendered.text,
+            sendOptions,
+          );
+          sentCount += 1;
+        } catch (err: any) {
+          this.logger.warn(
+            `[telegram-bot] Failed to send restock notification to channel ${channelTarget.chatId}: ${err?.message || err}`,
+          );
+          if (rendered.hasHtml) {
+            try {
+              await telegramSendMessage(
+                token,
+                channelTarget.chatId,
+                stripRestockCustomEmojiHtml(rendered.text),
+                sendOptions,
+              );
+              sentCount += 1;
+            } catch {
+              // ignore fallback failure
+            }
+          }
+        }
+      }
+    }
+
     // Stream customers in cursor-paginated chunks — a 100k-customer shop restock previously
     // loaded the whole list into memory + fanned out N×M sends before yielding. Chunking:
     //   1. Keeps heap flat regardless of shop size.
     //   2. Lets Telegram rate-limiter breathe between batches.
     const CHUNK = 500;
     let cursorId: string | undefined = undefined;
-    let sentCount = 0;
 
     while (true) {
       const customers: Array<{

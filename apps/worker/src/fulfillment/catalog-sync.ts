@@ -217,19 +217,6 @@ export async function notifyCatalogStockUpdates(
   if (notifications.length === 0 || !encryptedBotToken) {
     return 0;
   }
-  // The sync can run for several seconds. Re-read the switches here so a seller
-  // enabling own-products-only during an in-flight sync cannot receive a stale
-  // source-product restock notification after the toggle has been saved.
-  const notificationConfig = await prisma.providerConfig.findUnique({
-    where: { shopId },
-    select: { sourceNotificationSyncEnabled: true, ownProductsOnly: true },
-  });
-  if (
-    !notificationConfig?.sourceNotificationSyncEnabled ||
-    notificationConfig.ownProductsOnly
-  ) {
-    return 0;
-  }
   const token = decryptSecret(encryptedBotToken, getEncryptionKey());
   if (
     !token ||
@@ -238,7 +225,11 @@ export async function notifyCatalogStockUpdates(
   ) {
     return 0;
   }
-  const [customers, sourceProducts, shop] = await Promise.all([
+  const [notificationConfig, customers, sourceProducts, shop] = await Promise.all([
+    prisma.providerConfig.findUnique({
+      where: { shopId },
+      select: { sourceNotificationSyncEnabled: true, ownProductsOnly: true },
+    }),
     prisma.customer.findMany({
       where: { shopId },
       select: { telegramChatId: true, preferredLanguage: true },
@@ -257,12 +248,21 @@ export async function notifyCatalogStockUpdates(
       },
     }),
   ]);
-  const productById = new Map(sourceProducts.map((p) => [p.id, p]));
   const rawCust = shop?.botConfig?.customizationJson;
   const custJson =
     rawCust && typeof rawCust === "object" && !Array.isArray(rawCust)
       ? (rawCust as Record<string, any>)
       : {};
+  const channelRestockEnabled =
+    custJson.channelRestockNotificationEnabled === true;
+  const shouldNotifyCustomers =
+    notificationConfig?.sourceNotificationSyncEnabled &&
+    !notificationConfig.ownProductsOnly;
+
+  if (!shouldNotifyCustomers && !channelRestockEnabled) {
+    return 0;
+  }
+  const productById = new Map(sourceProducts.map((p) => [p.id, p]));
   const custEmojis =
     custJson.buttonEmojis && typeof custJson.buttonEmojis === "object"
       ? (custJson.buttonEmojis as Record<string, string>)
@@ -351,8 +351,6 @@ export async function notifyCatalogStockUpdates(
 
   const tasks: RestockTask[] = [];
   const botUsername = shop?.botConfig?.telegramBotUsername;
-  const channelRestockEnabled =
-    custJson.channelRestockNotificationEnabled === true;
   const channelTarget = channelRestockEnabled
     ? resolveTelegramChannelTargetWithThread(
         custJson.forceJoinChatId as string,
@@ -392,36 +390,38 @@ export async function notifyCatalogStockUpdates(
   }
 
   // 2. Customer individual tasks
-  for (const customer of customers) {
-    if (!customer.telegramChatId || customer.telegramChatId === "0") continue;
-    const lang =
-      customer.preferredLanguage === "en"
-        ? "en"
-        : customer.preferredLanguage === "th"
-          ? "th"
-          : "vi";
+  if (shouldNotifyCustomers) {
+    for (const customer of customers) {
+      if (!customer.telegramChatId || customer.telegramChatId === "0") continue;
+      const lang =
+        customer.preferredLanguage === "en"
+          ? "en"
+          : customer.preferredLanguage === "th"
+            ? "th"
+            : "vi";
 
-    for (const item of freshNotifications) {
-      const product = productById.get(item.sourceProductId);
-      if (!product) continue;
-      const cbData = `buy:${item.sourceProductId}`;
-      const rendered = renderRestockHtml(restockTemplate, {
-        productName: item.displayName || "",
-        addedQuantity: item.addedQuantity,
-        available: item.available,
-        price: item.price ?? null,
-        usdtVndRate,
-        productIconCustomEmojiId: product.iconCustomEmojiId ?? null,
-        language: lang,
-      });
+      for (const item of freshNotifications) {
+        const product = productById.get(item.sourceProductId);
+        if (!product) continue;
+        const cbData = `buy:${item.sourceProductId}`;
+        const rendered = renderRestockHtml(restockTemplate, {
+          productName: item.displayName || "",
+          addedQuantity: item.addedQuantity,
+          available: item.available,
+          price: item.price ?? null,
+          usdtVndRate,
+          productIconCustomEmojiId: product.iconCustomEmojiId ?? null,
+          language: lang,
+        });
 
-      tasks.push({
-        chatId: customer.telegramChatId,
-        text: rendered.text,
-        hasHtml: rendered.hasHtml,
-        cbData,
-        lang,
-      });
+        tasks.push({
+          chatId: customer.telegramChatId,
+          text: rendered.text,
+          hasHtml: rendered.hasHtml,
+          cbData,
+          lang,
+        });
+      }
     }
   }
 
@@ -1134,9 +1134,17 @@ export async function syncCatalogForShop(
       })
       .catch(() => undefined);
   }
+  const rawCust = shop.botConfig?.customizationJson;
+  const custJson =
+    rawCust && typeof rawCust === "object" && !Array.isArray(rawCust)
+      ? (rawCust as Record<string, unknown>)
+      : {};
+  const channelRestockEnabled =
+    custJson.channelRestockNotificationEnabled === true;
   if (
-    shop.providerConfig.sourceNotificationSyncEnabled &&
-    !shop.providerConfig.ownProductsOnly
+    (shop.providerConfig.sourceNotificationSyncEnabled &&
+      !shop.providerConfig.ownProductsOnly) ||
+    channelRestockEnabled
   ) {
     const redis = options?.redis || _globalRedis;
     await notifyCatalogStockUpdates(
